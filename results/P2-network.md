@@ -257,3 +257,6 @@
 - 程序元数据构建在 iPhone 11 进程 8268 复测成功。原版 `init` 记录探针退出 0，耗时 0.254 秒。标签为 `9172b392a6f83a26`，解释字节码 2,560 字节，JIT 代码 0 字节，引用四个映射。原版程序的 IPv6 帧改写和计数复测也通过；本次 135 秒诊断仍未观察到完整启动。
 - iPhone 11 进程 8275 执行相同原版 IPv4 探针，确认 NAT、校验和、计数和时间戳均通过。原版 `init` 记录服务耗时 0.236 秒，正常退出。
 - 上一版补丁所用的公开主分支源码只接受 Android 16 的启动脚本元数据。补丁已移到 `android-17.0.0_r1`。新的 [加载器构建工具](../tools/build-netbpfload.py) 用同标签源码与 API 37 参考设备中的共享库生成诊断 ARM64 ELF。Mac 隔离诊断把源码构建的二进制提供给客体中的加载器路径，保留原厂 APEX 文件，并完成解释器自检、`offload.o` 的八个分类程序和 `test.o` 的加载。下一处是 `clatd.o`，其 libbpf 装载请求带 BTF 函数及源码行表。完整 Tethering APEX 仍待在 AOSP 构建环境重建。[正式发布标签](https://android.googlesource.com/platform/manifest/+/refs/tags/android-17.0.0_r1)
+
+- iPhone 11 进程 8290 通过源码版加载器的解释器自检，随后创建 `/sys/fs/bpf/netd_readonly` 时遇到客体目录上限。目录上限已从 512 提升至 2,048，保留 ext4 索引的独立计数。宿主回归先保存并恢复 540 个 `/data` 目录，再成功挂载 bpffs 并创建对应目录。
+- libbpf 提交的 BTF 程序函数与行表现在随程序保留，可通过 `BPF_OBJ_GET_INFO_BY_FD` 读回。Android 17 参考内核和 Nestvane Mac 使用同一 Bionic 探针，均拒绝重复指令偏移，并在初始 BTF 描述符关闭后正常回读函数与行表。宿主 ABI 回归通过。更新运行时后，Mac 中 `clatd.o` 的首条加载失败从 EOPNOTSUPP 推进至 EINVAL。原版节还使用尚未实现的 `bpf_skb_change_proto` 和 `bpf_skb_adjust_room`。

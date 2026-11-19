@@ -1009,6 +1009,47 @@ int main() {
 
     }
     {
+        constexpr auto object = base + 0x100, code = base + 0x200, license = base + 0x240;
+        constexpr auto debug = base + 0x260, attr = base + 0x300, info = base + 0x400, output = base + 0x500;
+        const auto write = [&](uint64_t address, const auto& record) {
+            return machine.write(address, {reinterpret_cast<const uint8_t*>(&record), sizeof(record)});
+        };
+        constexpr char names[] = "\0int\0ctx\0entry\0file.c\0line";
+        const std::array<uint32_t, 21> btf{0x0001eb9f, 24, 0, 60, 60, sizeof(names),
+            1, 1U << 24, 4, 0x01000020, 0, 2U << 24, 0,
+            0, (13U << 24) | 1, 1, 5, 2, 9, (12U << 24) | 1, 3};
+        const std::array<uint64_t, 4> btfAttr{object, 0, sizeof(btf) + sizeof(names), 0};
+        assert(write(object, btf) && write(object + sizeof(btf), names) && write(attr, btfAttr));
+        const auto types = call(280, {18, attr, sizeof(btfAttr)});
+        assert(types < 256);
+        const std::array<uint64_t, 2> instructions{0xb7, 0x95};
+        assert(write(code, instructions));
+        put(license, "GPL");
+        const std::array<uint32_t, 2> function{0, 4};
+        std::array<uint32_t, 8> lines{0, 15, 22, 1024, 0, 15, 22, 2048};
+        const std::array<uint64_t, 14> request{3 | (2ULL << 32), code, license, 0, 0, 0, 0, 0, 0,
+            types | (8ULL << 32), debug, 1 | (16ULL << 32), debug + 8, 2};
+        assert(write(attr, request) && write(debug, function) && write(debug + 8, lines));
+        assert(call(280, {5, attr, sizeof(request)}) == uint64_t(-22)); // Duplicate source-line slot.
+        lines[4] = 1;
+        assert(write(debug + 8, lines));
+        const auto program = call(280, {5, attr, sizeof(request)});
+        assert(program < 256 && call(57, {types}) == 0);
+        std::array<uint64_t, 22> query{};
+        query[16] = 8ULL << 32; // func_info_rec_size
+        query[17] = output;
+        query[18] = 1 | (2ULL << 32); // nr_func_info, nr_line_info
+        query[19] = output + 8;
+        query[21] = 16ULL << 32; // line_info_rec_size
+        const std::array<uint64_t, 2> requestInfo{program | (sizeof(query) << 32), info};
+        assert(write(info, query) && write(attr, requestInfo));
+        assert(call(280, {15, attr, sizeof(requestInfo)}) == 0 && uint32_t(load(info + 128)));
+        assert(load(info + 144) == query[18]);
+        assert(std::memcmp(machine.read(output, sizeof(function), 4), function.data(), sizeof(function)) == 0);
+        assert(std::memcmp(machine.read(output + 8, sizeof(lines), 4), lines.data(), sizeof(lines)) == 0);
+        assert(call(57, {program}) == 0);
+    }
+    {
         constexpr auto source = base + 256, attr = base + 400, key = base + 512, value = base + 520;
         constexpr char names[] = "\0u32\0u64";
         const std::array<uint32_t, 14> input{0x0001eb9f, 24, 0, 32, 32, sizeof(names),
@@ -2394,6 +2435,26 @@ int main() {
             put(base, "/data/package");
             const auto persistent = invoke(quota, 56, {cwd, base, 0xc1, 0600});
             assert(persistent < 256 && invoke(quota, 57, {persistent}) == 0 && quota.syncData());
+        }
+        {
+            const auto directoryDatabase = (cleanup.directory / "boot-dirs.sqlite3").string();
+            ProbeLinux seed(1, 0);
+            seed.mountData(directoryDatabase);
+            constexpr uint64_t cwd = uint32_t(-100);
+            for (unsigned i = 0; i < 540; ++i) {
+                const auto path = "/data/package-" + std::to_string(i);
+                put(base, path.c_str());
+                assert(invoke(seed, 34, {cwd, base, 0755}) == 0);
+            }
+            assert(seed.syncData());
+
+            ProbeLinux reboot(1, 0);
+            reboot.mountData(directoryDatabase);
+            put(base, "bpf");
+            put(base + 32, "/sys/fs/bpf");
+            assert(invoke(reboot, 40, {base, base + 32, base, 14}) == 0);
+            put(base, "/sys/fs/bpf/netd_readonly");
+            assert(invoke(reboot, 34, {cwd, base, 0755}) == 0);
         }
         constexpr auto atCwd = uint32_t(-100);
         constexpr auto firstPath = base + 0x280, secondPath = base + 0x300, payload = base + 0x380;

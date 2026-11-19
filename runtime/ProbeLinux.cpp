@@ -16,6 +16,7 @@
 #include <random>
 #include <sstream>
 #include <thread>
+#include <type_traits>
 
 namespace nestvane {
 
@@ -27,6 +28,8 @@ constexpr uint64_t lowMappingFloor = 0x10000;
 constexpr uint64_t mappingLimit = 0x20'0000'0000; // 128 GiB guest arena; includes 24 randomized page bits.
 constexpr uint64_t maxGuestFileBytes = 2 * 1024 * 1024;
 constexpr size_t maxWritableFiles = 1024;
+// Leave space for boot-created directories alongside a restored /data tree.
+constexpr size_t maxGuestDirectories = 2048;
 constexpr size_t maxGuestTasks = 256;
 constexpr uint32_t guestLoopbackIndex = 1;
 constexpr std::string_view cgroupRoot = "/sys/fs/cgroup";
@@ -2850,7 +2853,7 @@ bool ProbeLinux::fileCall(Machine& machine) {
                 else if (!directoryExists(parent)) x[0] = uint64_t(-2);
                 else if (!writablePath(path)) x[0] = uint64_t(-30);
                 else if (!canAccessParent(backing, true)) x[0] = uint64_t(-13);
-                else if (directories.size() - ext4DirectoryCount >= 512) x[0] = uint64_t(-28);
+                else if (directories.size() - ext4DirectoryCount >= maxGuestDirectories) x[0] = uint64_t(-28);
                 else {
                     directories.emplace(backing, Directory{uint32_t(x[2] & 0777 & ~current->process->umask),
                                                            userId(), groupId(), current->fsCreateContext});
@@ -5334,7 +5337,9 @@ uint64_t ProbeLinux::loadBpfProgram(Machine& machine) {
     const auto caps = current->process->effectiveCaps;
     if (type == BpfProgram::classifier && (!(caps & (capBpf | capSysAdmin)) || !(caps & (1ULL << 12))))
         return uint64_t(-1); // SCHED_CLS also requires CAP_NET_ADMIN.
-    if ((flags & ~3U) || flags == 3 || std::any_of(input.begin() + 64, input.end(), [](auto b) { return b != 0; }))
+    if ((flags & ~3U) || flags == 3 ||
+        std::any_of(input.begin() + 64, input.begin() + 72, [](auto b) { return b != 0; }) ||
+        std::any_of(input.begin() + 108, input.end(), [](auto b) { return b != 0; }))
         return uint64_t(-95);
     if (!count || count > BpfProgram::maxInstructions) return uint64_t(-7);
     const auto licenseText = readPath(machine, license);
@@ -5356,7 +5361,50 @@ uint64_t ProbeLinux::loadBpfProgram(Machine& machine) {
             std::chrono::steady_clock::now().time_since_epoch()).count();
         identity.gplCompatible = std::ranges::find(gplLicenses, *licenseText) != gplLicenses.end();
         std::memcpy(identity.name.data(), input.data() + 48, identity.name.size() - 1);
-        auto program = std::make_shared<BpfProgram>(identity);
+        BpfProgram::DebugInfo debug;
+        struct DebugAttributes {
+            uint32_t btfFd, functionSize;
+            uint64_t functions;
+            uint32_t functionCount, lineSize;
+            uint64_t lines;
+            uint32_t lineCount;
+        };
+        static_assert(sizeof(DebugAttributes) == 40 && offsetof(DebugAttributes, lineCount) == 32);
+        DebugAttributes metadata{};
+        std::memcpy(&metadata, input.data() + 72, 36);
+        if (metadata.functionCount || metadata.lineCount) {
+            if (!(caps & (capBpf | capSysAdmin))) return uint64_t(-1);
+            const auto btf = descriptors().find(metadata.btfFd);
+            if (btf == descriptors().end()) return uint64_t(-9);
+            if (!btf->second.btf) return invalid;
+            debug.types = btf->second.btf;
+            // This interpreter supports a single entry point. libbpf passes one function record
+            // and a strictly ordered table of source lines, indexed by instruction slot.
+            if (metadata.functionCount) {
+                if (metadata.functionCount != 1 || metadata.functionSize != sizeof(BpfProgram::FunctionInfo))
+                    return invalid;
+                BpfProgram::FunctionInfo function{};
+                if (!machine.readInto(metadata.functions, {reinterpret_cast<uint8_t*>(&function), sizeof(function)}))
+                    return uint64_t(-14);
+                if (function[0] || !debug.types->isFunction(function[1])) return invalid;
+                debug.functions.push_back(function);
+            }
+            if (metadata.lineCount) {
+                if (metadata.lineCount > count || metadata.lineSize != sizeof(BpfProgram::LineInfo)) return invalid;
+                debug.lines.resize(metadata.lineCount);
+                auto bytes = std::span(reinterpret_cast<uint8_t*>(debug.lines.data()), metadata.lineCount * metadata.lineSize);
+                if (!machine.readInto(metadata.lines, bytes)) return uint64_t(-14);
+                if (debug.lines.front()[0]) return invalid;
+                uint32_t minimum = 0;
+                for (const auto& record : debug.lines) {
+                    const auto slot = record[0];
+                    if (slot >= count || slot < minimum || !bytecode[size_t(slot) * 8] ||
+                        !debug.types->hasString(record[1]) || !debug.types->hasString(record[2])) return invalid;
+                    minimum = slot + 1;
+                }
+            }
+        }
+        auto program = std::make_shared<BpfProgram>(identity, std::move(debug));
         if (!program->load(type, bytecode, [&](uint32_t mapFd) -> std::shared_ptr<BpfMap> {
                 const auto found = descriptors().find(mapFd);
                 return found == descriptors().end() ? nullptr : found->second.bpfMap;
@@ -5575,12 +5623,21 @@ uint64_t ProbeLinux::bpfObjectInfo(Machine& machine) {
             uint64_t mapIds;
             std::array<char, 16> name;
             uint32_t ifindex, gplCompatible;
+            uint64_t namespaceDevice, namespaceInode;
+            uint32_t jitSymbolCount, jitFunctionCount;
+            uint64_t jitSymbols, jitFunctions;
+            uint32_t btf, functionSize;
+            uint64_t functions;
+            uint32_t functionCount, lineCount;
+            uint64_t lines, jitLines;
+            uint32_t jitLineCount, lineSize;
         };
-        static_assert(sizeof(Info) == 88 && offsetof(Info, mapIds) == 56);
+        static_assert(sizeof(Info) == 176 && offsetof(Info, mapIds) == 56 && offsetof(Info, btf) == 128);
         if (!validTail(sizeof(Info))) return uint64_t(-95);
         Info info{};
         std::memcpy(&info, request.data(), std::min<size_t>(length, sizeof(info)));
-        if (info.jitBytes || info.translatedBytes) return uint64_t(-95);
+        if (info.jitBytes || info.translatedBytes || info.jitSymbols || info.jitFunctions || info.jitLines)
+            return uint64_t(-95);
         try {
             const auto ids = program->mapIds();
             const auto size = std::min<size_t>(info.mapCount, ids.size()) * sizeof(uint32_t);
@@ -5599,13 +5656,31 @@ uint64_t ProbeLinux::bpfObjectInfo(Machine& machine) {
             std::copy_n(digest.begin(), info.tag.size(), info.tag.begin());
             info.jitLength = 0;
             constexpr uint64_t bpfCapabilities = (1ULL << 39) | (1ULL << 21);
-            info.translatedLength = current->process->effectiveCaps & bpfCapabilities ? code.size() : 0;
+            const bool inspect = current->process->effectiveCaps & bpfCapabilities;
+            info.translatedLength = inspect ? code.size() : 0;
             info.loadTime = identity.loadTime;
             info.uid = identity.uid;
             info.mapCount = ids.size();
             info.name = identity.name;
             info.ifindex = 0;
             info.gplCompatible = identity.gplCompatible;
+            info.namespaceDevice = info.namespaceInode = 0;
+            info.jitSymbolCount = info.jitFunctionCount = info.jitLineCount = 0;
+            const auto& debug = program->debugInfo();
+            info.btf = debug.types ? debug.types->id() : 0;
+            const auto copyRecords = [&](const auto& records, uint32_t& count, uint32_t& stride, uint64_t where) {
+                const auto requested = inspect ? std::min<size_t>(count, records.size()) : 0;
+                const auto width = sizeof(typename std::decay_t<decltype(records)>::value_type);
+                if (count && stride != width) return invalid;
+                if (requested && !machine.write(where,
+                        {reinterpret_cast<const uint8_t*>(records.data()), requested * width})) return uint64_t(-14);
+                count = inspect ? records.size() : 0;
+                stride = width;
+                return uint64_t{0};
+            };
+            if (const auto result = copyRecords(debug.functions, info.functionCount, info.functionSize, info.functions))
+                return result;
+            if (const auto result = copyRecords(debug.lines, info.lineCount, info.lineSize, info.lines)) return result;
             return writeInfo(info);
         } catch (const std::bad_alloc&) {
             return noMemory;

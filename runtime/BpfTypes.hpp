@@ -15,6 +15,12 @@ public:
     explicit BpfTypes(uint32_t id) : objectId(id) {}
     uint32_t id() const { return objectId; }
     std::span<const uint8_t> bytes() const { return blob; }
+    bool hasString(uint32_t offset) const { return offset < stringBytes; }
+    bool isFunction(uint32_t id) const {
+        if (!id || id > records.size() || records[id - 1].kind != 12) return false;
+        const auto prototype = records[id - 1].data;
+        return prototype && prototype <= records.size() && records[prototype - 1].kind == 13;
+    }
 
     bool load(std::vector<uint8_t> object) {
         const auto bytes = std::span<const uint8_t>(object);
@@ -77,6 +83,7 @@ public:
             pos += elements * width;
         }
         if (highestReference > decoded.size()) return false;
+        stringBytes = stringLength;
         records = std::move(decoded);
         blob = std::move(object);
         return true;
@@ -115,7 +122,7 @@ private:
         return value;
     }
     std::vector<Record> records;
-    uint32_t objectId;
+    uint32_t objectId, stringBytes = 0;
     std::vector<uint8_t> blob;
 };
 

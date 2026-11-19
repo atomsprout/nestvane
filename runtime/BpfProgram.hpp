@@ -48,7 +48,15 @@ public:
         bool gplCompatible = false;
     };
 
-    explicit BpfProgram(Identity identity) : identity(identity) {}
+    using FunctionInfo = std::array<uint32_t, 2>;
+    using LineInfo = std::array<uint32_t, 4>;
+    struct DebugInfo {
+        std::shared_ptr<const BpfTypes> types;
+        std::vector<FunctionInfo> functions;
+        std::vector<LineInfo> lines;
+    };
+
+    BpfProgram(Identity identity, DebugInfo debug) : identity(identity), debug(std::move(debug)) {}
 
     struct Packet {
         std::vector<uint8_t> bytes;
@@ -122,6 +130,7 @@ public:
 
     uint32_t type() const { return programType; }
     const Identity& info() const { return identity; }
+    const DebugInfo& debugInfo() const { return debug; }
     std::span<const uint8_t> bytecode() const {
         return {reinterpret_cast<const uint8_t*>(instructions.data()), instructions.size() * sizeof(Instruction)};
     }
@@ -437,6 +446,7 @@ private:
     }
 
     Identity identity;
+    DebugInfo debug;
     uint32_t programType = 0;
     std::vector<Instruction> instructions;
     std::map<size_t, std::shared_ptr<BpfMap>> referencedMaps;
