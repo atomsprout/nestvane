@@ -153,7 +153,8 @@ void changeRange(Machine& machine, uint64_t start, uint64_t end, std::optional<u
                 case ForkAdvice::keep: part.wipeOnFork = false; break;
             }
         };
-        if (retain && left == segment.address && right == segmentEnd &&
+        const bool privatize = segment.imageView && flags && (*flags & 2);
+        if (retain && !privatize && left == segment.address && right == segmentEnd &&
             (advice || !segment.reservedSize || segment.anonymousPages || segment.imageView)) {
             if (flags) segment.flags = *flags;
             applyAdvice(segment);
@@ -166,6 +167,7 @@ void changeRange(Machine& machine, uint64_t start, uint64_t end, std::optional<u
                 fragment.omitOnFork = segment.omitOnFork;
                 fragment.wipeOnFork = segment.wipeOnFork;
                 fragment.sharedAnonymous = segment.sharedAnonymous;
+                fragment.sharedReadOnly = segment.sharedReadOnly;
                 fragment.maxProtection = segment.maxProtection;
                 if (changed) applyAdvice(fragment);
                 pages.push_back(std::move(fragment));
@@ -180,12 +182,18 @@ void changeRange(Machine& machine, uint64_t start, uint64_t end, std::optional<u
                 return;
             }
             if (segment.imageView) {
-                auto fragment = segment;
-                fragment.address = from;
-                fragment.reservedSize = to - from;
-                fragment.imageView += from - segment.address;
-                fragment.flags = permissions;
-                append(std::move(fragment));
+                const auto* first = segment.imageView + (from - segment.address);
+                if (permissions & 2) {
+                    append({from, {first, first + (to - from)}, permissions, 0, false, {}, 0,
+                            false, false, false, true});
+                } else {
+                    auto fragment = segment;
+                    fragment.address = from;
+                    fragment.reservedSize = to - from;
+                    fragment.imageView = first;
+                    fragment.flags = permissions;
+                    append(std::move(fragment));
+                }
                 return;
             }
             if (segment.shared) {
@@ -242,7 +250,8 @@ uint64_t protect(Machine& machine, uint64_t start, uint64_t count, uint64_t prot
     if (prot) {
         uint64_t needed = 0;
         for (const auto& segment : machine.segments) {
-            if (segment.shared || segment.anonymousPages || segment.beyondFileEnd || segment.imageView) continue;
+            if (segment.shared || segment.anonymousPages || segment.beyondFileEnd ||
+                (segment.imageView && !(prot & 2))) continue;
             const auto left = std::max(start, segment.address);
             const auto right = std::min(end, segment.address + segment.mappedSize());
             if (left < right) needed += right - left;
@@ -3303,7 +3312,7 @@ uint64_t ProbeLinux::map(Machine& machine) {
         if (x[5] < raw.size()) bytes = raw.subspan(x[5], std::min<uint64_t>(length, raw.size() - x[5]));
         backedLength = pageAlignedLength(bytes.size());
         // The root loader and retained read-only APEX mounts own these bytes throughout the boot.
-        if (sharing == 1 && !(x[2] & 2) && !fd.temporary && files.contains(fd.path))
+        if (!(x[2] & 2) && !fd.temporary && files.contains(fd.path))
             imageLength = bytes.size() & ~(pageSize - 1);
     }
     const bool sparse = anon && !x[2];
@@ -3325,7 +3334,7 @@ uint64_t ProbeLinux::map(Machine& machine) {
     if (atAddress) changeRange(machine, start, end, {});
     if (!atAddress || (x[3] & fixedNoReplace)) nextMapping = std::max(nextMapping, end);
     if (imageLength) {
-        Segment view{start, {}, flags, imageLength, false, {}, 0, false, true, false, true};
+        Segment view{start, {}, flags, imageLength, false, {}, 0, false, sharing == 1, false, true};
         view.imageView = bytes.data();
         machine.insertSegment(std::move(view));
     }

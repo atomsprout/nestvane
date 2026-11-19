@@ -413,6 +413,13 @@ int main() {
         assert(machine.read(view + pageSize, 1, 4) == contents.data() + pageSize * 2);
         assert(call(226, {view, pageSize, 3}) == uint64_t(-13));
         assert(!machine.store64(view, 0));
+        const auto privateView = call(222, {0, pageSize * 2, 1, 2, file, pageSize});
+        assert(machine.read(privateView, 1, 4) == contents.data() + pageSize);
+        assert(call(226, {privateView, pageSize, 3}) == 0);
+        assert(*machine.read(privateView, 1, 4) == 0x37 && machine.store64(privateView, 0x99));
+        assert(contents[pageSize] == 0x37 && *machine.read(view, 1, 4) == 0x37);
+        assert(machine.read(privateView + pageSize, 1, 4) == contents.data() + pageSize * 2);
+        assert(call(215, {privateView, pageSize * 2}) == 0);
         const auto tail = call(222, {0, pageSize * 3, 1, 1, file, pageSize * 2});
         assert(machine.read(tail, 1, 4) == contents.data() + pageSize * 2);
         assert(*machine.read(tail + pageSize, 1, 4) == 0x2a && *machine.read(tail + pageSize + 32, 1, 4) == 0);
