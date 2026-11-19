@@ -1045,6 +1045,32 @@ int main() {
             packetMark = 0x6f35;
             assert(firewall.allows(packet, GuestFirewall::output, 65536, {&packetMark}));
             assert(packetMark == 0x6f35);
+
+            constexpr uint16_t policySize = 344, policyInfo = 32 + 304;
+            payloadRule.assign(header + policySize + 40, 0);
+            store(payloadRule, offsets, uint16_t(header + policySize));
+            store(payloadRule, offsets + 2, uint16_t(payloadRule.size()));
+            store(payloadRule, header, policySize);
+            std::memcpy(payloadRule.data() + header + 2, "policy", 6);
+            store(payloadRule, header + policyInfo, uint16_t(2)); // --dir out --pol ipsec
+            store(payloadRule, header + policyInfo + 2, uint16_t(1));
+            store(payloadRule, header + policySize, uint16_t(40));
+            store(payloadRule, header + policySize + 32, int32_t(-1));
+            store(update, 40, uint32_t(initial.size() + payloadRule.size()));
+            for (unsigned hook = 0; hook < 5; ++hook) {
+                const auto entry = metadata[1 + hook], policy = metadata[6 + hook];
+                store(update, 44 + hook * 4, uint32_t(entry + (entry > start ? payloadRule.size() : 0)));
+                store(update, 64 + hook * 4, uint32_t(policy + (policy >= start ? payloadRule.size() : 0)));
+            }
+            assert(installPayloadRule(metadata[11] + 1) == 0);
+            assert(firewall.allows(packet, GuestFirewall::output, 65536, {}));
+            store(payloadRule, header + policyInfo, uint16_t(2 | 4)); // --dir out --pol none
+            store(payloadRule, header + policyInfo + 2, uint16_t(0));
+            assert(installPayloadRule(metadata[11] + 1) == 0);
+            assert(!firewall.allows(packet, GuestFirewall::output, 65536, {}));
+            store(payloadRule, header + policyInfo, uint16_t(4)); // Missing direction.
+            assert(installPayloadRule(metadata[11] + 1) == uint64_t(-22));
+            assert(!firewall.allows(packet, GuestFirewall::output, 65536, {}));
         }
     }
     const auto put = [&](uint64_t address, const char* data) {

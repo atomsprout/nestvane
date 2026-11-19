@@ -64,7 +64,7 @@ public:
             if (match && name == "bpf") return version == 1 ? 0 : uint64_t(-93);
             if (!match && name == "MARK") return version == 2 ? 0 : uint64_t(-93);
             if (!match && name == "CONNMARK") return (version == 1 || version == 2) ? 0 : uint64_t(-93);
-            const bool known = match ? name == "comment" || name == "tcp" || name == "udp" || name == "u32" || name == "state" : name == "TCPMSS" || name == "REJECT" || name == "NFLOG";
+            const bool known = match ? name == "comment" || name == "tcp" || name == "udp" || name == "u32" || name == "state" || name == "policy" : name == "TCPMSS" || name == "REJECT" || name == "NFLOG";
             return !known ? missing : version ? uint64_t(-93) : 0;
         }
         if (option != 64 && option != 65) return unsupported;
@@ -203,6 +203,8 @@ private:
     static_assert(sizeof(U32Operation) == 8 && sizeof(U32Test) == 180);
     static constexpr size_t u32TestCountOffset = u32MaxElements * sizeof(U32Test);
     static constexpr size_t u32PayloadSize = (u32TestCountOffset + 2 + 7) & ~size_t(7);
+    static constexpr size_t policyFlagsOffset = 304, policyPayloadSize = 312;
+    enum PolicyFlag : uint16_t { policyIn = 1, policyOut = 2, policyNone = 4, policyStrict = 8 };
 
     struct Table {
         uint32_t hooks;
@@ -395,6 +397,13 @@ private:
                                                 newConnection | untrackedConnection;
                     if (length != 40 || (load<uint32_t>(extension, targetHeader) & ~states)) return invalid;
                     table.usesConnectionTracking = true;
+                } else if (matchName == "policy") {
+                    if (length != targetHeader + policyPayloadSize) return invalid;
+                    const auto body = extension.subspan(targetHeader);
+                    const auto flags = load<uint16_t>(body, policyFlagsOffset);
+                    if (!(flags & (policyIn | policyOut)) ||
+                        (flags & ~(policyIn | policyOut | policyNone | policyStrict)) ||
+                        load<uint16_t>(body, policyFlagsOffset + 2) > 4) return invalid;
                 } else if (matchName == "u32") {
                     if (!validU32(extension.subspan(targetHeader, length - targetHeader))) return invalid;
                 } else if (matchName == "tcp") {
@@ -503,6 +512,12 @@ private:
                     return false;
             } else if (type == "state") {
                 if (!(load<uint32_t>(body, 0) & state.connection)) return false;
+            } else if (type == "policy") {
+                // This transport only constructs loopback packets with no XFRM state.
+                const auto flags = load<uint16_t>(body, policyFlagsOffset);
+                const auto direction = hook == input || hook == prerouting ? policyIn :
+                                       hook == forward ? policyIn | policyOut : policyOut;
+                if (!(flags & policyNone) || (flags & (policyIn | policyOut) & ~direction)) return false;
             } else if (type == "u32") {
                 if (!matchU32(body, packet)) return false;
             } else if (type != "comment" && !matchTransport(type, body, packet, layout.ipv6)) {
