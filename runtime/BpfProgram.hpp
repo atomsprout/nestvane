@@ -197,6 +197,7 @@ public:
         size_t networkOffset = 0;
         uint64_t socketCookie = 0;
         bool ringNotification = false;
+        std::shared_ptr<void> socket;
     };
 
     struct SocketOperations {
@@ -281,7 +282,10 @@ public:
                     case 1:
                         if (type == socketFilter) return false;
                         break;
-                    case 59: case 107: case 143: case 144:
+                    case 107:
+                        if (type == socketFilter) return false;
+                        break;
+                    case 59: case 143: case 144:
                         if (type != socketOperations) return false;
                         break;
                     case 9: case 10: case 11: case 23: case 31: case 39: case 40: case 43: case 46: case 50: case 125: case 130: case 131:
@@ -295,6 +299,10 @@ public:
             } else if (i.code == 0xd4 || i.code == 0xdc) { // BPF_END
                 if (i.destination() == 10 || i.source() || i.offset ||
                     (i.immediate != 16 && i.immediate != 32 && i.immediate != 64)) return false;
+            } else if (i.kind() == 0 && (i.mode() == 0x20 || i.mode() == 0x40)) {
+                // Legacy absolute and indirect packet loads use r6 as their implicit skb.
+                if (type == socketOperations || i.destination() || i.offset || i.width() == 8 ||
+                    (i.mode() == 0x20 && i.source())) return false;
             } else if (i.kind() == 5) {
                 if (!jump(i.operation(), 0, 0).has_value() || (i.operation() == 0 && i.code != 0x05))
                     return false;
@@ -591,6 +599,8 @@ private:
             return valueAddress(map, value);
         };
 
+        const auto* socket = sockOps ? &sockOps->socket : classifierPacket ? &classifierPacket->socket : nullptr;
+        const bool hasSocket = socket && *socket;
         auto skbField = [&](uint64_t offset) -> std::optional<uint32_t> {
             if (offset == 0) return uint32_t(packet.size()); // __sk_buff.len
             if (!classifierPacket) return std::nullopt;
@@ -627,6 +637,17 @@ private:
                 const auto imm = uint64_t(int64_t(i.immediate));
                 const auto operand = i.fromRegister() ? src : imm;
                 switch (i.code) {
+                    case 0x20: case 0x28: case 0x30: case 0x40: case 0x48: case 0x50: {
+                        if (registers[6] != context) return std::nullopt;
+                        const auto offset = uint32_t(i.immediate) + (i.mode() == 0x40 ? uint32_t(src) : 0);
+                        const auto width = i.width();
+                        if (offset > packet.size() || width > packet.size() - offset) return 0;
+                        uint32_t value = 0;
+                        for (const auto byte : packet.subspan(offset, width)) value = (value << 8) | byte;
+                        registers[0] = value;
+                        std::fill_n(registers.begin() + 1, 5, 0);
+                        continue;
+                    }
                     case 0xd4: case 0xdc:
                         dst = changeByteOrder(dst, i.immediate, i.code == 0xdc);
                         continue;
@@ -717,8 +738,8 @@ private:
                             case 107: { // bpf_sk_storage_get for an existing socket entry.
                                 auto* map = mapFor(r1);
                                 if (!map || map->type != BpfMap::socketStorage || r3 || registers[4]) return std::nullopt;
-                                if (r2 != socketHandle || !sockOps->socket) break;
-                                const auto found = map->socketValues.find(sockOps->socket);
+                                if (r2 != socketHandle || !hasSocket) break;
+                                const auto found = map->socketValues.find(*socket);
                                 if (found != map->socketValues.end()) result = valueAddress(*map, found->second);
                                 break;
                             }
@@ -828,12 +849,16 @@ private:
                         const auto address = src + i.offset;
                         if (sockOps && address >= context && address < context + 216) {
                             const auto offset = address - context;
-                            if (i.width() == 8 && offset == 184) dst = sockOps->socket ? socketHandle : 0;
+                            if (i.width() == 8 && offset == 184) dst = hasSocket ? socketHandle : 0;
                             else if (i.width() != 4) return std::nullopt;
                             else if (offset == 0) dst = sockOps->operation;
                             else if (offset == 84) dst = sockOps->callbackFlags;
                             else if (offset == 212) dst = sockOps->tcpFlags;
                             else return std::nullopt;
+                            break;
+                        }
+                        if (classifierPacket && i.width() == 8 && address == context + 168) {
+                            dst = hasSocket ? socketHandle : 0; // __sk_buff.sk
                             break;
                         }
                         if (i.width() == 4 && address >= context && address < context + 180) {

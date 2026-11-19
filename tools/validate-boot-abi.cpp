@@ -123,6 +123,23 @@ int main() {
         assert(option.options[0] == 174 && option.options[1] == 3 && option.options[2] == 101);
         assert(run(option, write) == uint32_t(-28));
     }
+    {
+        const auto encode = [](uint8_t op, uint8_t registers = 0, int32_t immediate = 0) {
+            return op | (uint64_t(registers) << 8) | (uint64_t(uint32_t(immediate)) << 32);
+        };
+        // r6 is the implicit skb. The first absolute read selects an index for the indirect read.
+        const std::array code{encode(0xbf, 0x16), encode(0x30, 0, 1), encode(0xbf, 0x07),
+                              encode(0x48, 0x70, 1), encode(0x95)};
+        const auto bytes = std::span(reinterpret_cast<const uint8_t*>(code.data()), sizeof(code));
+        BpfProgram program({}, {});
+        assert(program.load(BpfProgram::classifier, bytes, {}));
+        BpfProgram::Packet packet;
+        packet.bytes = {0, 2, 0, 0x12, 0x34};
+        assert(program.classify(packet) == 0x1234);
+        packet.bytes.pop_back();
+        assert(program.classify(packet) == 0); // Truncated read terminates the program immediately.
+        assert(!program.load(BpfProgram::socketOperations, bytes, {}));
+    }
     constexpr uint64_t base = 0x2000;
     Machine machine(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
     {
