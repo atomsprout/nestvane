@@ -19,6 +19,7 @@ constexpr uint64_t mappingFloor = 0x1'0000'0000;
 constexpr uint64_t lowMappingFloor = 0x10000;
 constexpr uint64_t mappingLimit = 0x20'0000'0000; // 128 GiB guest arena; includes 24 randomized page bits.
 constexpr uint64_t maxGuestFileBytes = 2 * 1024 * 1024;
+constexpr size_t maxGuestTasks = 256;
 constexpr std::string_view cgroupRoot = "/sys/fs/cgroup";
 constexpr std::string_view cgroupProcs = "/cgroup.procs";
 constexpr uint64_t lazyAnonymousThreshold = 4 * 1024 * 1024;
@@ -1027,20 +1028,36 @@ uint64_t ProbeLinux::resize(const WritableFile& file, uint64_t size) {
 
 bool ProbeLinux::canAccessParent(std::string_view path, bool modify) const {
     if (!userId()) return true;
-    if (!dataPath(path)) return !modify;
+    const MountView* view = nullptr;
+    std::string_view root = "/data";
+    if (!dataPath(path)) {
+        view = mountFor(path);
+        if (!view || (view->flags & 1)) return !modify;
+        root = view->backing;
+    }
     auto parent = path.substr(0, path.rfind('/'));
     bool immediate = true;
-    while (dataPath(parent)) {
+    while (parent == root || inside(parent, root)) {
         const auto directory = directories.find(parent);
-        if (directory == directories.end()) return false;
-        const auto& metadata = directory->second;
-        const auto shift = userId() == metadata.uid ? 6 : groupId() == metadata.gid ? 3 : 0;
         const auto requested = immediate && modify ? 3U : 1U;
-        if (((metadata.mode >> shift) & requested) != requested) return false;
+        unsigned permission = 0;
+        if (directory != directories.end()) {
+            const auto& metadata = directory->second;
+            permission = metadata.mode >> permissionShift(metadata.uid, metadata.gid);
+        } else if (view && parent == root) {
+            permission = view->mode >> permissionShift(0, view->gid);
+        }
+        if ((permission & requested) != requested) return false;
         immediate = false;
         parent = parent.substr(0, parent.rfind('/'));
     }
-    return true;
+    return !modify || !immediate;
+}
+
+unsigned ProbeLinux::permissionShift(uint32_t uid, uint32_t gid) const {
+    if (userId() == uid) return 6;
+    const auto& groups = current->process->groups;
+    return groupId() == gid || std::find(groups.begin(), groups.end(), gid) != groups.end() ? 3 : 0;
 }
 
 uint64_t ProbeLinux::recordLock(Machine& machine, const Descriptor& fd) {
@@ -1206,7 +1223,9 @@ uint64_t ProbeLinux::renameFile(Machine& machine) {
     std::string source, destination;
     if (const auto error = getPath(x[0], x[1], source); error) return error;
     if (const auto error = getPath(x[2], x[3], destination); error) return error;
-    if (!dataPath(source) || !dataPath(destination)) return uint64_t(-18);
+    const auto* sourceMount = mountFor(source);
+    if (!sourceMount || sourceMount != mountFor(destination) ||
+        (!sourceMount->hostData && !sourceMount->device.empty())) return uint64_t(-18);
     if (source == "/data" || destination == "/data" || current->mountNamespace->mounts.contains(source) ||
         current->mountNamespace->mounts.contains(destination)) return uint64_t(-16);
     if (backingPath(source) != source || backingPath(destination) != destination) return uint64_t(-18);
@@ -1259,9 +1278,8 @@ uint64_t ProbeLinux::open(const Machine& machine, const std::string& path, uint3
     if (entry && entry->cgroupFile && (flags & 3) && !canWriteCgroup(*entry->cgroupFile)) return uint64_t(-13);
     if (entry && entry->temporary && userId() != 0 && !(flags & pathOnly)) {
         const auto& file = *entry->temporary;
-        const unsigned shift = file.persistent ? userId() == file.uid ? 6 : groupId() == file.gid ? 3 : 0 : 0;
         const unsigned requested = (flags & 3) == 2 ? 6 : ((flags & 3) || (flags & truncate)) ? 2 : 4;
-        if (((file.mode >> shift) & requested) != requested) return uint64_t(-13);
+        if (((file.mode >> permissionShift(file.uid, file.gid)) & requested) != requested) return uint64_t(-13);
     }
     const auto fd = freeDescriptor();
     if (fd == descriptorCapacity) return uint64_t(-24);
@@ -2728,10 +2746,7 @@ uint64_t ProbeLinux::map(Machine& machine) {
 }
 
 bool ProbeLinux::canWriteCgroup(const Directory& node) const {
-    const auto& groups = current->process->groups;
-    const bool groupMember = groupId() == node.gid || std::find(groups.begin(), groups.end(), node.gid) != groups.end();
-    const auto shift = userId() == node.uid ? 6 : groupMember ? 3 : 0;
-    return userId() == 0 || ((node.mode >> shift) & 2);
+    return userId() == 0 || ((node.mode >> permissionShift(node.uid, node.gid)) & 2);
 }
 
 uint64_t ProbeLinux::moveToCgroup(Machine& machine, const Descriptor& fd, uint64_t address, uint64_t size) {
@@ -3082,7 +3097,7 @@ bool ProbeLinux::cloneThread(Machine& machine) {
     constexpr uint64_t pthreadFlags = 0x3d0f00;
     if (x[0] != pthreadFlags) return forkProcess(machine);
     if (!x[1] || x[1] % 16) { x[0] = invalid; return true; }
-    if (threads.size() >= 64) { x[0] = uint64_t(-11); return true; }
+    if (threads.size() >= maxGuestTasks) { x[0] = uint64_t(-11); return true; }
     const auto tid = static_cast<uint32_t>(nextTid);
     if (!writeGuest(machine, x[2], tid)) { x[0] = uint64_t(-14); return true; }
     Thread child;
@@ -3126,7 +3141,7 @@ bool ProbeLinux::forkProcess(Machine& machine) {
     auto& x = cpu.x;
     // Bionic fork uses SIGCHLD, CLONE_CHILD_SETTID and CLONE_CHILD_CLEARTID.
     if (x[0] != 0x1200011 || x[1]) return false;
-    if (threads.size() >= 64) { x[0] = uint64_t(-11); return true; }
+    if (threads.size() >= maxGuestTasks) { x[0] = uint64_t(-11); return true; }
     Thread child;
     child.process = std::make_shared<Process>(*current->process);
     if (child.process->mdwe & mdweNoInherit) child.process->mdwe = 0;

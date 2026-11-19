@@ -343,6 +343,69 @@ int main() {
     }
     {
         ProbeLinux guest(1, 0);
+        guest.addBootTmpfs("/metadata", 0755, 0, 6);
+        guest.addBootTmpfs("/scratch", 0777, 0, 6);
+        Machine task(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
+        const auto invoke = [&](uint64_t number, std::array<uint64_t, 6> args = {}) {
+            std::copy(args.begin(), args.end(), task.cpu.x.begin());
+            task.cpu.x[8] = number;
+            assert(guest.syscall(task));
+            return task.cpu.x[0];
+        };
+        const auto path = [&](std::string_view value) {
+            const std::string text(value);
+            assert(task.write(base, {reinterpret_cast<const uint8_t*>(text.c_str()), text.size() + 1}));
+        };
+        constexpr uint64_t cwd = uint32_t(-100), scratch = base + 256;
+        path("/metadata/maps");
+        assert(invoke(34, {cwd, base, 0775}) == 0);
+        assert(invoke(54, {cwd, base, 0, 1000, 0}) == 0);
+        assert(invoke(53, {cwd, base, 0775, 0}) == 0); // Restore group write removed by umask.
+        path("/metadata/private");
+        assert(invoke(34, {cwd, base, 0700}) == 0);
+        assert(task.store64(scratch, 1000));
+        assert(invoke(159, {1, scratch}) == 0);
+        assert(invoke(149, {2000, 2000, 2000}) == 0 && invoke(147, {2000, 2000, 2000}) == 0);
+        path("/metadata/denied");
+        assert(invoke(56, {cwd, base, 0x41, 0600}) == uint64_t(-13));
+        path("/metadata/private/denied");
+        assert(invoke(56, {cwd, base, 0x41, 0600}) == uint64_t(-13));
+        path("/metadata/maps/test");
+        const auto file = invoke(56, {cwd, base, 0x42, 0600});
+        assert(file < 256 && invoke(64, {file, scratch, 8}) == 8 && invoke(57, {file}) == 0);
+        const auto reopened = invoke(56, {cwd, base, 0});
+        assert(reopened < 256 && invoke(63, {reopened, scratch, 8}) == 8);
+        uint64_t contents = 0;
+        assert(task.load64(scratch, contents) && contents == 1000);
+        constexpr char across[] = "/scratch/test";
+        constexpr char moved[] = "/metadata/maps/moved";
+        assert(task.write(scratch, {reinterpret_cast<const uint8_t*>(across), sizeof(across)}));
+        assert(invoke(38, {cwd, base, cwd, scratch}) == uint64_t(-18));
+        assert(task.write(scratch, {reinterpret_cast<const uint8_t*>(moved), sizeof(moved)}));
+        assert(invoke(38, {cwd, base, cwd, scratch}) == 0);
+        assert(invoke(56, {cwd, base, 0}) == uint64_t(-2));
+        path(moved);
+        assert(invoke(35, {cwd, base, 0}) == 0);
+    }
+    {
+        ProbeLinux guest(1, 0);
+        Machine task(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
+        const auto clone = [&](uint64_t flags, uint64_t stack) {
+            task.cpu.x[0] = flags;
+            task.cpu.x[1] = stack;
+            task.cpu.x[2] = task.cpu.x[4] = base;
+            task.cpu.x[3] = 0;
+            task.cpu.x[8] = 220;
+            assert(guest.syscall(task));
+            return task.cpu.x[0];
+        };
+        for (uint64_t tid = 2; tid <= 256; ++tid)
+            assert(clone(0x3d0f00, base + 256) == tid);
+        assert(clone(0x3d0f00, base + 256) == uint64_t(-11));
+        assert(clone(0x1200011, 0) == uint64_t(-11));
+    }
+    {
+        ProbeLinux guest(1, 0);
         guest.addBootCgroups();
         Machine task(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
         const auto invoke = [&](uint64_t number, std::array<uint64_t, 6> args = {}) {

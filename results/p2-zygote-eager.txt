@@ -209,3 +209,20 @@ SystemServerTiming: StartActivityManager
   guest execution wall time: 177428 ms
 Unix SO_REUSEADDR set/get, socket isolation, and invalid arguments: host suite and ASan/UBSan passed.
 iOS Release build with SO_REUSEADDR: BUILD SUCCEEDED.
+
+iPhone 11 after enabling main-class services and implementing quotactl
+iOS device 26.0.1 | process 6970 | thermal nominal → serious
+libbinder.BackendUnifiedServiceManager: Thread Pool max thread count is 0. Cannot cache binder as linkToDeath cannot be implemented. serviceName: installd
+SystemServerTiming: StartActivityManager
+AndroidRuntime: *** FATAL EXCEPTION IN SYSTEM PROCESS: watchdog
+java.util.NoSuchElementException
+    at android.os.HwBinder.getService(Native Method)
+  guest execution wall time: 467386 ms
+
+Mac with SO_REUSEADDR
+libc: pthread_create failed: clone failed: Try again
+Caused by: java.lang.OutOfMemoryError: pthread_create (1040KB stack) failed: Try again
+    at com.android.server.am.psc.OomAdjuster.createAdjusterThread(OomAdjuster.java:793)
+aconfigd_system: failed to copy file from /system/etc/aconfig/package.map to /metadata/aconfig/maps/system.package.new: Permission denied
+  guest execution wall time: 230095 ms
+Host regressions cover 256 guest tasks, tmpfs directory mode bits, supplementary groups, temporary file ownership and a same-volume rename. Host suite and ASan/UBSan passed.

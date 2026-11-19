@@ -78,3 +78,5 @@
 - iPhone 11 在同一次离线启动中完成 18,596 个类和常规 Zygote 预加载，随后进入原版 `SystemServer` 并启动 ActivityManager。真机复现后续的 `installd` 等待和 watchdog 除零。Mac 在新版离线配置中启动了原版 `installd`，并正常加载原版 WebView 引导库。`installd` 首个挂起点是 `quotactl(Q_GETQUOTA)`。新增客体查询处理，已挂载的只读 Ext4 返回无配额操作的 Linux 错误，原版 `installd` 可据此选择目录统计路径。实际继续执行待复测。[运行记录](p2-zygote-eager.txt) · [Android 配额探测](https://android.googlesource.com/platform/frameworks/native/+/refs/heads/main/cmds/installd/QuotaUtils.cpp)
 
 - Mac 复测中，原版 `installd` 越过配额查询，完成布局初始化。原版框架通过 Binder 找到它，并推进到 ActivityManager。随后 `SystemServer` 停在 `setsockopt(SOL_SOCKET, SO_REUSEADDR)`。已补齐该选项的读写，宿主回归、ASan/UBSan 和 iOS Release 构建通过。[运行记录](p2-zygote-eager.txt) · [Linux socket 选项](https://raw.githubusercontent.com/torvalds/linux/master/net/core/sock.c)
+
+- iPhone 11 同样确认原版框架找到了 `installd`。它随后在 watchdog 查询 `HwBinder` 服务时抛出异常。Mac 越过 `SO_REUSEADDR` 后到达 ActivityManager 的调度线程创建，原先 64 个客体任务上限导致 `pthread_create` 失败。已提高到 256，并补齐客体 tmpfs 的目录访问、文件权限和同挂载点改名，使原版 Aconfig 能尝试在具有组写权限的目录里生成标志表。宿主回归、ASan/UBSan 和 iOS Release 构建通过。[运行记录](p2-zygote-eager.txt)

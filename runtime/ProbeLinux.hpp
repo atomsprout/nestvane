@@ -461,6 +461,7 @@ private:
     uint64_t nextInode = 65536;
     uint32_t userId() const { return current->process->userIds[1]; }
     uint32_t groupId() const { return current->process->groupIds[1]; }
+    unsigned permissionShift(uint32_t uid, uint32_t gid) const;
     uint64_t pid, memoryLimit;
     std::shared_ptr<AnonymousBudget> anonymousBudget;
     struct ChildExit { uint64_t parent; uint32_t status, uid, code; };
