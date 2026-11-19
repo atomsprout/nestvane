@@ -126,13 +126,15 @@ def collect(serial, readelf, destination, small_art_heap):
         surfaceflinger = "/system/bin/surfaceflinger"
         bootanimation = "/system/bin/bootanimation"
         aconfigd = "/system/bin/aconfigd-system"
+        bpfloader = "/system/bin/bpfloader"
+        uprobestats = "/apex/com.android.uprobestats/bin/uprobestatsbpfload"
         keymint = "/vendor/bin/hw/android.hardware.security.keymint-service"
         lights = "/vendor/bin/hw/android.hardware.lights-service.example"
         health = "/vendor/bin/hw/android.hardware.health-service.example"
         composer = "/vendor/bin/hw/android.hardware.graphics.composer3-service.ranchu"
         allocator = "/vendor/bin/hw/android.hardware.graphics.allocator-service.ranchu"
         for programs, search_paths in (
-            ((vold, service, cmd, vdc, keystore, casefold, vold_prepare, odsign), ("/system/lib64",)),
+            ((vold, service, cmd, vdc, keystore, casefold, vold_prepare, odsign, bpfloader), ("/system/lib64",)),
             ((zygote, installd, system_suspend, surfaceflinger, bootanimation, aconfigd), ("/system/lib64", "/system_ext/lib64")),
             ((keymint, lights, health, composer, allocator), ("/vendor/lib64", "/system/lib64")),
         ):
@@ -335,7 +337,7 @@ def collect(serial, readelf, destination, small_art_heap):
                     bootanimation, composer, allocator, aconfigd,
                     f"{sdkext}/derive_sdk", f"{sdkext}/derive_classpath",
                     "/apex/com.android.art/bin/art_boot", "/apex/com.android.art/bin/odrefresh",
-                    "/apex/com.android.tethering/bin/netbpfload",
+                    "/apex/com.android.tethering/bin/netbpfload", uprobestats, bpfloader,
                     "/apex/com.android.conscrypt/bin/boringssl_self_test64",
                     "/apex/com.android.configinfrastructure/bin/aconfigd-mainline",
                     "/apex/com.android.os.statsd/bin/statsd", *managers)
@@ -343,6 +345,8 @@ def collect(serial, readelf, destination, small_art_heap):
             file_context = shell("ls", "-Zd", path).split()[0]
             source = {
                 vold_prepare: "u:r:vold:s0",
+                uprobestats: "u:r:bpfloader:s0",
+                bpfloader: "u:r:bpfloader:s0",
                 "/apex/com.android.art/bin/odrefresh": "u:r:odsign:s0",
             }.get(path, init_context)
             query = f"{source} {file_context} {process_class}"
