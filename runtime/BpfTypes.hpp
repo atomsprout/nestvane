@@ -16,6 +16,17 @@ public:
     uint32_t id() const { return objectId; }
     std::span<const uint8_t> bytes() const { return blob; }
     bool hasString(uint32_t offset) const { return offset < stringBytes; }
+    bool isInt32(uint32_t id) const {
+        for (size_t remaining = records.size(); remaining && id && id <= records.size(); --remaining) {
+            const auto& record = records[id - 1];
+            switch (record.kind) {
+                case 1: return record.data == 4 && (record.elements & 0x00ff00ff) == 32;
+                case 8: case 9: case 10: case 11: case 18: id = record.data; break;
+                default: return false;
+            }
+        }
+        return false;
+    }
     bool isFunction(uint32_t id) const {
         if (!id || id > records.size() || records[id - 1].kind != 12) return false;
         const auto prototype = records[id - 1].data;
@@ -60,6 +71,7 @@ public:
             };
             if (kind == 1) {
                 const auto encoding = read32(types, pos);
+                record.elements = encoding;
                 if (!data || !(encoding & 0xff) ||
                     ((encoding >> 16) & 0xff) + (encoding & 0xff) > uint64_t(data) * 8) return false;
             } else if (kind == 3) {

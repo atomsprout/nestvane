@@ -5184,6 +5184,20 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
         return std::any_of(bytes.begin(), bytes.end(), [](auto b) { return b != 0; });
     };
 
+    const auto allocatedBytes = [&] {
+        size_t allocated = 0;
+        for (const auto& entry : bpfMaps) {
+            if (const auto map = entry.second.lock()) {
+                if (map->type == BpfMap::socketStorage) {
+                    std::erase_if(map->socketValues, [](const auto& storage) { return storage.first.expired(); });
+                    allocated += map->socketValues.size() * (map->valueSize + 128);
+                }
+                allocated += map->budgetBytes;
+            }
+        }
+        return allocated;
+    };
+
     if (command == create) {
         // BPF_MAP_CREATE has five leading u32 fields and an optional 16-byte object name.
         std::array<uint32_t, 5> createFields{};
@@ -5192,11 +5206,14 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
         const bool array = type == arrayType || type == perCpuArray;
         const bool perCpu = type == perCpuArray || type == perCpuHash;
         const bool device = type == deviceHash;
-        if (!array && !device && type != hashType && type != perCpuHash) return uint64_t(-95);
+        const bool socket = type == BpfMap::socketStorage;
+        if (!array && !device && !socket && type != hashType && type != perCpuHash) return uint64_t(-95);
+        if (socket && !(current->process->effectiveCaps & (capBpf | capSysAdmin))) return uint64_t(-1);
         if (device && !(current->process->effectiveCaps & (1ULL << 12))) return uint64_t(-1); // CAP_NET_ADMIN
         const uint32_t arrayFlags = type == arrayType ? mappable | programReadOnly : 0;
         const uint32_t supportedFlags = readOnly | writeOnly | (device ? programReadOnly : array ? arrayFlags : noPrealloc);
-        if (((array || device) && keySize != sizeof(uint32_t)) || !keySize || !valueSize || !entries ||
+        if (((array || device || socket) && keySize != sizeof(uint32_t)) || !keySize || !valueSize ||
+            (socket ? entries || !(flags & noPrealloc) : !entries) ||
             (device && valueSize != 4 && valueSize != 8) ||
             (flags & ~supportedFlags) || (flags & (readOnly | writeOnly)) == (readOnly | writeOnly))
             return invalid;
@@ -5212,20 +5229,19 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
             if (!types || types->typeSize(keyType) != keySize || types->typeSize(valueType) != valueSize)
                 return invalid;
         }
+        if (socket && (!types || !types->isInt32(keyType))) return invalid;
+        if (socket && valueSize > 65535 - 128) return tooBig;
         // The mmap array ABI aligns array elements to eight bytes. Per-CPU syscalls copy
         // one aligned value for each possible guest CPU, of which this guest has one.
         const uint64_t valueStride = array || perCpu ? (uint64_t(valueSize) + 7) & ~uint64_t{7} : valueSize;
         const uint64_t entryBytes = valueStride + (array ? 0 : uint64_t(keySize) + 128);
-        if (entryBytes > mapBudget / entries) return noMemory;
-        const size_t valueBytes = entryBytes * entries;
+        if (entries && entryBytes > mapBudget / entries) return noMemory;
+        const size_t valueBytes = socket ? 128 : entryBytes * entries;
         const size_t bytes = flags & mappable ? pageAlignedLength(valueBytes) : valueBytes;
         const auto newFd = freeDescriptor();
         if (newFd == descriptorCapacity) return uint64_t(-24);
         std::erase_if(bpfMaps, [](const auto& entry) { return entry.second.expired(); });
-        size_t allocated = 0;
-        for (const auto& entry : bpfMaps)
-            if (const auto map = entry.second.lock()) allocated += map->budgetBytes;
-        if (allocated > mapBudget - bytes || bpfMaps.size() >= 256) return uint64_t(-12);
+        if (allocatedBytes() > mapBudget - bytes || bpfMaps.size() >= 256) return noMemory;
         if (nextBpfMapId >= INT32_MAX) return uint64_t(-28);
         try {
             auto map = std::make_shared<BpfMap>();
@@ -5273,6 +5289,35 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
     if ((command == update || command == erase) ? access == 0 : access == 1) return uint64_t(-1);
     if (command == lookup && flags) return invalid;
     if (command == update && flags > 2) return invalid;
+
+    if (map.type == BpfMap::socketStorage) {
+        if (command == nextKey) return uint64_t(-524);
+        uint32_t socketFd = 0;
+        if (!machine.readInto(key, {reinterpret_cast<uint8_t*>(&socketFd), sizeof(socketFd)})) return fault;
+        const auto descriptor = descriptors().find(socketFd);
+        if (descriptor == descriptors().end()) return uint64_t(-9);
+        if (!descriptor->second.socket) return uint64_t(-88); // ENOTSOCK
+        const auto& socket = descriptor->second.socket;
+        const auto storage = map.socketValues.find(socket);
+        if (command == lookup || command == erase) {
+            if (storage == map.socketValues.end()) return uint64_t(-2);
+            if (command == lookup) return machine.write(value, storage->second) ? 0 : fault;
+            map.socketValues.erase(storage);
+            return 0;
+        }
+        if (storage == map.socketValues.end() && flags == 2) return uint64_t(-2);
+        if (storage != map.socketValues.end() && flags == 1) return uint64_t(-17);
+        if (storage == map.socketValues.end() && allocatedBytes() > mapBudget - (map.valueSize + 128))
+            return noMemory;
+        try {
+            std::vector<uint8_t> replacement(map.valueSize);
+            if (!machine.readInto(value, replacement)) return fault;
+            map.socketValues.insert_or_assign(socket, std::move(replacement));
+            return 0;
+        } catch (const std::bad_alloc&) {
+            return noMemory;
+        }
+    }
 
     if (!map.array) {
         try {

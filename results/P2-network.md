@@ -267,3 +267,6 @@
 - 客体支持带 BTF 函数表的 eBPF 回调与 `bpf_for_each_map_elem`。在 Android 17 参考内核和 Nestvane Mac 中执行同一 ARM64 探针里的原版 DSCP 分类器。两端均选中覆盖更窄目标端口范围的规则，保留 ECN 并验证重写后的 IP 校验和。宿主回归验证回调读取映射键、写入调用方栈和按返回值提前停止。源码版加载器在 Mac 完成 `dscpPolicy@funcs.o` 加载，随后创建 `netd@funcs.o` 的 `blocked_ports_map` 时遇到可映射数组标志。[Linux 映射回调 ABI](https://codebrowser.dev/linux/linux/include/uapi/linux/bpf.h.html)
 - iPhone 11 进程 8304 的原版 DSCP 探针正常退出，耗时 0.221 秒。源码版加载器也完整加载 `dscpPolicy@funcs.o`，接下来是 `netd@funcs.o` 的 `blocked_ports_map`。
 - 客体新增 `BPF_F_MMAPABLE` 数组。Android 17 参考内核与 Nestvane Mac 中，同一 Bionic 探针均验证八字节元素对齐、数组系统调用与共享映射互相可见、只读映射无法再加写权限、关闭 FD 后映射仍保持对象存活。宿主 ABI 回归通过。源码版加载器在 Mac 越过 `blocked_ports_map`，随后在 `sk_storage` 遇到尚未支持的套接字局部存储映射。[Linux BPF 数组映射](https://codebrowser.dev/linux/linux/kernel/bpf/arraymap.c.html)
+- iPhone 11 进程 8305 同一轮复验了原版 CLAT、DSCP 和 BPF 共享数组。共享数组探针耗时 0.226 秒并退出 0，确认八字节元素对齐、共享写入、只读映射保护和关闭 FD 后的生命周期。源码版加载器成功加载 CLAT 和 DSCP，并越过 `blocked_ports_map`，该轮下一处失败为 `sk_storage`，未达到 `sys.boot_completed=1`。
+- 客体新增带 BTF 的 BPF 套接字局部存储映射。映射值跟随客体套接字，重复 FD 可访问同一份值，同一 socketpair 的另一个套接字有独立存储。Android 17 参考内核和 Nestvane Mac 的独立 Bionic 探针均通过。Mac 源码版加载器提交的 `sk_storage` 使用有修饰的 BTF 整数键，现可解析到 32 位整型。宿主 ABI 回归覆盖带有 const 修饰的键、关闭原 FD 后从别名读取、套接字间隔离及删除。套接字局部存储尚未在 iPhone 11 复验。
+- Mac 源码版加载器已越过 `sk_storage`。下一处失败为创建 `packet_trace_ringbuf`，客体返回 EOPNOTSUPP。该轮未验证完整启动。

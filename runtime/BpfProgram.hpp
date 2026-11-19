@@ -22,6 +22,7 @@ namespace nestvane {
 class BpfTypes;
 
 struct BpfMap {
+    static constexpr uint32_t socketStorage = 24;
     uint32_t id = 0, type = 0, flags = 0, entryCount = 0;
     uint32_t keySize = 0, valueSize = 0, valueStride = 0, btfKeyType = 0, btfValueType = 0;
     std::array<char, 16> name{};
@@ -39,6 +40,9 @@ struct BpfMap {
         }
     };
     std::map<std::vector<uint8_t>, std::vector<uint8_t>, CompareKeys> hash;
+    // Descriptor duplicates share the same socket owner. Closing the last socket FD
+    // leaves an expired weak key, which is reaped before using the map again.
+    std::map<std::weak_ptr<void>, std::vector<uint8_t>, std::owner_less<void>> socketValues;
 };
 
 class BpfProgram {
@@ -372,7 +376,7 @@ private:
 
         auto lookup = [&](uint64_t handle, uint64_t keyAddress, size_t depth) -> uint64_t {
             auto* foundMap = mapFor(handle);
-            if (!foundMap) return 0;
+            if (!foundMap || foundMap->type == BpfMap::socketStorage) return 0;
             auto& map = *foundMap;
             const auto key = readAt(keyAddress, map.keySize, depth);
             if (key.empty()) return 0;
@@ -514,7 +518,7 @@ private:
                             case 164: { // bpf_for_each_map_elem
                                 auto* map = mapFor(r1);
                                 if (registers[4]) { result = uint64_t(-22); break; }
-                                if (!map || r2 <= callbackBase || r2 - callbackBase >= instructions.size() ||
+                                if (!map || map->type == BpfMap::socketStorage || r2 <= callbackBase || r2 - callbackBase >= instructions.size() ||
                                     !functionEntries.contains(r2 - callbackBase)) return std::nullopt;
                                 auto invoke = [&](std::span<const uint8_t> key, std::span<uint8_t> value) {
                                     callbackKeys[depth] = key;

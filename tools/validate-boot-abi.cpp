@@ -1157,8 +1157,8 @@ int main() {
     {
         constexpr auto source = base + 256, attr = base + 400, key = base + 512, value = base + 520;
         constexpr char names[] = "\0u32\0u64";
-        const std::array<uint32_t, 14> input{0x0001eb9f, 24, 0, 32, 32, sizeof(names),
-            1, 1U << 24, 4, 32, 5, 1U << 24, 8, 64};
+        const std::array<uint32_t, 17> input{0x0001eb9f, 24, 0, 44, 44, sizeof(names),
+            1, 1U << 24, 4, 32, 5, 1U << 24, 8, 64, 0, 10U << 24, 1};
         assert(machine.write(source, {reinterpret_cast<const uint8_t*>(input.data()), sizeof(input)}));
         assert(machine.write(source + sizeof(input), {reinterpret_cast<const uint8_t*>(names), sizeof(names)}));
         assert(machine.store64(attr, source) && machine.store64(attr + 8, 0));
@@ -1189,7 +1189,14 @@ int main() {
         map[14] = 2;
         assert(machine.write(attr, {reinterpret_cast<const uint8_t*>(map.data()), sizeof(map)}));
         const auto fd = call(280, {0, attr, sizeof(map)});
-        assert(fd < 256 && call(57, {btf}) == 0);
+        assert(fd < 256);
+        map[0] = 24; // BPF_MAP_TYPE_SK_STORAGE
+        map[3] = 0;
+        map[4] = 1; // BPF_F_NO_PREALLOC
+        map[13] = 3; // A const-qualified integer key.
+        assert(machine.write(attr, {reinterpret_cast<const uint8_t*>(map.data()), sizeof(map)}));
+        const auto storage = call(280, {0, attr, sizeof(map)});
+        assert(storage < 256 && call(57, {btf}) == 0);
         assert(machine.write(info, zero) && objectInfo(fd, 88) == 0 && (load(attr) >> 32) == 88);
         assert((load(info) & UINT32_MAX) == 2 && (load(info) >> 32) != 0);
         assert(load(info + 8) == ((8ULL << 32) | 4) && (load(info + 16) & UINT32_MAX) == 2);
@@ -1202,6 +1209,19 @@ int main() {
         assert(call(280, {2, attr, 32}) == 0 && machine.store64(value, 0));
         assert(call(280, {1, attr, 32}) == 0 && load(value) == 99);
         assert(call(57, {fd}) == 0);
+
+        assert(call(199, {1, 1, 0, info}) == 0);
+        const auto sockets = load(info);
+        const auto first = uint32_t(sockets), second = uint32_t(sockets >> 32);
+        const auto alias = call(23, {first});
+        assert(alias < 256 && machine.store64(attr, storage) && machine.store64(key, first));
+        assert(call(280, {2, attr, 32}) == 0);
+        assert(call(57, {first}) == 0 && machine.store64(value, 0) && machine.store64(key, alias));
+        assert(call(280, {1, attr, 32}) == 0 && load(value) == 99);
+        assert(machine.store64(key, second) && call(280, {1, attr, 32}) == uint64_t(-2));
+        assert(machine.store64(key, alias) && call(280, {3, attr, 16}) == 0);
+        assert(call(280, {1, attr, 32}) == uint64_t(-2));
+        assert(call(57, {alias}) == 0 && call(57, {second}) == 0 && call(57, {storage}) == 0);
     }
     {
         constexpr auto attr = base + 96;
