@@ -123,12 +123,14 @@ def collect(serial, readelf, destination, small_art_heap):
         zygote = "/system/bin/app_process64"
         installd = "/system/bin/installd"
         system_suspend = "/system/bin/hw/android.system.suspend-service"
+        surfaceflinger = "/system/bin/surfaceflinger"
         aconfigd = "/system/bin/aconfigd-system"
         keymint = "/vendor/bin/hw/android.hardware.security.keymint-service"
+        lights = "/vendor/bin/hw/android.hardware.lights-service.example"
         for programs, search_paths in (
             ((vold, service, cmd, vdc, keystore, casefold, vold_prepare, odsign), ("/system/lib64",)),
-            ((zygote, installd, system_suspend, aconfigd), ("/system/lib64", "/system_ext/lib64")),
-            ((keymint,), ("/vendor/lib64", "/system/lib64")),
+            ((zygote, installd, system_suspend, surfaceflinger, aconfigd), ("/system/lib64", "/system_ext/lib64")),
+            ((keymint, lights), ("/vendor/lib64", "/system/lib64")),
         ):
             dependencies = {}
             for directory in search_paths:
@@ -301,7 +303,7 @@ def collect(serial, readelf, destination, small_art_heap):
         boot_domains = []
         sdkext = "/apex/com.android.sdkext/bin"
         programs = ("/system/bin/apexd", system_self_test, vendor_self_test, vold, vdc, keystore, keymint,
-                    casefold, vold_prepare, odsign, zygote, installd, system_suspend, aconfigd,
+                    casefold, vold_prepare, odsign, zygote, installd, system_suspend, lights, surfaceflinger, aconfigd,
                     f"{sdkext}/derive_sdk", f"{sdkext}/derive_classpath",
                     "/apex/com.android.art/bin/art_boot", "/apex/com.android.art/bin/odrefresh",
                     "/apex/com.android.tethering/bin/netbpfload",

@@ -433,6 +433,7 @@ DynamicReport probeInit(const std::string& directory, const std::string& databas
                 "nativeloader: Load libperfetto_framework_jni.so", "nativeloader: Load libcompiler_rt.so",
                 "SystemServer: Entered the Android system server", "SystemServerTiming: StartActivityManager",
                 "SystemServerTiming: StartPowerManager", "SystemServerTiming: StartThermalManager",
+                "SystemServerTiming: StartLightsService",
                 "SystemServerTiming: StartDisplayManager", "SystemServerTiming: WaitForDisplay",
                 "SystemServerTiming: StartPackageManagerService",
                 "Watchdog: *** WATCHDOG KILLING SYSTEM PROCESS"

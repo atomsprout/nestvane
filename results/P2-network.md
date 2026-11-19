@@ -92,3 +92,5 @@
 - PowerManager 等待唤醒锁时，init 日志显示原版 `system_suspend` 可执行文件缺失。已将原版服务、ELF 依赖和 SELinux 启动规则纳入采集，干净重建了 Android 17 离线镜像，iOS 签名构建通过。原版 suspend 服务在没有客体电源节点时支持 socketpair 回退，后续核对实际注册和 PowerManager 交互。[运行记录](p2-zygote-eager.txt) · [Android suspend 服务](https://android.googlesource.com/platform/system/hardware/interfaces/+/refs/heads/main/suspend/1.0/default/main.cpp)
 
 - 新增 HAL 后，参考 `service_manager` 决策文件增长至 1,074,726 字节。调高有界输入上限后，Mac 成功载入完整决策并走完原版 PowerManager 启动，实测该阶段 327 ms。上一轮 iPhone 11 在 ActivityManager 中遇到 `SO_RCVTIMEO`；现已补齐 ARM64 两种选项号的读写、阻塞接收时限以及数据到达时的唤醒，宿主与 ASan/UBSan 验证通过。[运行记录](p2-zygote-eager.txt) · [Linux socket 接收超时](https://man7.org/linux/man-pages/man7/socket.7.html)
+
+- iPhone 11 第 7129 号进程的实时日志确认原版 PowerManager 启动完成，耗时 1,018 ms。为后续显示启动验证，采集器已纳入原版 Lights HAL、SurfaceFlinger、ELF 依赖与 SELinux 进程转换。Android 17 参考采集共 1,155 个文件，重建的离线镜像为 799,348,572 字节，低于加载上限。显示服务与包管理待运行验证。
