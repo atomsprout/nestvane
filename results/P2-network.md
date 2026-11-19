@@ -150,3 +150,5 @@
 - Mac 用原版 Android 17 越过标量 `CMEQ` 后，Ranchu HWC 到达 640×960 主显示交换链分配。原版 Allocator 打开 `pipe:refcount` 返回 `ENOENT`，随后以 `NO_RESOURCES` 结束申请。SurfaceFlinger 因无法创建 Composer 客户端退出，DisplayManager 在查询合成色彩空间时阻塞。主显示真实客体帧仍待验证。
 
 - [缓冲区生命周期补丁](../tools/patches/gfxstream-color-buffer-lifetime.patch) 在主显示补丁之后应用。Nestvane 启动器启用 Gfxstream 的 `RefCountPipe` 模式，原版客体以小端方式写入缓冲区编号。同一客体文件的最后一个描述符关闭后通知宿主。宿主回归验证分段写入、重复写入、只关闭副本和不完整编号关闭。三个图形补丁均可从固定版本依次应用。Mac 和 iPhoneOS 后端，以及带该通道的 iOS 签名构建均已成功。[Android Emulator RefcountPipe](https://android.googlesource.com/platform/hardware/google/aemu/+/refs/heads/emu-36-1-release/host-common/RefcountPipe.cpp)
+
+- iPhone 11 第 7520 号进程已越过 `CMEQ`，复现原版 Ranchu 的交换链分配失败和 `refcount` 缺失。Mac 接上该通道后，交换链分配原有的 `NO_RESOURCES` 消失，同步 Binder 回复随后报 `FAILED_TRANSACTION`。iPhone 11 第 7565 号进程已安装启动带缓冲区生命周期通道和首帧记录的版本。若 UIKit 接收客体帧，`Documents/display-first-frame.txt` 会记录进程号、耗时和尺寸。

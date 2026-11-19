@@ -11,6 +11,7 @@
 #include <cstring>
 #include <cstdio>
 #include <dlfcn.h>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -130,6 +131,24 @@ bool runSdkVersionProbe(void* module, const RendererTransfer& transfer, const ch
 }
 
 namespace {
+std::jthread watchGuestDisplay(void* module, uint32_t width, uint32_t height) {
+    const auto read = load<uint64_t (*)(uint64_t, uint8_t*, size_t, uint32_t*)>(
+        module, "gfxstream_guest_display_read");
+    if (!read) return {};
+    return std::jthread([=](std::stop_token stop) {
+        std::vector<uint8_t> pixels(size_t(width) * height * 4);
+        while (!stop.stop_requested()) {
+            uint32_t dimensions[2]{};
+            if (const auto sequence = read(0, pixels.data(), pixels.size(), dimensions)) {
+                std::fprintf(stderr, "[Android boot] Primary display posted a %ux%u frame (sequence %llu)\n",
+                             dimensions[0], dimensions[1], static_cast<unsigned long long>(sequence));
+                return;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(33));
+        }
+    });
+}
+
 bool validatePostedDisplay(void* module, uint32_t handle, uint32_t side, std::span<const uint8_t> expected) {
     const auto read = load<uint64_t (*)(uint64_t, uint8_t*, size_t, uint32_t*)>(
         module, "gfxstream_guest_display_read");
@@ -205,9 +224,12 @@ int main(int argc, char** argv) {
             destroy();
             return 1;
         }
-        const auto report = nestvane::probeInit(argv[3], argc == 5 ? argv[4] : "", [](std::string_view event) {
-            std::fprintf(stderr, "[Android boot] %.*s\n", int(event.size()), event.data());
-        }, std::move(factory));
+        const auto report = [&] {
+            auto display = watchGuestDisplay(module, 640, 960);
+            return nestvane::probeInit(argv[3], argc == 5 ? argv[4] : "", [](std::string_view event) {
+                std::fprintf(stderr, "[Android boot] %.*s\n", int(event.size()), event.data());
+            }, std::move(factory));
+        }();
         std::fputs(report.report.c_str(), stdout);
         destroy();
         return report.passed ? 0 : 1;

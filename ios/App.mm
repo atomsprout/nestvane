@@ -224,15 +224,23 @@ static NSString* ThermalState() {
                 nestvane::GfxstreamSession renderer(rendererPath.fileSystemRepresentation, guestWidth, guestHeight);
                 if (!renderer) return {false, renderer.error() + "\n"};
                 progress("Local Android renderer initialized");
+                NSURL* displayProgress = [documents URLByAppendingPathComponent:@"display-first-frame.txt"];
                 auto displayReader = StartDisplayReader(renderer, ^(UIImage* frame) {
-                    if (self.display.hidden) {
-                        NSLog(@"Presented the first Android display frame (%.0f × %.0f pixels)",
-                              frame.size.width, frame.size.height);
+                    const BOOL firstFrame = self.display.hidden;
+                    self.display.image = frame;
+                    if (firstFrame) {
                         self.status.text = @"Android 17 display";
                         self.details.hidden = YES;
                         self.display.hidden = NO;
+                        const auto milliseconds = (NSProcessInfo.processInfo.systemUptime - bootStarted) * 1000;
+                        NSString* message = [NSString stringWithFormat:
+                            @"process %d | %.0f ms | presented %.0f × %.0f Android pixels\n",
+                            NSProcessInfo.processInfo.processIdentifier, milliseconds,
+                            frame.size.width, frame.size.height];
+                        NSError* error = nil;
+                        if (![message writeToURL:displayProgress atomically:YES encoding:NSUTF8StringEncoding error:&error])
+                            NSLog(@"Unable to export display progress: %@", error);
                     }
-                    self.display.image = frame;
                 });
                 auto boot = nestvane::probeInit(initRoot.fileSystemRepresentation, database.fileSystemRepresentation,
                                                 progress, renderer.pipeFactory());
