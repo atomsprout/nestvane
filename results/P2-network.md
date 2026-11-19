@@ -193,3 +193,6 @@
 
 - iPhone 11 第 7956 号进程已呈现正向的原版 Android 开机字标。首帧时间为 113,027 ms，首张有内容的帧为 113,072 ms，尺寸均为 640×960。真机 PNG 的 SHA-256 为 `ce492b1ee068dbc3e20bdad0025ac046ad4643981dbd71907e5b7a94df1462e1`。Mac 使用新接收路径后继续运行开机动画，终端报告中该线程已越过 `recvmsg` 原停点。
 - Mac 上包管理进入创建组件时探测 `FS_IOC_ENABLE_VERITY`，此前不支持的 ioctl 会挂起调用方。虚拟文件系统现在明确返回 Linux 的 `ENOTTY`，并一致处理测量、读取元数据以及不允许 ioctl 的 `O_PATH` 描述符。客体未启用文件 verity。启动观察器现在也记录包管理创建和扫描各步骤。宿主 ABI 回归和 iOS 签名构建通过。[Linux fs-verity ioctl 语义](https://docs.kernel.org/filesystems/fsverity.html)
+
+- 新的 `--framework-diagnostic --framework-apps` 打包选项从已通过版本与 boot 输入哈希校验的 ARM64 SDK 参考环境收集桌面所需的系统应用。样本包含 Launcher3、SystemUI、Settings、PackageInstaller、DocumentsUI、存储提供方和关联的三个 APEX。构建 CE2A.260420.051.A3 的完整命令已成功，13 个 APK 均保留 DEX。镜像约 956 MiB，已在 Mac 开始启动验证。APK 安装和桌面启动仍待确认。
+- 处理 fs-verity 探测后的 Mac 启动日志确认包管理完成 `createSubComponents`，继续执行 `get system config` 和 `addSharedUsers`。当前不含额外系统 APK 的诊断镜像尚未证明包管理可用。

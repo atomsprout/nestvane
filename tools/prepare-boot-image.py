@@ -9,6 +9,55 @@ import shutil
 import subprocess
 import tempfile
 from xml.etree import ElementTree
+from zipfile import ZipFile
+
+
+FRAMEWORK_APPS = (
+    "com.android.documentsui",
+    "com.android.externalstorage",
+    "com.android.inputdevices",
+    "com.android.keychain",
+    "com.android.launcher3",
+    "com.android.packageinstaller",
+    "com.android.providers.downloads",
+    "com.android.providers.downloads.ui",
+    "com.android.providers.settings",
+    "com.android.server.telecom",
+    "com.android.settings",
+    "com.android.shell",
+    "com.android.systemui",
+)
+
+FRAMEWORK_APP_APEXES = ("com.android.extservices", "com.android.mediaprovider", "com.android.permission")
+
+
+def copy_framework_apps(adb, remote, active_modules, guest):
+    paths = set()
+    for package in FRAMEWORK_APPS:
+        files = remote("pm", "path", package).splitlines()
+        if not files:
+            raise SystemExit(f"Reference system APK is missing: {package}")
+        for entry in files:
+            match = re.fullmatch(r"package:(/(?:system|system_ext|product)/(?:app|priv-app)/"
+                                 r"[A-Za-z0-9_.+-]+/[A-Za-z0-9_.+-]+\.apk)", entry)
+            if not match:
+                raise SystemExit(f"Expected a factory system APK for {package}: {entry}")
+            paths.add(match[1])
+    for path in sorted(paths):
+        local = guest / path.lstrip("/")
+        local.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(adb + ["pull", path, str(local)], check=True)
+        with ZipFile(local) as apk:
+            if "AndroidManifest.xml" not in apk.namelist():
+                raise SystemExit(f"Invalid factory APK: {path}")
+    for module in FRAMEWORK_APP_APEXES:
+        path = active_modules.get(module, "")
+        if not re.fullmatch(r"/system/apex/[A-Za-z0-9_.-]+\.apex", path):
+            raise SystemExit(f"Expected an active factory system APEX file for {module}")
+        local = guest / path.lstrip("/")
+        if not local.is_file():
+            subprocess.run(adb + ["pull", path, str(local)], check=True)
+    print(f"Added {len(paths)} factory APKs with {len(FRAMEWORK_APP_APEXES)} framework APEX dependencies", flush=True)
 
 
 def replace_line(path, pattern, value):
@@ -65,6 +114,8 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--framework-diagnostic", action="store_true",
                         help="Produce a complete offline diagnostic guest root using the compiled image")
+    parser.add_argument("--framework-apps", action="store_true",
+                        help="Include launcher, SystemUI and package-management apps from the matching reference")
     parser.add_argument("--defer-zygote-preload", action="store_true",
                         help="Use Android's lazy-preload option in the offline framework diagnostic")
     parser.add_argument("--hardware-timeout-multiplier", type=int,
@@ -74,6 +125,8 @@ def main():
         parser.error("Choose a new output directory")
     if args.defer_zygote_preload and not args.framework_diagnostic:
         parser.error("--defer-zygote-preload requires --framework-diagnostic")
+    if args.framework_apps and not args.framework_diagnostic:
+        parser.error("--framework-apps requires --framework-diagnostic")
     if args.hardware_timeout_multiplier is not None:
         if not args.framework_diagnostic or not 1 <= args.hardware_timeout_multiplier <= 0x7fffffff:
             parser.error("--hardware-timeout-multiplier requires --framework-diagnostic and a positive Android int")
@@ -160,6 +213,8 @@ def main():
                 guest = Path(temporary) / "guest"
                 make_framework_root(args.root, root, guest, args.defer_zygote_preload,
                                     args.hardware_timeout_multiplier)
+                if args.framework_apps:
+                    copy_framework_apps(adb, remote, active_modules, guest)
                 guest.rename(args.output)
             else:
                 root.rename(args.output)
