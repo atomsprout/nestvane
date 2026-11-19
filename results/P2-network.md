@@ -235,3 +235,5 @@
 - iPhone 11 的第 8205 号进程越过了前一轮的显示等待，约 13 分 20 秒进入 PackageManager，14 分 58 秒已记录系统框架扫描进展。该轮测试继续运行，尚未确认客体完整启动。
 - bpffs 固定操作扩展到 socket filter 程序。参考 Android 内核将原版 Health 程序固定后，以只读请求重新打开，移除文件名后附着，过滤结果不变。Nestvane 宿主回归执行同样的程序 FD 生命周期，并验证客体 uevent 的丢弃和截断。包含该改动的 iPhoneOS 开发签名通过。
 - 采集器补齐原版加载器从分区读取的 BPF ELF，保留子目录与文件名并校验 ELF 架构。相同 SDK 的完整采集获得 1,217 个 Android 文件，其中 11 个 `/system/etc/bpf` 对象和一个 vendor Health 对象是此前缺少的输入。采集的 vendor 文件与差分测试所用字节逐一一致。
+- 可用 `tools/prepare-bpf-uevent-probe.sh` 将独立 Bionic 夹具装入诊断根目录。Mac 启动时，原版 init 启动夹具，后者从 SDK Health 字节码装载程序、固定到 bpffs、关闭创建 FD、重新打开并附着到一个 uevent 套接字。创建探针 loop 设备时，普通监听器收到 `SUBSYSTEM=block`，带过滤器的监听器没有收到；init 记录夹具退出 0。包含同一夹具的 iPhoneOS 签名包已通过文件校验。
+- iPhone 11 第 8205 号进程报告首次系统包扫描耗时 534.122 秒，时间戳为宿主启动后 1,352,481 ms。
