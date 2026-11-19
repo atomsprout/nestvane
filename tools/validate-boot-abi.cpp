@@ -1224,6 +1224,66 @@ int main() {
         assert(call(57, {alias}) == 0 && call(57, {second}) == 0 && call(57, {storage}) == 0);
     }
     {
+        constexpr auto attr = base + 0x100, code = base + 0x200, packet = base + 0x300, license = base + 0x380;
+        constexpr auto event = base + 0x400;
+        const auto write = [&](uint64_t address, const auto& value) {
+            return machine.write(address, {reinterpret_cast<const uint8_t*>(&value), sizeof(value)});
+        };
+        std::array<uint32_t, 15> create{27, 0, 0, pageSize, 0};
+        create[12] = UINT32_MAX; // Irrelevant BTF FD without key or value type IDs.
+        assert(write(attr, create));
+        const auto ring = call(280, {0, attr, sizeof(create)});
+        assert(ring < 256);
+        const auto reader = call(222, {0, pageSize, 3, 1, ring, 0});
+        const auto writer = call(222, {0, 3 * pageSize, 1, 1, ring, pageSize});
+        assert(reader < (1ULL << 37) && writer < (1ULL << 37));
+        assert(call(222, {0, pageSize, 3, 1, ring, pageSize}) == uint64_t(-1));
+        assert(call(226, {writer, pageSize, 3}) == uint64_t(-13));
+        const auto epoll = call(20, {0});
+        const std::array<uint64_t, 2> subscription{0x41, 123};
+        assert(epoll < 256 && write(event, subscription) && call(21, {epoll, 1, ring, event}) == 0);
+        assert(call(22, {epoll, event, 1, 0}) == 0);
+
+        const auto encode = [](uint8_t op, uint8_t registers, int16_t offset = 0, int32_t immediate = 0) {
+            return op | (uint64_t(registers) << 8) | (uint64_t(uint16_t(offset)) << 16) |
+                   (uint64_t(uint32_t(immediate)) << 32);
+        };
+        put(license, "GPL");
+        const auto loadProgram = [&](uint32_t length, uint32_t finish) {
+            const std::array instructions{
+                encode(0x18, 0x11, 0, ring), uint64_t{0},
+                encode(0xb7, 0x02, 0, length), encode(0xb7, 0x03), encode(0x85, 0, 0, 131),
+                encode(0x15, 0, 6), encode(0xb7, 0x01, 0, 123), encode(0x7b, 0x10, length - 8),
+                encode(0xbf, 0x01), encode(0xb7, 0x02), encode(0x85, 0, 0, finish), encode(0xb7, 0), encode(0x95, 0)};
+            const std::array<uint64_t, 8> request{3 | (uint64_t(instructions.size()) << 32), code, license};
+            assert(write(code, instructions) && write(attr, request));
+            return call(280, {5, attr, sizeof(request)});
+        };
+        const auto small = loadProgram(8, 132), wrapping = loadProgram(16, 132), discarded = loadProgram(8, 133);
+        assert(small < 256 && wrapping < 256 && discarded < 256);
+        assert(write(packet, std::array<uint8_t, 64>{}));
+        const auto run = [&](uint64_t program, uint64_t repeat) {
+            const std::array<uint64_t, 5> request{program, 64, packet, 0, repeat};
+            assert(write(attr, request) && call(280, {10, attr, sizeof(request)}) == 0);
+        };
+        for (int i = 0; i < 3; ++i) run(small, 64);
+        run(small, 63);
+        assert(load(writer) == 4080 && call(22, {epoll, event, 1, 0}) == 1);
+        assert(load(event) == 0x41 && load(event + 8) == 123);
+        run(small, 1);
+        assert(load(writer) == 4080 && machine.store64(reader, 4080));
+        assert(call(22, {epoll, event, 1, 0}) == 0);
+        run(wrapping, 1);
+        assert(load(writer) == 4104);
+        const auto data = writer + pageSize;
+        assert(uint32_t(load(data + 4080)) == 16 && load(data + 4096) == 123 && load(data) == 123);
+        assert(machine.store64(reader, 4104));
+        run(discarded, 1);
+        assert(load(writer) == 4120 && uint32_t(load(data + 8)) == ((1U << 30) | 8));
+        for (const auto fd : {ring, epoll, small, wrapping, discarded}) assert(call(57, {fd}) == 0);
+        assert(call(215, {reader, pageSize}) == 0 && call(215, {writer, 3 * pageSize}) == 0);
+    }
+    {
         constexpr auto attr = base + 96;
         put(base, "/sys/fs/bpf/map_missing");
         assert(machine.store64(attr, base) && machine.store64(attr + 8, 0));

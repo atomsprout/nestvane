@@ -253,6 +253,7 @@ private:
         bool pipeReader = false;
         std::weak_ptr<GuestTouch> touch{};
         std::weak_ptr<GuestTouch::Reader> touchReader{};
+        std::weak_ptr<BpfMap> ring{};
     };
     struct EventState {
         struct Timer {

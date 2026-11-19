@@ -22,7 +22,8 @@ namespace nestvane {
 class BpfTypes;
 
 struct BpfMap {
-    static constexpr uint32_t socketStorage = 24;
+    static constexpr uint32_t socketStorage = 24, ringBuffer = 27;
+    static constexpr uint32_t ringDiscardBit = 1U << 30, ringBusyBit = 1U << 31;
     uint32_t id = 0, type = 0, flags = 0, entryCount = 0;
     uint32_t keySize = 0, valueSize = 0, valueStride = 0, btfKeyType = 0, btfValueType = 0;
     std::array<char, 16> name{};
@@ -33,6 +34,54 @@ struct BpfMap {
     std::span<uint8_t> arrayElement(uint32_t index) {
         return std::span(values.pages).subspan(uint64_t(index) * valueStride, valueStride);
     }
+    uint64_t ringPosition(size_t offset) const {
+        uint64_t position;
+        std::memcpy(&position, values.pages.data() + offset, sizeof(position));
+        return position;
+    }
+    bool ringReadable() const { return ringPosition(pageSize) != ringPosition(0); }
+
+    struct RingRecord {
+        uint64_t position;
+        std::span<uint8_t> payload;
+    };
+
+    std::optional<RingRecord> reserveRingRecord(uint64_t size) {
+        const auto position = ringPosition(pageSize);
+        const auto used = position - ringPosition(0);
+        if (size >= entryCount) return {};
+        const auto length = (size + 15) & ~uint64_t{7};
+        if (used >= entryCount || length >= entryCount - used) return {};
+        auto* record = ringData(position);
+        const auto header = uint32_t(size) | ringBusyBit;
+        std::memcpy(record, &header, sizeof(header));
+        std::memset(record + 4, 0, 4);
+        auto payload = std::span(record + 8, size);
+        // Reused payload bytes never become readable to another guest program.
+        std::ranges::fill(payload, 0);
+        const auto next = position + length;
+        std::memcpy(values.pages.data() + pageSize, &next, sizeof(next));
+        return RingRecord{position, payload};
+    }
+
+    bool finishRingRecord(RingRecord record, bool discard, uint64_t flags) {
+        const auto header = uint32_t(record.payload.size()) | (discard ? ringDiscardBit : 0);
+        auto* data = ringData(record.position);
+        std::memcpy(data, &header, sizeof(header));
+        // The backing reserves budget for a second read-only copy so a guest load
+        // can read a wrapping record through either view in a single operation.
+        const auto offset = record.position & (entryCount - 1);
+        const size_t length = (record.payload.size() + 15) & ~size_t{7};
+        const size_t first = std::min<size_t>(length, entryCount - offset);
+        std::memcpy(data + entryCount, data, first);
+        if (first < length) std::memcpy(ringData(0), data + first, length - first);
+        return (flags & 2) || (!(flags & 1) && record.position == ringPosition(0));
+    }
+
+    uint8_t* ringData(uint64_t position) {
+        return values.pages.data() + 2 * pageSize + (position & (entryCount - 1));
+    }
+
     struct CompareKeys {
         using is_transparent = void;
         bool operator()(std::span<const uint8_t> left, std::span<const uint8_t> right) const {
@@ -73,6 +122,7 @@ public:
         uint32_t protocol = 0, packetType = 0, ingressIfindex = 0, ifindex = 0, mark = 0;
         size_t networkOffset = 0;
         uint64_t socketCookie = 0;
+        bool ringNotification = false;
     };
 
     bool load(uint32_t type, std::span<const uint8_t> bytes, const MapResolver& resolve) {
@@ -109,7 +159,8 @@ public:
                 if (i.registers || i.offset) return false;
                 switch (i.immediate) {
                     case 26: break; // skb_load_bytes
-                    case 1: case 9: case 10: case 11: case 23: case 31: case 39: case 40: case 43: case 46: case 50: case 125: case 164:
+                    case 1: case 9: case 10: case 11: case 23: case 31: case 39: case 40: case 43: case 46: case 50: case 125: case 130: case 131:
+                    case 132: case 133: case 134: case 164:
                         if (type != classifier) return false;
                         break;
                     default: return false;
@@ -324,6 +375,8 @@ private:
     struct Region {
         std::span<uint8_t> bytes;
         bool writable;
+        BpfMap* ring = nullptr;
+        uint64_t position = 0;
     };
 
     std::optional<uint32_t> execute(std::span<const uint8_t> packet, Packet* classifierPacket) const {
@@ -336,6 +389,16 @@ private:
         std::array<std::array<uint8_t, 512>, maxDepth> stacks{};
         std::array<std::span<const uint8_t>, maxDepth> callbackKeys{};
         std::vector<Region> values;
+        struct DiscardPending {
+            std::vector<Region>& regions;
+            Packet* packet;
+            ~DiscardPending() {
+                for (auto& region : regions) {
+                    if (region.ring)
+                        packet->ringNotification |= region.ring->finishRingRecord({region.position, region.bytes}, true, 0);
+                }
+            }
+        } discardPending{values, classifierPacket};
         std::unordered_map<const uint8_t*, size_t> valueRegions;
         const auto slice = [](auto memory, uint64_t base, uint64_t address, uint64_t size) -> decltype(memory) {
             if (address < base || address - base > memory.size() || size > memory.size() - (address - base))
@@ -376,7 +439,7 @@ private:
 
         auto lookup = [&](uint64_t handle, uint64_t keyAddress, size_t depth) -> uint64_t {
             auto* foundMap = mapFor(handle);
-            if (!foundMap || foundMap->type == BpfMap::socketStorage) return 0;
+            if (!foundMap || foundMap->type == BpfMap::socketStorage || foundMap->type == BpfMap::ringBuffer) return 0;
             auto& map = *foundMap;
             const auto key = readAt(keyAddress, map.keySize, depth);
             if (key.empty()) return 0;
@@ -515,10 +578,54 @@ private:
                                 result = std::chrono::duration_cast<std::chrono::nanoseconds>(
                                     std::chrono::steady_clock::now().time_since_epoch()).count();
                                 break;
+                            case 130: { // bpf_ringbuf_output
+                                auto* ring = mapFor(r1);
+                                const auto flags = registers[4];
+                                if (!ring || ring->type != BpfMap::ringBuffer) return std::nullopt;
+                                if (flags & ~3ULL) { result = uint64_t(-22); break; }
+                                const auto data = read(r2, r3);
+                                if (r3 && data.empty()) return std::nullopt;
+                                const auto record = ring->reserveRingRecord(r3);
+                                if (!record) { result = uint64_t(-11); break; }
+                                std::ranges::copy(data, record->payload.begin());
+                                classifierPacket->ringNotification |= ring->finishRingRecord(*record, false, flags);
+                                break;
+                            }
+                            case 131: { // bpf_ringbuf_reserve
+                                auto* ring = mapFor(r1);
+                                if (!ring || ring->type != BpfMap::ringBuffer) return std::nullopt;
+                                if (r3) break;
+                                values.push_back({});
+                                const auto record = ring->reserveRingRecord(r2);
+                                if (!record) { values.pop_back(); break; }
+                                values.back() = {record->payload, true, ring, record->position};
+                                result = mapValueBase + (values.size() - 1) * mapStride;
+                                break;
+                            }
+                            case 132: case 133: { // bpf_ringbuf_submit and bpf_ringbuf_discard
+                                if (r1 < mapValueBase || (r1 - mapValueBase) % mapStride) return std::nullopt;
+                                const auto index = (r1 - mapValueBase) / mapStride;
+                                if (index >= values.size() || !values[index].ring) return std::nullopt;
+                                auto& region = values[index];
+                                classifierPacket->ringNotification |= region.ring->finishRingRecord(
+                                    {region.position, region.bytes}, i.immediate == 133, r2);
+                                region = {};
+                                break;
+                            }
+                            case 134: { // bpf_ringbuf_query
+                                auto* ring = mapFor(r1);
+                                if (!ring || ring->type != BpfMap::ringBuffer) return std::nullopt;
+                                if (r2 == 0) result = ring->ringPosition(pageSize) - ring->ringPosition(0);
+                                if (r2 == 1) result = ring->entryCount;
+                                if (r2 == 2) result = ring->ringPosition(0);
+                                if (r2 == 3) result = ring->ringPosition(pageSize);
+                                break;
+                            }
                             case 164: { // bpf_for_each_map_elem
                                 auto* map = mapFor(r1);
                                 if (registers[4]) { result = uint64_t(-22); break; }
-                                if (!map || map->type == BpfMap::socketStorage || r2 <= callbackBase || r2 - callbackBase >= instructions.size() ||
+                                if (!map || map->type == BpfMap::socketStorage || map->type == BpfMap::ringBuffer ||
+                                    r2 <= callbackBase || r2 - callbackBase >= instructions.size() ||
                                     !functionEntries.contains(r2 - callbackBase)) return std::nullopt;
                                 auto invoke = [&](std::span<const uint8_t> key, std::span<uint8_t> value) {
                                     callbackKeys[depth] = key;

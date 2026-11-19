@@ -270,3 +270,4 @@
 - iPhone 11 进程 8305 同一轮复验了原版 CLAT、DSCP 和 BPF 共享数组。共享数组探针耗时 0.226 秒并退出 0，确认八字节元素对齐、共享写入、只读映射保护和关闭 FD 后的生命周期。源码版加载器成功加载 CLAT 和 DSCP，并越过 `blocked_ports_map`，该轮下一处失败为 `sk_storage`，未达到 `sys.boot_completed=1`。
 - 客体新增带 BTF 的 BPF 套接字局部存储映射。映射值跟随客体套接字，重复 FD 可访问同一份值，同一 socketpair 的另一个套接字有独立存储。Android 17 参考内核和 Nestvane Mac 的独立 Bionic 探针均通过。Mac 源码版加载器提交的 `sk_storage` 使用有修饰的 BTF 整数键，现可解析到 32 位整型。宿主 ABI 回归覆盖带有 const 修饰的键、关闭原 FD 后从别名读取、套接字间隔离及删除。套接字局部存储尚未在 iPhone 11 复验。
 - Mac 源码版加载器已越过 `sk_storage`。下一处失败为创建 `packet_trace_ringbuf`，客体返回 EOPNOTSUPP。该轮未验证完整启动。
+- 客体支持内核生产型 BPF 环形缓冲区，含独立的读写消费页、只读生产页与双映射数据视图、预留/提交/丢弃/复制写入和 `epoll` 可读状态。Android 17 参考内核和 Nestvane Mac 上的同一个 ARM64 Bionic 探针验证了满缓冲区保留未读记录、回绕记录在两个位置可读、丢弃标志及消费后的通知状态。宿主 ABI 回归和 iPhoneOS 开发签名通过。Mac 源码版加载器越过 `packet_trace_ringbuf`，下一项失败为 `local_net_access_map`（最长前缀匹配映射）。iPhone 11 进程 8321 已启动包含环形缓冲区与套接字局部存储探针的构建。完整启动仍待验收。[Linux BPF 环形缓冲区 ABI](https://docs.kernel.org/bpf/ringbuf.html)

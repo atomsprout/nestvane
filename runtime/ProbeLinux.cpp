@@ -1569,7 +1569,9 @@ bool ProbeLinux::eventCall(Machine& machine) {
             const auto target = descriptors().find(uint32_t(x[2]));
             if (descriptor == descriptors().end() || target == descriptors().end()) { x[0] = uint64_t(-9); break; }
             if (descriptor->second.node != Node::poller) { x[0] = invalid; break; }
-            if (!target->second.socket && !target->second.binder && !target->second.graphics &&
+            const auto& targetMap = target->second.bpfMap;
+            const auto ring = targetMap && targetMap->type == BpfMap::ringBuffer ? targetMap : nullptr;
+            if (!ring && !target->second.socket && !target->second.binder && !target->second.graphics &&
                 !target->second.pipe && !target->second.touch && (!target->second.event || target->second.node == Node::poller)) {
                 x[0] = uint64_t(-1);
                 break;
@@ -1578,7 +1580,7 @@ bool ProbeLinux::eventCall(Machine& machine) {
             const auto fd = uint32_t(x[2]);
             if (const auto stale = watches.find(fd); stale != watches.end() && stale->second.source.expired() &&
                 stale->second.socket.expired() && stale->second.binder.expired() && stale->second.graphics.expired() &&
-                stale->second.pipeEnd.expired() && stale->second.touchReader.expired()) {
+                stale->second.pipeEnd.expired() && stale->second.touchReader.expired() && stale->second.ring.expired()) {
                 watches.erase(stale);
             }
             const bool registered = watches.contains(fd);
@@ -1592,11 +1594,11 @@ bool ProbeLinux::eventCall(Machine& machine) {
             std::memcpy(event.data(), data, sizeof(event));
             const auto mask = uint32_t(event[0]);
             // EPOLLWAKEUP requires no power-management action while the guest is scheduled.
-            if (mask & ~0x2000201fU) return false;
+            if (mask & ~0x2000205fU) return false;
             watches.insert_or_assign(fd, Watch{mask, event[1], target->second.event, target->second.socket,
                                               target->second.node == Node::event, target->second.binder, target->second.graphics,
                                               target->second.pipe, target->second.pipeEnd, target->second.node == Node::pipeRead,
-                                              target->second.touch, target->second.touchReader});
+                                              target->second.touch, target->second.touchReader, ring});
             x[0] = 0;
             break;
         }
@@ -1623,6 +1625,8 @@ bool ProbeLinux::eventCall(Machine& machine) {
                 const auto graphicsEvents = graphics ? graphics->pollEvents() : 0;
                 const auto pipe = watch.pipeEnd.expired() ? nullptr : watch.pipe.lock();
                 const auto pipeEvents = pipe ? pipe->pollEvents(watch.pipeReader) : 0;
+                const auto ring = watch.ring.lock();
+                const auto ringEvents = ring && ring->ringReadable() ? 0x41 : 0;
                 const bool receiveEnded = endpoint && (endpoint->receiveShutdown ||
                     (endpoint->connected && (!peer || peer->sendShutdown)));
                 const bool readable = (state && state->counter) || childReady || (binder && binderReadable(*binder)) ||
@@ -1634,7 +1638,7 @@ bool ProbeLinux::eventCall(Machine& machine) {
                 const bool hungUp = endpoint && endpoint->connected && (!peer || (receiveEnded && endpoint->sendShutdown));
                 const bool mountsChanged = state && state->mountNamespace &&
                     state->observedMountGeneration != state->mountNamespace->generation;
-                const uint64_t mask = ((graphicsEvents | pipeEvents) & (watch.mask | 0x18U)) | (watch.mask & ((readable ? 1U : 0) | (mountsChanged ? 2U : 0) |
+                const uint64_t mask = ((graphicsEvents | pipeEvents | ringEvents) & (watch.mask | 0x18U)) | (watch.mask & ((readable ? 1U : 0) | (mountsChanged ? 2U : 0) |
                                                         (writable ? 4U : 0) | (receiveEnded ? 0x2000U : 0))) | (hungUp ? 16U : 0);
                 if (mask) {
                     ready.push_back({mask, watch.data});
@@ -3320,9 +3324,11 @@ uint64_t ProbeLinux::map(Machine& machine) {
         if ((fd.flags & 3) == 1) return uint64_t(-13);
         if (const auto& map = fd.bpfMap) {
             constexpr uint32_t mappable = 1 << 10, programReadOnly = 1 << 7;
-            if (map->type != 2) return uint64_t(-524); // No mmap operation for this map type.
-            if (sharing != 1 || !(map->flags & mappable)) return invalid;
+            const bool ring = map->type == BpfMap::ringBuffer;
+            if (!ring && map->type != 2) return uint64_t(-524);
+            if (sharing != 1 || (!ring && !(map->flags & mappable))) return invalid;
             const bool writable = x[2] & 2;
+            if (ring && writable && (x[5] || length != pageSize)) return uint64_t(-1);
             if ((x[2] & 4) || (writable && (!(fd.flags & 3) || (map->flags & programReadOnly))))
                 return uint64_t(-13);
             if (x[5] > map->values.size || length > map->values.size - x[5]) return invalid;
@@ -4667,6 +4673,8 @@ bool ProbeLinux::poll(Machine& machine) {
             entry.returned = (events & entry.events) | (events & 16);
         } else if (const auto pipe = descriptor->second.pipe) {
             entry.returned = pipe->pollEvents(descriptor->second.node == Node::pipeRead) & (entry.events | 0x18);
+        } else if (const auto& map = descriptor->second.bpfMap) {
+            entry.returned = map->type == BpfMap::ringBuffer && map->ringReadable() ? entry.events & 0x41 : 0;
         } else if (descriptor->second.node == Node::timer) {
             refreshTimers(steady_clock::now());
             entry.returned = entry.events & (descriptor->second.event->counter ? 1 : 0);
@@ -5207,22 +5215,28 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
         const bool perCpu = type == perCpuArray || type == perCpuHash;
         const bool device = type == deviceHash;
         const bool socket = type == BpfMap::socketStorage;
-        if (!array && !device && !socket && type != hashType && type != perCpuHash) return uint64_t(-95);
-        if (socket && !(current->process->effectiveCaps & (capBpf | capSysAdmin))) return uint64_t(-1);
+        const bool ring = type == BpfMap::ringBuffer;
+        if (!array && !device && !socket && !ring && type != hashType && type != perCpuHash) return uint64_t(-95);
+        if ((socket || ring) && !(current->process->effectiveCaps & (capBpf | capSysAdmin))) return uint64_t(-1);
         if (device && !(current->process->effectiveCaps & (1ULL << 12))) return uint64_t(-1); // CAP_NET_ADMIN
         const uint32_t arrayFlags = type == arrayType ? mappable | programReadOnly : 0;
         const uint32_t supportedFlags = readOnly | writeOnly | (device ? programReadOnly : array ? arrayFlags : noPrealloc);
-        if (((array || device || socket) && keySize != sizeof(uint32_t)) || !keySize || !valueSize ||
-            (socket ? entries || !(flags & noPrealloc) : !entries) ||
-            (device && valueSize != 4 && valueSize != 8) ||
-            (flags & ~supportedFlags) || (flags & (readOnly | writeOnly)) == (readOnly | writeOnly))
+        if (ring) {
+            if (keySize || valueSize || entries < pageSize || (entries & (entries - 1)) || flags) return invalid;
+        } else if (((array || device || socket) && keySize != sizeof(uint32_t)) || !keySize || !valueSize ||
+                   (socket ? entries || !(flags & noPrealloc) : !entries) ||
+                   (device && valueSize != 4 && valueSize != 8) || (flags & ~supportedFlags)) {
             return invalid;
+        }
+        if ((flags & (readOnly | writeOnly)) == (readOnly | writeOnly)) return invalid;
         if (nonzero(20, 28) || nonzero(44, 48) || nonzero(60, input.size())) return uint64_t(-95);
         std::array<uint32_t, 3> btf{};
         std::memcpy(btf.data(), input.data() + 48, sizeof(btf));
         const auto [btfFd, keyType, valueType] = btf;
         std::shared_ptr<const BpfTypes> types;
-        if (btfFd || keyType || valueType) {
+        // libbpf can supply the ELF's BTF FD even when the ring has no typed elements.
+        if (keyType || valueType || (btfFd && !ring)) {
+            if (ring) return invalid;
             const auto found = descriptors().find(btfFd);
             if (found == descriptors().end()) return uint64_t(-9);
             types = found->second.btf;
@@ -5235,9 +5249,10 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
         // one aligned value for each possible guest CPU, of which this guest has one.
         const uint64_t valueStride = array || perCpu ? (uint64_t(valueSize) + 7) & ~uint64_t{7} : valueSize;
         const uint64_t entryBytes = valueStride + (array ? 0 : uint64_t(keySize) + 128);
-        if (entries && entryBytes > mapBudget / entries) return noMemory;
-        const size_t valueBytes = socket ? 128 : entryBytes * entries;
-        const size_t bytes = flags & mappable ? pageAlignedLength(valueBytes) : valueBytes;
+        if (entries && !ring && entryBytes > mapBudget / entries) return noMemory;
+        const uint64_t valueBytes = ring ? 2 * (uint64_t(entries) + pageSize) : socket ? 128 : entryBytes * entries;
+        const auto bytes = flags & mappable ? pageAlignedLength(valueBytes) : valueBytes;
+        if (bytes > mapBudget) return noMemory;
         const auto newFd = freeDescriptor();
         if (newFd == descriptorCapacity) return uint64_t(-24);
         std::erase_if(bpfMaps, [](const auto& entry) { return entry.second.expired(); });
@@ -5258,7 +5273,7 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
             map->budgetBytes = bytes;
             map->array = array;
             map->types = std::move(types);
-            if (array) {
+            if (array || ring) {
                 map->values.pages.resize(bytes);
                 map->values.size = bytes;
             }
@@ -5289,6 +5304,7 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
     if ((command == update || command == erase) ? access == 0 : access == 1) return uint64_t(-1);
     if (command == lookup && flags) return invalid;
     if (command == update && flags > 2) return invalid;
+    if (map.type == BpfMap::ringBuffer) return uint64_t(-524);
 
     if (map.type == BpfMap::socketStorage) {
         if (command == nextKey) return uint64_t(-524);
@@ -5538,7 +5554,9 @@ uint64_t ProbeLinux::testBpfProgram(Machine& machine) {
         const auto repetitions = std::max(1U, test.repeat);
         const auto start = std::chrono::steady_clock::now();
         for (uint32_t run = 0; run < repetitions; ++run) {
+            packet.ringNotification = false;
             const auto result = program->classify(packet);
+            if (packet.ringNotification) wakePollers();
             if (!result) return invalid;
             test.action = *result;
         }
