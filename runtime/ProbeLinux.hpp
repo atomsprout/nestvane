@@ -456,7 +456,8 @@ private:
     };
     struct BinderConnection {
         uint64_t owner;
-        uint32_t maxThreads = 15;
+        uint32_t maxThreads = 0;
+        bool looperRequested = false;
         std::shared_ptr<SharedFileBytes> mapped{};
         uint64_t address = 0, target = 0, cookie = 0;
         bool sendSecurityContext = false, managerAcceptsFiles = true;
@@ -468,7 +469,7 @@ private:
         std::map<uint64_t, std::deque<BinderPacket>> directed;
         std::map<uint64_t, std::vector<BinderRoute>> replies;
         std::deque<BinderPacket> incoming;
-        std::set<uint64_t> loopers;
+        std::map<uint64_t, bool> loopers; // Whether the looper was requested by the driver.
         explicit BinderConnection(uint64_t owner) : owner(owner) {}
     };
     struct Ashmem {

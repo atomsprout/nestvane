@@ -10,7 +10,7 @@ constexpr uint64_t invalid = uint64_t(-22), fault = uint64_t(-14);
 constexpr uint32_t bcTransaction = 0x40406300, bcReply = 0x40406301, bcFreeBuffer = 0x40086303;
 constexpr uint32_t bcTransactionSg = 0x40486311, bcReplySg = 0x40486312;
 constexpr uint32_t brTransaction = 0x80407202, brTransactionSecctx = 0x80487202, brReply = 0x80407203;
-constexpr uint32_t brDeadReply = 0x7205, brComplete = 0x7206, brFailedReply = 0x7211;
+constexpr uint32_t brDeadReply = 0x7205, brComplete = 0x7206, brSpawnLooper = 0x720d, brFailedReply = 0x7211;
 constexpr uint32_t oneWay = 1, acceptReplyFiles = 0x10;
 constexpr uint32_t acceptNodeFiles = 0x100, sendSecurityContext = 0x1000;
 constexpr uint32_t binderFile = 0x66642a85, closeOnExec = 0x80000;
@@ -109,8 +109,12 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
     static_assert(sizeof(BinderTransaction) == 64);
     auto& connection = *fd.binder;
     switch (command) {
-        case 0x630b: case 0x630c: // BC_REGISTER_LOOPER / BC_ENTER_LOOPER
-            connection.loopers.insert(currentTid);
+        case 0x630b: // BC_REGISTER_LOOPER
+            if (connection.looperRequested && connection.loopers.try_emplace(currentTid, true).second)
+                connection.looperRequested = false;
+            return 0;
+        case 0x630c: // BC_ENTER_LOOPER
+            connection.loopers.try_emplace(currentTid, false);
             return 0;
         case 0x630d: // BC_EXIT_LOOPER
             connection.loopers.erase(currentTid);
@@ -486,23 +490,53 @@ uint64_t ProbeLinux::binderWriteRead(Machine& machine, const Descriptor& fd) {
         }
     }
     const auto size = (next.command >> 16) & 0x3fffU;
-    std::array<uint8_t, sizeof(uint32_t) + sizeof(BinderTransaction) + sizeof(uint64_t)> response{};
-    if (size > response.size() - sizeof(uint32_t) ||
-        request.readSize - request.readConsumed < sizeof(uint32_t) + size)
+    constexpr size_t maxPayload = sizeof(BinderTransaction) + sizeof(uint64_t);
+    std::array<uint8_t, 2 * sizeof(uint32_t) + maxPayload> response{};
+    const auto room = request.readSize - request.readConsumed;
+    const auto packetSize = sizeof(uint32_t) + size;
+    if (size > maxPayload || room < packetSize)
         return writeGuest(machine, argument, request) ? uint64_t(-28) : fault;
-    std::memcpy(response.data(), &next.command, sizeof(uint32_t));
+
+    bool requestLooper = false;
+    if (connection.maxThreads && !connection.looperRequested && !request.readConsumed &&
+        room >= packetSize + sizeof(uint32_t) && connection.loopers.contains(currentTid)) {
+        std::erase_if(connection.loopers, [&](const auto& looper) {
+            const auto task = threads.find(looper.first);
+            return task == threads.end() || task->second.wait == Wait::exited;
+        });
+        const auto registered = std::ranges::count_if(connection.loopers, [](const auto& looper) { return looper.second; });
+        const auto idle = [&](const auto& looper) {
+            if (looper.first == currentTid) return false;
+            const auto& task = threads.at(looper.first);
+            const auto& cpu = task.saved;
+            const auto& descriptors = task.process->descriptors;
+            if (task.wait != Wait::poll || cpu.x[8] != 29 || cpu.x[1] != 0xc0306201) return false;
+            const auto descriptor = descriptors.find(uint32_t(cpu.x[0]));
+            const auto replies = connection.replies.find(looper.first);
+            return descriptor != descriptors.end() && descriptor->second.binder.get() == &connection &&
+                (replies == connection.replies.end() || replies->second.empty());
+        };
+        requestLooper = registered < connection.maxThreads && std::ranges::none_of(connection.loopers, idle);
+    }
+    size_t prefix = 0;
+    if (requestLooper) {
+        std::memcpy(response.data(), &brSpawnLooper, sizeof(brSpawnLooper));
+        prefix = sizeof(brSpawnLooper);
+    }
+    auto* packet = response.data() + prefix;
+    std::memcpy(packet, &next.command, sizeof(uint32_t));
     if (next.command == brIncrefs || next.command == brAcquire ||
         next.command == brDeadBinder || next.command == brClearDeath)
-        std::memcpy(response.data() + sizeof(uint32_t), next.reference.data(), size);
+        std::memcpy(packet + sizeof(uint32_t), next.reference.data(), size);
     else if (size >= sizeof(BinderTransaction))
-        std::memcpy(response.data() + sizeof(uint32_t), &next.transaction, sizeof(BinderTransaction));
+        std::memcpy(packet + sizeof(uint32_t), &next.transaction, sizeof(BinderTransaction));
     if (size > sizeof(BinderTransaction))
-        std::memcpy(response.data() + sizeof(uint32_t) + sizeof(BinderTransaction),
-                    &next.securityContext, sizeof(uint64_t));
-    const auto count = sizeof(uint32_t) + size;
+        std::memcpy(packet + sizeof(uint32_t) + sizeof(BinderTransaction), &next.securityContext, sizeof(uint64_t));
+    const auto count = prefix + packetSize;
     if (!machine.write(request.readBuffer + request.readConsumed, std::span(response).first(count))) return fault;
     request.readConsumed += count;
     if (!writeGuest(machine, argument, request)) return fault;
+    if (requestLooper) connection.looperRequested = true;
     if (size >= sizeof(BinderTransaction)) {
         const auto offset = next.transaction.buffer - connection.address;
         for (size_t i = 0; i < next.files.size(); ++i) {

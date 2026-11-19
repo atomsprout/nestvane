@@ -3928,9 +3928,11 @@ int main() {
     assert(uint32_t(load(base + 0x720)) == 0x7206);
     assert(bindRequest(channel, 0, 0, "", true) == channel && linux.blocked());
     assert(linux.schedule(machine) && linux.processId() == 1);
+    assert(machine.store64(base + 512, 1) && call(29, {manager, 0x40046205, base + 512}) == 0);
     assert(bindRequest(manager, 0x630c, 0, "", true) == 0);
-    assert(uint32_t(load(base + 0x720)) == 0x80407202);
-    const auto transaction = machine.read(base + 0x724, 64, 4);
+    assert(uint32_t(load(base + 0x720)) == 0x720d);
+    assert(uint32_t(load(base + 0x724)) == 0x80407202);
+    const auto transaction = machine.read(base + 0x728, 64, 4);
     assert(transaction);
     std::array<uint64_t, 8> fields{};
     std::memcpy(fields.data(), transaction, sizeof fields);
