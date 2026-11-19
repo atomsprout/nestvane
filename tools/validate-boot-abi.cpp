@@ -1909,6 +1909,14 @@ int main() {
         }
         assert(call(57, {fixedFd}) == 0);
     }
+    const auto binderWorker = call(220, {0x3d0f00, base + 0x900, base + 0x810, base + 0xa00, base + 0x810});
+    assert(binderWorker > binderChild);
+    call(93, {0}); // The leader exits, leaving its Binder connection alive in the worker.
+    assert(linux.schedule(machine) && linux.processId() == binderChild && linux.threadId() == binderWorker);
+    machine.cpu.retired += 4096;
+    assert(linux.schedule(machine) && linux.processId() == 1);
+    assert(bindRequest(manager, 0, 0, "", true) == manager && linux.blocked());
+    assert(linux.schedule(machine) && linux.threadId() == binderWorker);
     call(94, {0});
     assert(linux.schedule(machine) && linux.processId() == 1);
 

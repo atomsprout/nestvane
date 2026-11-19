@@ -87,9 +87,7 @@ bool ProbeLinux::refreshBinderDeaths() {
         for (auto& [handle, death] : connection->deaths) {
             if (death.sent) continue;
             const auto target = death.target.lock();
-            if (target && std::any_of(threads.begin(), threads.end(), [&](const auto& task) {
-                return task.second.process->id == target->owner && task.second.wait != Wait::exited;
-            })) continue;
+            if (target && processAlive(target->owner)) continue;
             const auto receiver = threads.find(death.thread);
             auto& queue = receiver != threads.end() && receiver->second.wait != Wait::exited
                 ? connection->directed[death.thread] : connection->incoming;

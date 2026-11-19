@@ -4285,6 +4285,10 @@ bool ProbeLinux::exitThread(Machine& machine) {
 }
 
 bool ProbeLinux::processAlive(uint64_t id) const {
+    const auto leader = threads.find(id);
+    if (leader != threads.end() && leader->second.process->id == id && leader->second.wait != Wait::exited)
+        return true;
+    // A process remains alive after its leader exits if it still has another thread.
     return std::any_of(threads.begin(), threads.end(), [&](const auto& entry) {
         return entry.second.process->id == id && entry.second.wait != Wait::exited;
     });

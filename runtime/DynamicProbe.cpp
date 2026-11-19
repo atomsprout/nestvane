@@ -459,14 +459,9 @@ DynamicReport probeInit(const std::string& directory, const std::string& databas
                 "Zygote: Preloading classes", "Zygote: ...preloaded", "Zygote: end preload",
                 "Resources: Preloading resources",
                 "nativeloader: Load libperfetto_framework_jni.so", "nativeloader: Load libcompiler_rt.so",
-                "SystemServer: Entered the Android system server", "SystemServerTiming: StartActivityManager",
-                "SystemServerTiming: StartPowerManager", "SystemServerTiming: StartThermalManager",
-                "SystemServerTiming: StartLightsService",
-                "SystemServerTiming: StartDisplayManager", "SystemServerTiming: WaitForDisplay",
-                "SystemServerTiming: StartPackageManagerService", "PackageManagerTiming: ",
-                "SystemServerTiming: StartInputManager", "EventHub: New device:",
+                "SystemServer: Entered the Android system server", "SystemServerTiming: ",
+                "PackageManagerTiming: ", "EventHub: New device:",
                 "mmap APK: ", "PackageManager: Failed to parse", "PackageManager: Time to scan packages",
-                "SystemServerTiming: StartWindowManagerService", "SystemServerTiming: StartActivityManagerReadyPhase",
                 "NestvaneSmoke: ", "ActivityTaskManager: Displayed dev.nestvane.smoke/",
                 "SurfaceFlinger: SurfaceFlinger is starting", "SurfaceFlinger: Using HWComposer service",
                 "SurfaceFlinger: OpenGL ES informations", "mapper.ranchu: GoldfishAddressSpace",
@@ -478,7 +473,9 @@ DynamicReport probeInit(const std::string& directory, const std::string& databas
                 "libEGL: couldn't find an OpenGL ES implementation", "libEGL: eglInitialize(",
                 "Watchdog: *** WATCHDOG KILLING SYSTEM PROCESS"
             };
-            if (message.starts_with("Zygote: System zygote died")) {
+            if (message.starts_with("Zygote: System zygote died") ||
+                message.starts_with("SystemServer: Failure") ||
+                message.starts_with("AndroidRuntime: FATAL EXCEPTION IN SYSTEM PROCESS")) {
                 progress(message.substr(0, 2048));
                 return;
             }
