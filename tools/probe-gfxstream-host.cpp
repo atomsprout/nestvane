@@ -137,12 +137,21 @@ std::jthread watchGuestDisplay(void* module, uint32_t width, uint32_t height) {
     if (!read) return {};
     return std::jthread([=](std::stop_token stop) {
         std::vector<uint8_t> pixels(size_t(width) * height * 4);
+        uint64_t lastFrame = 0;
         while (!stop.stop_requested()) {
             uint32_t dimensions[2]{};
-            if (const auto sequence = read(0, pixels.data(), pixels.size(), dimensions)) {
-                std::fprintf(stderr, "[Android boot] Primary display posted a %ux%u frame (sequence %llu)\n",
-                             dimensions[0], dimensions[1], static_cast<unsigned long long>(sequence));
-                return;
+            if (const auto sequence = read(lastFrame, pixels.data(), pixels.size(), dimensions)) {
+                if (!lastFrame)
+                    std::fprintf(stderr, "[Android boot] Primary display posted a %ux%u frame (sequence %llu)\n",
+                                 dimensions[0], dimensions[1], static_cast<unsigned long long>(sequence));
+                lastFrame = sequence;
+                const auto bytes = size_t(dimensions[0]) * dimensions[1] * 4;
+                if (bytes <= pixels.size() &&
+                    nestvane::guestDisplayHasColorVariation(std::span(pixels).first(bytes))) {
+                    std::fprintf(stderr, "[Android boot] Primary display posted nonuniform RGB (sequence %llu)\n",
+                                 static_cast<unsigned long long>(sequence));
+                    return;
+                }
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(33));
         }
@@ -165,13 +174,16 @@ bool validatePostedDisplay(void* module, uint32_t handle, uint32_t side, std::sp
     const uint64_t frame = read(0, pixels.data(), pixels.size(), dimensions);
     const bool matched = frame && dimensions[0] == side && dimensions[1] == side &&
         std::ranges::equal(pixels, expected);
+    constexpr std::array<uint8_t, 8> alphaOnly{0, 0, 0, 0, 0, 0, 0, 255};
+    const bool recognizedContent = nestvane::guestDisplayHasColorVariation(pixels) &&
+        !nestvane::guestDisplayHasColorVariation(alphaOnly);
     const bool consumed = !read(frame, pixels.data(), pixels.size(), dimensions);
     flush(handle);
     const bool reused = read(frame, pixels.data(), pixels.size(), dimensions) > frame;
     std::printf("Primary display post: frame=%llu, %ux%u, matching RGBA8=%s, new post to same buffer=%s\n",
                 static_cast<unsigned long long>(frame), dimensions[0], dimensions[1],
                 matched ? "yes" : "no", reused ? "yes" : "no");
-    return matched && consumed && reused;
+    return matched && recognizedContent && consumed && reused;
 }
 } // namespace
 

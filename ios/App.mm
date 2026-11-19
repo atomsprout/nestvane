@@ -2,6 +2,7 @@
 #import <UIKit/UIKit.h>
 
 #include "DynamicProbe.hpp"
+#include "GfxstreamPipe.hpp"
 #include "GfxstreamSession.hpp"
 #include "Validation.hpp"
 
@@ -39,9 +40,10 @@ UIImage* GuestDisplayImage(std::span<const uint8_t> pixels, uint32_t width, uint
     return image;
 }
 
-std::jthread StartDisplayReader(const nestvane::GfxstreamSession& renderer, void (^present)(UIImage*)) {
+std::jthread StartDisplayReader(const nestvane::GfxstreamSession& renderer, bool captureContent,
+                                void (^present)(UIImage*, bool)) {
     if (!renderer.hasDisplayReadback()) return {};
-    return std::jthread([&renderer, present](std::stop_token stop) {
+    return std::jthread([&renderer, captureContent, present](std::stop_token stop) mutable {
         std::vector<uint8_t> pixels(size_t(guestWidth) * guestHeight * 4);
         const auto slot = dispatch_semaphore_create(1);
         uint64_t lastFrame = 0;
@@ -53,8 +55,12 @@ std::jthread StartDisplayReader(const nestvane::GfxstreamSession& renderer, void
                     UIImage* image = frame ? GuestDisplayImage(pixels, dimensions[0], dimensions[1]) : nil;
                     if (image) {
                         lastFrame = frame;
+                        const auto bytes = size_t(dimensions[0]) * dimensions[1] * 4;
+                        const bool content = captureContent &&
+                            nestvane::guestDisplayHasColorVariation(std::span(pixels).first(bytes));
+                        if (content) captureContent = false;
                         dispatch_async(dispatch_get_main_queue(), ^{
-                            present(image);
+                            present(image, content);
                             dispatch_semaphore_signal(slot);
                         });
                     } else {
@@ -227,7 +233,7 @@ static NSString* ThermalState() {
                 NSURL* displayProgress = [documents URLByAppendingPathComponent:@"display-first-frame.txt"];
                 const BOOL captureFirstFrame = [NSProcessInfo.processInfo.environment[@"NESTVANE_CAPTURE_FIRST_FRAME"]
                     isEqualToString:@"1"];
-                auto displayReader = StartDisplayReader(renderer, ^(UIImage* frame) {
+                auto displayReader = StartDisplayReader(renderer, captureFirstFrame, ^(UIImage* frame, bool content) {
                     const BOOL firstFrame = self.display.hidden;
                     self.display.image = frame;
                     if (firstFrame) {
@@ -242,12 +248,18 @@ static NSString* ThermalState() {
                         NSError* error = nil;
                         if (![message writeToURL:displayProgress atomically:YES encoding:NSUTF8StringEncoding error:&error])
                             NSLog(@"Unable to export display progress: %@", error);
-                        if (captureFirstFrame) {
-                            NSURL* capture = [documents URLByAppendingPathComponent:@"display-first-frame.png"];
-                            NSData* png = UIImagePNGRepresentation(frame);
+                    }
+                    if (captureFirstFrame && (firstFrame || content)) {
+                        NSData* png = UIImagePNGRepresentation(frame);
+                        const auto save = [&](NSString* filename) {
+                            NSURL* capture = [documents URLByAppendingPathComponent:filename];
+                            NSError* error = nil;
                             if (!png || ![png writeToURL:capture options:NSDataWritingAtomic error:&error])
-                                NSLog(@"Unable to export the first Android frame: %@", error);
-                        }
+                                NSLog(@"Unable to export %@: %@", filename, error);
+                        };
+                        if (firstFrame) save(@"display-first-frame.png");
+                        if (content) save([NSString stringWithFormat:@"display-first-content-%d.png",
+                            NSProcessInfo.processInfo.processIdentifier]);
                     }
                 });
                 auto boot = nestvane::probeInit(initRoot.fileSystemRepresentation, database.fileSystemRepresentation,

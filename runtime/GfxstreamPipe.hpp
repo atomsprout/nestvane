@@ -7,6 +7,13 @@
 
 namespace nestvane {
 
+inline bool guestDisplayHasColorVariation(std::span<const uint8_t> rgba) {
+    for (size_t i = 4; i + 3 < rgba.size(); i += 4) {
+        if (rgba[i] != rgba[0] || rgba[i + 1] != rgba[1] || rgba[i + 2] != rgba[2]) return true;
+    }
+    return false;
+}
+
 class GfxstreamRefcountPipe final : public GraphicsPipe {
 public:
     explicit GfxstreamRefcountPipe(void (*release)(uint32_t)) : release(release) {}
