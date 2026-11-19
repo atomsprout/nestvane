@@ -289,3 +289,4 @@
 - 客体支持 INET 释放回调，使用创建时的 cgroup 层级，并按照关闭时仍生效的附着执行。Mac 上的原版回调在关闭最后一个重复描述符时删除 cookie 标签，关闭第一个描述符时保留标签，解除附着后保留原映射条目。宿主回归和 iPhoneOS 签名构建通过。源码版加载器越过释放回调，下一处为 `bind4_inet4_bind_5_15_t`。真机进程 8337 已开始复验，完整启动仍待验证。
 - iPhone 11 进程 8337 的原版 INET 释放探针正常退出，耗时 0.224 秒，确认关闭最后一个 FD 时才删除标签。源码版加载器推进到 `bind4_inet4_bind_5_15_t`，该轮仍未完成启动。
 - 客体支持 IPv4/IPv6 回环与通配地址绑定、端口分配、占用检测和 `getsockname` 回读。INET 地址程序调用接入 `bind()`。Mac 上的原版 Android 17 IPv4/IPv6 回调验证了端口位图拒绝、关闭后的端口重新绑定、IPv6 临时端口，以及原版回调授予的低端口例外。宿主回归和 iPhoneOS 编译通过。源码版加载器越过 INET 地址程序，下一处为 `getsockopt_prog_6_1_26q2`。真机绑定验证与 TCP/UDP 传输仍待验收。[Linux BPF 套接字地址 ABI](https://codebrowser.dev/linux/linux/include/uapi/linux/bpf.h.html)
+- iPhone 11 进程 8342 的原版 IPv4/IPv6 绑定探针正常退出，耗时 0.226 秒。实际验证端口策略、关闭后重新绑定、IPv6 临时端口及低端口授权。参考 Android 上的系统原版回调也允许在移除探针的 `CAP_NET_BIND_SERVICE` 后绑定 80，拒绝绑定 102。真机源码版加载器越过 INET 地址程序，停在 `getsockopt_prog_6_1_26q2`。本轮尚未达到 `sys.boot_completed=1`。
