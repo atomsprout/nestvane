@@ -397,6 +397,28 @@ int main() {
         return value;
     };
     {
+        static std::array<uint8_t, pageSize * 3 + 32> contents{};
+        contents[pageSize] = 0x37;
+        contents[2 * pageSize] = 0x72;
+        contents[3 * pageSize] = 0x2a;
+        linux.mount("/test/resources.apk", contents);
+        put(base + 512, "/test/resources.apk");
+        const auto file = call(56, {uint32_t(-100), base + 512, 0});
+        assert(file < 256);
+        const auto view = call(222, {0, pageSize * 2, 1, 1, file, pageSize});
+        assert(machine.read(view, 1, 4) == contents.data() + pageSize);
+        assert(call(226, {view + pageSize, pageSize, 0}) == 0);
+        assert(!machine.read(view + pageSize, 1, 4));
+        assert(call(226, {view + pageSize, pageSize, 1}) == 0);
+        assert(machine.read(view + pageSize, 1, 4) == contents.data() + pageSize * 2);
+        assert(call(226, {view, pageSize, 3}) == uint64_t(-13));
+        assert(!machine.store64(view, 0));
+        const auto tail = call(222, {0, pageSize, 1, 1, file, pageSize * 3});
+        assert(*machine.read(tail, 1, 4) == 0x2a && *machine.read(tail + 32, 1, 4) == 0);
+        assert(call(57, {file}) == 0 && machine.read(view, 1, 4) == contents.data() + pageSize);
+        assert(call(215, {view, pageSize * 2}) == 0 && call(215, {tail, pageSize}) == 0);
+    }
+    {
         using namespace std::chrono;
         struct EchoGraphicsPipe : GraphicsPipe {
             std::vector<uint8_t> queued;

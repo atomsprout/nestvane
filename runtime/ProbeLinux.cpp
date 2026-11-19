@@ -154,7 +154,7 @@ void changeRange(Machine& machine, uint64_t start, uint64_t end, std::optional<u
             }
         };
         if (retain && left == segment.address && right == segmentEnd &&
-            (advice || !segment.reservedSize || segment.anonymousPages)) {
+            (advice || !segment.reservedSize || segment.anonymousPages || segment.imageView)) {
             if (flags) segment.flags = *flags;
             applyAdvice(segment);
             pages.push_back(std::move(segment));
@@ -175,6 +175,15 @@ void changeRange(Machine& machine, uint64_t start, uint64_t end, std::optional<u
                 fragment.address = from;
                 fragment.reservedSize = to - from;
                 fragment.fileOffset += from - segment.address;
+                fragment.flags = permissions;
+                append(std::move(fragment));
+                return;
+            }
+            if (segment.imageView) {
+                auto fragment = segment;
+                fragment.address = from;
+                fragment.reservedSize = to - from;
+                fragment.imageView += from - segment.address;
                 fragment.flags = permissions;
                 append(std::move(fragment));
                 return;
@@ -233,7 +242,7 @@ uint64_t protect(Machine& machine, uint64_t start, uint64_t count, uint64_t prot
     if (prot) {
         uint64_t needed = 0;
         for (const auto& segment : machine.segments) {
-            if (segment.shared || segment.anonymousPages || segment.beyondFileEnd) continue;
+            if (segment.shared || segment.anonymousPages || segment.beyondFileEnd || segment.imageView) continue;
             const auto left = std::max(start, segment.address);
             const auto right = std::min(end, segment.address + segment.mappedSize());
             if (left < right) needed += right - left;
@@ -3220,6 +3229,7 @@ uint64_t ProbeLinux::map(Machine& machine) {
     if (atAddress && !(x[3] & fixedNoReplace) && start >= mappingFloor && end > nextMapping) return noMemory;
     std::span<const uint8_t> bytes;
     uint64_t backedLength = length;
+    bool immutableRoot = false;
     if (anon) {
         if (x[5]) return invalid;
     } else {
@@ -3292,15 +3302,20 @@ uint64_t ProbeLinux::map(Machine& machine) {
             ? std::span<const uint8_t>(fd.temporary->storage->pages).first(fd.temporary->storage->size) : fd.contents();
         if (x[5] < raw.size()) bytes = raw.subspan(x[5], std::min<uint64_t>(length, raw.size() - x[5]));
         backedLength = pageAlignedLength(bytes.size());
+        // Full pages from the read-only root are already mapped in the host image.
+        immutableRoot = sharing == 1 && !(x[2] & 2) && !fd.ext4File &&
+                        !fd.temporary && bytes.size() == length && files.contains(fd.path);
     }
     const bool sparse = anon && !x[2];
     const bool lazy = anon && !sparse && sharing == 2 && length >= lazyAnonymousThreshold;
-    if (!sparse && !lazy && (backedLength > memoryLimit / 2 ||
+    if (!sparse && !lazy && !immutableRoot && (backedLength > memoryLimit / 2 ||
         !allowsBacking(machine, start, end, backedLength, memoryLimit))) return noMemory;
-    Segment segment{start, {}, guestFlags(x[2]), sparse || lazy ? length : 0,
+    Segment segment{start, {}, guestFlags(x[2]), sparse || lazy || immutableRoot ? length : 0,
                     false, {}, 0, anon, !anon && sharing == 1, false, !anon};
     segment.sharedAnonymous = anon && sharing == 1;
-    if (lazy) {
+    if (immutableRoot) {
+        segment.imageView = bytes.data();
+    } else if (lazy) {
         segment.anonymousPages = AnonymousPages::allocate(length, anonymousBudget);
         if (!segment.anonymousPages) return noMemory;
     } else if (!sparse) {
@@ -5725,9 +5740,22 @@ bool ProbeLinux::syscall(Machine& machine) {
             x[0] = written ? written : result;
             break;
         }
-        case 222: // mmap
-            x[0] = map(machine);
+        case 222: { // mmap
+            const auto result = map(machine);
+            if (androidLogObserver && result >= uint64_t(-4095) && !(x[3] & 0x20)) {
+                const auto file = descriptors().find(uint32_t(x[4]));
+                if (file != descriptors().end() && file->second.path.ends_with(".apk")) {
+                    std::ostringstream event;
+                    event << "mmap APK: " << file->second.path << " failed with errno=" << -int64_t(result)
+                          << std::hex << " length=0x" << x[1] << " prot=0x" << x[2]
+                          << " flags=0x" << x[3] << " offset=0x" << x[5];
+                    const auto message = event.str();
+                    androidLogObserver(message);
+                }
+            }
+            x[0] = result;
             break;
+        }
         case 215: { // munmap
             if (x[0] % pageSize || x[0] < lowMappingFloor || !x[1] || x[1] > maxReservation ||
                 x[0] > mappingLimit - pageAlignedLength(x[1])) { x[0] = invalid; break; }

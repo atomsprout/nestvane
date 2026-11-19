@@ -80,6 +80,7 @@ struct Segment {
     std::shared_ptr<AnonymousPages> anonymousPages = {};
     bool omitOnFork = false, wipeOnFork = false, sharedAnonymous = false;
     unsigned maxProtection = 7; // Linux PROT bits permitted for this mapping.
+    const uint8_t* imageView = nullptr; // Borrowed immutable root bytes, kept alive by the image loader.
 
     uint64_t mappedSize() const { return reservedSize ? reservedSize : bytes.size(); }
     uint64_t accessibleSize() const;

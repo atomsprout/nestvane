@@ -460,6 +460,7 @@ DynamicReport probeInit(const std::string& directory, const std::string& databas
                 "SystemServerTiming: StartDisplayManager", "SystemServerTiming: WaitForDisplay",
                 "SystemServerTiming: StartPackageManagerService", "PackageManagerTiming: ",
                 "SystemServerTiming: StartInputManager", "EventHub: New device:",
+                "mmap APK: ", "PackageManager: Failed to parse",
                 "SurfaceFlinger: SurfaceFlinger is starting", "SurfaceFlinger: Using HWComposer service",
                 "SurfaceFlinger: OpenGL ES informations", "mapper.ranchu: GoldfishAddressSpace",
                 "SurfaceFlinger: Can't create AidlComposerClient", "SurfaceFlinger: Loaded AIDL composer3 HAL",

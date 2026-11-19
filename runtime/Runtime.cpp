@@ -461,7 +461,7 @@ bool AnonymousPages::copyTo(AnonymousPages& target, uint64_t source, uint64_t de
 }
 
 uint64_t Segment::accessibleSize() const {
-    if (anonymousPages) return mappedSize();
+    if (anonymousPages || imageView) return mappedSize();
     if (!shared) return bytes.size();
     if (fileOffset >= shared->pages.size()) return 0;
     return std::min(mappedSize(), shared->pages.size() - fileOffset);
@@ -469,6 +469,7 @@ uint64_t Segment::accessibleSize() const {
 
 const uint8_t* Segment::data() const {
     if (anonymousPages) return anonymousPages->data() + fileOffset;
+    if (imageView) return imageView;
     return shared ? shared->pages.data() + fileOffset : bytes.data();
 }
 
@@ -477,7 +478,7 @@ uint8_t* Segment::data() {
 }
 
 bool Segment::prepareWrite(uint64_t offset, uint64_t length) {
-    return !anonymousPages || anonymousPages->prepareWrite(fileOffset + offset, length);
+    return !imageView && (!anonymousPages || anonymousPages->prepareWrite(fileOffset + offset, length));
 }
 
 void Machine::insertSegment(Segment segment) {
