@@ -1842,6 +1842,16 @@ struct SocketMessage {
     uint32_t flags, tailPadding;
 };
 static_assert(sizeof(SocketMessage) == 56);
+
+uint64_t readSocketMessage(const Machine& machine, uint64_t address, SocketMessage& message,
+                           std::vector<std::array<uint64_t, 2>>& vectors) {
+    if (!machine.readInto(address, {reinterpret_cast<uint8_t*>(&message), sizeof(message)})) return uint64_t(-14);
+    if (message.vectorCount > 1024) return uint64_t(-90);
+    vectors.resize(message.vectorCount);
+    if (!machine.readInto(message.vector, {reinterpret_cast<uint8_t*>(vectors.data()),
+                                          vectors.size() * sizeof(vectors.front())})) return uint64_t(-14);
+    return 0;
+}
 }
 
 uint64_t ProbeLinux::socketWrite(Machine& machine, const Descriptor& fd, uint64_t address, uint64_t size) {
@@ -2173,18 +2183,12 @@ bool ProbeLinux::socketCall(Machine& machine) {
             if (!endpoint) { x[0] = uint64_t(-88); break; }
             if (endpoint->uevent || (x[2] & ~0x40c0ULL)) return false; // DONTWAIT, EOR, NOSIGNAL
             SocketMessage message{};
-            if (!machine.readInto(x[1], {reinterpret_cast<uint8_t*>(&message), sizeof(message)})) {
-                x[0] = uint64_t(-14);
+            std::vector<SocketVector> vectors;
+            if (const auto error = readSocketMessage(machine, x[1], message, vectors)) {
+                x[0] = error;
                 break;
             }
             if (message.nameLength || message.controlLength) return false;
-            if (message.vectorCount > 1024) { x[0] = uint64_t(-90); break; }
-            std::vector<SocketVector> vectors(message.vectorCount);
-            if (!machine.readInto(message.vector, {reinterpret_cast<uint8_t*>(vectors.data()),
-                                                   vectors.size() * sizeof(SocketVector)})) {
-                x[0] = uint64_t(-14);
-                break;
-            }
             const auto result = socketWrite(machine, fd->second, vectors);
             const bool blocking = !(x[2] & 0x40) && !(fd->second.effectiveFlags() & 0x800);
             if (result == uint64_t(-11) && blocking && waitForSocketTimeout(endpoint->sendTimeout)) return true;
@@ -2192,14 +2196,68 @@ bool ProbeLinux::socketCall(Machine& machine) {
             x[0] = result;
             break;
         }
-        case 212: { // recvmsg on the guest kernel multicast channel.
+        case 212: { // recvmsg on the guest kernel multicast channel or a connected packet socket.
             if (fd == descriptors().end()) { x[0] = uint64_t(-9); break; }
-            if (!fd->second.socket || !fd->second.socket->uevent) return false;
+            if (!fd->second.socket) { x[0] = uint64_t(-88); break; }
             auto& endpoint = *fd->second.socket;
-            if (endpoint.inbox.empty() && !(fd->second.effectiveFlags() & 0x800) && !(x[2] & 0x40) &&
-                waitForSocketTimeout(endpoint.receiveTimeout)) return true;
+            if (endpoint.uevent) {
+                if (endpoint.inbox.empty() && !(fd->second.effectiveFlags() & 0x800) && !(x[2] & 0x40) &&
+                    waitForSocketTimeout(endpoint.receiveTimeout)) return true;
+                current->deadline.reset();
+                x[0] = recvUevent(machine, endpoint);
+                break;
+            }
+            constexpr uint64_t peek = 0x2, trunc = 0x20, dontWait = 0x40, cloexec = 0x40000000;
+            if (endpoint.type == 1 || endpoint.passCredentials || (x[2] & ~(peek | trunc | dontWait | cloexec)))
+                return false;
+            SocketMessage message{};
+            std::vector<SocketVector> vectors;
+            if (const auto error = readSocketMessage(machine, x[1], message, vectors)) {
+                x[0] = error;
+                break;
+            }
+            if (endpoint.inbox.empty()) {
+                const auto peer = endpoint.peer.lock();
+                if (endpoint.receiveShutdown || (endpoint.type == 5 && endpoint.connected &&
+                    (!peer || peer->sendShutdown))) {
+                    x[0] = 0;
+                } else {
+                    if (!(fd->second.effectiveFlags() & 0x800) && !(x[2] & dontWait) &&
+                        waitForSocketTimeout(endpoint.receiveTimeout)) return true;
+                    x[0] = uint64_t(-11);
+                }
+                current->deadline.reset();
+                break;
+            }
             current->deadline.reset();
-            x[0] = recvUevent(machine, endpoint);
+            const auto& packet = endpoint.inbox.front();
+            auto remaining = std::span(packet);
+            bool copied = true;
+            for (const auto& [address, size] : vectors) {
+                if (remaining.empty()) break;
+                const auto count = std::min<uint64_t>(size, remaining.size());
+                if (count && !machine.write(address, remaining.first(count))) { copied = false; break; }
+                remaining = remaining.subspan(count);
+            }
+            if (copied && message.name && !endpoint.peerAddress.empty()) {
+                std::array<uint8_t, 111> address{1, 0};
+                std::ranges::copy(endpoint.peerAddress, address.begin() + 2);
+                const auto length = uint32_t(endpoint.peerAddress.size() + 3);
+                const auto count = std::min(message.nameLength, length);
+                copied = !count || machine.write(message.name, std::span(address).first(count));
+                message.nameLength = length;
+            } else {
+                message.nameLength = 0;
+            }
+            message.flags = remaining.empty() ? 0 : trunc;
+            message.controlLength = 0;
+            if (!copied || !writeGuest(machine, x[1], message)) { x[0] = uint64_t(-14); break; }
+            x[0] = (x[2] & trunc) ? packet.size() : packet.size() - remaining.size();
+            if (!(x[2] & peek)) {
+                endpoint.queuedBytes -= packet.size();
+                endpoint.inbox.pop_front();
+                wakePollers();
+            }
             break;
         }
         case 209: { // getsockopt on AF_UNIX.

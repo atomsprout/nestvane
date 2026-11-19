@@ -1070,6 +1070,20 @@ int main() {
     assert(call(207, {second, base + 512, 32, 0x40}) == 12);
     assert(std::memcmp(machine.read(base + 512, 12, 4), "guest packet", 12) == 0);
     assert(call(207, {second, base + 512, 32, 0x40}) == uint64_t(-11));
+    assert(call(211, {first, base + 576, 0x4040}) == 12);
+    const std::array<uint64_t, 7> receiveHeader{0, 0, base + 736, 2, base + 832, 24, 0};
+    std::array<uint64_t, 4> receiveVectors{base + 800, 4, 0, 4};
+    assert(machine.write(base + 672, {reinterpret_cast<const uint8_t*>(receiveHeader.data()), sizeof(receiveHeader)}));
+    assert(machine.write(base + 736, {reinterpret_cast<const uint8_t*>(receiveVectors.data()), sizeof(receiveVectors)}));
+    assert(call(212, {second, base + 672, 0x40}) == uint64_t(-14));
+    receiveVectors[2] = base + 808;
+    assert(machine.write(base + 736, {reinterpret_cast<const uint8_t*>(receiveVectors.data()), sizeof(receiveVectors)}));
+    assert(call(212, {second, base + 672, 0x62}) == 12); // Peek with full datagram length.
+    assert(load(base + 712) == 0 && load(base + 720) == 0x20);
+    assert(call(212, {second, base + 672, 0x40}) == 8);
+    assert(std::memcmp(machine.read(base + 800, 4, 4), "gues", 4) == 0);
+    assert(std::memcmp(machine.read(base + 808, 4, 4), "t pa", 4) == 0);
+    assert(call(212, {second, base + 672, 0x40}) == uint64_t(-11));
     assert(call(57, {first}) == 0);
     assert(call(22, {poll, base + 512, 1}) == 1 && load(base + 512) == 16);
     assert(call(63, {second, base + 512, 32}) == 0);
