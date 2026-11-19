@@ -778,6 +778,20 @@ int main() {
         assert(invoke(1, hash, hashOut, output) == uint64_t(-2));
         assert(invoke(3, hash, hashOut, 0) == uint64_t(-2));
         assert(call(57, {hash}) == 0);
+        const std::array<uint32_t, 5> devmapArgs{25, 4, 4, 2, 0};
+        assert(machine.write(attr, {reinterpret_cast<const uint8_t*>(devmapArgs.data()), sizeof(devmapArgs)}));
+        const auto devmap = call(280, {0, attr, sizeof(devmapArgs)});
+        assert(devmap < 256 && machine.store64(key, 77) && machine.store64(data, 1));
+        assert(invoke(2, devmap, key, data, 2) == 0);
+        assert(machine.store64(data, UINT32_MAX) && invoke(2, devmap, key, data) == uint64_t(-22));
+        assert(invoke(1, devmap, key, output) == 0 && (load(output) & UINT32_MAX) == 1);
+        assert(invoke(3, devmap, key, 0) == 0 && invoke(1, devmap, key, output) == uint64_t(-2));
+        assert(call(57, {devmap}) == 0);
+        put(base, "/sys/class/net/lo/ifindex");
+        const auto loopback = call(56, {uint32_t(-100), base, 0});
+        assert(loopback < 256 && call(63, {loopback, output, 8}) == 2);
+        assert((load(output) & 0xffff) == 0x0a31 && call(57, {loopback}) == 0);
+        assert(machine.store64(data, expected));
         for (const uint32_t type : {5, 6}) {
             const std::array<uint32_t, 5> percpuArgs{type, 4, 5, 2, 0};
             assert(machine.write(attr, {reinterpret_cast<const uint8_t*>(percpuArgs.data()), sizeof(percpuArgs)}));

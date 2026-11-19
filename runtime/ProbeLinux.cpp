@@ -26,6 +26,7 @@ constexpr uint64_t mappingLimit = 0x20'0000'0000; // 128 GiB guest arena; includ
 constexpr uint64_t maxGuestFileBytes = 2 * 1024 * 1024;
 constexpr size_t maxWritableFiles = 1024;
 constexpr size_t maxGuestTasks = 256;
+constexpr uint32_t guestLoopbackIndex = 1;
 constexpr std::string_view cgroupRoot = "/sys/fs/cgroup";
 constexpr std::string_view cgroupProcs = "/cgroup.procs";
 constexpr uint64_t lazyAnonymousThreshold = 4 * 1024 * 1024;
@@ -374,6 +375,8 @@ ProbeLinux::ProbeLinux(uint64_t pid, uint64_t uid, uint64_t memoryLimit)
         kernelFiles.emplace(std::string("/sys/devices/system/cpu/") + name, "0\n");
     addDirectory("/sys/fs/bpf", 0755);
     addDirectory("/sys/class", 0555);
+    addDirectory("/sys/class/net/lo", 0555);
+    kernelFiles.emplace("/sys/class/net/lo/ifindex", std::to_string(guestLoopbackIndex) + "\n");
     addDirectory("/sys/block", 0555);
     descriptors().emplace(0, Descriptor{"/dev/stdin", {}, 0, Node::input});
     descriptors().emplace(1, Descriptor{"/dev/stdout", {}, 1, Node::output});
@@ -5137,8 +5140,8 @@ bool ProbeLinux::enforceSeccomp(Machine& machine) {
 uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
     constexpr uint64_t fault = uint64_t(-14), tooBig = uint64_t(-7);
     constexpr uint64_t create = 0, lookup = 1, update = 2, erase = 3, nextKey = 4;
-    constexpr uint32_t hashType = 1, arrayType = 2, perCpuHash = 5, perCpuArray = 6;
-    constexpr uint32_t noPrealloc = 1, readOnly = 1 << 3, writeOnly = 1 << 4;
+    constexpr uint32_t hashType = 1, arrayType = 2, perCpuHash = 5, perCpuArray = 6, deviceHash = 25;
+    constexpr uint32_t noPrealloc = 1, readOnly = 1 << 3, writeOnly = 1 << 4, programReadOnly = 1 << 7;
     constexpr uint64_t capBpf = 1ULL << 39, capSysAdmin = 1ULL << 21;
     constexpr size_t mapBudget = 32 * 1024 * 1024;
     const auto& x = machine.cpu.x;
@@ -5162,9 +5165,12 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
         const auto [type, keySize, valueSize, entries, flags] = createFields;
         const bool array = type == arrayType || type == perCpuArray;
         const bool perCpu = type == perCpuArray || type == perCpuHash;
-        if (!array && type != hashType && type != perCpuHash) return uint64_t(-95);
-        const uint32_t supportedFlags = readOnly | writeOnly | (array ? 0 : noPrealloc);
-        if ((array && keySize != sizeof(uint32_t)) || !keySize || !valueSize || !entries ||
+        const bool device = type == deviceHash;
+        if (!array && !device && type != hashType && type != perCpuHash) return uint64_t(-95);
+        if (device && !(current->process->effectiveCaps & (1ULL << 12))) return uint64_t(-1); // CAP_NET_ADMIN
+        const uint32_t supportedFlags = readOnly | writeOnly | (device ? programReadOnly : array ? 0 : noPrealloc);
+        if (((array || device) && keySize != sizeof(uint32_t)) || !keySize || !valueSize || !entries ||
+            (device && valueSize != 4 && valueSize != 8) ||
             (flags & ~supportedFlags) || (flags & (readOnly | writeOnly)) == (readOnly | writeOnly))
             return invalid;
         if (nonzero(20, 28) || nonzero(44, 48) || nonzero(60, input.size())) return uint64_t(-95);
@@ -5197,7 +5203,7 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
             auto map = std::make_shared<BpfMap>();
             map->id = nextBpfMapId;
             map->type = type;
-            map->flags = flags & ~(readOnly | writeOnly);
+            map->flags = (flags & ~(readOnly | writeOnly)) | (device ? programReadOnly : 0);
             map->entryCount = entries;
             map->valueSize = valueSize;
             map->btfKeyType = keyType;
@@ -5254,11 +5260,23 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
                 map.hash.erase(entry);
                 return 0;
             }
-            if (entry == map.hash.end() && flags == 2) return uint64_t(-2); // BPF_EXIST
+            const bool device = map.type == deviceHash;
+            if (!device && entry == map.hash.end() && flags == 2) return uint64_t(-2); // BPF_EXIST
             if (entry != map.hash.end() && flags == 1) return uint64_t(-17); // BPF_NOEXIST
             if (entry == map.hash.end() && map.hash.size() == map.entryCount) return tooBig;
             std::vector<uint8_t> replacement(map.valueStride);
             if (!machine.readInto(value, replacement)) return fault;
+            if (device) {
+                uint32_t index = 0;
+                std::memcpy(&index, replacement.data(), sizeof(index));
+                if (index != guestLoopbackIndex) return invalid;
+                if (replacement.size() == 8) {
+                    int32_t program = 0;
+                    std::memcpy(&program, replacement.data() + 4, sizeof(program));
+                    if (program > 0) return uint64_t(-95); // XDP programs require a device backend.
+                    std::fill(replacement.begin() + 4, replacement.end(), 0);
+                }
+            }
             map.hash.insert_or_assign(std::move(bytes), std::move(replacement));
             return 0;
         } catch (const std::bad_alloc&) {
