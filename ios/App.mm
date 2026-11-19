@@ -108,8 +108,7 @@ static NSString* ThermalState() {
     const auto axis = [](CGFloat location) {
         return int32_t(std::clamp(location, CGFloat(0), CGFloat(1)) * nestvane::GuestTouch::maximumAxis + 0.5);
     };
-    _touchDevice->submit(axis(x), axis(y), down);
-    return YES;
+    return _touchDevice->submit(axis(x), axis(y), down);
 }
 
 - (void)touchesBegan:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)event {
@@ -119,7 +118,8 @@ static NSString* ThermalState() {
 }
 
 - (void)touchesMoved:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)event {
-    if (_activeTouch && [touches containsObject:_activeTouch]) [self sendTouch:_activeTouch down:YES];
+    if (_activeTouch && [touches containsObject:_activeTouch] && ![self sendTouch:_activeTouch down:YES])
+        _activeTouch = nil;
 }
 
 - (void)touchesEnded:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)event {

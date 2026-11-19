@@ -1051,6 +1051,7 @@ int main() {
     {
         const auto touch = std::make_shared<GuestTouch>();
         linux.setGuestTouch(touch);
+        touch->submit(100, 100, true); // A tap on the boot screen has no guest reader.
         put(base + 704, "/dev/input");
         const auto directory = call(56, {uint32_t(-100), base + 704, 0x4000});
         assert(directory < 256);
@@ -1067,8 +1068,10 @@ int main() {
         assert(machine.store64(base + 688, 0x20000001) && machine.store64(base + 696, 42));
         assert(call(21, {poll, 1, input, base + 688}) == 0);
         assert(call(63, {input, base + 768, 96}) == uint64_t(-11));
-        assert(call(22, {poll, base + 512, 1}) == 0);
+        assert(call(22, {poll, base + 512, 1, UINT32_MAX}) == poll && linux.blocked());
         touch->submit(123, 456, true);
+        assert(linux.schedule(machine, std::chrono::steady_clock::now() + std::chrono::seconds(1)));
+        assert(!linux.blocked());
         assert(call(22, {poll, base + 512, 1}) == 1 && load(base + 512) == 1 && load(base + 520) == 42);
         assert(call(63, {input, 0, 96}) == uint64_t(-14));
         assert(call(63, {input, base + 768, 96}) == 96);

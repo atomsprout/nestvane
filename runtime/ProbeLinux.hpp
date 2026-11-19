@@ -216,7 +216,7 @@ private:
     uint64_t graphicsAddressIoctl(Machine& machine, const Descriptor& fd);
     GraphicsPipeFactory graphicsPipeFactory;
     std::shared_ptr<GuestTouch> guestTouch;
-    std::weak_ptr<int> guestTouchReader;
+    std::weak_ptr<GuestTouch::Reader> guestTouchReader;
     uint64_t touchIoctl(Machine& machine, const Descriptor& fd);
     struct EventState;
     struct Pipe;
@@ -232,7 +232,7 @@ private:
         std::weak_ptr<int> pipeEnd{};
         bool pipeReader = false;
         std::weak_ptr<GuestTouch> touch{};
-        std::weak_ptr<int> touchReader{};
+        std::weak_ptr<GuestTouch::Reader> touchReader{};
     };
     struct EventState {
         struct Timer {
@@ -373,7 +373,7 @@ private:
         std::shared_ptr<GraphicsPipeState> graphics{};
         std::shared_ptr<GraphicsAddressSpace> graphicsAddress{};
         std::shared_ptr<GuestTouch> touch{};
-        std::shared_ptr<int> touchReader{};
+        std::shared_ptr<GuestTouch::Reader> touchReader{};
         std::span<const uint8_t> contents() const { return ext4File ? ext4File->bytes() : bytes; }
         uint64_t contentSize() const { return ext4File ? ext4File->size : bytes.size(); }
         static constexpr uint32_t mutableStatus = 0xc00; // O_APPEND and O_NONBLOCK

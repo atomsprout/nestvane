@@ -5,8 +5,10 @@
 #include <chrono>
 #include <cstdint>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <span>
+#include <utility>
 
 namespace nestvane {
 
@@ -28,9 +30,22 @@ public:
         bool down = false;
     };
 
-    void submit(int32_t x, int32_t y, bool down) {
+    class Reader {
+    public:
+        explicit Reader(std::shared_ptr<GuestTouch> touch) : touch(std::move(touch)) {
+            this->touch->setReaderAvailable(true);
+        }
+        ~Reader() { touch->setReaderAvailable(false); }
+        Reader(const Reader&) = delete;
+        Reader& operator=(const Reader&) = delete;
+
+    private:
+        std::shared_ptr<GuestTouch> touch;
+    };
+
+    bool submit(int32_t x, int32_t y, bool down) {
         std::scoped_lock lock(mutex);
-        if (!down && !position.down) return;
+        if (!readerAvailable || (!down && !position.down)) return false;
         x = std::clamp(x, 0, maximumAxis);
         y = std::clamp(y, 0, maximumAxis);
         const auto timestamp = std::chrono::steady_clock::now().time_since_epoch();
@@ -48,6 +63,7 @@ public:
         if (down != position.down) append(1, touchKey, down);
         append(0, 0, 0); // SYN_REPORT
         position = {x, y, down};
+        return true;
     }
 
     Position state() const {
@@ -74,8 +90,16 @@ public:
     }
 
 private:
+    void setReaderAvailable(bool available) {
+        std::scoped_lock lock(mutex);
+        readerAvailable = available;
+        events.clear();
+        position = {};
+    }
+
     static constexpr size_t capacity = 256;
     mutable std::mutex mutex;
+    bool readerAvailable = false;
     std::deque<Event> events;
     Position position;
 };

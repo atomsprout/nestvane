@@ -202,3 +202,5 @@
 
 - UIKit 的 Android 显示视图已将单指按下、移动、释放和取消送入客体 `/dev/input/event0`。坐标以实际画面区域为准。客体设备实现了单指 evdev 能力、轴范围、事件读取与 epoll 唤醒，支持 EventHub 使用的 `EPOLLWAKEUP` 标志。宿主回归验证设备枚举、触点状态、按下与释放、读出故障后的重试。iPhoneOS 签名构建通过。Android 原版 InputReader 接收、应用响应与输入延迟尚待真机验收。
 - 带原版应用标签策略的 Mac 启动已越过原停点，完成包管理的 `loadFallbacks`、读取用户设置和 `setFirstBoot`。后续初始化出现新的 system_server 异常，正在收集完整堆栈。
+
+- 触控队列按客体输入设备打开状态启用。开机画面上的触碰会在 Android 尚无读端时丢弃，设备关闭时清理排队事件。宿主 ABI 馈送测试已验证阻塞的 guest epoll 在宿主提交触点后恢复运行。Mac 启动探针也接入同一输入设备，以便验证原版 EventHub 的枚举。iPhoneOS 签名构建通过。

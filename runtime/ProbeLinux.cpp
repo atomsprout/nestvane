@@ -1356,7 +1356,7 @@ uint64_t ProbeLinux::open(const Machine& machine, const std::string& path, uint3
     if (!entry->pathOnly() && entry->node == Node::touchDevice) {
         if (userId() && permissionShift(0, 1004) == 0) return uint64_t(-13);
         if (!guestTouchReader.expired()) return uint64_t(-16);
-        entry->touchReader = std::make_shared<int>();
+        entry->touchReader = std::make_shared<GuestTouch::Reader>(guestTouch);
         guestTouchReader = entry->touchReader;
         entry->touch = guestTouch;
     }
