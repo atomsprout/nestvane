@@ -265,6 +265,27 @@ int main() {
         put(base + 16, "x");
         assert(call(64, {sender, base + 16, 1}) == 1 && !linux.blocked());
         assert(call(63, {receiver, base, 1}) == 1 && *machine.read(base, 1, 4) == 'x');
+        constexpr uint64_t buffer = base + 1024, vector = base + 640;
+        assert(machine.store64(timeout, 0) && machine.store64(timeout + 8, 30'000));
+        assert(call(208, {sender, 1, 21, timeout, 16}) == 0);
+        assert(machine.store64(length, 16) && machine.store64(timeout + 8, 0));
+        assert(call(209, {sender, 1, 67, timeout, length}) == 0);
+        assert(load(length) == 16 && load(timeout) == 0 && load(timeout + 8) == 30'000);
+        assert(machine.store64(length, 16) && call(209, {sender, 1, 20, timeout, length}) == 0);
+        assert(load(timeout) == 0 && load(timeout + 8) == 0);
+        assert(machine.store64(length, 1024) && call(208, {sender, 1, 7, length, 4}) == 0);
+        assert(call(64, {sender, buffer, 2048}) == 2048);
+        assert(call(206, {sender, buffer, 1, 0x40}) == uint64_t(-11) && !linux.blocked());
+        assert(call(206, {sender, buffer, 1}) == sender && linux.blocked());
+        assert(linux.schedule(machine, steady_clock::now() + seconds(1)));
+        assert(call(206, {sender, buffer, 1}) == uint64_t(-11) && !linux.blocked());
+        assert(call(64, {sender, buffer, 1}) == sender && linux.blocked());
+        assert(call(63, {receiver, buffer, 1}) == 1 && !linux.blocked());
+        assert(call(64, {sender, buffer, 1}) == 1);
+        assert(machine.store64(vector, buffer) && machine.store64(vector + 8, 1));
+        assert(call(66, {sender, vector, 1}) == sender && linux.blocked());
+        assert(linux.schedule(machine, steady_clock::now() + seconds(1)));
+        assert(call(66, {sender, vector, 1}) == uint64_t(-11) && !linux.blocked());
         assert(call(57, {sender}) == 0 && call(57, {receiver}) == 0);
     }
     {
@@ -797,6 +818,27 @@ int main() {
     assert(call(206, {accepted, base + 296, 3}) == 3);
     assert(call(63, {client, base + 512, 3}) == 3);
 
+
+    {
+        using namespace std::chrono;
+        const auto pendingClient = call(198, {1, 1});
+        const auto blockedClient = call(198, {1, 1});
+        assert(call(201, {listener, 1}) == 0);
+        assert(call(203, {pendingClient, base + 768, 19}) == 0);
+        assert(machine.store64(base + 832, 0) && machine.store64(base + 840, 30'000));
+        assert(call(208, {blockedClient, 1, 67, base + 832, 16}) == 0);
+        assert(call(203, {blockedClient, base + 768, 19}) == blockedClient && linux.blocked());
+        assert(linux.schedule(machine, steady_clock::now() + seconds(1)));
+        assert(call(203, {blockedClient, base + 768, 19}) == uint64_t(-11) && !linux.blocked());
+        assert(call(203, {blockedClient, base + 768, 19}) == blockedClient && linux.blocked());
+        const auto firstConnection = call(202, {listener, 0});
+        assert(firstConnection < 256 && !linux.blocked());
+        assert(call(203, {blockedClient, base + 768, 19}) == 0);
+        const auto secondConnection = call(202, {listener, 0});
+        assert(secondConnection < 256);
+        for (const auto fd : {pendingClient, blockedClient, firstConnection, secondConnection})
+            assert(call(57, {fd}) == 0);
+    }
 
     // Test the clone ABI with the same registers Bionic supplies to the kernel.
     assert(call(140, {0, 0, 3}) == 0);
@@ -1638,6 +1680,7 @@ int main() {
     assert(call(209, {socketReceiver, 1, 8, base + 0x3c0, base + 0x390}) == 0);
     assert((load(base + 0x3c0) & UINT32_MAX) == 16384);
     for (unsigned i = 0; i < 8; ++i) assert(call(64, {socketSender, base, 1024}) == 1024);
+    assert(call(25, {socketSender, 4, 0x800}) == 0); // O_NONBLOCK
     assert(call(64, {socketSender, base, 1}) == uint64_t(-11));
     assert(call(63, {socketReceiver, base, 512}) == 512);
     assert(call(64, {socketSender, base, 1024}) == 512);

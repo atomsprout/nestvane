@@ -29,6 +29,7 @@ constexpr uint8_t mdweRefuseExecGain = 1, mdweNoInherit = 2;
 constexpr uint32_t sealSeal = 1, sealShrink = 2, sealGrow = 4, sealWrite = 8, sealFutureWrite = 16;
 constexpr unsigned sigChild = 17;
 constexpr uint64_t receiveTimeoutOld = 20, receiveTimeoutNew = 66;
+constexpr uint64_t sendTimeoutOld = 21, sendTimeoutNew = 67;
 constexpr uint32_t fileAccessed = 1, fileModified = 2, fileAttributes = 4, fileClosedWrite = 8,
                    fileClosedRead = 16, fileOpened = 32, fileMovedFrom = 64, fileMovedTo = 128,
                    fileCreated = 256, fileDeleted = 512, fileDeletedSelf = 1024, fileMovedSelf = 2048;
@@ -1810,7 +1811,8 @@ bool ProbeLinux::socketCall(Machine& machine) {
                 } else {
                     if (!endpoint->listening) { x[0] = uint64_t(-111); break; }
                     if (endpoint->pending.size() >= endpoint->backlog) {
-                        if (!(fd->second.effectiveFlags() & 0x800)) return waitForEvents();
+                        if (!(fd->second.effectiveFlags() & 0x800) &&
+                            waitForSocketTimeout(client->sendTimeout)) return true;
                         x[0] = uint64_t(-11);
                         break;
                     }
@@ -1854,7 +1856,7 @@ bool ProbeLinux::socketCall(Machine& machine) {
             const uint64_t flags = x[8] == 242 ? x[3] : 0;
             if (!endpoint->listening || (flags & ~0x80800ULL)) { x[0] = invalid; break; }
             if (endpoint->pending.empty()) {
-                if (!(fd->second.effectiveFlags() & 0x800) && waitForSocketReceive(*endpoint)) return true;
+                if (!(fd->second.effectiveFlags() & 0x800) && waitForSocketTimeout(endpoint->receiveTimeout)) return true;
                 current->deadline.reset();
                 x[0] = uint64_t(-11);
                 break;
@@ -1900,12 +1902,12 @@ bool ProbeLinux::socketCall(Machine& machine) {
             const bool waitAll = !send && (x[3] & 0x100) && blocking &&
                 endpoint.type == 1 && x[2] > endpoint.queuedBytes && peer &&
                 !peer->sendShutdown && !endpoint.receiveShutdown;
-            if (waitAll && waitForSocketReceive(endpoint)) return true;
+            if (waitAll && waitForSocketTimeout(endpoint.receiveTimeout)) return true;
             const auto result = send ? socketWrite(machine, fd->second, x[1], x[2])
                                      : socketRead(machine, fd->second, x[1], x[2]);
             if (result == uint64_t(-11) && blocking &&
-                (send ? waitForEvents() : !waitAll && waitForSocketReceive(endpoint))) return true;
-            if (!send) current->deadline.reset();
+                (!waitAll && waitForSocketTimeout(send ? endpoint.sendTimeout : endpoint.receiveTimeout))) return true;
+            current->deadline.reset();
             x[0] = result;
             break;
         }
@@ -1926,7 +1928,7 @@ bool ProbeLinux::socketCall(Machine& machine) {
             if (!fd->second.socket || !fd->second.socket->uevent) return false;
             auto& endpoint = *fd->second.socket;
             if (endpoint.inbox.empty() && !(fd->second.effectiveFlags() & 0x800) && !(x[2] & 0x40) &&
-                waitForSocketReceive(endpoint)) return true;
+                waitForSocketTimeout(endpoint.receiveTimeout)) return true;
             current->deadline.reset();
             x[0] = recvUevent(machine, endpoint);
             break;
@@ -1940,8 +1942,10 @@ bool ProbeLinux::socketCall(Machine& machine) {
             if (!pointer) { x[0] = uint64_t(-14); break; }
             std::memcpy(&size, pointer, sizeof(size));
             const auto& endpoint = *fd->second.socket;
-            if (x[2] == receiveTimeoutOld || x[2] == receiveTimeoutNew) {
-                const auto usec = std::max<int64_t>(0, endpoint.receiveTimeout.count());
+            const bool sendTimeout = x[2] == sendTimeoutOld || x[2] == sendTimeoutNew;
+            if (sendTimeout || x[2] == receiveTimeoutOld || x[2] == receiveTimeoutNew) {
+                const auto delay = sendTimeout ? endpoint.sendTimeout : endpoint.receiveTimeout;
+                const auto usec = std::max<int64_t>(0, delay.count());
                 const std::array<int64_t, 2> timeout{usec / 1'000'000, usec % 1'000'000};
                 size = std::min<uint32_t>(size, sizeof timeout);
                 x[0] = (!size || machine.write(x[3], {reinterpret_cast<const uint8_t*>(timeout.data()), size})) &&
@@ -1987,7 +1991,8 @@ bool ProbeLinux::socketCall(Machine& machine) {
             if (!fd->second.socket) { x[0] = uint64_t(-88); break; }
             auto& endpoint = *fd->second.socket;
             if (x[1] != 1) return false;
-            if (x[2] == receiveTimeoutOld || x[2] == receiveTimeoutNew) {
+            const bool sendTimeout = x[2] == sendTimeoutOld || x[2] == sendTimeoutNew;
+            if (sendTimeout || x[2] == receiveTimeoutOld || x[2] == receiveTimeoutNew) {
                 std::array<int64_t, 2> timeout{};
                 if (x[4] < sizeof timeout) { x[0] = invalid; break; }
                 auto bytes = std::span(reinterpret_cast<uint8_t*>(timeout.data()), sizeof timeout);
@@ -1997,7 +2002,7 @@ bool ProbeLinux::socketCall(Machine& machine) {
                 constexpr auto largest = std::chrono::microseconds::max().count();
                 const auto delay = sec < 0 ? -1 : sec > (largest - usec) / 1'000'000 ?
                     largest : sec * 1'000'000 + usec;
-                endpoint.receiveTimeout = std::chrono::microseconds(delay);
+                (sendTimeout ? endpoint.sendTimeout : endpoint.receiveTimeout) = std::chrono::microseconds(delay);
                 x[0] = 0;
                 break;
             }
@@ -2027,6 +2032,7 @@ bool ProbeLinux::socketCall(Machine& machine) {
         }
         default: return false;
     }
+    if (x[8] == 203) current->deadline.reset();
     return true;
 }
 
@@ -2601,7 +2607,7 @@ bool ProbeLinux::fileCall(Machine& machine) {
                 if (x[8] == 67) { x[0] = uint64_t(-29); break; }
                 const auto result = socketRead(machine, fd, x[1], x[2]);
                 if (result == uint64_t(-11) && !(fd.effectiveFlags() & 0x800) &&
-                    waitForSocketReceive(*fd.socket)) return true;
+                    waitForSocketTimeout(fd.socket->receiveTimeout)) return true;
                 current->deadline.reset();
                 x[0] = result;
                 break;
@@ -3857,9 +3863,8 @@ bool ProbeLinux::waitForEvents() {
     return true;
 }
 
-bool ProbeLinux::waitForSocketReceive(const SocketState& socket) {
+bool ProbeLinux::waitForSocketTimeout(std::chrono::microseconds timeout) {
     using namespace std::chrono;
-    const auto timeout = socket.receiveTimeout;
     if (timeout.count() < 0) return false;
     if (timeout.count()) {
         const auto now = steady_clock::now();
@@ -5142,8 +5147,15 @@ bool ProbeLinux::syscall(Machine& machine) {
             if (position && *position > INT64_MAX) { x[0] = invalid; break; }
             const auto result = descriptor == descriptors().end() ? uint64_t(-9) :
                 writeDescriptor(machine, descriptor->second, x[1], x[2], position);
-            if (result == uint64_t(-11) && (descriptor->second.pipe || descriptor->second.pty) &&
-                !(descriptor->second.effectiveFlags() & 0x800)) return waitForEvents();
+            if (descriptor != descriptors().end() && descriptor->second.socket) {
+                const auto& fd = descriptor->second;
+                if (result == uint64_t(-11) && !(fd.effectiveFlags() & 0x800) &&
+                    waitForSocketTimeout(fd.socket->sendTimeout)) return true;
+                current->deadline.reset();
+            } else if (result == uint64_t(-11) && (descriptor->second.pipe || descriptor->second.pty) &&
+                       !(descriptor->second.effectiveFlags() & 0x800)) {
+                return waitForEvents();
+            }
             x[0] = result;
             break;
         }
@@ -5194,6 +5206,12 @@ bool ProbeLinux::syscall(Machine& machine) {
                 result = writeDescriptor(machine, descriptor->second, iov[0], iov[1]);
                 if (result <= iov[1]) written += result;
                 if (result != iov[1]) break;
+            }
+            const auto& fd = descriptor->second;
+            if (fd.socket) {
+                if (!written && result == uint64_t(-11) && !(fd.effectiveFlags() & 0x800) &&
+                    waitForSocketTimeout(fd.socket->sendTimeout)) return true;
+                current->deadline.reset();
             }
             x[0] = written ? written : result;
             break;
