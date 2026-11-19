@@ -1447,6 +1447,11 @@ uint64_t ProbeLinux::open(const Machine& machine, const std::string& path, uint3
         entry->ashmem->file.memoryFile = true;
     }
     if ((flags & truncate) && entry->temporary) resize(*entry->temporary, 0);
+    if (entry->node == Node::directory && pathname.find('/', 2) == std::string::npos) {
+        // Each BPF mount owns a synthetic backing root. A bind mount can expose a subdirectory.
+        const auto* mount = mountFor(*logical);
+        entry->bpfFilesystemRoot = mount && mount->device == "bpf" && mount->backing == pathname;
+    }
     if (entry->path != *logical) entry->visiblePath = *logical;
     if (!entry->pathOnly() && (entry->node == Node::regular || entry->temporary || entry->node == Node::directory))
         fileEvent(entry->path, fileOpened, entry->node == Node::directory);
@@ -6167,6 +6172,26 @@ uint64_t ProbeLinux::bpfObjectInfo(Machine& machine) {
     return invalid;
 }
 
+uint64_t ProbeLinux::createBpfToken(Machine& machine) {
+    const auto& x = machine.cpu.x;
+    if (x[2] > pageSize) return uint64_t(-7);
+    std::array<uint8_t, pageSize> input{};
+    if (!machine.readInto(x[1], std::span(input).first(x[2]))) return uint64_t(-14);
+    uint32_t flags = 0, rootFd = 0;
+    std::memcpy(&flags, input.data(), sizeof(flags));
+    std::memcpy(&rootFd, input.data() + sizeof(flags), sizeof(rootFd));
+    if (flags || std::any_of(input.begin() + 8, input.end(), [](auto byte) { return byte != 0; }))
+        return invalid;
+    const auto fd = descriptors().find(rootFd);
+    if (fd == descriptors().end() || fd->second.pathOnly()) return uint64_t(-9);
+    if (!fd->second.bpfFilesystemRoot) return invalid;
+
+    constexpr uint64_t capBpf = 1ULL << 39;
+    if (!(current->process->effectiveCaps & capBpf)) return uint64_t(-1);
+    // The guest has only the initial user namespace, where Linux rejects token creation.
+    return uint64_t(-95);
+}
+
 bool ProbeLinux::syscall(Machine& machine) {
     auto& x = machine.cpu.x;
     const uint64_t number = x[8];
@@ -6184,6 +6209,7 @@ bool ProbeLinux::syscall(Machine& machine) {
             if (x[0] >= 11 && x[0] <= 14) { x[0] = bpfObjectIdCall(machine); break; }
             if (x[0] == 15) { x[0] = bpfObjectInfo(machine); break; }
             if (x[0] == 18) { x[0] = loadBpfTypes(machine); break; }
+            if (x[0] == 36) { x[0] = createBpfToken(machine); break; }
             const bool pin = x[0] == 6; // BPF_OBJ_PIN
             if (!pin && x[0] != 7) return false; // BPF_OBJ_GET
             if (x[2] > pageSize) { x[0] = uint64_t(-7); break; }

@@ -1019,6 +1019,18 @@ int main() {
         put(fs, "bpf");
         put(mountpoint, "/sys/fs/bpf");
         assert(call(40, {fs, mountpoint, fs, 14}) == 0);
+        const auto tokenRoot = call(56, {uint32_t(-100), mountpoint, 0x4000});
+        const auto tokenPath = call(56, {uint32_t(-100), mountpoint, 0x204000});
+        assert(tokenRoot < 256 && tokenPath < 256);
+        assert(machine.store64(attr, tokenRoot << 32));
+        assert(call(280, {36, attr, 8}) == uint64_t(-95));
+        assert(machine.store64(attr, (tokenRoot << 32) | 1));
+        assert(call(280, {36, attr, 8}) == uint64_t(-22));
+        assert(machine.store64(attr, tokenPath << 32));
+        assert(call(280, {36, attr, 8}) == uint64_t(-9));
+        assert(machine.store64(attr, 0xffffffffULL << 32));
+        assert(call(280, {36, attr, 8}) == uint64_t(-9));
+        assert(call(57, {tokenPath}) == 0);
         put(from, "/sys/fs/bpf/nestvane_map");
         put(to, "/sys/fs/bpf/nestvane_moved");
         const std::array<uint32_t, 5> create{2, 4, 8, 2, 0};
@@ -1050,6 +1062,9 @@ int main() {
         assert(elem(2, reopened, value) == uint64_t(-1));
         assert(call(57, {reopened}) == 0);
         assert(call(39, {mountpoint, 0}) == 0);
+        assert(machine.store64(attr, tokenRoot << 32));
+        assert(call(280, {36, attr, 8}) == uint64_t(-95)); // The open FD still names the BPF root.
+        assert(call(57, {tokenRoot}) == 0);
     }
     {
         constexpr auto attr = base + 96, code = base + 256, license = base + 280, address = base + 384;
@@ -2940,6 +2955,7 @@ int main() {
     assert(load(base + 0x2a0) == 0xcafe4a11);
     assert(call(34, {uint32_t(-100), base + 0x260, 0700}) == 0);
     assert(call(56, {uint32_t(-100), base + 0x280, 0x42, 0600}) == uint64_t(-13));
+
     put(base + 0x320, "/proc/sys/kernel/unprivileged_bpf_disabled");
     const auto bpfSetting = call(56, {uint32_t(-100), base + 0x320, 2});
     assert(bpfSetting < 256);

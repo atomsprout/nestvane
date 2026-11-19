@@ -238,6 +238,7 @@ private:
     uint64_t bpfObjectIdCall(Machine& machine);
     uint64_t loadBpfTypes(Machine& machine);
     uint64_t bpfObjectInfo(Machine& machine);
+    uint64_t createBpfToken(Machine& machine);
     std::vector<std::weak_ptr<const BpfTypes>> bpfTypes;
     struct Descriptor;
     struct GraphicsRegion {
@@ -426,6 +427,7 @@ private:
         std::shared_ptr<BpfMap> bpfMap{};
         std::shared_ptr<const BpfTypes> btf{};
         std::shared_ptr<const BpfProgram> bpfProgram{};
+        bool bpfFilesystemRoot = false;
         std::span<const uint8_t> contents() const { return ext4File ? ext4File->bytes() : bytes; }
         uint64_t contentSize() const { return ext4File ? ext4File->size : bytes.size(); }
         static constexpr uint32_t mutableStatus = 0xc00; // O_APPEND and O_NONBLOCK
