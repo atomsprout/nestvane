@@ -2187,6 +2187,54 @@ int main() {
         assert(call(57, {alias}) == 0 && call(57, {second}) == 0 && call(57, {storage}) == 0);
     }
     {
+        constexpr uint64_t epollIn = 1, epollOut = 4, epollEdge = 0x80000000, epollReadHangup = 0x2000;
+        constexpr auto input = base + 0x100, result = base + 0x140, value = base + 0x180;
+        const auto fd = call(19, {0, 0x800});
+        const auto alias = call(23, {fd});
+        const auto firstPoller = call(20, {0}), secondPoller = call(20, {0});
+        assert(fd < 256 && alias < 256 && firstPoller < 256 && secondPoller < 256);
+        const auto watch = [&](uint64_t poller, uint64_t op, uint64_t mask, uint64_t tag) {
+            assert(machine.store64(input, mask) && machine.store64(input + 8, tag));
+            assert(call(21, {poller, op, fd, input}) == 0);
+        };
+        const auto wait = [&](uint64_t poller, uint64_t mask, uint64_t tag) {
+            assert(call(22, {poller, result, 1, 0}) == (mask ? 1 : 0));
+            if (mask) assert(load(result) == mask && load(result + 8) == tag);
+        };
+        const auto notify = [&](uint64_t count) {
+            assert(machine.store64(value, count) && call(64, {alias, value, 8}) == 8);
+        };
+        watch(firstPoller, 1, epollEdge | epollIn | epollReadHangup, 17);
+        watch(secondPoller, 1, epollEdge | epollIn, 23);
+        wait(firstPoller, 0, 0);
+        notify(1);
+        notify(2);
+        assert(call(22, {firstPoller, 0, 1, 0}) == uint64_t(-14));
+        wait(firstPoller, epollIn, 17);
+        wait(firstPoller, 0, 0);
+        wait(secondPoller, epollIn, 23);
+        wait(secondPoller, 0, 0);
+        notify(0); // A successful eventfd write notifies even if the counter stays unchanged.
+        wait(firstPoller, epollIn, 17);
+        notify(4);
+        wait(firstPoller, epollIn, 17);
+        watch(firstPoller, 3, epollEdge | epollIn, 29);
+        wait(firstPoller, epollIn, 29);
+        assert(call(63, {fd, value, 8}) == 8 && load(value) == 7);
+        wait(firstPoller, 0, 0);
+        wait(secondPoller, 0, 0);
+        watch(firstPoller, 3, epollEdge | epollOut, 31);
+        wait(firstPoller, epollOut, 31);
+        notify(UINT64_MAX - 1);
+        wait(secondPoller, epollIn, 23);
+        wait(firstPoller, 0, 0);
+        assert(call(63, {fd, value, 8}) == 8 && load(value) == UINT64_MAX - 1);
+        wait(firstPoller, epollOut, 31);
+        wait(firstPoller, 0, 0);
+        for (const auto descriptor : {alias, fd, firstPoller, secondPoller}) assert(call(57, {descriptor}) == 0);
+    }
+
+    {
         constexpr auto attr = base + 0x100, code = base + 0x200, packet = base + 0x300, license = base + 0x380;
         constexpr auto event = base + 0x400;
         const auto write = [&](uint64_t address, const auto& value) {

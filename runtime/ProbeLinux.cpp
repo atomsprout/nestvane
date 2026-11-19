@@ -1517,6 +1517,7 @@ uint32_t ProbeLinux::freeDescriptor(uint32_t minimum) const {
 
 bool ProbeLinux::eventCall(Machine& machine) {
     constexpr uint64_t capWakeAlarm = 1ULL << 35;
+    constexpr uint32_t epollIn = 1, epollOut = 4, epollEdge = 0x80000000U;
     auto& x = machine.cpu.x;
     constexpr uint32_t cloexec = 0x80000, nonblock = 0x800;
     const auto descriptor = descriptors().find(uint32_t(x[0]));
@@ -1650,15 +1651,17 @@ bool ProbeLinux::eventCall(Machine& machine) {
             std::memcpy(event.data(), data, sizeof(event));
             const auto mask = uint32_t(event[0]);
             // EPOLLWAKEUP requires no power-management action while the guest is scheduled.
-            if (mask & ~0x2000205fU) return false;
+            const auto supported = 0x2000205fU | (target->second.node == Node::event ? epollEdge : 0);
+            if (mask & ~supported) return false;
             watches.insert_or_assign(fd, Watch{mask, event[1], target->second.event, target->second.socket,
                                               target->second.node == Node::event, target->second.binder, target->second.graphics,
                                               target->second.pipe, target->second.pipeEnd, target->second.node == Node::pipeRead,
                                               target->second.touch, target->second.touchReader, ring});
+            if (mask & epollEdge) wakePollers();
             x[0] = 0;
             break;
         }
-        case 22: { // epoll_pwait with level-triggered, immediately ready guest events.
+        case 22: { // epoll_pwait
             if (descriptor == descriptors().end()) { x[0] = uint64_t(-9); break; }
             if (descriptor->second.node != Node::poller || !x[2] || x[2] > INT32_MAX) {
                 x[0] = invalid;
@@ -1668,9 +1671,19 @@ bool ProbeLinux::eventCall(Machine& machine) {
             if (!timers.empty()) refreshTimers(std::chrono::steady_clock::now());
             std::vector<std::array<uint64_t, 2>> ready;
             std::vector<std::shared_ptr<EventState>> readNotifications;
+            std::vector<std::pair<Watch*, EventFdNotifications>> readyEdges;
             bool watchesHostEvents = false;
-            for (const auto& [fd, watch] : descriptor->second.event->watches) {
+            for (auto& [fd, watch] : descriptor->second.event->watches) {
                 const auto state = watch.source.lock();
+                const bool edge = watch.mask & epollEdge;
+                if (edge) {
+                    if (!state) continue;
+                    const auto& notifications = state->eventFdNotifications;
+                    const auto& delivered = watch.deliveredEventFd;
+                    if (delivered &&
+                        (!(watch.mask & epollIn) || delivered->readable == notifications.readable) &&
+                        (!(watch.mask & epollOut) || delivered->writable == notifications.writable)) continue;
+                }
                 const auto endpoint = watch.socket.lock();
                 const auto peer = endpoint ? endpoint->peer.lock() : nullptr;
                 const bool childReady = state && (state->signalMask & sigChildMask) && current->process->childSignal;
@@ -1704,8 +1717,11 @@ bool ProbeLinux::eventCall(Machine& machine) {
                                                         (writable ? 4U : 0) | (receiveEnded ? 0x2000U : 0))) | (hungUp ? 16U : 0) | (socketError ? 8U : 0);
                 if (mask) {
                     ready.push_back({mask, watch.data});
+                    if (edge) readyEdges.emplace_back(&watch, state->eventFdNotifications);
                     if (mask & 2) readNotifications.push_back(state);
                     if (ready.size() == x[2]) break;
+                } else if (edge) {
+                    watch.deliveredEventFd = state->eventFdNotifications;
                 }
             }
             if (ready.empty()) {
@@ -1738,6 +1754,7 @@ bool ProbeLinux::eventCall(Machine& machine) {
             current->deadline.reset();
             const auto bytes = std::span(reinterpret_cast<const uint8_t*>(ready.data()), ready.size() * sizeof(ready[0]));
             if (!machine.write(x[1], bytes)) { x[0] = uint64_t(-14); break; }
+            for (const auto& [watch, notifications] : readyEdges) watch->deliveredEventFd = notifications;
             for (const auto& state : readNotifications) state->observedMountGeneration = state->mountNamespace->generation;
             x[0] = ready.size();
             break;
@@ -3702,6 +3719,10 @@ bool ProbeLinux::fileCall(Machine& machine) {
                 }
                 if (!machine.store64(x[1], fd.event->counter)) { x[0] = uint64_t(-14); break; }
                 fd.event->counter = 0;
+                if (fd.node == Node::event) {
+                    ++fd.event->eventFdNotifications.writable;
+                    wakePollers();
+                }
                 x[0] = 8;
                 break;
             }
@@ -4199,7 +4220,8 @@ uint64_t ProbeLinux::writeDescriptor(Machine& machine, const Descriptor& fd, uin
         if (increment == UINT64_MAX) return invalid;
         if (UINT64_MAX - fd.event->counter <= increment) return uint64_t(-11);
         fd.event->counter += increment;
-        if (increment) wakePollers();
+        ++fd.event->eventFdNotifications.readable;
+        wakePollers();
         return 8;
     }
     if (!size || fd.node == Node::null) return size;
