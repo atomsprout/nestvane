@@ -5911,6 +5911,19 @@ std::optional<uint64_t> ProbeLinux::setInetSocketOption(Machine& machine, Socket
     return {};
 }
 
+ProbeLinux::CgroupSocketHooks* ProbeLinux::bpfCgroupHooks(uint32_t type) {
+    switch (type) {
+        case BpfProgram::cgroupIngress: return &inetIngressPrograms;
+        case BpfProgram::cgroupEgress: return &inetEgressPrograms;
+        case BpfProgram::cgroupSocketOperations: return &inetSocketOperationPrograms;
+        case BpfProgram::cgroupInetCreate: return &inetCreatePrograms;
+        case BpfProgram::cgroupInetRelease: return inetReleasePrograms.get();
+        case BpfProgram::getOption: return &inetGetOptionPrograms;
+        case BpfProgram::setOption: return &inetSetOptionPrograms;
+        default: return BpfProgram::inetAddressAttach(type) ? &inetAddressPrograms[type] : nullptr;
+    }
+}
+
 uint64_t ProbeLinux::changeBpfCgroupAttachment(Machine& machine) {
     constexpr uint32_t allowOverride = 1, multi = 2;
     const auto& x = machine.cpu.x;
@@ -5926,13 +5939,9 @@ uint64_t ProbeLinux::changeBpfCgroupAttachment(Machine& machine) {
     const bool socketOperations = type == BpfProgram::cgroupSocketOperations;
     const bool address = BpfProgram::inetAddressAttach(type);
     const bool option = type == BpfProgram::getOption || type == BpfProgram::setOption;
-    if (!packet && !address && !option && !socketOperations && type != BpfProgram::cgroupInetCreate && type != BpfProgram::cgroupInetRelease)
-        return uint64_t(-95);
-    auto& hooks = type == BpfProgram::cgroupIngress ? inetIngressPrograms :
-                  type == BpfProgram::cgroupEgress ? inetEgressPrograms :
-                  socketOperations ? inetSocketOperationPrograms : address ? inetAddressPrograms[type] :
-                  type == BpfProgram::getOption ? inetGetOptionPrograms : type == BpfProgram::setOption ? inetSetOptionPrograms :
-                  type == BpfProgram::cgroupInetCreate ? inetCreatePrograms : *inetReleasePrograms;
+    auto* selected = bpfCgroupHooks(type);
+    if (!selected) return uint64_t(-95);
+    auto& hooks = *selected;
     if (flags > multi || (!attach && flags) ||
         std::ranges::any_of(std::span(input).subspan(sizeof(fields)), [](auto byte) { return byte != 0; }))
         return invalid;
@@ -5980,6 +5989,59 @@ uint64_t ProbeLinux::changeBpfCgroupAttachment(Machine& machine) {
         attachment->second.programs.front() = program;
     }
     return 0;
+}
+
+uint64_t ProbeLinux::queryBpfCgroupPrograms(Machine& machine) {
+    const auto& x = machine.cpu.x;
+    if (x[2] > pageSize) return uint64_t(-7);
+    std::array<uint8_t, pageSize> input{};
+    if (!machine.readInto(x[1], std::span(input).first(x[2]))) return uint64_t(-14);
+    constexpr uint64_t capNetAdmin = 1ULL << 12, capSysAdmin = 1ULL << 21;
+    if (!(current->process->effectiveCaps & (capNetAdmin | capSysAdmin))) return uint64_t(-1);
+    struct Request {
+        uint32_t fd, type, flags, attachFlags;
+        uint64_t ids;
+        uint32_t count, padding;
+        uint64_t programFlags;
+    };
+    static_assert(sizeof(Request) == 40 && offsetof(Request, programFlags) == 32);
+    Request req{};
+    std::memcpy(&req, input.data(), sizeof(req));
+    const bool effective = req.flags & 1;
+    if ((req.flags & ~1U) || (effective && req.programFlags) || req.padding ||
+        std::any_of(input.begin() + sizeof(Request), input.end(), [](uint8_t byte) { return byte != 0; }))
+        return invalid;
+    const auto* hooks = bpfCgroupHooks(req.type);
+    if (!hooks) return uint64_t(-95);
+    const auto fd = descriptors().find(req.fd);
+    if (fd == descriptors().end()) return uint64_t(-9);
+    const auto& target = fd->second;
+    if (!target.cgroupDirectory) return invalid;
+    const auto live = cgroupFiles.find(target.path + std::string(cgroupProcs));
+    if (live == cgroupFiles.end() || live->second != target.cgroupDirectory) return uint64_t(-19);
+
+    std::vector<uint32_t> ids;
+    uint32_t flags = 0;
+    if (effective) {
+        visitInetPrograms(*hooks, target.path, [](const auto&, size_t) { return true; },
+            [&](const BpfProgram& program) { ids.push_back(program.info().id); return true; });
+    } else if (const auto local = hooks->find(target.path); local != hooks->end()) {
+        flags = local->second.flags;
+        for (const auto& program : local->second.programs) ids.push_back(program->info().id);
+    }
+    if (!writeGuest(machine, x[1] + offsetof(Request, attachFlags), flags) ||
+        !writeGuest(machine, x[1] + offsetof(Request, count), uint32_t(ids.size())))
+        return uint64_t(-14);
+    if (!req.ids || !req.count || ids.empty()) return 0;
+    const auto copied = std::min<size_t>(ids.size(), req.count);
+    if (!machine.write(req.ids, {reinterpret_cast<const uint8_t*>(ids.data()), copied * sizeof(ids.front())}))
+        return uint64_t(-14);
+    if (req.programFlags) {
+        std::fill_n(ids.begin(), copied, flags);
+        if (!machine.write(req.programFlags, {reinterpret_cast<const uint8_t*>(ids.data()), copied * sizeof(flags)}))
+            return uint64_t(-14);
+    }
+    return copied < ids.size() ? uint64_t(-28) : 0;
 }
 
 size_t ProbeLinux::bpfMapBytes() {
@@ -6692,6 +6754,7 @@ bool ProbeLinux::syscall(Machine& machine) {
             if (x[0] == 10) { x[0] = testBpfProgram(machine); break; }
             if (x[0] >= 11 && x[0] <= 14) { x[0] = bpfObjectIdCall(machine); break; }
             if (x[0] == 15) { x[0] = bpfObjectInfo(machine); break; }
+            if (x[0] == 16) { x[0] = queryBpfCgroupPrograms(machine); break; }
             if (x[0] == 18) { x[0] = loadBpfTypes(machine); break; }
             if (x[0] == 36) { x[0] = createBpfToken(machine); break; }
             const bool pin = x[0] == 6; // BPF_OBJ_PIN

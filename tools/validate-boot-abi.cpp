@@ -1702,8 +1702,8 @@ int main() {
             assert(id < 256);
             return id;
         };
-        const auto attachPacket = [&](uint64_t command, uint32_t direction, uint64_t id) {
-            const std::array<uint32_t, 4> request{uint32_t(root), uint32_t(id), direction, 0};
+        const auto attachPacket = [&](uint64_t command, uint32_t direction, uint64_t id, uint32_t flags = 0) {
+            const std::array<uint32_t, 4> request{uint32_t(root), uint32_t(id), direction, flags};
             assert(write(attr, request));
             return invoke(280, {command, attr, sizeof(request)});
         };
@@ -1815,7 +1815,42 @@ int main() {
             insn(0xb7, 2, 0, 0x0101041e), insn(0x63, 0x2a, -4), insn(0xbf, 0xa2), insn(0x07, 2, 0, -4),
             insn(0xb7, 3, 0, 4), insn(0xb7, 4), insn(0x85, 0, 0, 143), insn(0xb7, 0, 0, 1), insn(0x95)};
         const auto operations = loadTcpProgram(13, 3, sockOps);
-        assert(attachPacket(8, 3, operations) == 0);
+        assert(attachPacket(8, 3, operations, 2) == 0);
+        const auto additional = loadTcpProgram(13, 3, sockOps);
+        assert(attachPacket(8, 3, additional, 2) == 0);
+        constexpr auto ids = base + 1040, flags = base + 1060;
+        const auto idOf = [&](uint64_t programFd) {
+            const std::array<uint64_t, 2> request{programFd | (8ULL << 32), ids};
+            assert(write(attr, request) && invoke(280, {15, attr, sizeof(request)}) == 0);
+            uint64_t identity = 0;
+            assert(task.load64(ids, identity));
+            return uint32_t(identity >> 32);
+        };
+        const auto firstId = idOf(operations), secondId = idOf(additional);
+        path("/sys/fs/cgroup/system/uid_1000");
+        const auto childGroup = invoke(56, {cwd, base, 0x4000});
+        assert(childGroup < 256 && firstId && secondId && firstId != secondId);
+        const auto query = [&](uint64_t group, uint64_t mode, uint64_t capacity, uint64_t programFlags,
+                               size_t attributeSize = 64) {
+            const std::array<uint64_t, 8> request{group | (3ULL << 32), mode, ids, capacity, programFlags};
+            assert(write(attr, request));
+            return invoke(280, {16, attr, attributeSize});
+        };
+        uint64_t value64 = 0;
+        assert(query(root, 0, 1, flags) == uint64_t(-28));
+        assert(task.load64(attr + 24, value64) && value64 == 2);
+        assert(task.load64(attr + 56, value64) && value64 == 0);
+        assert(task.load64(ids, value64) && uint32_t(value64) == firstId);
+        assert(task.load64(flags, value64) && uint32_t(value64) == 2);
+        assert(query(childGroup, 0, 0, 0, 32) == 0);
+        assert(task.load64(attr + 24, value64) && value64 == 0);
+        assert(query(childGroup, 1, 2, flags) == uint64_t(-22));
+        assert(query(childGroup, 1, 2, 0) == 0);
+        assert(task.load64(ids, value64) && uint32_t(value64) == firstId && uint32_t(value64 >> 32) == secondId);
+        assert(task.load64(attr + 56, value64) && value64 == 0);
+        assert(attachPacket(9, 3, additional) == 0 && invoke(57, {additional}) == 0);
+        assert(query(childGroup, 1, 1, 0) == 0);
+        assert(task.load64(attr + 24, value64) && value64 == 1 && invoke(57, {childGroup}) == 0);
         for (uint32_t family : {2, 10}) {
             const uint32_t addressSize = family == 2 ? 16 : 28;
             const uint32_t ipSize = family == 2 ? 20 : 40;

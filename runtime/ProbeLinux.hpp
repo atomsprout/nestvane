@@ -227,6 +227,7 @@ private:
     size_t bpfMapBytes();
     bool canAllocateSocketStorage(size_t valueSize);
     uint64_t changeBpfCgroupAttachment(Machine& machine);
+    uint64_t queryBpfCgroupPrograms(Machine& machine);
     bool openInetSocket(const std::shared_ptr<SocketState>& socket, const SocketState* listener = nullptr);
     uint64_t bindInetSocket(Machine& machine, const std::shared_ptr<SocketState>& socket);
     uint64_t reserveInetAddress(const std::shared_ptr<SocketState>& socket, SocketState::InetAddress address);
@@ -250,6 +251,7 @@ private:
         std::vector<std::shared_ptr<const BpfProgram>> programs;
     };
     using CgroupSocketHooks = std::map<std::string, CgroupSocketPrograms, std::less<>>;
+    CgroupSocketHooks* bpfCgroupHooks(uint32_t type);
     CgroupSocketHooks inetCreatePrograms, inetGetOptionPrograms, inetSetOptionPrograms;
     std::map<uint32_t, CgroupSocketHooks> inetAddressPrograms;
     CgroupSocketHooks inetIngressPrograms, inetEgressPrograms, inetSocketOperationPrograms;
