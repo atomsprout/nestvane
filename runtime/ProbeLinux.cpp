@@ -1641,14 +1641,16 @@ bool ProbeLinux::eventCall(Machine& machine) {
                 const auto ring = watch.ring.lock();
                 const auto ringEvents = ring && ring->ringReadable() ? 0x41 : 0;
                 const bool receiveEnded = endpoint && (endpoint->receiveShutdown ||
-                    (endpoint->connected && (!peer || peer->sendShutdown)));
+                    (!endpoint->inetDatagram() && endpoint->connected && (!peer || peer->sendShutdown)));
                 const bool readable = (state && state->counter) || childReady || (binder && binderReadable(*binder)) ||
                     (touch && touch->ready()) ||
-                    (endpoint && (!endpoint->inbox.empty() || !endpoint->pending.empty() || (peer && receiveEnded)));
+                    (endpoint && (endpoint->hasInput() || !endpoint->pending.empty() || (peer && receiveEnded)));
                 const bool writable = (state && watch.eventCounter && state->counter < UINT64_MAX - 1) ||
+                    (endpoint && endpoint->inetDatagram() && !endpoint->sendShutdown) ||
                     (peer && !endpoint->sendShutdown && !peer->receiveShutdown &&
                      peer->queuedBytes < endpoint->sendBuffer && peer->inbox.size() < 256);
-                const bool hungUp = endpoint && endpoint->connected && (!peer || (receiveEnded && endpoint->sendShutdown));
+                const bool hungUp = endpoint && !endpoint->inetDatagram() && endpoint->connected &&
+                    (!peer || (receiveEnded && endpoint->sendShutdown));
                 const bool mountsChanged = state && state->mountNamespace &&
                     state->observedMountGeneration != state->mountNamespace->generation;
                 const uint64_t mask = ((graphicsEvents | pipeEvents | ringEvents) & (watch.mask | 0x18U)) | (watch.mask & ((readable ? 1U : 0) | (mountsChanged ? 2U : 0) |
@@ -1701,6 +1703,7 @@ bool ProbeLinux::eventCall(Machine& machine) {
 uint64_t ProbeLinux::socketRead(Machine& machine, const Descriptor& fd, uint64_t address, uint64_t size) {
     auto& endpoint = *fd.socket;
     if (!size) return 0;
+    if (endpoint.inetDatagram()) return receiveInetDatagram(machine, endpoint, address, size);
     if (endpoint.inbox.empty()) {
         const auto peer = endpoint.peer.lock();
         if (endpoint.receiveShutdown || (endpoint.connected && (!peer || peer->sendShutdown))) return 0;
@@ -2016,6 +2019,7 @@ uint64_t ProbeLinux::socketWrite(Machine& machine, const Descriptor& fd, uint64_
 }
 
 uint64_t ProbeLinux::socketWrite(Machine& machine, const Descriptor& fd, std::span<const SocketVector> vectors) {
+    if (fd.socket->inetDatagram()) return sendInetDatagram(machine, fd.socket, vectors);
     constexpr uint64_t maxPacketBytes = 65536;
     auto peer = fd.socket->peer.lock();
     if (!fd.socket->connected) return uint64_t(-107);
@@ -2182,7 +2186,8 @@ bool ProbeLinux::socketCall(Machine& machine) {
             if (fd == descriptors().end()) { x[0] = uint64_t(-9); break; }
             if (!fd->second.socket) { x[0] = uint64_t(-88); break; }
             if (fd->second.socket->family == 2 || fd->second.socket->family == 10) {
-                x[0] = x[8] == 200 ? bindInetSocket(machine, fd->second.socket) : uint64_t(-95);
+                x[0] = x[8] == 200 ? bindInetSocket(machine, fd->second.socket) :
+                    fd->second.socket->inetDatagram() ? connectInetDatagram(machine, fd->second.socket) : uint64_t(-95);
                 break;
             }
             if (auto& uevent = fd->second.socket->uevent; uevent) {
@@ -2313,7 +2318,7 @@ bool ProbeLinux::socketCall(Machine& machine) {
                 const std::array<uint32_t, 3> address{16, endpoint.uevent->pid, endpoint.uevent->groups};
                 x[0] = writeAddress({reinterpret_cast<const uint8_t*>(address.data()), sizeof(address)});
             } else if (endpoint.family == 2 || endpoint.family == 10) {
-                auto address = endpoint.localInetAddress;
+                auto address = x[8] == 204 ? endpoint.localInetAddress : endpoint.peerInetAddress;
                 address[0] = endpoint.family;
                 x[0] = writeAddress(std::span(address).first(endpoint.family == 2 ? 16 : 28));
             } else {
@@ -2325,6 +2330,19 @@ bool ProbeLinux::socketCall(Machine& machine) {
             if (fd == descriptors().end()) { x[0] = uint64_t(-9); break; }
             if (!fd->second.socket) { x[0] = uint64_t(-88); break; }
             const bool send = x[8] == 206;
+            const auto& socket = fd->second.socket;
+            if (socket->inetDatagram()) {
+                if (x[3] & ~(send ? 0x4040ULL : 0x162ULL)) { x[0] = invalid; break; }
+                const bool blocking = !(x[3] & 0x40) && !(fd->second.effectiveFlags() & 0x800);
+                const SocketVector vector{x[1], x[2]};
+                const auto result = send ? sendInetDatagram(machine, socket, std::span(&vector, 1), x[4], x[5])
+                    : receiveInetDatagram(machine, *socket, x[1], x[2], x[3], x[4], x[5]);
+                if (!send && result == uint64_t(-11) && blocking && waitForSocketTimeout(socket->receiveTimeout))
+                    return true;
+                current->deadline.reset();
+                x[0] = result;
+                break;
+            }
             if (x[4] || x[5] || (x[3] & ~(send ? 0x4040ULL : 0x140ULL))) return false;
             const auto& endpoint = *fd->second.socket;
             const auto peer = endpoint.peer.lock();
@@ -2364,8 +2382,10 @@ bool ProbeLinux::socketCall(Machine& machine) {
                 x[0] = error;
                 break;
             }
-            if (message.nameLength || message.controlLength) return false;
-            const auto result = socketWrite(machine, fd->second, vectors);
+            if (message.controlLength || (message.nameLength && !endpoint->inetDatagram())) return false;
+            const auto result = endpoint->inetDatagram() ?
+                sendInetDatagram(machine, endpoint, vectors, message.name, message.nameLength) :
+                socketWrite(machine, fd->second, vectors);
             const bool blocking = !(x[2] & 0x40) && !(fd->second.effectiveFlags() & 0x800);
             if (result == uint64_t(-11) && blocking && waitForSocketTimeout(endpoint->sendTimeout)) return true;
             current->deadline.reset();
@@ -2392,7 +2412,7 @@ bool ProbeLinux::socketCall(Machine& machine) {
                 x[0] = error;
                 break;
             }
-            if (endpoint.inbox.empty()) {
+            if (!endpoint.hasInput()) {
                 const auto peer = endpoint.peer.lock();
                 if (endpoint.receiveShutdown || (endpoint.type == 5 && endpoint.connected &&
                     (!peer || peer->sendShutdown))) {
@@ -2406,7 +2426,7 @@ bool ProbeLinux::socketCall(Machine& machine) {
                 break;
             }
             current->deadline.reset();
-            const auto& packet = endpoint.inbox.front();
+            const auto& packet = endpoint.inetDatagram() ? endpoint.datagrams.front().payload : endpoint.inbox.front();
             auto remaining = std::span(packet);
             bool copied = true;
             for (const auto& [address, size] : vectors) {
@@ -2415,7 +2435,12 @@ bool ProbeLinux::socketCall(Machine& machine) {
                 if (count && !machine.write(address, remaining.first(count))) { copied = false; break; }
                 remaining = remaining.subspan(count);
             }
-            if (copied && message.name && !endpoint.peerAddress.empty()) {
+            if (copied && message.name && endpoint.inetDatagram()) {
+                const auto length = uint32_t(endpoint.family == 2 ? 16 : 28);
+                const auto count = std::min(message.nameLength, length);
+                copied = !count || machine.write(message.name, std::span(endpoint.datagrams.front().source).first(count));
+                message.nameLength = length;
+            } else if (copied && message.name && !endpoint.peerAddress.empty()) {
                 std::array<uint8_t, 111> address{1, 0};
                 std::ranges::copy(endpoint.peerAddress, address.begin() + 2);
                 const auto length = uint32_t(endpoint.peerAddress.size() + 3);
@@ -2431,7 +2456,8 @@ bool ProbeLinux::socketCall(Machine& machine) {
             x[0] = (x[2] & trunc) ? packet.size() : packet.size() - remaining.size();
             if (!(x[2] & peek)) {
                 endpoint.queuedBytes -= packet.size();
-                endpoint.inbox.pop_front();
+                if (endpoint.inetDatagram()) endpoint.datagrams.pop_front();
+                else endpoint.inbox.pop_front();
                 wakePollers();
             }
             break;
@@ -2877,6 +2903,8 @@ bool ProbeLinux::fileCall(Machine& machine) {
                         inet6BindPrograms.erase(backing);
                         inetGetOptionPrograms.erase(backing);
                         inetSetOptionPrograms.erase(backing);
+                        inetIngressPrograms.erase(backing);
+                        inetEgressPrograms.erase(backing);
                         x[0] = directories.erase(backing) ? 0 : uint64_t(-2);
                     } else {
                         x[0] = directories.erase(backing) ? 0 : uint64_t(-2);
@@ -4754,11 +4782,14 @@ bool ProbeLinux::poll(Machine& machine) {
             entry.returned = entry.events & (binderReadable(*descriptor->second.binder) ? 1 : 0);
         } else if (const auto endpoint = descriptor->second.socket) {
             const auto peer = endpoint->peer.lock();
-            const bool receiveEnded = endpoint->receiveShutdown || (endpoint->connected && (!peer || peer->sendShutdown));
-            const bool readable = !endpoint->inbox.empty() || !endpoint->pending.empty() || (peer && receiveEnded);
-            const bool writable = peer && !endpoint->sendShutdown && !peer->receiveShutdown &&
-                                  peer->queuedBytes < endpoint->sendBuffer && peer->inbox.size() < 256;
-            const bool hungUp = endpoint->connected && (!peer || (receiveEnded && endpoint->sendShutdown));
+            const bool receiveEnded = endpoint->receiveShutdown ||
+                (!endpoint->inetDatagram() && endpoint->connected && (!peer || peer->sendShutdown));
+            const bool readable = endpoint->hasInput() || !endpoint->pending.empty() || (peer && receiveEnded);
+            const bool writable = (endpoint->inetDatagram() && !endpoint->sendShutdown) ||
+                (peer && !endpoint->sendShutdown && !peer->receiveShutdown &&
+                 peer->queuedBytes < endpoint->sendBuffer && peer->inbox.size() < 256);
+            const bool hungUp = !endpoint->inetDatagram() && endpoint->connected &&
+                (!peer || (receiveEnded && endpoint->sendShutdown));
             entry.returned = (entry.events & ((readable ? 1 : 0) | (writable ? 4 : 0) |
                                               (receiveEnded ? 0x2000 : 0))) | (hungUp ? 16 : 0);
         } else {
@@ -5237,8 +5268,7 @@ bool ProbeLinux::enforceSeccomp(Machine& machine) {
     return true;
 }
 
-static bool runInetPrograms(const auto& hooks, std::string_view group, const BpfProgram::SocketContext& context,
-                            const auto& isGroupCurrent, bool* skipBindCapability = nullptr) {
+static bool visitInetPrograms(const auto& hooks, std::string_view group, const auto& isGroupCurrent, const auto& run) {
     constexpr uint32_t multi = 2;
     bool evaluated = false;
     size_t depth = 0;
@@ -5246,11 +5276,7 @@ static bool runInetPrograms(const auto& hooks, std::string_view group, const Bpf
         const auto attachment = hooks.find(group);
         if (attachment != hooks.end() && (!evaluated || (attachment->second.flags & multi)) &&
             isGroupCurrent(attachment->second.group, depth)) {
-            for (const auto& program : attachment->second.programs) {
-                const auto result = program->runSocketContext(context);
-                if (!result || (*result != 1 && (!skipBindCapability || *result != 3))) return false;
-                if (skipBindCapability && *result == 3) *skipBindCapability = true;
-            }
+            for (const auto& program : attachment->second.programs) if (!run(*program)) return false;
             evaluated = true;
         }
         if (group == cgroupRoot) break;
@@ -5258,6 +5284,22 @@ static bool runInetPrograms(const auto& hooks, std::string_view group, const Bpf
         ++depth;
     }
     return true;
+}
+
+static bool runInetPrograms(const auto& hooks, std::string_view group, const BpfProgram::SocketContext& context,
+                            const auto& isGroupCurrent, bool* skipBindCapability = nullptr) {
+    return visitInetPrograms(hooks, group, isGroupCurrent, [&](const BpfProgram& program) {
+        const auto result = program.runSocketContext(context);
+        if (!result || (*result != 1 && (!skipBindCapability || *result != 3))) return false;
+        if (skipBindCapability && *result == 3) *skipBindCapability = true;
+        return true;
+    });
+}
+
+static bool sameSocketGroup(const auto& socket, const auto& attached, size_t depth) {
+    constexpr std::owner_less<void> order{};
+    const auto& ancestry = socket.inetAncestry;
+    return depth < ancestry.size() && !order(attached, ancestry[depth]) && !order(ancestry[depth], attached);
 }
 
 bool ProbeLinux::openInetSocket(const std::shared_ptr<SocketState>& socket) {
@@ -5278,10 +5320,8 @@ bool ProbeLinux::openInetSocket(const std::shared_ptr<SocketState>& socket) {
     }
     socket->onClose = [hooks = std::weak_ptr(inetReleasePrograms)](const SocketState& endpoint) {
         if (const auto programs = hooks.lock(); programs && !programs->empty()) {
-            constexpr std::owner_less<void> order{};
             const auto isCurrent = [&](const auto& attached, size_t depth) {
-                const auto& ancestry = endpoint.inetAncestry;
-                return depth < ancestry.size() && !order(attached, ancestry[depth]) && !order(ancestry[depth], attached);
+                return sameSocketGroup(endpoint, attached, depth);
             };
             try {
                 const BpfProgram::SocketContext release{endpoint.storageIdentity, endpoint.cookie, endpoint.credentials[1],
@@ -5320,8 +5360,14 @@ uint64_t ProbeLinux::bindInetSocket(Machine& machine, const std::shared_ptr<Sock
     const auto loopback = ipv4 ? std::span<const uint8_t>(loopback4) : std::span<const uint8_t>(loopback6);
     if (!std::ranges::equal(ip, loopback) && std::ranges::any_of(ip, [](uint8_t byte) { return byte != 0; }))
         return uint64_t(-99);
-    auto port = uint16_t(uint16_t(address[2]) << 8 | address[3]);
+    const auto port = uint16_t(uint16_t(address[2]) << 8 | address[3]);
     if (port && port < 1024 && !skipBindCapability && !(current->process->effectiveCaps & (1ULL << 10))) return uint64_t(-13);
+    return reserveInetAddress(socket, address);
+}
+
+uint64_t ProbeLinux::reserveInetAddress(const std::shared_ptr<SocketState>& socket, SocketState::InetAddress address) {
+    const bool ipv4 = socket->family == 2;
+    auto port = uint16_t(uint16_t(address[2]) << 8 | address[3]);
     std::erase_if(inetBindings, [](const auto& entry) { return entry.second.expired(); });
     if (inetBindings.size() >= 256) return uint64_t(-98);
     const auto key = [&](uint16_t value) { return std::tuple(socket->family, socket->protocol, value); };
@@ -5340,15 +5386,232 @@ uint64_t ProbeLinux::bindInetSocket(Machine& machine, const std::shared_ptr<Sock
     return 0;
 }
 
+namespace {
+using InetAddress = std::array<uint8_t, 28>;
+
+uint16_t inetPort(const InetAddress& address) {
+    return uint16_t(uint16_t(address[2]) << 8 | address[3]);
+}
+
+std::span<const uint8_t> inetHost(const InetAddress& address) {
+    return address[0] == 2 ? std::span(address).subspan(4, 4) : std::span(address).subspan(8, 16);
+}
+
+bool inetWildcard(const InetAddress& address) {
+    return std::ranges::all_of(inetHost(address), [](auto byte) { return byte == 0; });
+}
+
+void setInetLoopback(InetAddress& address) {
+    if (address[0] == 2) address[4] = 127;
+    address[address[0] == 2 ? 7 : 23] = 1;
+}
+
+bool matchInetPeer(const InetAddress& expected, const InetAddress& actual) {
+    return inetPort(expected) == inetPort(actual) && std::ranges::equal(inetHost(expected), inetHost(actual));
+}
+
+uint64_t readInetDestination(const Machine& machine, uint64_t pointer, uint64_t length,
+                             uint32_t family, InetAddress& address) {
+    const uint64_t size = family == 2 ? 16 : 28;
+    if (length < size || length > 128) return uint64_t(-22);
+    if (!machine.readInto(pointer, std::span(address).first(size))) return uint64_t(-14);
+    if (address[0] != family || address[1]) return uint64_t(-97);
+    InetAddress loopback{};
+    loopback[0] = family;
+    setInetLoopback(loopback);
+    if (inetWildcard(address)) setInetLoopback(address);
+    if (!std::ranges::equal(inetHost(address), inetHost(loopback))) return uint64_t(-101);
+    return inetPort(address) ? 0 : uint64_t(-22);
+}
+
+uint32_t internetSum(std::span<const uint8_t> bytes, uint32_t sum = 0) {
+    for (size_t i = 0; i < bytes.size(); i += 2)
+        sum += (uint32_t(bytes[i]) << 8) | (i + 1 < bytes.size() ? bytes[i + 1] : 0);
+    while (sum >> 16) sum = (sum & 0xffff) + (sum >> 16);
+    return sum;
+}
+
+void writeNetwork16(std::span<uint8_t> bytes, size_t offset, uint32_t value) {
+    bytes[offset] = uint8_t(value >> 8);
+    bytes[offset + 1] = uint8_t(value);
+}
+
+void encodeLoopbackUdp(std::span<uint8_t> bytes, const InetAddress& source, const InetAddress& destination) {
+    const bool ipv4 = source[0] == 2;
+    const auto headerSize = ipv4 ? 20 : 40;
+    auto udp = bytes.subspan(headerSize);
+    bytes[0] = ipv4 ? 0x45 : 0x60;
+    if (ipv4) {
+        writeNetwork16(bytes, 2, bytes.size());
+        bytes[8] = 64;
+        bytes[9] = 17;
+    } else {
+        writeNetwork16(bytes, 4, udp.size());
+        bytes[6] = 17;
+        bytes[7] = 64;
+    }
+    const auto sourceIp = inetHost(source), destinationIp = inetHost(destination);
+    std::ranges::copy(sourceIp, bytes.begin() + (ipv4 ? 12 : 8));
+    std::ranges::copy(destinationIp, bytes.begin() + (ipv4 ? 16 : 24));
+    if (ipv4) writeNetwork16(bytes, 10, ~internetSum(bytes.first(headerSize)));
+    writeNetwork16(udp, 0, inetPort(source));
+    writeNetwork16(udp, 2, inetPort(destination));
+    writeNetwork16(udp, 4, udp.size());
+    const auto checksum = uint16_t(~internetSum(udp, internetSum(sourceIp, internetSum(destinationIp, 17 + udp.size()))));
+    writeNetwork16(udp, 6, checksum ? checksum : 0xffff);
+}
+} // namespace
+
+uint64_t ProbeLinux::connectInetDatagram(Machine& machine, const std::shared_ptr<SocketState>& socket) {
+    const auto& x = machine.cpu.x;
+    if (x[2] >= 2) {
+        uint16_t family = 0;
+        if (!machine.readInto(x[1], {reinterpret_cast<uint8_t*>(&family), sizeof(family)})) return uint64_t(-14);
+        if (!family) {
+            socket->connected = false;
+            socket->peerInetAddress = {};
+            return 0;
+        }
+    }
+    InetAddress destination{};
+    if (const auto error = readInetDestination(machine, x[1], x[2], socket->family, destination)) return error;
+    if (!socket->localInetAddress[0]) {
+        InetAddress local{};
+        local[0] = socket->family;
+        setInetLoopback(local);
+        if (const auto error = reserveInetAddress(socket, local)) return error;
+    }
+    socket->peerInetAddress = destination;
+    socket->connected = true;
+    return 0;
+}
+
+static bool filterInetPacket(const auto& hooks, const auto& socket, BpfProgram::Packet& packet, bool egress) {
+    packet.ringNotification = false;
+    if (hooks.empty()) return true;
+    packet.socket = socket.storageIdentity;
+    packet.socketCookie = socket.cookie;
+    packet.socketUid = socket.credentials[1];
+    const auto isCurrent = [&](const auto& attached, size_t depth) {
+        return sameSocketGroup(socket, attached, depth);
+    };
+    bool accepted = true;
+    visitInetPrograms(hooks, socket.inetCgroup, isCurrent, [&](const BpfProgram& program) {
+        const auto result = program.classify(packet);
+        // Egress bit zero is the verdict. Loopback has no congestion notification transport.
+        accepted &= result && (egress ? (*result & 1) != 0 : *result == 1);
+        return true; // Later programs still observe the packet and update accounting.
+    });
+    return accepted;
+}
+
+uint64_t ProbeLinux::sendInetDatagram(Machine& machine, const std::shared_ptr<SocketState>& socket,
+    std::span<const SocketVector> vectors, uint64_t address, uint64_t addressLength) {
+    InetAddress destination = socket->peerInetAddress;
+    if (address) {
+        if (const auto error = readInetDestination(machine, address, addressLength, socket->family, destination))
+            return error;
+    } else if (!socket->connected) {
+        return uint64_t(-89);
+    }
+    if (socket->sendShutdown) return uint64_t(-32);
+    const bool ipv4 = socket->family == 2;
+    const size_t headerSize = ipv4 ? 28 : 48;
+    size_t size = 0;
+    for (const auto& [base, length] : vectors) {
+        if (length > BpfProgram::maxPacketBytes - headerSize - size) return uint64_t(-90);
+        size += length;
+    }
+    try {
+        BpfProgram::Packet packet;
+        packet.bytes.resize(headerSize + size);
+        size_t offset = headerSize;
+        for (const auto& [base, length] : vectors) {
+            if (length && !machine.readInto(base, std::span(packet.bytes).subspan(offset, length))) return uint64_t(-14);
+            offset += length;
+        }
+        if (!socket->localInetAddress[0]) {
+            InetAddress local{};
+            local[0] = socket->family;
+            if (const auto error = reserveInetAddress(socket, local)) return error;
+        }
+        auto source = socket->localInetAddress;
+        if (inetWildcard(source)) setInetLoopback(source);
+        encodeLoopbackUdp(packet.bytes, source, destination);
+        packet.protocol = ipv4 ? 0x0008 : 0xdd86;
+        packet.ifindex = guestLoopbackIndex;
+        packet.socketLookup = [&](std::span<const uint8_t> tuple, bool tcp) -> std::shared_ptr<void> {
+            if (tcp) return nullptr; // The loopback transport currently owns UDP endpoints.
+            const size_t ipBytes = (tuple.size() - 4) / 2;
+            const uint32_t family = ipBytes == 4 ? 2 : 10;
+            const size_t offset = family == 2 ? 4 : 8;
+            InetAddress from{}, to{};
+            from[0] = to[0] = family;
+            std::ranges::copy(tuple.first(ipBytes), from.begin() + offset);
+            std::ranges::copy(tuple.subspan(ipBytes, ipBytes), to.begin() + offset);
+            std::ranges::copy(tuple.subspan(2 * ipBytes, 2), from.begin() + 2);
+            std::ranges::copy(tuple.last(2), to.begin() + 2);
+            const auto candidate = inetBindings.find({family, 17, inetPort(to)});
+            const auto peer = candidate == inetBindings.end() ? nullptr : candidate->second.lock();
+            if (!peer || (!inetWildcard(peer->localInetAddress) &&
+                          !matchInetPeer(peer->localInetAddress, to)) ||
+                (peer->connected && !matchInetPeer(peer->peerInetAddress, from))) return nullptr;
+            return peer->storageIdentity;
+        };
+        const bool sent = filterInetPacket(inetEgressPrograms, *socket, packet, true);
+        if (packet.ringNotification) wakePollers();
+        if (!sent) return uint64_t(-1);
+
+        const auto endpoint = inetBindings.find({socket->family, socket->protocol, inetPort(destination)});
+        const auto peer = endpoint == inetBindings.end() ? nullptr : endpoint->second.lock();
+        if (!peer || peer->receiveShutdown ||
+            (!inetWildcard(peer->localInetAddress) && !matchInetPeer(peer->localInetAddress, destination)) ||
+            (peer->connected && !matchInetPeer(peer->peerInetAddress, source))) return size;
+        packet.ingressIfindex = guestLoopbackIndex;
+        const bool received = filterInetPacket(inetIngressPrograms, *peer, packet, false);
+        if (packet.ringNotification) wakePollers();
+        if (!received) return size;
+        if (peer->datagrams.size() < 256 && peer->queuedBytes + size <= peer->receiveBuffer) {
+            peer->datagrams.push_back({source, {packet.bytes.begin() + headerSize, packet.bytes.end()}});
+            peer->queuedBytes += size;
+            wakePollers();
+        }
+        return size;
+    } catch (const std::bad_alloc&) {
+        return noMemory;
+    }
+}
+
+uint64_t ProbeLinux::receiveInetDatagram(Machine& machine, SocketState& socket, uint64_t address, uint64_t size,
+    uint64_t flags, uint64_t source, uint64_t sourceLength) {
+    if (socket.datagrams.empty()) return socket.receiveShutdown ? 0 : uint64_t(-11);
+    const auto& packet = socket.datagrams.front();
+    const auto count = std::min<uint64_t>(size, packet.payload.size());
+    if (source) {
+        uint32_t capacity = 0;
+        const auto length = uint32_t(socket.family == 2 ? 16 : 28);
+        if (!machine.readInto(sourceLength, {reinterpret_cast<uint8_t*>(&capacity), sizeof(capacity)}))
+            return uint64_t(-14);
+        if (capacity > INT32_MAX) return invalid;
+        if ((capacity && !machine.write(source, std::span(packet.source).first(std::min(capacity, length)))) ||
+            !writeGuest(machine, sourceLength, length)) return uint64_t(-14);
+    }
+    if (count && !machine.write(address, std::span(packet.payload).first(count))) return uint64_t(-14);
+    const auto result = flags & 0x20 ? packet.payload.size() : count; // MSG_TRUNC
+    if (!(flags & 2)) { // MSG_PEEK
+        socket.queuedBytes -= packet.payload.size();
+        socket.datagrams.pop_front();
+    }
+    return result;
+}
+
 static bool runInetOption(const auto& programs, const auto& socket, uint32_t uid, uint32_t gid,
                           uint32_t pid, uint32_t tid, BpfProgram::SocketOption& option) {
     BpfProgram::SocketContext context{socket.storageIdentity, socket.cookie, uid, gid,
         socket.family, socket.type, socket.protocol, {}, pid, tid};
     context.option = &option;
-    constexpr std::owner_less<void> order{};
     const auto isCurrent = [&](const auto& attached, size_t depth) {
-        const auto& ancestry = socket.inetAncestry;
-        return depth < ancestry.size() && !order(attached, ancestry[depth]) && !order(ancestry[depth], attached);
+        return sameSocketGroup(socket, attached, depth);
     };
     return runInetPrograms(programs, socket.inetCgroup, context, isCurrent);
 }
@@ -5445,11 +5708,13 @@ uint64_t ProbeLinux::changeBpfCgroupAttachment(Machine& machine) {
     std::memcpy(fields.data(), input.data(), sizeof(fields));
     const auto [targetFd, programFd, type, flags] = fields;
     const bool attach = x[0] == 8;
+    const bool packet = type == BpfProgram::cgroupIngress || type == BpfProgram::cgroupEgress;
     const bool address = type == BpfProgram::bind4 || type == BpfProgram::bind6;
     const bool option = type == BpfProgram::getOption || type == BpfProgram::setOption;
-    if (!address && !option && type != BpfProgram::cgroupInetCreate && type != BpfProgram::cgroupInetRelease)
+    if (!packet && !address && !option && type != BpfProgram::cgroupInetCreate && type != BpfProgram::cgroupInetRelease)
         return uint64_t(-95);
-    auto& hooks = type == BpfProgram::bind4 ? inet4BindPrograms : type == BpfProgram::bind6 ? inet6BindPrograms :
+    auto& hooks = type == BpfProgram::cgroupIngress ? inetIngressPrograms :
+                  type == BpfProgram::cgroupEgress ? inetEgressPrograms : type == BpfProgram::bind4 ? inet4BindPrograms : type == BpfProgram::bind6 ? inet6BindPrograms :
                   type == BpfProgram::getOption ? inetGetOptionPrograms : type == BpfProgram::setOption ? inetSetOptionPrograms :
                   type == BpfProgram::cgroupInetCreate ? inetCreatePrograms : *inetReleasePrograms;
     if (flags > multi || (!attach && flags) ||
@@ -5477,9 +5742,11 @@ uint64_t ProbeLinux::changeBpfCgroupAttachment(Machine& machine) {
         return 0;
     }
     if (!program) return source == descriptors().end() ? uint64_t(-9) : invalid;
-    const auto programType = address ? BpfProgram::socketAddress :
+    const auto programType = packet ? BpfProgram::cgroupPacket : address ? BpfProgram::socketAddress :
         option ? BpfProgram::socketOption : BpfProgram::cgroupSocket;
-    if (program->type() != programType || program->info().attachType != type) return invalid;
+    const auto expected = program->info().attachType;
+    const bool legacyPacket = packet && expected == BpfProgram::cgroupIngress;
+    if (program->type() != programType || (!legacyPacket && expected != type)) return invalid;
     for (const auto& [path, item] : hooks) {
         if (inside(target.path, path) && !(item.flags & (multi | allowOverride))) return uint64_t(-1);
         if (inside(path, target.path) && !flags) return uint64_t(-1);

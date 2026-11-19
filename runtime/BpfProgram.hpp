@@ -180,6 +180,7 @@ struct BpfMap {
 class BpfProgram {
 public:
     static constexpr uint32_t socketFilter = 1, classifier = 3, trafficAction = 4, cgroupPacket = 8, cgroupSocket = 9, socketOperations = 13, socketAddress = 18, socketOption = 25;
+    static constexpr uint32_t cgroupIngress = 0, cgroupEgress = 1;
     static constexpr uint32_t cgroupInetCreate = 2, cgroupSocketOperations = 3, cgroupInetRelease = 34;
     static constexpr uint32_t bind4 = 8, bind6 = 9, getOption = 21, setOption = 22;
     static bool inetAddressAttach(uint32_t type) {

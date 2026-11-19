@@ -1690,7 +1690,65 @@ int main() {
         assert(assigned && assigned[2] >= 0x80 && assigned[4] == 127 && assigned[7] == 1);
         assert(invoke(200, {second, output, loopback.size()}) == uint64_t(-98));
         assert(invoke(57, {first}) == 0 && invoke(200, {second, output, loopback.size()}) == 0);
-        assert(invoke(57, {second}) == 0 && invoke(57, {root}) == 0);
+        assert(invoke(57, {second}) == 0);
+
+        // Socket-created cgroup context drives address-family packet hooks.
+        const auto program = [&](uint32_t direction, uint32_t verdict) {
+            const std::array<uint64_t, 2> packetCode{0xb7 | (uint64_t(verdict) << 32), 0x95};
+            load[0] = 8 | (uint64_t(packetCode.size()) << 32); // BPF_PROG_TYPE_CGROUP_SKB
+            load[8] = uint64_t(direction) << 32;
+            assert(write(releaseEntry, packetCode) && write(attr, load));
+            const auto id = invoke(280, {5, attr, sizeof(load)});
+            assert(id < 256);
+            return id;
+        };
+        const auto attachPacket = [&](uint64_t command, uint32_t direction, uint64_t id) {
+            const std::array<uint32_t, 4> request{uint32_t(root), uint32_t(id), direction, 0};
+            assert(write(attr, request));
+            return invoke(280, {command, attr, sizeof(request)});
+        };
+        const auto blockedIn = program(0, 0), blockedOut = program(1, 0), allowedOut = program(1, 3);
+        assert(attachPacket(8, 0, allowedOut) == uint64_t(-22));
+        assert(attachPacket(8, 1, blockedIn) == 0 && attachPacket(9, 1, blockedIn) == 0);
+        for (uint32_t family : {2, 10}) {
+            const auto receiver = invoke(198, {family, 0x802, 0}), sender = invoke(198, {family, 0x802, 0});
+            assert(receiver < 256 && sender < 256);
+            const auto socketAddress = base + 640, payload = base + 680, from = base + 704;
+            const auto fromLength = base + 736;
+            std::array<uint8_t, 28> address{};
+            address[0] = family;
+            address[family == 2 ? 4 : 23] = family == 2 ? 127 : 1;
+            if (family == 2) address[7] = 1;
+            const uint32_t addressSize = family == 2 ? 16 : 28;
+            assert(write(socketAddress, address) && write(fromLength, addressSize));
+            assert(invoke(200, {receiver, socketAddress, addressSize}) == 0);
+            assert(invoke(204, {receiver, socketAddress, fromLength}) == 0);
+            constexpr uint64_t data = 0x1020304050607080ULL;
+            assert(write(payload, data));
+            const auto send = [&] { return invoke(206, {sender, payload, 8, 0, socketAddress, addressSize}); };
+            const auto recv = [&] { return invoke(207, {receiver, payload, 8, 0, from, fromLength}); };
+            assert(attachPacket(8, 1, blockedOut) == 0);
+            assert(send() == uint64_t(-1) && recv() == uint64_t(-11));
+            assert(attachPacket(9, 1, blockedOut) == 0);
+            assert(attachPacket(8, 1, allowedOut) == 0 && attachPacket(8, 0, blockedIn) == 0);
+            assert(send() == 8 && recv() == uint64_t(-11));
+            assert(attachPacket(9, 0, blockedIn) == 0);
+            assert(send() == 8 && write(payload, uint64_t(0)));
+            assert(invoke(207, {receiver, payload, 4, 0x22, 0, 0}) == 8); // Peek and report full length.
+            assert(recv() == 8 && recv() == uint64_t(-11));
+            uint64_t observed = 0;
+            assert(task.load64(payload, observed) && observed == data);
+            const auto* origin = task.read(from, addressSize, 4);
+            assert(origin && origin[0] == family && origin[family == 2 ? 7 : 23] == 1 &&
+                   (origin[2] || origin[3]));
+            assert(invoke(203, {sender, socketAddress, addressSize}) == 0);
+            assert(invoke(205, {sender, from, fromLength}) == 0);
+            assert(invoke(64, {sender, payload, 8}) == 8 && recv() == 8);
+            assert(attachPacket(9, 1, allowedOut) == 0);
+            assert(invoke(57, {sender}) == 0 && invoke(57, {receiver}) == 0);
+        }
+        assert(invoke(57, {blockedIn}) == 0 && invoke(57, {blockedOut}) == 0 &&
+               invoke(57, {allowedOut}) == 0 && invoke(57, {root}) == 0);
         assert(invoke(220, {0x1200011, 0, 0, 0, base + 128}) == 2);
         assert(invoke(63, {procs, output, 128}) == 4);
         assert(std::memcmp(task.read(output, 4, 4), "1\n2\n", 4) == 0);
