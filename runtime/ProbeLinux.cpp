@@ -5544,7 +5544,8 @@ uint64_t ProbeLinux::testBpfProgram(Machine& machine) {
     const auto fd = descriptors().find(test.fd);
     if (fd == descriptors().end()) return uint64_t(-9);
     const auto& program = fd->second.bpfProgram;
-    if (!program || !BpfProgram::packetProgram(program->type())) return invalid;
+    if (!program || (!BpfProgram::packetProgram(program->type()) && program->type() != BpfProgram::socketFilter))
+        return invalid;
     try {
         BpfProgram::Packet packet;
         packet.bytes.resize(test.inputSize);

@@ -179,7 +179,7 @@ struct BpfMap {
 
 class BpfProgram {
 public:
-    static constexpr uint32_t socketFilter = 1, classifier = 3, cgroupPacket = 8, socketOperations = 13;
+    static constexpr uint32_t socketFilter = 1, classifier = 3, trafficAction = 4, cgroupPacket = 8, socketOperations = 13;
     static constexpr uint32_t cgroupSocketOperations = 3;
     static constexpr size_t maxInstructions = 4096, maxPacketBytes = 65535;
     using MapResolver = std::function<std::shared_ptr<BpfMap>(uint32_t)>;
@@ -253,7 +253,8 @@ public:
         }
     };
 
-    static bool packetProgram(uint32_t type) { return type == classifier || type == cgroupPacket; }
+    static bool trafficControl(uint32_t type) { return type == classifier || type == trafficAction; }
+    static bool packetProgram(uint32_t type) { return trafficControl(type) || type == cgroupPacket; }
     static bool supports(uint32_t type) {
         return type == socketFilter || packetProgram(type) || type == socketOperations;
     }
@@ -274,7 +275,7 @@ public:
                 const auto& upper = decoded[pc + 1];
                 if (upper.code || upper.registers || upper.offset) return false;
                 if (i.source() == 1) { // BPF_PSEUDO_MAP_FD
-                    if (type == socketFilter || upper.immediate) return false;
+                    if (upper.immediate) return false;
                     auto map = resolve(uint32_t(i.immediate));
                     if (!map || map->type == 25) return false;
                     maps.emplace(pc, std::move(map));
@@ -299,11 +300,9 @@ public:
                     case 26: // skb_load_bytes
                         if (type == socketOperations) return false;
                         break;
-                    case 1:
-                        if (type == socketFilter) return false;
-                        break;
-                    case 2: // bpf_map_update_elem
-                        if (!packetProgram(type)) return false;
+                    case 1: break; // bpf_map_lookup_elem
+                    case 2: case 46: case 47: // Map updates and socket identity.
+                        if (type == socketOperations) return false;
                         break;
                     case 107:
                         if (type == socketFilter) return false;
@@ -314,12 +313,12 @@ public:
                     case 84: case 85: case 86:
                         if (type != cgroupPacket) return false;
                         break;
-                    case 46: case 47: case 68: case 95: case 125: case 130: case 131:
+                    case 68: case 95: case 125: case 130: case 131:
                     case 132: case 133: case 134: case 164:
                         if (!packetProgram(type)) return false;
                         break;
                     case 9: case 10: case 11: case 23: case 31: case 39: case 40: case 43: case 50:
-                        if (type != classifier) return false;
+                        if (!trafficControl(type)) return false;
                         break;
                     default: return false;
                 }
@@ -330,7 +329,7 @@ public:
                     (i.immediate != 16 && i.immediate != 32 && i.immediate != 64)) return false;
             } else if (i.kind() == 0 && (i.mode() == 0x20 || i.mode() == 0x40)) {
                 // Legacy absolute and indirect packet loads use r6 as their implicit skb.
-                if ((type != socketFilter && type != classifier) || i.destination() || i.offset || i.width() == 8 ||
+                if ((type != socketFilter && !trafficControl(type)) || i.destination() || i.offset || i.width() == 8 ||
                     (i.mode() == 0x20 && i.source())) return false;
             } else if (i.kind() == 5) {
                 if (!jump(i.operation(), 0, 0).has_value() || (i.operation() == 0 && i.code != 0x05))
@@ -347,7 +346,7 @@ public:
                     i.operation() == 0xc0) && uint32_t(i.immediate) >= 64) return false;
             } else if (i.kind() == 1 || i.kind() == 3) {
                 if (i.kind() == 1 && i.destination() == 10) return false;
-                if (i.mode() != 0x60 && (!packetProgram(type) || i.kind() != 3 || i.mode() != 0xc0 ||
+                if (i.mode() != 0x60 && (type == socketOperations || i.kind() != 3 || i.mode() != 0xc0 ||
                     (i.width() != 4 && i.width() != 8))) return false;
                 if (i.immediate) return false; // The only supported atomic operation is ADD without fetch.
             } else {
@@ -386,7 +385,7 @@ public:
     }
 
     std::optional<uint32_t> classify(Packet& packet) const {
-        if (!packetProgram(programType) || packet.bytes.size() > maxPacketBytes ||
+        if ((!packetProgram(programType) && programType != socketFilter) || packet.bytes.size() > maxPacketBytes ||
             packet.networkOffset > packet.bytes.size()) return std::nullopt;
         return execute(packet.bytes, &packet);
     }
@@ -581,7 +580,7 @@ private:
                 return {};
             return memory.subspan(address - base, size);
         };
-        const bool networkView = programType == cgroupPacket;
+        const bool networkView = classifierPacket && (programType == cgroupPacket || programType == socketFilter);
         const auto dataOffset = networkView ? classifierPacket->networkOffset : 0;
         const auto packetData = [&] { return packet.subspan(dataOffset); };
         auto spanAt = [&](uint64_t address, uint64_t size, bool write, size_t depth) -> std::span<uint8_t> {
@@ -699,8 +698,9 @@ private:
                 case 16: return classifierPacket->protocol;
                 case 36: return classifierPacket->ingressIfindex;
                 case 40: return classifierPacket->ifindex;
-                case 76: return uint32_t(packetBase);
-                case 80: return uint32_t(packetBase + packetData().size());
+                case 76: case 80:
+                    if (programType == socketFilter) return std::nullopt;
+                    return uint32_t(packetBase + (offset == 80 ? packetData().size() : 0));
                 case 164: case 176: return 0; // No segmentation offload on the linear test packet.
                 default: return std::nullopt;
             }
@@ -730,9 +730,10 @@ private:
                         if (registers[6] != context) return std::nullopt;
                         const auto offset = uint32_t(i.immediate) + (i.mode() == 0x40 ? uint32_t(src) : 0);
                         const auto width = i.width();
-                        if (offset > packet.size() || width > packet.size() - offset) return 0;
+                        const auto data = packetData();
+                        if (offset > data.size() || width > data.size() - offset) return 0;
                         uint32_t value = 0;
-                        for (const auto byte : packet.subspan(offset, width)) value = (value << 8) | byte;
+                        for (const auto byte : data.subspan(offset, width)) value = (value << 8) | byte;
                         registers[0] = value;
                         std::fill_n(registers.begin() + 1, 5, 0);
                         continue;
@@ -839,11 +840,11 @@ private:
                             }
                             case 46: // bpf_get_socket_cookie
                                 if (r1 != context) return std::nullopt;
-                                result = classifierPacket->socketCookie;
+                                result = classifierPacket ? classifierPacket->socketCookie : 0;
                                 break;
                             case 47: // bpf_get_socket_uid
                                 if (r1 != context) return std::nullopt;
-                                result = classifierPacket->socketUid;
+                                result = classifierPacket ? classifierPacket->socketUid : 65534;
                                 break;
                             case 84: case 85: { // bpf_sk_lookup_tcp / bpf_sk_lookup_udp
                                 if (r1 != context) return std::nullopt;

@@ -1125,7 +1125,14 @@ int main() {
             return call(280, {5, attr, sizeof(request)});
         };
         assert(write(code, instructions));
-        assert(loadProgram(1) == uint64_t(-22)); // A socket filter cannot load this program.
+        const auto filter = loadProgram(1);
+        assert(filter < 256);
+        const std::array<uint8_t, 18> filterPacket{};
+        const std::array<uint64_t, 5> filterRun{filter, filterPacket.size(), packet};
+        assert(write(packet, filterPacket) && write(attr, filterRun));
+        // Filters can perform map operations, but cannot access skb.data directly.
+        assert(call(280, {10, attr, sizeof(filterRun)}) == uint64_t(-22));
+        assert(call(57, {filter}) == 0);
         const auto program = loadProgram(3);
         assert(program < 256);
         const auto info = base + 0x500, ids = base + 0x580;
