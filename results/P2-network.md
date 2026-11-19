@@ -164,3 +164,6 @@
 - Mac 复测越过向量最值操作后，SurfaceFlinger 将主显示设为 60 Hz、完成开启显示的 power mode 2，随后触发 `cmgt v3.2d, v2.2d, #0`。此前控制管道的 epoll 错误已消失。向量有符号比较修复通过宿主 ABI 和 iOS 签名构建。第 7592 号真机验证进程已经运行包含前一批向量修复的版本。
 
 - iPhone 11 第 7592 号进程确认原版主显示已完成 power mode 2，随后触发和 Mac 相同的 `CMGT` 停点。Mac 修复后推进到 `CMLE`，并在相同基本块发现 `UMINV`。两项指令实现的宿主回归和 iOS 签名构建均已通过。
+
+- 补齐 `SMOV` 和向量 `FRINTP` 后，Mac 上原版 Android 17 完成 DisplayManager 启动（740 ms），在 WaitForDisplay 等到主显示（704 ms），随后进入 PackageManagerService。iPhone 11 第 7596 号进程曾停在相同 `SMOV`，包含两项修复的版本已作为第 7604 号进程启动。
+- 启动镜像采集加入原版 `bootanimation`，同版 API 37 ARM64 参考采集共 1,196 个文件，确认 `libbootanimation_preapex.so` 及其额外 ELF 依赖，并读回参考 SELinux 的 `init → bootanim` 转换。既有 `framework-res.apk` 包含内建开机动画使用的两张标志图片。待实测客体提交动画帧。[AOSP 开机动画实现](https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/cmds/bootanimation/BootAnimation.cpp)
