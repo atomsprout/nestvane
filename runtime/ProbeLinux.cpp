@@ -32,6 +32,7 @@ constexpr size_t maxWritableFiles = 1024;
 constexpr size_t maxGuestDirectories = 2048;
 constexpr size_t maxGuestTasks = 256;
 constexpr uint32_t guestLoopbackIndex = 1;
+constexpr size_t bpfMapBudget = 32 * 1024 * 1024;
 constexpr std::string_view cgroupRoot = "/sys/fs/cgroup";
 constexpr std::string_view cgroupProcs = "/cgroup.procs";
 constexpr uint64_t lazyAnonymousThreshold = 4 * 1024 * 1024;
@@ -1076,7 +1077,14 @@ std::optional<ProbeLinux::Descriptor> ProbeLinux::find(std::string_view path, ui
     if (path == "/dev/random" || path == "/dev/urandom")
         return Descriptor{std::string(path), {}, flags, Node::entropy};
     if (path == "/dev/kmsg") return Descriptor{std::string(path), {}, flags, Node::kernelLog};
-    if (directoryExists(path)) return Descriptor{std::string(path), {}, flags, Node::directory};
+    if (directoryExists(path)) {
+        Descriptor result{std::string(path), {}, flags, Node::directory};
+        if (path == cgroupRoot || inside(path, cgroupRoot)) {
+            const auto node = cgroupFiles.find(result.path + std::string(cgroupProcs));
+            if (node != cgroupFiles.end()) result.cgroupDirectory = node->second;
+        }
+        return result;
+    }
     return {};
 }
 
@@ -2120,11 +2128,15 @@ bool ProbeLinux::socketCall(Machine& machine) {
     switch (x[8]) {
         case 198: case 199: { // socket, socketpair
             const bool uevent = x[8] == 198 && x[0] == 16 && x[2] == 15; // NETLINK_KOBJECT_UEVENT
-            if (x[0] != 1 && !uevent) { x[0] = uint64_t(-97); break; }
+            const bool inet = x[8] == 198 && (x[0] == 2 || x[0] == 10);
+            if (x[0] != 1 && !uevent && !inet) { x[0] = uint64_t(-97); break; }
             const uint32_t type = x[1] & 15;
             constexpr uint32_t flags = 0x80000 | 0x800;
+            if (inet && (type != 1 && type != 2)) { x[0] = uint64_t(-94); break; }
+            const uint32_t inetProtocol = type == 1 ? 6 : 17;
+            if (inet && x[2] && x[2] != inetProtocol) { x[0] = uint64_t(-93); break; }
             if (x[1] & ~(uint64_t(flags) | 15) ||
-                (uevent ? type != 2 : (type != 1 && type != 2 && type != 5) || x[2])) {
+                (!inet && (uevent ? type != 2 : (type != 1 && type != 2 && type != 5) || x[2]))) {
                 x[0] = uint64_t(-22);
                 break;
             }
@@ -2134,8 +2146,13 @@ bool ProbeLinux::socketCall(Machine& machine) {
             endpoint->context = current->socketCreateContext.empty()
                 ? current->process->context : current->socketCreateContext;
             endpoint->credentials = {uint32_t(processId()), userId(), groupId()};
-            Descriptor entry{uevent ? "socket:[uevent]" : "socket:[unix]", {}, uint32_t(x[1] & flags) | 2, Node::socket};
+            Descriptor entry{inet ? "socket:[inet]" : uevent ? "socket:[uevent]" : "socket:[unix]",
+                             {}, uint32_t(x[1] & flags) | 2, Node::socket};
             if (uevent) endpoint->uevent.emplace();
+            endpoint->family = x[0];
+            endpoint->protocol = inet ? inetProtocol : x[2];
+            endpoint->cookie = nextSocketCookie++;
+            if (inet && !allowInetSocket(endpoint)) { x[0] = uint64_t(-1); break; }
             entry.socket = endpoint;
             descriptors().emplace(first, entry);
             if (x[8] == 198) { x[0] = first; break; }
@@ -2144,6 +2161,7 @@ bool ProbeLinux::socketCall(Machine& machine) {
             const std::array<uint32_t, 2> pair{first, second};
             if (!writeGuest(machine, x[3], pair)) { descriptors().erase(first); x[0] = uint64_t(-14); break; }
             entry.socket = std::make_shared<SocketState>(type);
+            entry.socket->cookie = nextSocketCookie++;
             entry.socket->peer = endpoint;
             endpoint->peer = entry.socket;
             entry.socket->connected = endpoint->connected = true;
@@ -2158,6 +2176,7 @@ bool ProbeLinux::socketCall(Machine& machine) {
         case 200: case 203: { // bind, connect
             if (fd == descriptors().end()) { x[0] = uint64_t(-9); break; }
             if (!fd->second.socket) { x[0] = uint64_t(-88); break; }
+            if (fd->second.socket->family == 2 || fd->second.socket->family == 10) { x[0] = uint64_t(-95); break; }
             if (auto& uevent = fd->second.socket->uevent; uevent) {
                 std::array<uint32_t, 3> address{};
                 if (x[8] != 200 || x[2] != sizeof(address)) { x[0] = invalid; break; }
@@ -2285,6 +2304,9 @@ bool ProbeLinux::socketCall(Machine& machine) {
             if (endpoint.uevent) {
                 const std::array<uint32_t, 3> address{16, endpoint.uevent->pid, endpoint.uevent->groups};
                 x[0] = writeAddress({reinterpret_cast<const uint8_t*>(address.data()), sizeof(address)});
+            } else if (endpoint.family == 2 || endpoint.family == 10) {
+                const std::array<uint8_t, 28> address{uint8_t(endpoint.family)};
+                x[0] = writeAddress(std::span(address).first(endpoint.family == 2 ? 16 : 28));
             } else {
                 x[0] = writeUnixAddress(x[8] == 204 ? endpoint.localAddress : endpoint.peerAddress);
             }
@@ -2432,12 +2454,19 @@ bool ProbeLinux::socketCall(Machine& machine) {
                     case 3: value = endpoint.type; break; // SO_TYPE
                     case 7: value = endpoint.sendBuffer; break; // SO_SNDBUF
                     case 8: value = endpoint.uevent ? endpoint.uevent->receiveBuffer : endpoint.receiveBuffer; break;
-                    case 38: value = endpoint.uevent ? 15 : 0; break; // SO_PROTOCOL
-                    case 39: value = endpoint.uevent ? 16 : 1; break; // SO_DOMAIN
+                    case 38: value = endpoint.protocol; break; // SO_PROTOCOL
+                    case 39: value = endpoint.family; break; // SO_DOMAIN
                 }
                 size = std::min<uint32_t>(size, sizeof(value));
                 x[0] = (!size || machine.write(x[3], {reinterpret_cast<const uint8_t*>(&value), size})) &&
                        writeGuest(machine, x[4], size) ? 0 : uint64_t(-14);
+                break;
+            }
+            if (x[2] == 57) { // SO_COOKIE
+                if (size < sizeof(endpoint.cookie)) { x[0] = invalid; break; }
+                const uint64_t cookie = fd->second.socket->cookie
+                    ? fd->second.socket->cookie : (fd->second.socket->cookie = nextSocketCookie++);
+                x[0] = writeGuest(machine, x[3], cookie) && writeGuest(machine, x[4], uint32_t(sizeof(cookie))) ? 0 : uint64_t(-14);
                 break;
             }
             if (x[2] != 17 && x[2] != 31) return false; // SO_PEERCRED or SO_PEERSEC
@@ -2810,6 +2839,7 @@ bool ProbeLinux::fileCall(Machine& machine) {
                                 return task.second.wait != Wait::exited && task.second.process->cgroup == backing;
                             })) { x[0] = uint64_t(-16); break; }
                         cgroupFiles.erase(file);
+                        inetCreatePrograms.erase(backing);
                         x[0] = directories.erase(backing) ? 0 : uint64_t(-2);
                     } else {
                         x[0] = directories.erase(backing) ? 0 : uint64_t(-2);
@@ -5170,6 +5200,102 @@ bool ProbeLinux::enforceSeccomp(Machine& machine) {
     return true;
 }
 
+bool ProbeLinux::allowInetSocket(const std::shared_ptr<SocketState>& socket) {
+    if (inetCreatePrograms.empty()) return true;
+    constexpr uint32_t multi = 2;
+    const BpfProgram::SocketCreate context{socket, socket->cookie, socket->credentials[1], socket->credentials[2],
+        socket->family, socket->type, socket->protocol, [&](size_t bytes) { return canAllocateSocketStorage(bytes); }};
+    bool evaluated = false;
+    auto group = std::string_view(current->process->cgroup);
+    while (group == cgroupRoot || inside(group, cgroupRoot)) {
+        const auto attachment = inetCreatePrograms.find(group);
+        if (attachment != inetCreatePrograms.end() && (!evaluated || (attachment->second.flags & multi))) {
+            for (const auto& program : attachment->second.programs) {
+                const auto result = program->runSocketCreate(context);
+                if (!result || *result != 1) return false;
+            }
+            evaluated = true;
+        }
+        if (group == cgroupRoot) break;
+        group = group.substr(0, group.rfind('/'));
+    }
+    return true;
+}
+
+uint64_t ProbeLinux::changeBpfCgroupAttachment(Machine& machine) {
+    constexpr uint32_t allowOverride = 1, multi = 2;
+    const auto& x = machine.cpu.x;
+    if (!(current->process->effectiveCaps & (1ULL << 12))) return uint64_t(-1); // CAP_NET_ADMIN
+    if (x[2] > pageSize) return uint64_t(-7);
+    std::array<uint8_t, pageSize> input{};
+    if (!machine.readInto(x[1], std::span(input).first(x[2]))) return uint64_t(-14);
+    std::array<uint32_t, 4> fields{};
+    std::memcpy(fields.data(), input.data(), sizeof(fields));
+    const auto [targetFd, programFd, type, flags] = fields;
+    const bool attach = x[0] == 8;
+    if (type != BpfProgram::cgroupInetCreate) return uint64_t(-95);
+    if (flags > multi || (!attach && flags) ||
+        std::ranges::any_of(std::span(input).subspan(sizeof(fields)), [](auto byte) { return byte != 0; }))
+        return invalid;
+    const auto fd = descriptors().find(targetFd);
+    if (fd == descriptors().end()) return uint64_t(-9);
+    const auto& target = fd->second;
+    if (!target.cgroupDirectory) return invalid;
+    const auto live = cgroupFiles.find(target.path + std::string(cgroupProcs));
+    if (live == cgroupFiles.end() || live->second != target.cgroupDirectory) return uint64_t(-19);
+    const auto attachment = inetCreatePrograms.find(target.path);
+    const auto source = descriptors().find(programFd);
+    const auto program = source == descriptors().end() ? nullptr : source->second.bpfProgram;
+    if (!attach) {
+        if (attachment == inetCreatePrograms.end()) return uint64_t(-2);
+        auto& programs = attachment->second.programs;
+        if (attachment->second.flags & multi) {
+            if (!program) return source == descriptors().end() ? uint64_t(-9) : invalid;
+            if (!std::erase(programs, program)) return uint64_t(-2);
+        } else {
+            programs.clear();
+        }
+        if (programs.empty()) inetCreatePrograms.erase(attachment);
+        return 0;
+    }
+    if (!program) return source == descriptors().end() ? uint64_t(-9) : invalid;
+    if (program->type() != BpfProgram::cgroupSocket) return invalid;
+    for (const auto& [path, item] : inetCreatePrograms) {
+        if (inside(target.path, path) && !(item.flags & (multi | allowOverride))) return uint64_t(-1);
+        if (inside(path, target.path) && !flags) return uint64_t(-1);
+    }
+    if (attachment != inetCreatePrograms.end() && attachment->second.flags != flags) return uint64_t(-1);
+    if (attachment == inetCreatePrograms.end()) {
+        inetCreatePrograms.emplace(target.path, CgroupSocketPrograms{flags, {program}});
+    } else if (flags & multi) {
+        auto& programs = attachment->second.programs;
+        if (std::ranges::find(programs, program) != programs.end()) return uint64_t(-17);
+        if (programs.size() == 64) return uint64_t(-7);
+        programs.push_back(program);
+    } else {
+        attachment->second.programs.front() = program;
+    }
+    return 0;
+}
+
+size_t ProbeLinux::bpfMapBytes() {
+    size_t bytes = 0;
+    for (const auto& [id, weak] : bpfMaps) {
+        if (const auto map = weak.lock()) {
+            if (map->type == BpfMap::socketStorage) {
+                std::erase_if(map->socketValues, [](const auto& entry) { return entry.first.expired(); });
+                bytes += map->socketValues.size() * (map->valueSize + 128);
+            }
+            bytes += map->budgetBytes;
+        }
+    }
+    return bytes;
+}
+
+bool ProbeLinux::canAllocateSocketStorage(size_t valueSize) {
+    return bpfMapBytes() <= bpfMapBudget - (valueSize + 128);
+}
+
 uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
     constexpr uint64_t fault = uint64_t(-14), tooBig = uint64_t(-7);
     constexpr uint64_t create = 0, lookup = 1, update = 2, erase = 3, nextKey = 4;
@@ -5177,7 +5303,6 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
     constexpr uint32_t noPrealloc = 1, readOnly = 1 << 3, writeOnly = 1 << 4, programReadOnly = 1 << 7;
     constexpr uint32_t mappable = 1 << 10;
     constexpr uint64_t capBpf = 1ULL << 39, capSysAdmin = 1ULL << 21;
-    constexpr size_t mapBudget = 32 * 1024 * 1024;
     const auto& x = machine.cpu.x;
     const auto command = x[0];
     if (kernelSettings.at("/proc/sys/kernel/unprivileged_bpf_disabled").value &&
@@ -5190,20 +5315,6 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
     const auto nonzero = [&](size_t first, size_t last) {
         const auto bytes = std::span(input).subspan(first, last - first);
         return std::any_of(bytes.begin(), bytes.end(), [](auto b) { return b != 0; });
-    };
-
-    const auto allocatedBytes = [&] {
-        size_t allocated = 0;
-        for (const auto& entry : bpfMaps) {
-            if (const auto map = entry.second.lock()) {
-                if (map->type == BpfMap::socketStorage) {
-                    std::erase_if(map->socketValues, [](const auto& storage) { return storage.first.expired(); });
-                    allocated += map->socketValues.size() * (map->valueSize + 128);
-                }
-                allocated += map->budgetBytes;
-            }
-        }
-        return allocated;
     };
 
     if (command == create) {
@@ -5256,14 +5367,14 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
         // one aligned value for each possible guest CPU, of which this guest has one.
         const uint64_t valueStride = array || perCpu ? (uint64_t(valueSize) + 7) & ~uint64_t{7} : valueSize;
         const uint64_t entryBytes = valueStride + (array ? 0 : uint64_t(keySize) + 128);
-        if (entries && !ring && entryBytes > mapBudget / entries) return noMemory;
+        if (entries && !ring && entryBytes > bpfMapBudget / entries) return noMemory;
         const uint64_t valueBytes = ring ? 2 * (uint64_t(entries) + pageSize) : socket ? 128 : entryBytes * entries;
         const auto bytes = flags & mappable ? pageAlignedLength(valueBytes) : valueBytes;
-        if (bytes > mapBudget) return noMemory;
+        if (bytes > bpfMapBudget) return noMemory;
         const auto newFd = freeDescriptor();
         if (newFd == descriptorCapacity) return uint64_t(-24);
         std::erase_if(bpfMaps, [](const auto& entry) { return entry.second.expired(); });
-        if (allocatedBytes() > mapBudget - bytes || bpfMaps.size() >= 256) return noMemory;
+        if (bpfMapBytes() > bpfMapBudget - bytes || bpfMaps.size() >= 256) return noMemory;
         if (nextBpfMapId >= INT32_MAX) return uint64_t(-28);
         try {
             auto map = std::make_shared<BpfMap>(prefix);
@@ -5330,7 +5441,7 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
         }
         if (storage == map.socketValues.end() && flags == 2) return uint64_t(-2);
         if (storage != map.socketValues.end() && flags == 1) return uint64_t(-17);
-        if (storage == map.socketValues.end() && allocatedBytes() > mapBudget - (map.valueSize + 128))
+        if (storage == map.socketValues.end() && !canAllocateSocketStorage(map.valueSize))
             return noMemory;
         try {
             std::vector<uint8_t> replacement(map.valueSize);
@@ -5436,7 +5547,8 @@ uint64_t ProbeLinux::loadBpfProgram(Machine& machine) {
     uint32_t ifindex = 0, attachType = 0;
     std::memcpy(&ifindex, input.data() + 64, sizeof(ifindex));
     std::memcpy(&attachType, input.data() + 68, sizeof(attachType));
-    const auto expected = type == BpfProgram::socketOperations ? BpfProgram::cgroupSocketOperations : 0;
+    const auto expected = type == BpfProgram::socketOperations ? BpfProgram::cgroupSocketOperations :
+        type == BpfProgram::cgroupSocket ? BpfProgram::cgroupInetCreate : 0;
     const bool validAttach = type == BpfProgram::cgroupPacket ? attachType <= 1 : !attachType || attachType == expected;
     if ((flags & ~3U) || flags == 3 || ifindex || !validAttach ||
         std::any_of(input.begin() + 108, input.end(), [](auto b) { return b != 0; }))
@@ -5567,7 +5679,7 @@ uint64_t ProbeLinux::testBpfProgram(Machine& machine) {
         packet.ifindex = guestLoopbackIndex;
         packet.networkOffset = 14;
         packet.hasMacHeader = true;
-        packet.socketCookie = nextBpfTestCookie++;
+        packet.socketCookie = nextSocketCookie++;
         const auto repetitions = std::max(1U, test.repeat);
         const auto start = std::chrono::steady_clock::now();
         for (uint32_t run = 0; run < repetitions; ++run) {
@@ -5846,6 +5958,7 @@ bool ProbeLinux::syscall(Machine& machine) {
         case 280: { // bpf
             if (x[0] <= 4) { x[0] = bpfMapCall(machine); break; }
             if (x[0] == 5) { x[0] = loadBpfProgram(machine); break; }
+            if (x[0] == 8 || x[0] == 9) { x[0] = changeBpfCgroupAttachment(machine); break; }
             if (x[0] == 10) { x[0] = testBpfProgram(machine); break; }
             if (x[0] >= 11 && x[0] <= 14) { x[0] = bpfObjectIdCall(machine); break; }
             if (x[0] == 15) { x[0] = bpfObjectInfo(machine); break; }

@@ -179,8 +179,8 @@ struct BpfMap {
 
 class BpfProgram {
 public:
-    static constexpr uint32_t socketFilter = 1, classifier = 3, trafficAction = 4, cgroupPacket = 8, socketOperations = 13;
-    static constexpr uint32_t cgroupSocketOperations = 3;
+    static constexpr uint32_t socketFilter = 1, classifier = 3, trafficAction = 4, cgroupPacket = 8, cgroupSocket = 9, socketOperations = 13;
+    static constexpr uint32_t cgroupInetCreate = 2, cgroupSocketOperations = 3;
     static constexpr size_t maxInstructions = 4096, maxPacketBytes = 65535;
     using MapResolver = std::function<std::shared_ptr<BpfMap>(uint32_t)>;
 
@@ -253,10 +253,17 @@ public:
         }
     };
 
+    struct SocketCreate {
+        std::shared_ptr<void> socket;
+        uint64_t cookie;
+        uint32_t uid, gid, family, type, protocol;
+        std::function<bool(size_t)> canAllocateStorage;
+    };
+
     static bool trafficControl(uint32_t type) { return type == classifier || type == trafficAction; }
     static bool packetProgram(uint32_t type) { return trafficControl(type) || type == cgroupPacket; }
     static bool supports(uint32_t type) {
-        return type == socketFilter || packetProgram(type) || type == socketOperations;
+        return type == socketFilter || packetProgram(type) || type == cgroupSocket || type == socketOperations;
     }
 
     bool load(uint32_t type, std::span<const uint8_t> bytes, const MapResolver& resolve) {
@@ -298,10 +305,16 @@ public:
                 if (i.registers || i.offset) return false;
                 switch (i.immediate) {
                     case 26: // skb_load_bytes
-                        if (type == socketOperations) return false;
+                        if (type == socketOperations || type == cgroupSocket) return false;
                         break;
                     case 1: break; // bpf_map_lookup_elem
-                    case 2: case 46: case 47: // Map updates and socket identity.
+                    case 2: case 47:
+                        if (type == socketOperations || type == cgroupSocket) return false;
+                        break;
+                    case 15: // bpf_get_current_uid_gid
+                        if (type != cgroupSocket) return false;
+                        break;
+                    case 46: // bpf_get_socket_cookie
                         if (type == socketOperations) return false;
                         break;
                     case 107:
@@ -346,7 +359,8 @@ public:
                     i.operation() == 0xc0) && uint32_t(i.immediate) >= 64) return false;
             } else if (i.kind() == 1 || i.kind() == 3) {
                 if (i.kind() == 1 && i.destination() == 10) return false;
-                if (i.mode() != 0x60 && (type == socketOperations || i.kind() != 3 || i.mode() != 0xc0 ||
+                if (i.mode() != 0x60 && (type == socketOperations || type == cgroupSocket ||
+                    i.kind() != 3 || i.mode() != 0xc0 ||
                     (i.width() != 4 && i.width() != 8))) return false;
                 if (i.immediate) return false; // The only supported atomic operation is ADD without fetch.
             } else {
@@ -388,6 +402,11 @@ public:
         if ((!packetProgram(programType) && programType != socketFilter) || packet.bytes.size() > maxPacketBytes ||
             packet.networkOffset > packet.bytes.size()) return std::nullopt;
         return execute(packet.bytes, &packet);
+    }
+
+    std::optional<uint32_t> runSocketCreate(const SocketCreate& socket) const {
+        if (programType != cgroupSocket || !socket.socket) return std::nullopt;
+        return execute({}, nullptr, nullptr, &socket);
     }
 
     std::optional<uint32_t> runSocketOperations(SocketOperations& socket) const {
@@ -551,7 +570,8 @@ private:
     };
 
     std::optional<uint32_t> execute(std::span<const uint8_t> packet, Packet* classifierPacket,
-                                    SocketOperations* sockOps = nullptr) const {
+                                    SocketOperations* sockOps = nullptr,
+                                    const SocketCreate* createSocket = nullptr) const {
         // Interpreter addresses identify bounded packet, stack and map regions. The guest never
         // receives host addresses. Guest execution is serialized, so an atomic ADD needs no lock.
         constexpr size_t maxDepth = 8;
@@ -679,7 +699,8 @@ private:
             }
         };
 
-        const auto* socket = sockOps ? &sockOps->socket : classifierPacket ? &classifierPacket->socket : nullptr;
+        const auto* socket = createSocket ? &createSocket->socket : sockOps ? &sockOps->socket :
+                             classifierPacket ? &classifierPacket->socket : nullptr;
         const bool hasSocket = socket && *socket;
         constexpr uint64_t socketStride = 256;
         std::array<std::shared_ptr<void>, 15> socketReferences{};
@@ -838,9 +859,12 @@ private:
                                 }
                                 break;
                             }
+                            case 15: // bpf_get_current_uid_gid
+                                result = uint64_t(createSocket->gid) << 32 | createSocket->uid;
+                                break;
                             case 46: // bpf_get_socket_cookie
                                 if (r1 != context) return std::nullopt;
-                                result = classifierPacket ? classifierPacket->socketCookie : 0;
+                                result = createSocket ? createSocket->cookie : classifierPacket ? classifierPacket->socketCookie : 0;
                                 break;
                             case 47: // bpf_get_socket_uid
                                 if (r1 != context) return std::nullopt;
@@ -879,12 +903,25 @@ private:
                                 sockOps->callbackFlags = uint32_t(r2) & SocketOperations::allCallbackFlags;
                                 result = uint32_t(r2) & ~SocketOperations::allCallbackFlags;
                                 break;
-                            case 107: { // bpf_sk_storage_get for an existing socket entry.
+                            case 107: { // bpf_sk_storage_get
                                 auto* map = mapFor(r1);
-                                if (!map || map->type != BpfMap::socketStorage || r3 || registers[4]) return std::nullopt;
-                                const auto* owner = r2 == socketHandle ? socket : socketReference(r2);
+                                const auto flags = registers[4];
+                                if (!map || map->type != BpfMap::socketStorage || (flags & ~1ULL) ||
+                                    (r3 && !flags)) return std::nullopt;
+                                const auto* owner = r2 == socketHandle || (createSocket && r2 == context)
+                                    ? socket : socketReference(r2);
                                 if (!owner || !*owner) break;
-                                const auto found = map->socketValues.find(*owner);
+                                auto found = map->socketValues.find(*owner);
+                                if (found == map->socketValues.end() && flags && createSocket &&
+                                    createSocket->canAllocateStorage && createSocket->canAllocateStorage(map->valueSize)) {
+                                    const auto initial = r3 ? read(r3, map->valueSize) : std::span<const uint8_t>{};
+                                    if (r3 && initial.empty()) return std::nullopt;
+                                    try {
+                                        std::vector<uint8_t> value(map->valueSize);
+                                        std::ranges::copy(initial, value.begin());
+                                        found = map->socketValues.emplace(*owner, std::move(value)).first;
+                                    } catch (const std::bad_alloc&) { break; }
+                                }
                                 if (found != map->socketValues.end()) result = valueAddress(*map, found->second);
                                 break;
                             }
@@ -997,6 +1034,17 @@ private:
                 switch (i.kind()) {
                     case 1: {
                         const auto address = src + i.offset;
+                        if (createSocket && address >= context && address < context + 24) {
+                            if (i.width() != 4) return std::nullopt;
+                            switch (address - context) {
+                                case 0: case 16: case 20: dst = 0; break; // Bound interface, mark and priority.
+                                case 4: dst = createSocket->family; break;
+                                case 8: dst = createSocket->type; break;
+                                case 12: dst = createSocket->protocol; break;
+                                default: return std::nullopt;
+                            }
+                            break;
+                        }
                         if (sockOps && address >= context && address < context + 216) {
                             const auto offset = address - context;
                             if (i.width() == 8 && offset == 184) dst = hasSocket ? socketHandle : 0;

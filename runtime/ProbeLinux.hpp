@@ -168,6 +168,8 @@ private:
     };
     struct SocketState {
         uint32_t type;
+        uint32_t family = 1, protocol = 0;
+        uint64_t cookie = 0;
         std::array<uint32_t, 3> peerCredentials{0, UINT32_MAX, UINT32_MAX};
         std::string context, peerContext;
         std::string localAddress, peerAddress;
@@ -203,7 +205,16 @@ private:
     std::map<uint32_t, std::weak_ptr<BpfMap>> bpfMaps;
     std::map<uint32_t, std::weak_ptr<const BpfProgram>> bpfPrograms;
     uint32_t nextBpfMapId = 1, nextBpfProgramId = 1, nextBpfTypeId = 1;
-    uint64_t nextBpfTestCookie = 1;
+    uint64_t nextSocketCookie = 1;
+    size_t bpfMapBytes();
+    bool canAllocateSocketStorage(size_t valueSize);
+    uint64_t changeBpfCgroupAttachment(Machine& machine);
+    bool allowInetSocket(const std::shared_ptr<SocketState>& socket);
+    struct CgroupSocketPrograms {
+        uint32_t flags;
+        std::vector<std::shared_ptr<const BpfProgram>> programs;
+    };
+    std::map<std::string, CgroupSocketPrograms, std::less<>> inetCreatePrograms;
     uint64_t bpfMapCall(Machine& machine);
     uint64_t loadBpfProgram(Machine& machine);
     uint64_t testBpfProgram(Machine& machine);
@@ -390,7 +401,7 @@ private:
         std::shared_ptr<int> ptyEnd{};
         std::shared_ptr<BinderConnection> binder{};
         const Ext4Node* ext4File = nullptr;
-        std::shared_ptr<Directory> cgroupFile{};
+        std::shared_ptr<Directory> cgroupFile{}, cgroupDirectory{};
         std::shared_ptr<Ashmem> ashmem{};
         std::shared_ptr<GraphicsPipeState> graphics{};
         std::shared_ptr<GraphicsAddressSpace> graphicsAddress{};

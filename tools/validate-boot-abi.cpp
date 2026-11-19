@@ -1601,6 +1601,26 @@ int main() {
         constexpr std::string_view expected = "0::/system/uid_1000\n";
         assert(invoke(63, {proc, output, 128}) == expected.size());
         assert(std::memcmp(task.read(output, expected.size(), 4), expected.data(), expected.size()) == 0);
+        path("/sys/fs/cgroup");
+        const auto root = invoke(56, {cwd, base, 0x4000});
+        assert(root < 256);
+        constexpr auto license = base + 384, code = base + 400, attr = base + 440;
+        const auto write = [&](uint64_t address, const auto& value) {
+            return task.write(address, {reinterpret_cast<const uint8_t*>(&value), sizeof(value)});
+        };
+        std::array<uint64_t, 9> load{9 | (2ULL << 32), code, license};
+        load[8] = 2ULL << 32; // BPF_CGROUP_INET_SOCK_CREATE
+        assert(write(license, "GPL") && write(code, std::array<uint64_t, 2>{0xb7, 0x95}) && write(attr, load));
+        const auto deny = invoke(280, {5, attr, sizeof(load)});
+        assert(deny < 256);
+        const std::array<uint32_t, 4> attach{uint32_t(root), uint32_t(deny), 2, 0};
+        assert(write(attr, attach) && invoke(280, {8, attr, sizeof(attach)}) == 0);
+        assert(invoke(57, {deny}) == 0); // The cgroup owns a reference beyond the program FD.
+        assert(invoke(198, {2, 1, 0}) == uint64_t(-1)); // Attached parent applies inside the child.
+        assert(invoke(280, {9, attr, sizeof(attach)}) == 0);
+        const auto stream = invoke(198, {2, 1, 0});
+        assert(stream < 256 && invoke(57, {stream}) == 0);
+        assert(invoke(57, {root}) == 0);
         assert(invoke(220, {0x1200011, 0, 0, 0, base + 128}) == 2);
         assert(invoke(63, {procs, output, 128}) == 4);
         assert(std::memcmp(task.read(output, 4, 4), "1\n2\n", 4) == 0);
