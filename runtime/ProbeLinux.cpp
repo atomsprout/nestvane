@@ -30,6 +30,8 @@ constexpr uint32_t sealSeal = 1, sealShrink = 2, sealGrow = 4, sealWrite = 8, se
 constexpr unsigned sigChild = 17;
 constexpr uint64_t receiveTimeoutOld = 20, receiveTimeoutNew = 66;
 constexpr uint64_t sendTimeoutOld = 21, sendTimeoutNew = 67;
+constexpr std::string_view graphicsDevice = "/dev/goldfish_pipe_dprctd";
+constexpr size_t maxGraphicsTransfer = 64 * 1024;
 constexpr uint32_t fileAccessed = 1, fileModified = 2, fileAttributes = 4, fileClosedWrite = 8,
                    fileClosedRead = 16, fileOpened = 32, fileMovedFrom = 64, fileMovedTo = 128,
                    fileCreated = 256, fileDeleted = 512, fileDeletedSelf = 1024, fileMovedSelf = 2048;
@@ -801,6 +803,7 @@ bool ProbeLinux::exportExt4Mount(ProbeLinux& reader, std::string_view path) cons
 }
 
 uint64_t ProbeLinux::stat(Machine& machine, uint64_t address, const Descriptor& fd) const {
+    if (fd.node == Node::graphicsPipe) return statFile(machine, address, 0, 70'267, 0020666, 1000, 1000, 0x100a0b);
     if (fd.node == Node::ashmem) return statFile(machine, address, 0, 69'999, 0020666, 0, 0, 0x100a03);
     if (fd.temporary) {
         const auto& file = *fd.temporary;
@@ -1000,6 +1003,7 @@ std::optional<ProbeLinux::Descriptor> ProbeLinux::find(std::string_view path, ui
     if (path == "/dev/loop-control") return Descriptor{std::string(path), {}, flags, Node::loopControl};
     if (binderDevices.contains(path)) return Descriptor{std::string(path), {}, flags, Node::binder};
     if (loopDevices.contains(path)) return Descriptor{std::string(path), {}, flags, Node::loopDevice};
+    if (path == graphicsDevice && graphicsPipeFactory) return Descriptor{std::string(path), {}, flags, Node::graphicsPipe};
     if (path == "/dev/null") return Descriptor{std::string(path), {}, flags, Node::null};
     if (path == "/dev/random" || path == "/dev/urandom")
         return Descriptor{std::string(path), {}, flags, Node::entropy};
@@ -1332,6 +1336,7 @@ uint64_t ProbeLinux::open(const Machine& machine, const std::string& path, uint3
         fileEvent(pathname, fileCreated);
         entry = find(pathname, flags);
     }
+    if (!entry->pathOnly() && entry->node == Node::graphicsPipe) entry->graphics = std::make_shared<GraphicsPipeState>();
     if (!entry->pathOnly() && entry->node == Node::binder) {
         const auto& node = binderDevices.at(entry->path);
         if (userId() != 0) {
@@ -1467,7 +1472,7 @@ bool ProbeLinux::eventCall(Machine& machine) {
             const auto target = descriptors().find(uint32_t(x[2]));
             if (descriptor == descriptors().end() || target == descriptors().end()) { x[0] = uint64_t(-9); break; }
             if (descriptor->second.node != Node::poller) { x[0] = invalid; break; }
-            if (!target->second.socket && !target->second.binder &&
+            if (!target->second.socket && !target->second.binder && !target->second.graphics &&
                 (!target->second.event || target->second.node == Node::poller)) {
                 x[0] = uint64_t(-1);
                 break;
@@ -1475,7 +1480,7 @@ bool ProbeLinux::eventCall(Machine& machine) {
             auto& watches = descriptor->second.event->watches;
             const auto fd = uint32_t(x[2]);
             if (const auto stale = watches.find(fd); stale != watches.end() && stale->second.source.expired() &&
-                stale->second.socket.expired() && stale->second.binder.expired()) {
+                stale->second.socket.expired() && stale->second.binder.expired() && stale->second.graphics.expired()) {
                 watches.erase(stale);
             }
             const bool registered = watches.contains(fd);
@@ -1490,7 +1495,7 @@ bool ProbeLinux::eventCall(Machine& machine) {
             const auto mask = uint32_t(event[0]);
             if (mask & ~0x1fU) return false;
             watches.insert_or_assign(fd, Watch{mask, event[1], target->second.event, target->second.socket,
-                                              target->second.node == Node::event, target->second.binder});
+                                              target->second.node == Node::event, target->second.binder, target->second.graphics});
             x[0] = 0;
             break;
         }
@@ -1504,12 +1509,16 @@ bool ProbeLinux::eventCall(Machine& machine) {
             if (!timers.empty()) refreshTimers(std::chrono::steady_clock::now());
             std::vector<std::array<uint64_t, 2>> ready;
             std::vector<std::shared_ptr<EventState>> readNotifications;
+            bool watchesGraphics = false;
             for (const auto& [fd, watch] : descriptor->second.event->watches) {
                 const auto state = watch.source.lock();
                 const auto endpoint = watch.socket.lock();
                 const auto peer = endpoint ? endpoint->peer.lock() : nullptr;
                 const bool childReady = state && (state->signalMask & sigChildMask) && current->process->childSignal;
                 const auto binder = watch.binder.lock();
+                const auto graphics = watch.graphics.lock();
+                watchesGraphics |= bool(graphics);
+                const auto graphicsEvents = graphics ? graphics->pollEvents() : 0;
                 const bool receiveEnded = endpoint && (endpoint->receiveShutdown ||
                     (endpoint->connected && (!peer || peer->sendShutdown)));
                 const bool readable = (state && state->counter) || childReady || (binder && binderReadable(*binder)) ||
@@ -1520,7 +1529,7 @@ bool ProbeLinux::eventCall(Machine& machine) {
                 const bool hungUp = endpoint && endpoint->connected && (!peer || (receiveEnded && endpoint->sendShutdown));
                 const bool mountsChanged = state && state->mountNamespace &&
                     state->observedMountGeneration != state->mountNamespace->generation;
-                const uint64_t mask = (watch.mask & ((readable ? 1U : 0) | (mountsChanged ? 2U : 0) |
+                const uint64_t mask = (graphicsEvents & (watch.mask | 0x18U)) | (watch.mask & ((readable ? 1U : 0) | (mountsChanged ? 2U : 0) |
                                                         (writable ? 4U : 0) | (receiveEnded ? 0x2000U : 0))) | (hungUp ? 16U : 0);
                 if (mask) {
                     ready.push_back({mask, watch.data});
@@ -1529,6 +1538,7 @@ bool ProbeLinux::eventCall(Machine& machine) {
                 }
             }
             if (ready.empty()) {
+                const auto wait = [&] { return watchesGraphics ? waitForGraphics() : waitForEvents(); };
                 if (uint32_t(x[3]) == UINT32_MAX) {
                     if (currentTid != pid) {
                         for (const auto& [path, bound] : socketPaths) {
@@ -1541,14 +1551,14 @@ bool ProbeLinux::eventCall(Machine& machine) {
                             }
                         }
                     }
-                    return waitForEvents();
+                    return wait();
                 }
                 const auto timeout = int32_t(x[3]);
-                if (timeout < 0) return waitForEvents();
+                if (timeout < 0) return wait();
                 if (timeout > 0) {
                     const auto now = std::chrono::steady_clock::now();
                     if (!current->deadline) current->deadline = now + std::chrono::milliseconds(timeout);
-                    if (*current->deadline > now) return waitForEvents();
+                    if (*current->deadline > now) return wait();
                 }
                 current->deadline.reset();
                 x[0] = 0;
@@ -1606,6 +1616,68 @@ uint64_t ProbeLinux::socketRead(Machine& machine, const Descriptor& fd, uint64_t
     endpoint.inbox.pop_front();
     wakePollers();
     return count;
+}
+
+uint16_t ProbeLinux::GraphicsPipeState::pollEvents() const {
+    constexpr uint16_t readable = 1, writable = 4, hangup = 16;
+    if (failed) return hangup;
+    if (!backend) return writable;
+    return backend->pollEvents() | (unread.empty() ? 0 : readable);
+}
+
+uint64_t ProbeLinux::readGraphics(Machine& machine, GraphicsPipeState& pipe, uint64_t address, uint64_t size) {
+    if (!size) return 0;
+    if (pipe.failed) return uint64_t(-5);
+    if (!pipe.backend) return uint64_t(-11);
+    if (pipe.unread.empty()) {
+        auto& buffer = pipe.unread;
+        buffer.resize(std::min<uint64_t>(size, maxGraphicsTransfer));
+        const auto received = pipe.backend->read(buffer);
+        if (received <= 0 || uint64_t(received) > buffer.size()) {
+            buffer.clear();
+            return received <= 0 ? uint64_t(received) : uint64_t(-5);
+        }
+        buffer.resize(size_t(received));
+    }
+    const auto bytes = std::span(pipe.unread).subspan(pipe.offset);
+    const auto count = std::min<uint64_t>(size, bytes.size());
+    if (!machine.write(address, bytes.first(count))) return uint64_t(-14);
+    pipe.offset += count;
+    if (pipe.offset == pipe.unread.size()) {
+        pipe.unread.clear();
+        pipe.offset = 0;
+    }
+    return count;
+}
+
+uint64_t ProbeLinux::writeGraphics(const Machine& machine, GraphicsPipeState& pipe, uint64_t address, uint64_t size) {
+    if (!size) return 0;
+    if (pipe.failed) return uint64_t(-5);
+    if (!pipe.backend) {
+        // Goldfish opens a service by writing a NUL-terminated name to the device.
+        // Return a short write for bytes after the name so retries cannot duplicate the handshake.
+        constexpr size_t maxHeader = 256;
+        const auto count = std::min<uint64_t>(size, maxHeader - pipe.serviceHeader.size());
+        std::array<uint8_t, maxHeader> input{};
+        const auto bytes = std::span(input).first(count);
+        if (!machine.readInto(address, bytes)) return uint64_t(-14);
+        const auto delimiter = std::ranges::find(bytes, uint8_t{0});
+        pipe.serviceHeader.append(reinterpret_cast<const char*>(bytes.data()), delimiter - bytes.begin());
+        if (delimiter == bytes.end() && pipe.serviceHeader.size() < maxHeader) return count;
+        const auto service = std::string_view(pipe.serviceHeader);
+        if (delimiter != bytes.end() && (service == "pipe:opengles" || service == "pipe:GLProcessPipe" || service == "pipe:refcount"))
+            pipe.backend = graphicsPipeFactory(service.substr(5));
+        pipe.failed = !pipe.backend;
+        pipe.serviceHeader.clear();
+        wakePollers();
+        if (pipe.failed) return uint64_t(-2);
+        return delimiter - bytes.begin() + 1;
+    }
+    const auto count = std::min<uint64_t>(size, maxGraphicsTransfer);
+    std::vector<uint8_t> input(count);
+    if (!machine.readInto(address, input)) return uint64_t(-14);
+    const auto sent = pipe.backend->write(input);
+    return sent <= int64_t(input.size()) ? uint64_t(sent) : uint64_t(-5);
 }
 
 uint64_t ProbeLinux::socketWrite(Machine& machine, const Descriptor& fd, uint64_t address, uint64_t size) {
@@ -2537,6 +2609,13 @@ bool ProbeLinux::fileCall(Machine& machine) {
             auto& fd = descriptor->second;
             if ((fd.flags & 3) == 1) { x[0] = uint64_t(-9); break; }
             if (fd.node == Node::inotify) return readInotify(machine, fd);
+            if (fd.graphics) {
+                if (x[8] == 67) { x[0] = uint64_t(-29); break; }
+                const auto result = readGraphics(machine, *fd.graphics, x[1], x[2]);
+                if (result == uint64_t(-11) && !(fd.effectiveFlags() & 0x800)) return waitForGraphics();
+                x[0] = result;
+                break;
+            }
             if (fd.cgroupFile) {
                 const auto found = cgroupFiles.find(fd.path);
                 if (found == cgroupFiles.end() || found->second != fd.cgroupFile) { x[0] = uint64_t(-19); break; }
@@ -2922,6 +3001,7 @@ uint64_t ProbeLinux::writeDescriptor(Machine& machine, const Descriptor& fd, uin
                                      std::optional<uint64_t> position) {
     if (fd.pathOnly() || !(fd.flags & 3)) return uint64_t(-9);
     if (position && !fd.temporary) return uint64_t(-29);
+    if (fd.graphics) return writeGraphics(machine, *fd.graphics, address, size);
     if (fd.node == Node::securityInfo || fd.node == Node::securityValidate) {
         if (!size || size > pageSize) return invalid;
         const auto* data = machine.read(address, size, 4);
@@ -3171,6 +3251,14 @@ bool ProbeLinux::switchThread(Machine& machine, std::chrono::steady_clock::time_
         nextDeadline = refreshTimers(now);
         for (auto& [tid, thread] : threads) {
             const auto wait = thread.wait;
+            if (wait == Wait::poll && thread.graphicsRetry) {
+                if (*thread.graphicsRetry <= now) {
+                    thread.graphicsRetry.reset();
+                    thread.wait = Wait::none;
+                } else if (!nextDeadline || *thread.graphicsRetry < *nextDeadline) {
+                    nextDeadline = thread.graphicsRetry;
+                }
+            }
             if ((wait == Wait::poll || wait == Wait::sleep || wait == Wait::futex || wait == Wait::signal) && thread.deadline) {
                 if (*thread.deadline <= now) {
                     thread.wait = Wait::none;
@@ -3863,6 +3951,11 @@ bool ProbeLinux::waitForEvents() {
     return true;
 }
 
+bool ProbeLinux::waitForGraphics() {
+    current->graphicsRetry = std::chrono::steady_clock::now() + std::chrono::milliseconds(2);
+    return waitForEvents();
+}
+
 bool ProbeLinux::waitForSocketTimeout(std::chrono::microseconds timeout) {
     using namespace std::chrono;
     if (timeout.count() < 0) return false;
@@ -4079,6 +4172,7 @@ bool ProbeLinux::poll(Machine& machine) {
         std::memcpy(entries.data(), input, length);
     }
     unsigned ready = 0;
+    bool watchesGraphics = false;
     for (auto& entry : entries) {
         entry.returned = 0;
         if (entry.fd < 0) continue;
@@ -4089,6 +4183,9 @@ bool ProbeLinux::poll(Machine& machine) {
             const auto target = descriptor->second.targetProcess;
             if (!processAlive(target))
                 entry.returned = (entry.events & 0x41) | (childExits.contains(target) ? 0 : 16);
+        } else if (const auto& graphics = descriptor->second.graphics) {
+            watchesGraphics = true;
+            entry.returned = graphics->pollEvents() & (entry.events | 0x18);
         } else if (descriptor->second.pty) {
             const auto events = ptyPoll(descriptor->second);
             entry.returned = (events & entry.events) | (events & 16);
@@ -4130,7 +4227,8 @@ bool ProbeLinux::poll(Machine& machine) {
         }
         ready += entry.returned != 0;
     }
-    if (!ready && (!current->deadline || *current->deadline > steady_clock::now())) return waitForEvents();
+    if (!ready && (!current->deadline || *current->deadline > steady_clock::now()))
+        return watchesGraphics ? waitForGraphics() : waitForEvents();
     const auto bytes = std::span(reinterpret_cast<const uint8_t*>(entries.data()), length);
     return complete(!length || machine.write(x[0], bytes) ? ready : uint64_t(-14));
 }
@@ -4546,6 +4644,7 @@ bool ProbeLinux::enforceSeccomp(Machine& machine) {
 bool ProbeLinux::syscall(Machine& machine) {
     auto& x = machine.cpu.x;
     const uint64_t number = x[8];
+    current->graphicsRetry.reset();
     if (enforceSeccomp(machine)) return true;
     if (number == 139) return restoreSignalContext(machine); // rt_sigreturn
     if (securityCall(machine) || socketCall(machine) || eventCall(machine) || fileCall(machine)) return true;
@@ -5147,6 +5246,8 @@ bool ProbeLinux::syscall(Machine& machine) {
             if (position && *position > INT64_MAX) { x[0] = invalid; break; }
             const auto result = descriptor == descriptors().end() ? uint64_t(-9) :
                 writeDescriptor(machine, descriptor->second, x[1], x[2], position);
+            if (result == uint64_t(-11) && descriptor->second.graphics &&
+                !(descriptor->second.effectiveFlags() & 0x800)) return waitForGraphics();
             if (descriptor != descriptors().end() && descriptor->second.socket) {
                 const auto& fd = descriptor->second;
                 if (result == uint64_t(-11) && !(fd.effectiveFlags() & 0x800) &&
@@ -5208,6 +5309,8 @@ bool ProbeLinux::syscall(Machine& machine) {
                 if (result != iov[1]) break;
             }
             const auto& fd = descriptor->second;
+            if (!written && result == uint64_t(-11) && fd.graphics &&
+                !(fd.effectiveFlags() & 0x800)) return waitForGraphics();
             if (fd.socket) {
                 if (!written && result == uint64_t(-11) && !(fd.effectiveFlags() & 0x800) &&
                     waitForSocketTimeout(fd.socket->sendTimeout)) return true;

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "GraphicsPipe.hpp"
+
 #include <functional>
 #include <string>
 #include <string_view>
@@ -14,6 +16,7 @@ struct DynamicReport {
 DynamicReport probeArt(const std::string& directory);
 DynamicReport probeDynamic(const std::string& directory);
 using BootProgress = std::function<void(std::string_view)>;
-DynamicReport probeInit(const std::string& directory, const std::string& databasePath = {}, const BootProgress& progress = {});
+DynamicReport probeInit(const std::string& directory, const std::string& databasePath = {}, const BootProgress& progress = {},
+                        GraphicsPipeFactory graphics = {});
 
 } // namespace nestvane

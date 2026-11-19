@@ -258,6 +258,61 @@ int main() {
     };
     {
         using namespace std::chrono;
+        struct EchoGraphicsPipe : GraphicsPipe {
+            std::vector<uint8_t> queued;
+            int64_t read(std::span<uint8_t> bytes) override {
+                if (queued.empty()) return -11;
+                const auto count = std::min(queued.size(), bytes.size());
+                std::copy_n(queued.begin(), count, bytes.begin());
+                queued.erase(queued.begin(), queued.begin() + count);
+                return count;
+            }
+            int64_t write(std::span<const uint8_t> bytes) override {
+                queued.insert(queued.end(), bytes.begin(), bytes.end());
+                return bytes.size();
+            }
+            uint16_t pollEvents() const override { return 4 | (queued.empty() ? 0 : 1); }
+        };
+        constexpr uint64_t cwd = uint32_t(-100), path = base + 512, buffer = base + 1024, event = base + 768;
+        put(path, "/dev/goldfish_pipe_dprctd");
+        assert(call(56, {cwd, path, 0x802}) == uint64_t(-2));
+        unsigned connected = 0;
+        linux.setGraphicsPipeFactory([&](std::string_view service) -> std::unique_ptr<GraphicsPipe> {
+            assert(service == "opengles");
+            ++connected;
+            return std::make_unique<EchoGraphicsPipe>();
+        });
+        const auto channel = call(56, {cwd, path, 0x802});
+        const auto duplicate = call(23, {channel});
+        const auto poll = call(20, {0});
+        assert(channel < 256 && duplicate < 256 && poll < 256 && connected == 0);
+        assert(call(63, {channel, buffer, 2}) == uint64_t(-11) && !linux.blocked());
+        put(buffer, "pipe:");
+        assert(call(64, {channel, buffer, 5}) == 5 && connected == 0);
+        put(buffer, "opengles");
+        assert(machine.store64(buffer + 9, 0x0201));
+        assert(call(64, {duplicate, buffer, 11}) == 9 && connected == 1);
+        assert(machine.store64(event, 1) && machine.store64(event + 8, 77));
+        assert(call(21, {poll, 1, duplicate, event}) == 0);
+        assert(call(22, {poll, event, 1, 0}) == 0);
+        assert(call(22, {poll, event, 1, 100}) == poll && linux.blocked());
+        assert(linux.schedule(machine, steady_clock::now() + seconds(1)));
+        assert(call(64, {channel, buffer + 9, 2}) == 2);
+        assert(call(22, {poll, event, 1, 100}) == 1 && load(event) == 1 && load(event + 8) == 77);
+        assert(call(63, {duplicate, 0, 2}) == uint64_t(-14));
+        assert(call(63, {duplicate, buffer, 1}) == 1 && *machine.read(buffer, 1, 4) == 1);
+        assert(call(63, {channel, buffer, 1}) == 1 && *machine.read(buffer, 1, 4) == 2);
+        assert(call(63, {duplicate, buffer, 1}) == uint64_t(-11));
+        assert(call(57, {duplicate}) == 0 && call(57, {channel}) == 0 && call(57, {poll}) == 0);
+        const auto other = call(56, {cwd, path, 0x802});
+        put(buffer, "pipe:qemud");
+        assert(call(64, {other, buffer, 11}) == uint64_t(-2) && connected == 1);
+        assert(call(64, {other, buffer, 1}) == uint64_t(-5));
+        assert(call(57, {other}) == 0);
+        linux.setGraphicsPipeFactory({});
+    }
+    {
+        using namespace std::chrono;
         constexpr uint64_t pair = base + 512, timeout = base + 544, length = base + 576;
         assert(call(199, {1, 1, 0, pair}) == 0);
         const auto sender = uint32_t(load(pair)), receiver = uint32_t(load(pair) >> 32);

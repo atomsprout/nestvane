@@ -1,4 +1,6 @@
 #pragma once
+
+#include "GraphicsPipe.hpp"
 #include "Runtime.hpp"
 #include "Ext4.hpp"
 
@@ -26,6 +28,7 @@ struct ProbeLinux {
     void addBootCgroups();
     void alias(std::string path, std::string target);
     void mountData(const std::string& databasePath);
+    void setGraphicsPipeFactory(GraphicsPipeFactory factory) { graphicsPipeFactory = std::move(factory); }
     bool syncData();
     Machine createMachine(const Image& image) const { return Machine(image, anonymousBudget); }
     uint64_t dirtyAnonymousBytes() const { return anonymousBudget->dirty; }
@@ -109,6 +112,7 @@ private:
         uint32_t futexMask = 0, ioPriority = 0;
         int nice = 0;
         std::optional<std::chrono::steady_clock::time_point> deadline;
+        std::optional<std::chrono::steady_clock::time_point> graphicsRetry;
         uint64_t signalMask = 0;
         uint64_t signalWaitMask = 0;
         std::string fsCreateContext, socketCreateContext;
@@ -126,6 +130,7 @@ private:
                        const std::shared_ptr<SharedFileBytes>& backing = {});
     void wakePollers();
     bool waitForEvents();
+    bool waitForGraphics();
     bool poll(Machine& machine);
     bool exitThread(Machine& machine);
     void finishProcess(Process& process, uint32_t status, bool killed);
@@ -136,7 +141,7 @@ private:
     uint64_t installSeccomp(Machine& machine, uint64_t address);
     bool enforceSeccomp(Machine& machine);
 
-    enum class Node { regular, temporary, directory, input, output, error, null, entropy, kernelLog, poller, event, inotify, signal, socket, mountNamespace, pipeRead, pipeWrite, execLabel, fsCreateLabel, socketCreateLabel, securityInfo, securityCreate, securityAccess, securityValidate, loopControl, loopDevice, timer, ptyMaster, ptySlave, ueventTrigger, kernelSetting, binder, processHandle, cgroupProcs, ashmem };
+    enum class Node { regular, temporary, directory, input, output, error, null, entropy, kernelLog, poller, event, inotify, signal, socket, mountNamespace, pipeRead, pipeWrite, execLabel, fsCreateLabel, socketCreateLabel, securityInfo, securityCreate, securityAccess, securityValidate, loopControl, loopDevice, timer, ptyMaster, ptySlave, ueventTrigger, kernelSetting, binder, processHandle, cgroupProcs, ashmem, graphicsPipe };
     struct RecordLock {
         uint64_t owner, start, end;
         int16_t type;
@@ -175,6 +180,16 @@ private:
     };
     bool waitForSocketTimeout(std::chrono::microseconds timeout);
     struct BinderConnection;
+    struct GraphicsPipeState {
+        std::string serviceHeader;
+        std::unique_ptr<GraphicsPipe> backend;
+        std::vector<uint8_t> unread;
+        size_t offset = 0;
+        bool failed = false;
+
+        uint16_t pollEvents() const;
+    };
+    GraphicsPipeFactory graphicsPipeFactory;
     struct Descriptor;
     struct EventState;
     struct Watch {
@@ -184,6 +199,7 @@ private:
         std::weak_ptr<SocketState> socket;
         bool eventCounter;
         std::weak_ptr<BinderConnection> binder{};
+        std::weak_ptr<GraphicsPipeState> graphics{};
     };
     struct EventState {
         struct Timer {
@@ -312,6 +328,7 @@ private:
         const Ext4Node* ext4File = nullptr;
         std::shared_ptr<Directory> cgroupFile{};
         std::shared_ptr<Ashmem> ashmem{};
+        std::shared_ptr<GraphicsPipeState> graphics{};
         std::span<const uint8_t> contents() const { return ext4File ? ext4File->bytes() : bytes; }
         uint64_t contentSize() const { return ext4File ? ext4File->size : bytes.size(); }
         static constexpr uint32_t mutableStatus = 0xc00; // O_APPEND and O_NONBLOCK
@@ -326,6 +343,8 @@ private:
     uint64_t open(const Machine& machine, const std::string& path, uint32_t flags, uint32_t mode);
     uint64_t stat(Machine& machine, uint64_t address, const Descriptor& fd) const;
     uint64_t resize(const WritableFile& file, uint64_t size);
+    uint64_t readGraphics(Machine& machine, GraphicsPipeState& pipe, uint64_t address, uint64_t size);
+    uint64_t writeGraphics(const Machine& machine, GraphicsPipeState& pipe, uint64_t address, uint64_t size);
     uint64_t ashmemIoctl(Machine& machine, const Descriptor& fd);
     bool dataPath(std::string_view path) const;
     bool canAccessParent(std::string_view path, bool modify) const;

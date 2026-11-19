@@ -399,7 +399,8 @@ DynamicReport probeArt(const std::string& directory) {
     }
 }
 
-DynamicReport probeInit(const std::string& directory, const std::string& databasePath, const BootProgress& progress) {
+DynamicReport probeInit(const std::string& directory, const std::string& databasePath, const BootProgress& progress,
+                        GraphicsPipeFactory graphics) {
     try {
         if (progress) progress("Starting Android 17 init");
         namespace fs = std::filesystem;
@@ -435,6 +436,7 @@ DynamicReport probeInit(const std::string& directory, const std::string& databas
         const auto image = loadDynamicELF(files.at(filename).bytes(), files.at(interpreter).bytes(), filename,
                                           interpreter, {"second_stage"}, 0);
         ProbeLinux linux(1, 0, 512 * 1024 * 1024);
+        linux.setGraphicsPipeFactory(std::move(graphics));
         linux.captureAndroidLogs = true;
         if (progress) linux.androidLogObserver = [&progress](std::string_view message) {
             constexpr std::string_view milestones[] = {
