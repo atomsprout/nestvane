@@ -105,12 +105,19 @@
 
 - macOS 使用 SDK 自带的 `libgfxstream_backend.dylib`，经 Gfxstream 公共 C ABI 实测 64×64 RGBA8 缓冲区上传和读回，16,384 字节一致。复现使用 Gfxstream 头文件版本 `79c2174f9133fa004c1c9c70ecd50970f42fa53b` 和以下命令。该上游版本用 iPhoneOS SDK 构建静态后端时首先在 macOS 的 `libproc.h` 停止，源码还引用了 AppKit 和 macOS OpenGL。iPhone 本地渲染后端和 Goldfish 传输仍待接通。
 
-  ```sh
+  ```bash
   sdk_lib="$HOME/Library/Android/sdk/emulator/lib64"
-  xcrun clang++ -std=c++20 -Wall -Wextra -Werror -I"$GFXSTREAM_SOURCE/host/include" \
-    tools/probe-gfxstream-host.cpp -o /tmp/nestvane-probe-gfxstream-host
-  ANDROID_GFXSTREAM_EGL=1 DYLD_LIBRARY_PATH="$sdk_lib:$sdk_lib/gles_angle:$sdk_lib/vulkan" \
-    /tmp/nestvane-probe-gfxstream-host "$sdk_lib/libgfxstream_backend.dylib"
+  xcrun clang --target=aarch64-linux-gnu -c fixtures/android17-gfxstream.S -o /tmp/nestvane-gfxstream-guest.o
+  ld.lld -m aarch64elf -static --no-relax -T fixtures/guest.ld \
+    /tmp/nestvane-gfxstream-guest.o -o /tmp/nestvane-gfxstream-guest.elf
+  xcrun clang++ -O2 -std=c++20 -Wall -Wextra -Werror -Iruntime -isystem "$GFXSTREAM_SOURCE/host/include" \
+    runtime/{Runtime,AArch64,ProbeLinux,ProbeData,ProbeBinder,Ext4}.cpp \
+    tools/{no-aot,probe-gfxstream-host}.cpp -lsqlite3 -o /tmp/nestvane-probe-gfxstream-host
+  export ANDROID_GFXSTREAM_EGL=1 DYLD_LIBRARY_PATH="$sdk_lib:$sdk_lib/gles_angle:$sdk_lib/vulkan"
+  /tmp/nestvane-probe-gfxstream-host "$sdk_lib/libgfxstream_backend.dylib"
+  /tmp/nestvane-probe-gfxstream-host "$sdk_lib/libgfxstream_backend.dylib" /tmp/nestvane-gfxstream-guest.elf
   ```
 
 - iPhone 11 第 7167 号进程的实时记录复现了 Mac 的图形停点。init 开始后 55,782 ms，原版图形模块打开 `/dev/goldfish_pipe_dprctd` 收到 `ENOENT`。SurfaceFlinger 启动后再次尝试，64,653 ms 时记录 `eglInitialize` 失败。此时真机温度为 nominal。
+
+- 客体代码执行 `openat → write → read → close`，从 Mac 的真实 gfxstream 收到 `rcGetRendererVersion` 响应 `1` 并退出 0。宿主 ABI 测试覆盖描述符复制、分段握手、短写、坏地址后保留读取数据及等待可读。宿主常规与 ASan/UBSan 回归和 iOS 签名构建均通过。Mac 集成测试的适配器只处理该版本查询，iOS App 尚待接入完整渲染器。
