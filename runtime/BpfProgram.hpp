@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <functional>
@@ -80,13 +81,16 @@ public:
                 if (i.registers || i.offset) return false;
                 switch (i.immediate) {
                     case 26: break; // skb_load_bytes
-                    case 1: case 23: case 39: case 40: case 43:
+                    case 1: case 9: case 10: case 11: case 23: case 39: case 40: case 43: case 125:
                         if (type != classifier) return false;
                         break;
                     default: return false;
                 }
             } else if (i.code == 0x95) {
                 if (i.registers || i.offset || i.immediate) return false;
+            } else if (i.code == 0xd4 || i.code == 0xdc) { // BPF_END
+                if (i.destination() == 10 || i.source() || i.offset ||
+                    (i.immediate != 16 && i.immediate != 32 && i.immediate != 64)) return false;
             } else if (i.kind() == 5) {
                 if (!jump(i.operation(), 0, 0).has_value() || (i.operation() == 0 && i.code != 0x05))
                     return false;
@@ -190,6 +194,55 @@ private:
         }
     }
 
+    static uint64_t changeByteOrder(uint64_t value, unsigned bits, bool bigEndian) {
+        switch (bits) {
+            case 16: return bigEndian ? __builtin_bswap16(uint16_t(value)) : uint16_t(value);
+            case 32: return bigEndian ? __builtin_bswap32(uint32_t(value)) : uint32_t(value);
+            default: return bigEndian ? __builtin_bswap64(value) : value;
+        }
+    }
+
+    static uint32_t addChecksum(uint32_t left, uint32_t right) {
+        const auto sum = left + right;
+        return sum + (sum < right);
+    }
+
+    static uint16_t foldChecksum(uint32_t sum) {
+        sum = (sum & UINT16_MAX) + (sum >> 16);
+        return uint16_t(~(sum + (sum >> 16)));
+    }
+
+    static uint64_t replaceChecksum(std::span<uint8_t> packet, uint32_t offset, uint64_t from, uint64_t to,
+                                    uint64_t flags, bool transport) {
+        constexpr uint64_t sizeMask = 15, markMangledZero = 32, enforce = 64;
+        constexpr uint64_t transportFlags = 16 | markMangledZero | enforce;
+        if (flags & ~(sizeMask | (transport ? transportFlags : 0))) return uint64_t(-22);
+        if (offset > UINT16_MAX || (offset & 1) || offset > packet.size() || packet.size() - offset < 2)
+            return uint64_t(-14);
+
+        uint16_t original = 0;
+        std::memcpy(&original, packet.data() + offset, sizeof(original));
+        if ((flags & markMangledZero) && !(flags & enforce) && !original) return 0;
+        uint32_t delta;
+        switch (flags & sizeMask) {
+            case 0:
+                if (from) return uint64_t(-22);
+                delta = uint32_t(to);
+                break;
+            case 2:
+                delta = uint16_t(~from) + uint32_t(uint16_t(to));
+                break;
+            case 4:
+                delta = addChecksum(~uint32_t(from), uint32_t(to));
+                break;
+            default: return uint64_t(-22);
+        }
+        auto updated = foldChecksum(addChecksum(~uint32_t(original), delta));
+        if ((flags & markMangledZero) && !updated) updated = UINT16_MAX;
+        std::memcpy(packet.data() + offset, &updated, sizeof(updated));
+        return 0;
+    }
+
     struct Region {
         std::span<uint8_t> bytes;
         bool writable;
@@ -267,6 +320,9 @@ private:
             const auto imm = uint64_t(int64_t(i.immediate));
             const auto operand = i.fromRegister() ? src : imm;
             switch (i.code) {
+                case 0xd4: case 0xdc:
+                    dst = changeByteOrder(dst, i.immediate, i.code == 0xdc);
+                    continue;
                 case 0x18:
                     dst = i.source() ? mapHandleBase + pc - 1 :
                         uint32_t(imm) | (uint64_t(uint32_t(instructions[pc].immediate)) << 32);
@@ -277,6 +333,24 @@ private:
                     uint64_t result = 0;
                     switch (i.immediate) {
                         case 1: result = lookup(r1, r2); break;
+                        case 9: { // bpf_skb_store_bytes
+                            if (r1 != context) return std::nullopt;
+                            const auto offset = uint32_t(r2), length = uint32_t(registers[4]);
+                            if (registers[5] & ~3ULL) { result = uint64_t(-22); break; }
+                            const auto source = bytes(r3, length, false);
+                            if (offset > packet.size() || length > packet.size() - offset || (length && source.empty())) {
+                                result = uint64_t(-14);
+                                break;
+                            }
+                            // This packet has no checksum-offload or cached hash metadata to update.
+                            if (length) std::memmove(classifierPacket->bytes.data() + offset, source.data(), length);
+                            break;
+                        }
+                        case 10: case 11: // bpf_l3_csum_replace and bpf_l4_csum_replace
+                            if (r1 != context) return std::nullopt;
+                            result = replaceChecksum(classifierPacket->bytes, uint32_t(r2), r3, registers[4],
+                                                     registers[5], i.immediate == 11);
+                            break;
                         case 23: // bpf_redirect returns a TC action; test-run never transmits the frame.
                             result = r2 & ~1ULL ? 2 : 7; // TC_ACT_SHOT or TC_ACT_REDIRECT
                             break;
@@ -311,6 +385,10 @@ private:
                             }
                             break;
                         }
+                        case 125: // bpf_ktime_get_boot_ns uses the guest's CLOCK_BOOTTIME clock.
+                            result = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                std::chrono::steady_clock::now().time_since_epoch()).count();
+                            break;
                         default: return std::nullopt;
                     }
                     registers[0] = result;

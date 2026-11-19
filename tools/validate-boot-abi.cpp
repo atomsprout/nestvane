@@ -977,6 +977,36 @@ int main() {
         assert(machine.store64(key, 0) && write(attr, lookup));
         assert(call(280, {1, attr, sizeof(lookup)}) == 0 && load(output) == 21);
         assert(call(57, {counter}) == 0 && call(57, {program}) == 0);
+
+        const auto replaceChecksum = [&](int32_t helper, uint32_t offset, uint32_t flags) {
+            const std::array<uint64_t, 7> checksumProgram{
+                encode(0xb7, 0x02, 0, offset),             // r2 = checksum field offset
+                encode(0xb7, 0x03, 0, 0x3412),             // old field, in network order
+                encode(0xb7, 0x04, 0, 0x5678),
+                encode(0xdc, 0x04, 0, 16),                 // be16 r4
+                encode(0xb7, 0x05, 0, flags),
+                encode(0x85, 0, 0, helper),
+                encode(0x95, 0),
+            };
+            const std::array<uint64_t, 8> request{(uint64_t(checksumProgram.size()) << 32) | 3, code, license};
+            assert(write(code, checksumProgram) && write(attr, request));
+            const auto checksumFd = call(280, {5, attr, sizeof(request)});
+            assert(checksumFd < 256);
+            const std::array<uint64_t, 5> run{checksumFd, 16ULL << 32 | 16, packet, output, 1};
+            assert(write(attr, run) && call(280, {10, attr, sizeof(run)}) == 0);
+            assert(call(57, {checksumFd}) == 0);
+            return uint32_t(load(attr) >> 32);
+        };
+        auto checksumFrame = frame;
+        checksumFrame[14] = 0xed; checksumFrame[15] = 0xcb; // Wire checksum for 0x1234.
+        assert(write(packet, checksumFrame) && replaceChecksum(10, 14, 2) == 0);
+        const auto* transformed = machine.read(output, 16, 4);
+        assert(transformed && transformed[14] == 0xa9 && transformed[15] == 0x87);
+        checksumFrame[14] = 0; checksumFrame[15] = 0;
+        assert(write(packet, checksumFrame) && replaceChecksum(11, 14, 0x22) == 0);
+        assert((load(output + 8) >> 48) == 0); // UDP zero checksum remains disabled.
+        assert(replaceChecksum(10, 15, 2) == uint32_t(-14)); // Misaligned checksum offset.
+
     }
     {
         constexpr auto source = base + 256, attr = base + 400, key = base + 512, value = base + 520;
