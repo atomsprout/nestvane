@@ -32,7 +32,7 @@ NESTVANE_LABELS
 """
     result = subprocess.run(adb + ["shell", "sh"], input=script, text=True, capture_output=True, check=True)
     rows = {}
-    context = r"u:(?:object_r|r):[a-z0-9_]+:s0(?::c\d+(?:[,\.]c\d+)*)?"
+    context = r"u:(?:object_r|r):[A-Za-z0-9_]+:s0(?::c\d+(?:[,\.]c\d+)*)?"
     for line in result.stdout.splitlines():
         if re.fullmatch(rf"{context} {context}(?: [0-9a-f]+){{4}} [0-9]+ [0-9a-f]+", line):
             source, target, decision = line.split(maxsplit=2)

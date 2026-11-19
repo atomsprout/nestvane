@@ -529,7 +529,7 @@ def collect(serial, readelf, destination, small_art_heap):
                     for line in context_file.read_text().splitlines():
                         words = line.split()
                         if len(words) >= 2 and not line.lstrip().startswith("#"):
-                            if re.fullmatch(r"u:object_r:[a-z0-9_]+:s0", words[1]):
+                            if re.fullmatch(r"u:object_r:[A-Za-z0-9_]+:s0", words[1]):
                                 contexts.add(words[1])
             sources = (*subjects, "u:r:shell:s0")
             if name == "process":
