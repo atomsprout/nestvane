@@ -135,7 +135,7 @@ private:
     uint64_t installSeccomp(Machine& machine, uint64_t address);
     bool enforceSeccomp(Machine& machine);
 
-    enum class Node { regular, temporary, directory, input, output, error, null, entropy, kernelLog, poller, event, signal, socket, mountNamespace, pipeRead, pipeWrite, execLabel, fsCreateLabel, socketCreateLabel, securityInfo, securityCreate, securityAccess, securityValidate, loopControl, loopDevice, timer, ptyMaster, ptySlave, ueventTrigger, kernelSetting, binder, processHandle, cgroupProcs, ashmem };
+    enum class Node { regular, temporary, directory, input, output, error, null, entropy, kernelLog, poller, event, inotify, signal, socket, mountNamespace, pipeRead, pipeWrite, execLabel, fsCreateLabel, socketCreateLabel, securityInfo, securityCreate, securityAccess, securityValidate, loopControl, loopDevice, timer, ptyMaster, ptySlave, ueventTrigger, kernelSetting, binder, processHandle, cgroupProcs, ashmem };
     struct RecordLock {
         uint64_t owner, start, end;
         int16_t type;
@@ -172,6 +172,7 @@ private:
         explicit SocketState(uint32_t type) : type(type) {}
     };
     struct BinderConnection;
+    struct Descriptor;
     struct EventState;
     struct Watch {
         uint32_t mask;
@@ -192,8 +193,25 @@ private:
         std::shared_ptr<MountNamespace> mountNamespace{};
         uint64_t observedMountGeneration = 0;
         std::map<uint32_t, Watch> watches;
+        struct FileWatch { std::string path; uint32_t mask; bool directory; };
+        struct FileEvent {
+            int32_t watch;
+            uint32_t mask, cookie;
+            std::string name{};
+            bool operator==(const FileEvent&) const = default;
+        };
+        std::map<int32_t, FileWatch> fileWatches;
+        std::deque<FileEvent> fileEvents;
+        int32_t nextFileWatch = 1;
+        void queueFileEvent(FileEvent event);
     };
     std::vector<std::weak_ptr<EventState>> timers;
+    std::vector<std::weak_ptr<EventState>> inotifyInstances;
+    uint32_t nextMoveCookie = 1;
+    bool inotify(Machine& machine);
+    bool readInotify(Machine& machine, const Descriptor& fd);
+    void fileEvent(std::string_view path, uint32_t mask, bool directory = false, uint32_t cookie = 0);
+    void fileMoved(std::string_view source, std::string_view destination, bool directory);
     std::optional<std::chrono::steady_clock::time_point> refreshTimers(std::chrono::steady_clock::time_point now);
     struct Pipe {
         std::deque<uint8_t> data;

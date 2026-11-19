@@ -27,6 +27,11 @@ constexpr uint64_t noMemory = uint64_t(-12);
 constexpr uint8_t mdweRefuseExecGain = 1, mdweNoInherit = 2;
 constexpr uint32_t sealSeal = 1, sealShrink = 2, sealGrow = 4, sealWrite = 8, sealFutureWrite = 16;
 constexpr unsigned sigChild = 17;
+constexpr uint32_t fileAccessed = 1, fileModified = 2, fileAttributes = 4, fileClosedWrite = 8,
+                   fileClosedRead = 16, fileOpened = 32, fileMovedFrom = 64, fileMovedTo = 128,
+                   fileCreated = 256, fileDeleted = 512, fileDeletedSelf = 1024, fileMovedSelf = 2048;
+constexpr uint32_t fileWatchOverflow = 0x4000, fileWatchIgnored = 0x8000, fileWatchDirectory = 0x40000000,
+                   fileWatchOnce = 0x80000000;
 constexpr uint32_t secureNoRoot = 1, secureNoSetuidFixup = 4, secureKeepCaps = 16,
                    secureKeepCapsLocked = 32, secureNoAmbientRaise = 64;
 constexpr uint64_t sigChildMask = uint64_t{1} << (sigChild - 1);
@@ -1249,7 +1254,11 @@ uint64_t ProbeLinux::renameFile(Machine& machine) {
     if (source == destination) return flags ? uint64_t(-17) : 0;
     if (!directoryExists(destination.substr(0, destination.rfind('/')))) return uint64_t(-2);
     if (!canAccessParent(source, true) || !canAccessParent(destination, true)) return uint64_t(-13);
-    if (directory) return renameDirectory(source, destination, flags != 0);
+    if (directory) {
+        const auto result = renameDirectory(source, destination, flags != 0);
+        if (!result) fileMoved(source, destination, true);
+        return result;
+    }
     if (directories.contains(destination)) return uint64_t(-21);
     if (const auto existing = find(destination, 0); existing && !existing->temporary) return uint64_t(-30);
     if (flags && (writableFiles.contains(destination) || links.contains(destination))) return uint64_t(-17);
@@ -1257,11 +1266,12 @@ uint64_t ProbeLinux::renameFile(Machine& machine) {
     links.erase(destination);
     const auto move = [&](auto& items, auto item) {
         auto entry = items.extract(item);
-        entry.key() = std::move(destination);
+        entry.key() = destination;
         items.insert(std::move(entry));
     };
     if (file != writableFiles.end()) move(writableFiles, file);
     else move(links, link);
+    fileMoved(source, destination, false);
     return 0;
 }
 
@@ -1312,6 +1322,7 @@ uint64_t ProbeLinux::open(const Machine& machine, const std::string& path, uint3
         if (const auto& context = current->fsCreateContext; !context.empty())
             file->attributes["security.selinux"].assign(context.c_str(), context.c_str() + context.size() + 1);
         writableFiles.emplace(pathname, std::move(file));
+        fileEvent(pathname, fileCreated);
         entry = find(pathname, flags);
     }
     if (!entry->pathOnly() && entry->node == Node::binder) {
@@ -1332,6 +1343,8 @@ uint64_t ProbeLinux::open(const Machine& machine, const std::string& path, uint3
     }
     if ((flags & truncate) && entry->temporary) resize(*entry->temporary, 0);
     if (entry->path != *logical) entry->visiblePath = *logical;
+    if (!entry->pathOnly() && (entry->node == Node::regular || entry->temporary || entry->node == Node::directory))
+        fileEvent(entry->path, fileOpened, entry->node == Node::directory);
     descriptors().emplace(fd, std::move(*entry));
     return fd;
 }
@@ -2265,10 +2278,12 @@ bool ProbeLinux::fileCall(Machine& machine) {
                     } else {
                         x[0] = directories.erase(backing) ? 0 : uint64_t(-2);
                     }
+                    if (!x[0]) fileEvent(backing, fileDeleted, true);
                 } else if ((links.contains(backing) || (entry && entry->temporary)) && writablePath(path)) {
                     if (!canAccessParent(backing, true)) { x[0] = uint64_t(-13); break; }
                     writableFiles.erase(backing);
                     links.erase(backing);
+                    fileEvent(backing, fileDeleted);
                     x[0] = 0;
                 } else if (entry && entry->node == Node::directory) x[0] = uint64_t(-21);
                 else if (entry && entry->node == Node::cgroupProcs) x[0] = uint64_t(-1);
@@ -2299,6 +2314,7 @@ bool ProbeLinux::fileCall(Machine& machine) {
                 else if (auto binder = binderDevices.find(entry->path); binder != binderDevices.end())
                     x[0] = changeMetadata(binder->second);
                 else return false;
+                if (!x[0]) fileEvent(entry->path, fileAttributes, entry->node == Node::directory);
             } else if (x[8] == 34) {
                 const auto parent = backing.substr(0, backing.rfind('/'));
                 if (entry) x[0] = uint64_t(-17);
@@ -2313,6 +2329,7 @@ bool ProbeLinux::fileCall(Machine& machine) {
                         cgroupFiles.emplace(backing + std::string(cgroupProcs),
                                             std::make_shared<Directory>(Directory{0644, userId(), groupId()}));
                     }
+                    fileEvent(backing, fileCreated, true);
                     x[0] = 0;
                 }
             } else if (x[8] == 78) {
@@ -2352,11 +2369,19 @@ bool ProbeLinux::fileCall(Machine& machine) {
             x[0] = x[1];
             break;
         }
+        case 26: case 27: case 28:
+            return inotify(machine);
         case 61: // getdents64
             x[0] = descriptor == descriptors().end() ? uint64_t(-9) : readDirectory(machine, descriptor->second);
             break;
         case 57: // close
             if (descriptor == descriptors().end()) { x[0] = uint64_t(-9); break; }
+            if (!descriptor->second.pathOnly() && descriptor->second.offset.use_count() == 1 &&
+                (descriptor->second.node == Node::regular || descriptor->second.temporary ||
+                 descriptor->second.node == Node::directory)) {
+                const auto& fd = descriptor->second;
+                fileEvent(fd.path, fd.flags & 3 ? fileClosedWrite : fileClosedRead, fd.node == Node::directory);
+            }
             releaseRecordLocks(descriptor->second, processId());
             descriptors().erase(descriptor);
             wakePollers();
@@ -2461,6 +2486,8 @@ bool ProbeLinux::fileCall(Machine& machine) {
             }
             *output.offset = offset + count;
             if (!x[2]) *source.offset = position + count;
+            fileEvent(source.path, fileAccessed);
+            fileEvent(output.path, fileModified);
             x[0] = !x[2] || machine.store64(x[2], position + count) ? count : uint64_t(-14);
             break;
         }
@@ -2468,6 +2495,7 @@ bool ProbeLinux::fileCall(Machine& machine) {
             if (descriptor == descriptors().end() || descriptor->second.pathOnly()) { x[0] = uint64_t(-9); break; }
             auto& fd = descriptor->second;
             if ((fd.flags & 3) == 1) { x[0] = uint64_t(-9); break; }
+            if (fd.node == Node::inotify) return readInotify(machine, fd);
             if (fd.cgroupFile) {
                 const auto found = cgroupFiles.find(fd.path);
                 if (found == cgroupFiles.end() || found->second != fd.cgroupFile) { x[0] = uint64_t(-19); break; }
@@ -2594,6 +2622,7 @@ bool ProbeLinux::fileCall(Machine& machine) {
             const auto size = std::min<uint64_t>(x[2], bytes.size() - offset);
             if (!machine.write(x[1], bytes.subspan(offset, size))) { x[0] = uint64_t(-14); break; }
             if (x[8] == 63) *fd.offset += size;
+            if (fd.node == Node::regular || fd.temporary) fileEvent(fd.path, fileAccessed);
             x[0] = size;
             break;
         }
@@ -2601,6 +2630,7 @@ bool ProbeLinux::fileCall(Machine& machine) {
             if (descriptor == descriptors().end() || !(descriptor->second.flags & 3)) { x[0] = uint64_t(-9); break; }
             const auto& file = descriptor->second.temporary;
             x[0] = !file || x[1] > INT64_MAX ? invalid : resize(*file, x[1]);
+            if (!x[0]) fileEvent(descriptor->second.path, fileModified);
             break;
         }
         case 52: case 55: { // fchmod, fchown
@@ -2615,6 +2645,7 @@ bool ProbeLinux::fileCall(Machine& machine) {
                 if (uint32_t(x[2]) != UINT32_MAX) file->gid = uint32_t(x[2]);
             }
             x[0] = 0;
+            fileEvent(descriptor->second.path, fileAttributes);
             break;
         }
         case 5: case 6: case 7: { // setxattr, lsetxattr, fsetxattr on guest-writable nodes.
@@ -3035,6 +3066,7 @@ uint64_t ProbeLinux::writeDescriptor(Machine& machine, const Descriptor& fd, uin
         if (!data) return uint64_t(-14);
         if (const auto error = writeFileBytes(file, offset, {data, size}); error) return error;
         if (!position) *fd.offset = offset + size;
+        fileEvent(fd.path, fileModified);
         return size;
     }
     if (fd.node == Node::kernelLog) {
@@ -3785,6 +3817,164 @@ bool ProbeLinux::waitForEvents() {
     return true;
 }
 
+void ProbeLinux::EventState::queueFileEvent(FileEvent event) {
+    constexpr size_t capacity = 256;
+    if (fileEvents.size() > capacity || (!fileEvents.empty() && fileEvents.back() == event)) return;
+    if (fileEvents.size() == capacity) event = {-1, fileWatchOverflow, 0};
+    fileEvents.push_back(std::move(event));
+    counter = fileEvents.size();
+}
+
+void ProbeLinux::fileEvent(std::string_view path, uint32_t mask, bool directory, uint32_t cookie) {
+    if (inotifyInstances.empty() || !path.starts_with('/')) return;
+    const auto separator = path.rfind('/');
+    const auto parent = path.substr(0, separator ? separator : 1);
+    const auto name = path.substr(separator + 1);
+    bool notify = false;
+    for (const auto& weak : inotifyInstances) {
+        const auto instance = weak.lock();
+        if (!instance) continue;
+        for (auto watch = instance->fileWatches.begin(); watch != instance->fileWatches.end();) {
+            const auto& config = watch->second;
+            const bool same = config.path == path;
+            const bool child = config.directory && config.path == parent && !same && mask != fileMovedSelf;
+            const auto event = same && mask == fileDeleted ? fileDeletedSelf : mask;
+            const bool parentOnly = mask == fileCreated || mask == fileMovedFrom || mask == fileMovedTo;
+            const bool triggered = (child || (same && !parentOnly)) && (config.mask & event);
+            if (triggered) {
+                instance->queueFileEvent({watch->first, event | (directory ? fileWatchDirectory : 0),
+                                           same ? 0 : cookie, child ? std::string(name) : std::string{}});
+                notify = true;
+            }
+            if ((same && mask == fileDeleted) || (triggered && (config.mask & fileWatchOnce))) {
+                instance->queueFileEvent({watch->first, fileWatchIgnored, 0});
+                watch = instance->fileWatches.erase(watch);
+                notify = true;
+            } else {
+                ++watch;
+            }
+        }
+    }
+    if (notify) wakePollers();
+}
+
+void ProbeLinux::fileMoved(std::string_view source, std::string_view destination, bool directory) {
+    if (inotifyInstances.empty()) return;
+    if (!nextMoveCookie) ++nextMoveCookie;
+    const auto cookie = nextMoveCookie++;
+    fileEvent(source, fileMovedFrom, directory, cookie);
+    fileEvent(destination, fileMovedTo, directory, cookie);
+    fileEvent(source, fileMovedSelf, directory);
+    for (const auto& weak : inotifyInstances) {
+        if (const auto instance = weak.lock()) {
+            for (auto& [id, watch] : instance->fileWatches) {
+                if (watch.path == source || (directory && inside(watch.path, source)))
+                    watch.path = std::string(destination) + watch.path.substr(source.size());
+            }
+        }
+    }
+}
+
+bool ProbeLinux::inotify(Machine& machine) {
+    auto& x = machine.cpu.x;
+    if (x[8] == 26) {
+        if (x[0] & ~uint64_t{0x80800}) { x[0] = invalid; return true; }
+        const auto fd = freeDescriptor();
+        if (fd == descriptorCapacity) { x[0] = uint64_t(-24); return true; }
+        std::erase_if(inotifyInstances, [](const auto& instance) { return instance.expired(); });
+        if (inotifyInstances.size() >= 64) { x[0] = uint64_t(-24); return true; }
+        Descriptor entry{"anon_inode:inotify", {}, uint32_t(x[0]), Node::inotify};
+        entry.event = std::make_shared<EventState>();
+        inotifyInstances.push_back(entry.event);
+        descriptors().emplace(fd, std::move(entry));
+        x[0] = fd;
+        return true;
+    }
+    const auto fd = descriptors().find(uint32_t(x[0]));
+    if (fd == descriptors().end()) { x[0] = uint64_t(-9); return true; }
+    if (fd->second.node != Node::inotify) { x[0] = invalid; return true; }
+    auto& instance = *fd->second.event;
+    if (x[8] == 28) {
+        const auto watch = int32_t(x[1]);
+        if (!instance.fileWatches.erase(watch)) { x[0] = invalid; return true; }
+        instance.queueFileEvent({watch, fileWatchIgnored, 0});
+        wakePollers();
+        x[0] = 0;
+        return true;
+    }
+    constexpr uint32_t events = 0xfff, onlyDir = 0x01000000, noFollow = 0x02000000,
+                       excludeUnlinked = 0x04000000, createWatch = 0x10000000, addMask = 0x20000000;
+    const auto mask = uint32_t(x[2]);
+    if (!(mask & events) || (mask & ~(events | onlyDir | noFollow | excludeUnlinked |
+                                     createWatch | addMask | fileWatchOnce)) ||
+        ((mask & createWatch) && (mask & addMask))) { x[0] = invalid; return true; }
+    const auto path = readPath(machine, x[1]);
+    if (!path) { x[0] = uint64_t(-14); return true; }
+    if (path->empty()) { x[0] = uint64_t(-2); return true; }
+    const auto logical = followLinks(normalizePath(*path), !(mask & noFollow));
+    if (!logical) { x[0] = uint64_t(-40); return true; }
+    const auto watched = backingPath(*logical);
+    const auto entry = find(watched, 0);
+    if (!entry && !((mask & noFollow) && resolve(*logical))) { x[0] = uint64_t(-2); return true; }
+    const bool directory = entry && entry->node == Node::directory;
+    if ((mask & onlyDir) && !directory) { x[0] = uint64_t(-20); return true; }
+    if (!canAccessParent(watched, false)) { x[0] = uint64_t(-13); return true; }
+    if (userId()) {
+        const auto dir = directories.find(watched);
+        if ((dir != directories.end() && !((dir->second.mode >> permissionShift(dir->second.uid, dir->second.gid)) & 4)) ||
+            (entry && entry->temporary &&
+             !((entry->temporary->mode >> permissionShift(entry->temporary->uid, entry->temporary->gid)) & 4))) {
+            x[0] = uint64_t(-13);
+            return true;
+        }
+    }
+    const auto existing = std::find_if(instance.fileWatches.begin(), instance.fileWatches.end(),
+        [&](const auto& watch) { return watch.second.path == watched; });
+    const auto requested = mask & (events | excludeUnlinked | fileWatchOnce);
+    if (existing == instance.fileWatches.end()) {
+        if (instance.fileWatches.size() >= 256 || instance.nextFileWatch == INT32_MAX) {
+            x[0] = uint64_t(-28);
+            return true;
+        }
+        x[0] = instance.nextFileWatch++;
+        instance.fileWatches.emplace(int32_t(x[0]), EventState::FileWatch{watched, requested, directory});
+    } else {
+        if (mask & createWatch) { x[0] = uint64_t(-17); return true; }
+        existing->second.mask = (mask & addMask ? existing->second.mask : 0) | requested;
+        x[0] = existing->first;
+    }
+    return true;
+}
+
+bool ProbeLinux::readInotify(Machine& machine, const Descriptor& fd) {
+    auto& x = machine.cpu.x;
+    if (x[8] == 67) { x[0] = uint64_t(-29); return true; }
+    auto& instance = *fd.event;
+    if (instance.fileEvents.empty()) {
+        if (!(fd.effectiveFlags() & 0x800)) return waitForEvents();
+        x[0] = uint64_t(-11);
+        return true;
+    }
+    std::vector<uint8_t> bytes;
+    size_t count = 0;
+    for (const auto& event : instance.fileEvents) {
+        const auto length = event.name.empty() ? 0 : (event.name.size() + 16) & ~size_t{15};
+        const std::array<uint32_t, 4> header{uint32_t(event.watch), event.mask, event.cookie, uint32_t(length)};
+        if (sizeof header + length > x[2] - bytes.size()) break;
+        const auto start = bytes.size();
+        bytes.resize(start + sizeof header + length);
+        std::memcpy(bytes.data() + start, header.data(), sizeof header);
+        if (length) std::memcpy(bytes.data() + start + sizeof header, event.name.data(), event.name.size());
+        ++count;
+    }
+    if (!count) { x[0] = invalid; return true; }
+    if (!machine.write(x[1], bytes)) { x[0] = uint64_t(-14); return true; }
+    instance.fileEvents.erase(instance.fileEvents.begin(), instance.fileEvents.begin() + count);
+    instance.counter = instance.fileEvents.size();
+    x[0] = bytes.size();
+    return true;
+}
+
 void ProbeLinux::wakePollers() {
     for (auto& [tid, thread] : threads) {
         if (thread.wait == Wait::poll) thread.wait = Wait::none;
@@ -3852,6 +4042,8 @@ bool ProbeLinux::poll(Machine& machine) {
             }
         } else if (descriptor->second.node == Node::timer) {
             refreshTimers(steady_clock::now());
+            entry.returned = entry.events & (descriptor->second.event->counter ? 1 : 0);
+        } else if (descriptor->second.node == Node::inotify) {
             entry.returned = entry.events & (descriptor->second.event->counter ? 1 : 0);
         } else if (descriptor->second.node == Node::event) {
             const auto count = descriptor->second.event->counter;

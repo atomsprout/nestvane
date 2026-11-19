@@ -245,6 +245,44 @@ int main() {
         return value;
     };
     {
+        constexpr uint64_t cwd = uint32_t(-100), event = base + 512, buffer = base + 1024;
+        linux.addBootTmpfs("/watch", 0755, 0, 6);
+        put(base, "/watch");
+        assert(call(26, {0x1}) == uint64_t(-22));
+        const auto monitor = call(26, {0x80800});
+        const auto watch = call(27, {monitor, base, 0x3ca});
+        assert(monitor < 256 && watch == 1);
+        assert(call(27, {monitor, base, 0x100003ca}) == uint64_t(-17));
+        assert(call(63, {monitor, buffer, 128}) == uint64_t(-11));
+        const auto poll = call(20, {0x80000});
+        assert(machine.store64(event, 1) && machine.store64(event + 8, 123));
+        assert(call(21, {poll, 1, monitor, event}) == 0);
+        assert(call(22, {poll, buffer, 1, 0}) == 0);
+        put(base, "/watch/one");
+        const auto file = call(56, {cwd, base, 0x42, 0600});
+        assert(file < 256 && call(64, {file, base, 2}) == 2 && call(57, {file}) == 0);
+        assert(call(22, {poll, buffer, 1, 0}) == 1 && load(buffer) == 1 && load(buffer + 8) == 123);
+        assert(call(63, {monitor, buffer, 16}) == uint64_t(-22));
+        assert(call(63, {monitor, buffer, 32}) == 32);
+        assert(load(buffer) == (uint64_t{0x100} << 32 | watch));
+        assert(std::memcmp(machine.read(buffer + 16, 4, 4), "one", 4) == 0);
+        assert(call(63, {monitor, buffer, 128}) == 64);
+        assert(load(buffer) == (uint64_t{2} << 32 | watch));
+        assert(load(buffer + 32) == (uint64_t{8} << 32 | watch));
+        put(base + 128, "/watch/two");
+        assert(call(38, {cwd, base, cwd, base + 128}) == 0);
+        assert(call(63, {monitor, buffer, 128}) == 64);
+        assert(load(buffer) == (uint64_t{64} << 32 | watch));
+        assert(load(buffer + 32) == (uint64_t{128} << 32 | watch));
+        assert(uint32_t(load(buffer + 8)) && load(buffer + 8) == load(buffer + 40));
+        assert(call(35, {cwd, base + 128, 0}) == 0 && call(28, {monitor, watch}) == 0);
+        assert(call(63, {monitor, buffer, 128}) == 48);
+        assert(load(buffer) == (uint64_t{512} << 32 | watch));
+        assert(load(buffer + 32) == (uint64_t{0x8000} << 32 | watch));
+        assert(call(63, {monitor, buffer, 128}) == uint64_t(-11));
+        assert(call(57, {monitor}) == 0 && call(57, {poll}) == 0);
+    }
+    {
         put(base, "/proc/meminfo");
         assert(call(48, {uint32_t(-100), base, 4}) == 0);
         assert(call(79, {uint32_t(-100), base, base + 512, 0}) == 0);

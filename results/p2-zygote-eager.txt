@@ -241,3 +241,15 @@ BC_TRANSACTION_SG and BC_REPLY_SG passed across guest processes.
 Parent buffer pointers refer to the copied buffer in the receiver.
 Undersized extra storage and out-of-range parent offsets were rejected.
 Host ABI suite, ASan/UBSan and iOS Release build passed.
+
+Mac with guest file copy and HwBinder scatter/gather
+init: Service 'early_system_aconfigd_platform_init' (pid 74) exited with status 0
+init: Service 'system_aconfigd_platform_init' (pid 83) exited with status 0
+init: Service 'mainline_aconfigd_init' (pid 134) exited with status 0
+Zygote: end preload
+SystemServer: Entered the Android system server!
+SystemServerTiming: StartActivityManager
+android_os_HwBinder: HwBinder: Starting thread pool for getting: android.hidl.manager@1.0::IServiceManager/default
+  syscall 26 (inotify_init1) ... x0=0x80000 [unimplemented in guest PID 164, suspended]
+  guest execution wall time: 173752 ms
+Inotify coverage: guest create, modify, close, rename with shared cookie, deletion, watch removal, nonblocking reads and epoll readiness. Host suite, ASan/UBSan and iOS Release build passed.
