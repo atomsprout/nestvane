@@ -525,6 +525,12 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
         const auto sign = uint64_t{1} << (size * 8 - 1);
         for (unsigned i = 0; i < width / size; ++i)
             setLane(result, i, size, lane(source, i, size) ^ sign);
+    } else if ((word & 0xbffffc00) == 0x0e617800) { // FCVTL / FCVTL2 from S to D.
+        const unsigned first = width == 16 ? 2 : 0;
+        for (unsigned i = 0; i < 2; ++i) {
+            const auto value = std::bit_cast<float>(uint32_t(lane(source, first + i, 4)));
+            setLane(result, i, 8, std::bit_cast<uint64_t>(static_cast<double>(value)));
+        }
     } else if ((word & 0xbf3ffc00) == 0x0e209800) { // CMEQ (zero).
         for (unsigned i = 0; i < width / size; ++i) {
             setLane(result, i, size, lane(source, i, size) == 0 ? UINT64_MAX : 0);

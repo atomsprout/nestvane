@@ -114,6 +114,14 @@ int main() {
         std::memcpy(permute.cpu.v[4].data(), negateSingles.data(), sizeof(negateSingles));
         assert(executeStartupInstruction(permute, 0x2ea0f883)); // fneg v3.2s, v4.2s
         assert(std::memcmp(permute.cpu.v[3].data(), negateSinglesResult.data(), sizeof(negateSinglesResult)) == 0);
+        const std::array<float, 4> widenInput{1.75f, -0.0f, -11.5f, 23.25f};
+        const std::array<double, 2> widenedLow{1.75, -0.0}, widenedHigh{-11.5, 23.25};
+        std::memcpy(permute.cpu.v[2].data(), widenInput.data(), sizeof(widenInput));
+        std::memcpy(permute.cpu.v[4].data(), widenInput.data(), sizeof(widenInput));
+        assert(executeStartupInstruction(permute, 0x0e617842)); // fcvtl v2.2d, v2.2s
+        assert(std::memcmp(permute.cpu.v[2].data(), widenedLow.data(), sizeof(widenedLow)) == 0);
+        assert(executeStartupInstruction(permute, 0x4e617883)); // fcvtl2 v3.2d, v4.4s
+        assert(std::memcmp(permute.cpu.v[3].data(), widenedHigh.data(), sizeof(widenedHigh)) == 0);
         const double half = -2.5, beyondSignedMax = 0x1p63;
         std::memcpy(permute.cpu.v[5].data(), &half, sizeof(half));
         assert(executeStartupInstruction(permute, 0x9e6400a9)); // fcvtas x9, d5

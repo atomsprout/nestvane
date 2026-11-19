@@ -156,3 +156,5 @@
 - Binder 现在在接收端安装普通 `BINDER_TYPE_FD`，验证节点或调用的文件接收标志，并将接收端描述符设为 close-on-exec。回归使用两个客体进程验证拒绝时唤醒调用方、接收端描述符号重定位、发送端提前关闭和释放 Binder 缓冲区后的文件可用性。宿主回归、ASan/UBSan 和 iOS 签名构建通过。Mac 上原版 Ranchu 越过交换链分配的 Binder 回复，在 `frintm v1.2s, v1.2s` 这一新解释器停点结束，尚未提交可读帧。[Linux Binder 传输实现](https://android.googlesource.com/kernel/common/+/refs/heads/android-mainline/drivers/android/binder.c)
 
 - Mac 复测加入向量 `FRINTM` 和 `FRINTA` 后，原版 SurfaceFlinger 确认已加载 AIDL Composer3 HAL，连接主显示 HAL ID 0，创建 Surface 消费者并初始化刷新预测。解释器随后在向量 `FNEG` 停止。该指令修复的宿主 ABI 回归与 iOS 签名构建通过，首帧待下一次启动确认。
+
+- iPhone 11 第 7565 号进程验证缓冲区生命周期通道，原版 Ranchu 在约 67 秒进入 640×960 主显示初始化，消除前一轮的资源分配错误。此版仍复现 Binder 描述符回复失败并达到 720 秒诊断时限。Mac 启动在补齐 `FNEG` 后进入 SurfaceFlinger 刷新调度，随后触发 `LDAXP`。成对独占访存、SurfaceFlinger 控制管道的 epoll 支持，以及继续推进后触发的 `FCVTL` 已分别通过宿主回归。新版签名构建记录 Composer3 加载和主显示连接。
