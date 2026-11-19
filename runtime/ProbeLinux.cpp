@@ -2115,6 +2115,7 @@ uint64_t ProbeLinux::writeGraphics(const Machine& machine, GraphicsPipeState& pi
             } else if (!pipe.vsock && graphicsPipeFactory &&
                        (name == "opengles" || name == "GLProcessPipe" || name == "refcount")) {
                 pipe.backend = graphicsPipeFactory(name);
+                pipe.renderChannel = name == "opengles";
             }
         }
         pipe.failed = !pipe.backend;
@@ -3911,7 +3912,15 @@ bool ProbeLinux::fileCall(Machine& machine) {
             if (fd.graphics) {
                 if (x[8] == 67) { x[0] = uint64_t(-29); break; }
                 const auto result = readGraphics(machine, *fd.graphics, x[1], x[2]);
-                if (result == uint64_t(-11) && !(fd.effectiveFlags() & 0x800)) return waitForHostEvents();
+                if (result == uint64_t(-11)) {
+                    if (!(fd.effectiveFlags() & 0x800)) return waitForHostEvents();
+                    if (fd.graphics->renderChannel) {
+                        // Let the renderer and other guest tasks run between empty polls.
+                        // The nonblocking read still completes with EAGAIN at this PC.
+                        current->nextSliceAfter = std::chrono::steady_clock::now() + std::chrono::microseconds(200);
+                        sliceEnd = 0;
+                    }
+                }
                 x[0] = result;
                 break;
             }
@@ -4666,7 +4675,14 @@ bool ProbeLinux::switchThread(Machine& machine, std::chrono::steady_clock::time_
                     nextDeadline = thread.deadline;
                 }
             }
-            runnable |= thread.wait == Wait::none;
+            if (thread.wait != Wait::none) continue;
+            if (thread.nextSliceAfter && *thread.nextSliceAfter > now) {
+                if (!nextDeadline || *thread.nextSliceAfter < *nextDeadline)
+                    nextDeadline = thread.nextSliceAfter;
+                continue;
+            }
+            thread.nextSliceAfter.reset();
+            runnable = true;
         }
     };
     if (!binderDeathSubscribers.empty()) refreshBinderDeaths();
@@ -4681,7 +4697,7 @@ bool ProbeLinux::switchThread(Machine& machine, std::chrono::steady_clock::time_
     auto next = threads.upper_bound(currentTid);
     for (size_t tested = 0; tested < threads.size(); ++tested) {
         if (next == threads.end()) next = threads.begin();
-        if (next->second.wait != Wait::none) { ++next; continue; }
+        if (next->second.wait != Wait::none || next->second.nextSliceAfter) { ++next; continue; }
         if (next->first != currentTid) {
             const auto retired = machine.cpu.retired;
             auto output = std::move(machine.cpu.output);

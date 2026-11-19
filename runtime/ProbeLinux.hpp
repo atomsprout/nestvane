@@ -135,6 +135,7 @@ private:
         std::optional<std::chrono::steady_clock::time_point> deadline;
         std::optional<std::chrono::nanoseconds> realtimeFutexDeadline;
         std::optional<std::chrono::steady_clock::time_point> hostEventRetry;
+        std::optional<std::chrono::steady_clock::time_point> nextSliceAfter;
         uint64_t signalMask = 0;
         uint64_t signalWaitMask = 0;
         std::string fsCreateContext, socketCreateContext;
@@ -265,7 +266,7 @@ private:
         std::vector<uint8_t> readBuffer;
         size_t readOffset = 0, readSize = 0;
         std::string_view serviceContext;
-        bool failed = false, vsock = false, connected = false;
+        bool failed = false, vsock = false, connected = false, renderChannel = false;
 
         uint16_t pollEvents() const;
     };
