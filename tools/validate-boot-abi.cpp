@@ -1902,6 +1902,52 @@ int main() {
             assert(invoke(57, {server}) == 0 && invoke(57, {client}) == 0 && invoke(57, {listener}) == 0);
             assert(attachPacket(9, 1, verifyOptions) == 0 && invoke(57, {verifyOptions}) == 0);
         }
+        for (uint32_t type : {1, 2}) {
+            constexpr auto name = base + 800, remote = base + 832, length = base + 866, buffer = base + 880;
+            std::array<uint8_t, 28> dualAddress{10};
+            const auto dual = invoke(198, {10, type | 0x800, 0}), ipv4 = invoke(198, {2, type | 0x800, 0});
+            assert(dual < 256 && ipv4 < 256);
+            assert(write(length, uint32_t(4)) && invoke(209, {dual, 41, 26, buffer, length}) == 0);
+            uint64_t value = 0;
+            assert(task.load64(buffer, value) && uint32_t(value) == 0); // Default listener is dual stack.
+            assert(write(name, dualAddress) && invoke(200, {dual, name, dualAddress.size()}) == 0);
+            assert(write(length, uint32_t(dualAddress.size())) && invoke(204, {dual, name, length}) == 0);
+            const auto* bound = task.read(name, dualAddress.size(), 4);
+            assert(bound);
+            const std::array<uint8_t, 16> fromV4{2, 0, bound[2], bound[3], 127, 0, 0, 1};
+            assert(write(remote, fromV4));
+            assert(invoke(200, {ipv4, remote, fromV4.size()}) == uint64_t(-98));
+            if (type == 1) assert(invoke(201, {dual, 4}) == 0);
+            assert(invoke(203, {ipv4, remote, fromV4.size()}) == 0);
+            const auto server = type == 1 ? invoke(242, {dual, name, length, 0x800}) : dual;
+            assert(server < 256 && write(buffer, uint64_t(0xabcd)));
+            assert(invoke(64, {ipv4, buffer, 8}) == 8);
+            if (type == 1) assert(invoke(63, {server, buffer, 8}) == 8);
+            else assert(invoke(207, {server, buffer, 8, 0, name, length}) == 8);
+            const auto* source = task.read(name, dualAddress.size(), 4);
+            assert(source && source[0] == 10 && source[18] == 0xff && source[19] == 0xff &&
+                   source[20] == 127 && source[23] == 1);
+            if (type == 1) assert(invoke(64, {server, buffer, 8}) == 8 && invoke(63, {ipv4, buffer, 8}) == 8);
+            if (type == 1) assert(invoke(57, {server}) == 0);
+            assert(invoke(57, {ipv4}) == 0 && invoke(57, {dual}) == 0);
+        }
+        {
+            const auto v6 = invoke(198, {10, 1, 0}), v4 = invoke(198, {2, 1, 0});
+            constexpr auto name = base + 996, value = base + 1024, length = base + 1032;
+            assert(v6 < 256 && v4 < 256 && write(value, uint32_t(1)));
+            assert(invoke(208, {v6, 41, 26, value, 4}) == 0);
+            const std::array<uint8_t, 28> localAddress{10};
+            assert(write(name, localAddress) && invoke(200, {v6, name, localAddress.size()}) == 0);
+            assert(write(length, uint32_t(localAddress.size())) && invoke(204, {v6, name, length}) == 0);
+            const auto* host = task.read(name, localAddress.size(), 4);
+            assert(host);
+            const std::array<uint8_t, 16> v4Address{2, 0, host[2], host[3], 127, 0, 0, 1};
+            assert(write(name, v4Address));
+            assert(invoke(201, {v6, 4}) == 0 && invoke(203, {v4, name, v4Address.size()}) == uint64_t(-111));
+            assert(invoke(200, {v4, name, v4Address.size()}) == 0);
+            assert(invoke(208, {v6, 41, 26, value, 4}) == uint64_t(-22));
+            assert(invoke(57, {v6}) == 0 && invoke(57, {v4}) == 0);
+        }
         assert(attachPacket(9, 3, operations) == 0);
         assert(invoke(57, {operations}) == 0 && invoke(57, {root}) == 0);
         assert(invoke(220, {0x1200011, 0, 0, 0, base + 128}) == 2);

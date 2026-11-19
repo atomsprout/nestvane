@@ -2573,6 +2573,17 @@ bool ProbeLinux::socketCall(Machine& machine) {
                 std::ranges::copy(std::span(buffer).first(output.size()), output.begin());
                 return true;
             };
+            if (level == 41 && name == 26 && endpoint.family == 10) { // IPV6_V6ONLY
+                int32_t value = 0;
+                if (size < sizeof(value) || endpoint.localInetAddress[0]) { x[0] = invalid; break; }
+                if (!readOption({reinterpret_cast<uint8_t*>(&value), sizeof(value)})) {
+                    x[0] = uint64_t(-14);
+                    break;
+                }
+                endpoint.inetV6Only = value != 0;
+                x[0] = 0;
+                break;
+            }
             if (level != 1) {
                 if (!endpoint.storageIdentity) return false;
                 x[0] = uint64_t(-92);
@@ -5408,27 +5419,6 @@ uint64_t ProbeLinux::bindInetSocket(Machine& machine, const std::shared_ptr<Sock
     return reserveInetAddress(socket, address);
 }
 
-uint64_t ProbeLinux::reserveInetAddress(const std::shared_ptr<SocketState>& socket, SocketState::InetAddress address) {
-    const bool ipv4 = socket->family == 2;
-    auto port = uint16_t(uint16_t(address[2]) << 8 | address[3]);
-    std::erase_if(inetBindings, [](const auto& entry) { return entry.second.expired(); });
-    if (inetBindings.size() >= 256) return uint64_t(-98);
-    const auto key = [&](uint16_t value) { return std::tuple(socket->family, socket->protocol, value); };
-    if (!port) {
-        constexpr uint16_t end = 60999, start = 32768;
-        do {
-            port = nextEphemeralPort;
-            nextEphemeralPort = port == end ? start : port + 1;
-        } while (inetBindings.contains(key(port)));
-    }
-    if (!inetBindings.emplace(key(port), socket).second) return uint64_t(-98);
-    address[2] = port >> 8;
-    address[3] = uint8_t(port);
-    if (ipv4) std::ranges::fill(std::span(address).subspan(8), 0);
-    socket->localInetAddress = address;
-    return 0;
-}
-
 namespace {
 using InetAddress = std::array<uint8_t, 28>;
 
@@ -5447,6 +5437,26 @@ bool inetWildcard(const InetAddress& address) {
 void setInetLoopback(InetAddress& address) {
     if (address[0] == 2) address[4] = 127;
     address[address[0] == 2 ? 7 : 23] = 1;
+}
+
+InetAddress asMappedIpv4(const InetAddress& address) {
+    InetAddress mapped{};
+    mapped[0] = 10;
+    std::copy_n(address.begin() + 2, 2, mapped.begin() + 2);
+    mapped[18] = mapped[19] = 0xff;
+    std::copy_n(address.begin() + 4, 4, mapped.begin() + 20);
+    return mapped;
+}
+
+InetAddress asWireAddress(const InetAddress& address) {
+    const auto ip = inetHost(address);
+    if (address[0] != 10 || ip[10] != 0xff || ip[11] != 0xff ||
+        std::ranges::any_of(ip.first(10), [](uint8_t byte) { return byte != 0; })) return address;
+    InetAddress wire{};
+    wire[0] = 2;
+    std::copy_n(address.begin() + 2, 2, wire.begin() + 2);
+    std::copy(ip.end() - 4, ip.end(), wire.begin() + 4);
+    return wire;
 }
 
 bool matchInetPeer(const InetAddress& expected, const InetAddress& actual) {
@@ -5519,6 +5529,53 @@ void encodeLoopbackUdp(std::span<uint8_t> bytes, const InetAddress& source, cons
 }
 } // namespace
 
+uint64_t ProbeLinux::reserveInetAddress(const std::shared_ptr<SocketState>& socket, SocketState::InetAddress address) {
+    const bool ipv4 = socket->family == 2;
+    auto port = uint16_t(uint16_t(address[2]) << 8 | address[3]);
+    std::erase_if(inetBindings, [](const auto& entry) { return entry.second.expired(); });
+    if (inetBindings.size() >= 256) return uint64_t(-98);
+    const auto key = [&](uint16_t value) { return std::tuple(socket->family, socket->protocol, value); };
+    const auto conflicts = [&](uint16_t value) {
+        if (inetBindings.contains(key(value))) return true;
+        const auto other = inetBindings.find({ipv4 ? 10U : 2U, socket->protocol, value});
+        if (other == inetBindings.end()) return false;
+        if (!ipv4) return !socket->inetV6Only && inetWildcard(address);
+        const auto bound = other->second.lock();
+        return bound && !bound->inetV6Only && inetWildcard(bound->localInetAddress);
+    };
+    if (!port) {
+        constexpr uint16_t end = 60999, start = 32768;
+        do {
+            port = nextEphemeralPort;
+            nextEphemeralPort = port == end ? start : port + 1;
+        } while (conflicts(port));
+    }
+    if (conflicts(port)) return uint64_t(-98);
+    inetBindings.emplace(key(port), socket);
+    address[2] = port >> 8;
+    address[3] = uint8_t(port);
+    if (ipv4) std::ranges::fill(std::span(address).subspan(8), 0);
+    socket->localInetAddress = address;
+    return 0;
+}
+
+std::shared_ptr<ProbeLinux::SocketState> ProbeLinux::findInetDestination(
+    uint32_t protocol, const SocketState::InetAddress& address) const {
+    const auto port = inetPort(address);
+    if (const auto exact = inetBindings.find({address[0], protocol, port}); exact != inetBindings.end()) {
+        if (const auto endpoint = exact->second.lock(); endpoint &&
+            (inetWildcard(endpoint->localInetAddress) || matchInetPeer(endpoint->localInetAddress, address)))
+            return endpoint;
+    }
+    if (address[0] == 2) {
+        if (const auto dual = inetBindings.find({10, protocol, port}); dual != inetBindings.end()) {
+            if (const auto endpoint = dual->second.lock(); endpoint && !endpoint->inetV6Only &&
+                inetWildcard(endpoint->localInetAddress)) return endpoint;
+        }
+    }
+    return nullptr;
+}
+
 uint64_t ProbeLinux::connectInetSocket(Machine& machine, const std::shared_ptr<SocketState>& socket) {
     const auto& x = machine.cpu.x;
     if (x[2] >= 2) {
@@ -5582,15 +5639,16 @@ std::shared_ptr<void> ProbeLinux::lookupInetSocket(std::span<const uint8_t> tupl
     std::ranges::copy(tuple.last(2), to.begin() + 2);
     const uint32_t protocol = tcp ? 6 : 17;
     const auto addressMatches = [&](const SocketState& socket) {
-        return socket.protocol == protocol && socket.family == family &&
-            (inetWildcard(socket.localInetAddress) || matchInetPeer(socket.localInetAddress, to)) &&
-            inetPort(socket.localInetAddress) == inetPort(to) &&
-            (!socket.connected || matchInetPeer(socket.peerInetAddress, from));
+        const auto local = asWireAddress(socket.localInetAddress);
+        const bool wildcard = inetWildcard(local);
+        const bool dual = family == 2 && local[0] == 10 && !socket.inetV6Only && wildcard;
+        return socket.protocol == protocol && (local[0] == family || dual) &&
+            (wildcard || matchInetPeer(local, to)) && inetPort(local) == inetPort(to) &&
+            (!socket.connected || matchInetPeer(asWireAddress(socket.peerInetAddress), from));
     };
     if (receiving && addressMatches(*receiving)) return receiving->storageIdentity;
-    const auto local = inetBindings.find({family, protocol, inetPort(to)});
-    const auto socket = local == inetBindings.end() ? nullptr : local->second.lock();
-    if (!socket || !addressMatches(*socket)) return nullptr;
+    const auto socket = findInetDestination(protocol, to);
+    if (!socket || !addressMatches(*socket) || (tcp && !socket->listening && !socket->connected)) return nullptr;
     if (tcp && socket->listening) {
         const auto remote = inetBindings.find({family, protocol, inetPort(from)});
         const auto sender = remote == inetBindings.end() ? nullptr : remote->second.lock();
@@ -5632,11 +5690,12 @@ bool ProbeLinux::transmitInetStream(SocketState& from, SocketState& to, std::spa
         from.tcpCallbackFlags = output.callbackFlags;
     }
     const auto paddedOptions = (output.used + 3) & ~size_t(3);
-    const auto networkSize = from.family == 2 ? 20 : 40;
+    const auto source = asWireAddress(from.localInetAddress), destination = asWireAddress(to.localInetAddress);
+    const auto networkSize = source[0] == 2 ? 20 : 40;
     const auto tcpSize = 20 + paddedOptions;
     BpfProgram::Packet packet;
     packet.bytes.resize(networkSize + tcpSize + payload.size());
-    encodeLoopbackIp(packet.bytes, from.localInetAddress, to.localInetAddress, 6);
+    encodeLoopbackIp(packet.bytes, source, destination, 6);
     auto tcp = std::span(packet.bytes).subspan(networkSize);
     writeNetwork16(tcp, 0, inetPort(from.localInetAddress));
     writeNetwork16(tcp, 2, inetPort(to.localInetAddress));
@@ -5651,9 +5710,9 @@ bool ProbeLinux::transmitInetStream(SocketState& from, SocketState& to, std::spa
     writeNetwork16(tcp, 14, 65535);
     std::ranges::copy(std::span(output.options).first(output.used), tcp.begin() + 20);
     std::ranges::copy(payload, tcp.begin() + tcpSize);
-    writeNetwork16(tcp, 16, transportChecksum(packet.bytes, from.localInetAddress, to.localInetAddress, 6));
+    writeNetwork16(tcp, 16, transportChecksum(packet.bytes, source, destination, 6));
 
-    packet.protocol = from.family == 2 ? 0x0008 : 0xdd86;
+    packet.protocol = source[0] == 2 ? 0x0008 : 0xdd86;
     packet.ifindex = guestLoopbackIndex;
     packet.socketLookup = [&](std::span<const uint8_t> tuple, bool tcp) {
         return lookupInetSocket(tuple, tcp, &to);
@@ -5673,11 +5732,8 @@ uint64_t ProbeLinux::connectInetStream(const std::shared_ptr<SocketState>& socke
                                        const SocketState::InetAddress& destination) {
     if (socket->connected) return uint64_t(-106);
     if (socket->listening) return invalid;
-    const auto binding = inetBindings.find({socket->family, socket->protocol, inetPort(destination)});
-    const auto listener = binding == inetBindings.end() ? nullptr : binding->second.lock();
-    if (!listener || !listener->listening ||
-        (!inetWildcard(listener->localInetAddress) && !matchInetPeer(listener->localInetAddress, destination)))
-        return uint64_t(-111);
+    const auto listener = findInetDestination(socket->protocol, destination);
+    if (!listener || !listener->listening) return uint64_t(-111);
     if (listener->pending.size() >= listener->backlog) return uint64_t(-11);
     if (!socket->localInetAddress[0]) {
         InetAddress local{};
@@ -5689,12 +5745,14 @@ uint64_t ProbeLinux::connectInetStream(const std::shared_ptr<SocketState>& socke
     try {
         auto accepted = std::make_shared<SocketState>(socket->type);
         accepted->protocol = socket->protocol;
-        accepted->family = socket->family;
+        accepted->family = listener->family;
+        accepted->inetV6Only = listener->inetV6Only;
         accepted->cookie = nextSocketCookie++;
         accepted->credentials = listener->credentials;
         accepted->context = listener->context;
-        accepted->localInetAddress = destination;
-        accepted->peerInetAddress = socket->localInetAddress;
+        const bool mapped = socket->family != accepted->family;
+        accepted->localInetAddress = mapped ? asMappedIpv4(destination) : destination;
+        accepted->peerInetAddress = mapped ? asMappedIpv4(socket->localInetAddress) : socket->localInetAddress;
         openInetSocket(accepted, listener.get());
 
         socket->tcpSequence = uint32_t(socket->cookie);
@@ -5778,17 +5836,16 @@ uint64_t ProbeLinux::sendInetDatagram(Machine& machine, const std::shared_ptr<So
         if (packet.ringNotification) wakePollers();
         if (!sent) return uint64_t(-1);
 
-        const auto endpoint = inetBindings.find({socket->family, socket->protocol, inetPort(destination)});
-        const auto peer = endpoint == inetBindings.end() ? nullptr : endpoint->second.lock();
-        if (!peer || peer->receiveShutdown ||
-            (!inetWildcard(peer->localInetAddress) && !matchInetPeer(peer->localInetAddress, destination)) ||
-            (peer->connected && !matchInetPeer(peer->peerInetAddress, source))) return size;
+        const auto peer = findInetDestination(socket->protocol, destination);
+        if (!peer || peer->receiveShutdown) return size;
+        const auto reportedSource = socket->family == peer->family ? source : asMappedIpv4(source);
+        if (peer->connected && !matchInetPeer(peer->peerInetAddress, reportedSource)) return size;
         packet.ingressIfindex = guestLoopbackIndex;
         const bool received = filterInetPacket(inetIngressPrograms, *peer, packet, false);
         if (packet.ringNotification) wakePollers();
         if (!received) return size;
         if (peer->datagrams.size() < 256 && peer->queuedBytes + size <= peer->receiveBuffer) {
-            peer->datagrams.push_back({source, {packet.bytes.begin() + headerSize, packet.bytes.end()}});
+            peer->datagrams.push_back({reportedSource, {packet.bytes.begin() + headerSize, packet.bytes.end()}});
             peer->queuedBytes += size;
             wakePollers();
         }
@@ -5847,7 +5904,9 @@ uint64_t ProbeLinux::getInetSocketOption(Machine& machine, SocketState& socket) 
         std::memcpy(original.data(), &value, size);
         status = 0;
     };
-    if (x[1] == 1) {
+    if (x[1] == 41 && x[2] == 26 && socket.family == 10) { // IPV6_V6ONLY
+        store(uint32_t(socket.inetV6Only));
+    } else if (x[1] == 1) {
         switch (x[2]) {
             case 2: store(uint32_t(socket.reuseAddress)); break;
             case 3: store(socket.type); break;

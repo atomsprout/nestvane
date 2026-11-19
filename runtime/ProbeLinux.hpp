@@ -178,6 +178,7 @@ private:
         using InetAddress = std::array<uint8_t, 28>;
         InetAddress localInetAddress{}, peerInetAddress{};
         uint32_t tcpCallbackFlags = 0, tcpSequence = 0;
+        bool inetV6Only = false;
         bool inetStream() const { return protocol == 6; }
         struct Datagram {
             InetAddress source;
@@ -231,6 +232,7 @@ private:
     bool openInetSocket(const std::shared_ptr<SocketState>& socket, const SocketState* listener = nullptr);
     uint64_t bindInetSocket(Machine& machine, const std::shared_ptr<SocketState>& socket);
     uint64_t reserveInetAddress(const std::shared_ptr<SocketState>& socket, SocketState::InetAddress address);
+    std::shared_ptr<SocketState> findInetDestination(uint32_t protocol, const SocketState::InetAddress& address) const;
     bool filterInetAddress(const SocketState& socket, uint32_t type, SocketState::InetAddress& address,
         bool* skipBindCapability = nullptr);
     uint64_t connectInetSocket(Machine& machine, const std::shared_ptr<SocketState>& socket);

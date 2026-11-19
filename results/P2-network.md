@@ -307,3 +307,5 @@
 - 支持 cgroup BPF 的直接查询和继承查询，返回真实程序 ID、数量与附着标志。参考 Android 17 读到根 cgroup 出站程序 ID 24，子 cgroup 的继承结果一致。宿主回归额外覆盖容量不足、旧版查询结构、附着顺序和解除后结果。Mac 中原版 netd 的出站查询越过原停点，下一处调用为 `SIOCGIFFLAGS`（0x8913）。最新真机复验已启动，完整启动仍待验证。[Linux cgroup BPF 查询](https://codebrowser.dev/linux/linux/kernel/bpf/cgroup.c.html)
 - iPhone 11 进程 8382 已越过原版 netd 的 BPF 附着查询，停在真实的 `SIOCGIFFLAGS` 调用。双栈 TCP/UDP 探针再次退出 0。
 - 为客体回环补齐接口标志、开关状态、索引与 MTU 查询。参考 Android 17 和 Mac 的同一 ARM64 探针均读到标志 0x49、索引 1、MTU 65536，未知接口返回 ENODEV。宿主 ABI 回归验证关闭接口后的路由失败与重新打开。Mac 原版 netd 越过接口标志查询，接下来在一次 `connect` 调用收到 ECONNREFUSED。最新真机构建已安装复验，`sys.boot_completed=1` 尚未通过。[Linux 回环接口实现](https://codebrowser.dev/linux/linux/drivers/net/loopback.c.html)
+- iPhone 11 进程 8385 中，读取回环接口标志、索引和 MTU 的独立 ARM64 探针退出 0。原版 netd 与 Mac 一样到达本地连接自检。Mac 跟踪确认它先在 IPv6 通配地址监听，再从 IPv4 连接该端口。
+- 客体现在支持默认 IPv6 双栈监听接收 IPv4 连接和报文，向 IPv6 端报告映射后的 IPv4 地址。宿主回归覆盖 TCP 双向发送、UDP 来源、双栈端口冲突和 `IPV6_V6ONLY`。相同 ARM64 Bionic 探针在 Android 17 参考内核和 Mac 均完成 IPv4 到 IPv6 监听的双向读写。Mac 标准启动链中的原版 `netd1shot` 以 0 退出，常驻 netd 日志报告 `libnetd_updatable_init success`。原版 init 启动 Zygote 并进入类预加载。常驻 netd 随后报告镜像缺少 `iptables-restore` 和 `ip6tables-restore`，完整启动尚未验证。
