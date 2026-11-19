@@ -301,3 +301,5 @@
 - 补齐 cgroup 入站与出站包程序附着，并接入客体 IPv4/IPv6 回环 UDP。Mac 上的 ARM64 Bionic 探针验证出站拒绝、入站丢弃、读写、连接和报文截短，宿主 ABI 回归验证两个地址族、附着期间切换、报文来源和无连接语义。Android 17 参考系统通过普通 UDP 回环对照，已安装的参考策略拒绝在临时 cgroup 额外附着探针。Mac 上原版 `netd1shot` 越过出站和入站统计程序附着，下一项是 `prog_netd_connect4_inet4_connect`。iPhone 11 已进入本批构建复验，TCP 和外网数据通路仍待实现。[Linux cgroup 包过滤语义](https://codebrowser.dev/linux/linux/kernel/bpf/cgroup.c.html)
 - iPhone 11 进程 8359 复验原版 netd 越过入站与出站包程序附着，随后停在 `prog_netd_connect4_inet4_connect`。独立 UDP 探针进入程序，日志未保留其退出结果。
 - 接入 IPv4/IPv6 cgroup 连接与 UDP 发送、接收地址回调。宿主 ABI 验证两种地址族下拒绝连接、改写连接和发送目标端口、改写接收报告的来源端口。Mac 冷启动中的原版 netd 已越过连接和 UDP 地址程序，推进至 `prog_netd_sockops_accecn_option` 附着。真实 TCP 传输与完整启动仍待完成。[Linux UDP 发送与接收地址回调](https://codebrowser.dev/linux/linux/net/ipv4/udp.c.html)
+- iPhone 11 进程 8360 中，原版 init 启动的 ARM64 UDP 探针正常退出，覆盖 IPv4/IPv6 入站与出站策略、连接拒绝和端口改写。原版 netd 越过连接与 UDP 地址程序附着，停在 `prog_netd_sockops_accecn_option`。
+- 客体支持 IPv4/IPv6 TCP 回环监听、连接、队列和双向字节流，连接与数据段经过 cgroup 包过滤，并可执行 sockops 的连接、建立和 TCP 头选项回调。宿主回归验证主动和被动端都生成选项，出站程序在两向实际数据段中读到选项，且半关闭后对端读到 EOF。参考 Android 17 验证普通双栈 TCP/UDP 回环。Mac 原版 netd 越过 AccECN 附着，下一处挂起调用是 `BPF_PROG_QUERY`。真机复验进行中，TCP 仍是客体内回环。

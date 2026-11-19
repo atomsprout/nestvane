@@ -223,7 +223,8 @@ public:
     };
 
     struct SocketOperations {
-        static constexpr uint32_t tcpConnect = 3, passiveEstablished = 5, optionLength = 14, writeOption = 15;
+        static constexpr uint32_t tcpConnect = 3, activeEstablished = 4, passiveEstablished = 5;
+        static constexpr uint32_t optionLength = 14, writeOption = 15;
         static constexpr uint32_t allCallbackFlags = 0x7f;
 
         std::shared_ptr<void> socket;

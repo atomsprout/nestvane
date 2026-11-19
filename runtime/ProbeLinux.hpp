@@ -177,6 +177,8 @@ private:
         std::vector<std::weak_ptr<Directory>> inetAncestry;
         using InetAddress = std::array<uint8_t, 28>;
         InetAddress localInetAddress{}, peerInetAddress{};
+        uint32_t tcpCallbackFlags = 0, tcpSequence = 0;
+        bool inetStream() const { return protocol == 6; }
         struct Datagram {
             InetAddress source;
             std::vector<uint8_t> payload;
@@ -225,12 +227,16 @@ private:
     size_t bpfMapBytes();
     bool canAllocateSocketStorage(size_t valueSize);
     uint64_t changeBpfCgroupAttachment(Machine& machine);
-    bool openInetSocket(const std::shared_ptr<SocketState>& socket);
+    bool openInetSocket(const std::shared_ptr<SocketState>& socket, const SocketState* listener = nullptr);
     uint64_t bindInetSocket(Machine& machine, const std::shared_ptr<SocketState>& socket);
     uint64_t reserveInetAddress(const std::shared_ptr<SocketState>& socket, SocketState::InetAddress address);
     bool filterInetAddress(const SocketState& socket, uint32_t type, SocketState::InetAddress& address,
         bool* skipBindCapability = nullptr);
     uint64_t connectInetSocket(Machine& machine, const std::shared_ptr<SocketState>& socket);
+    uint64_t connectInetStream(const std::shared_ptr<SocketState>& socket, const SocketState::InetAddress& destination);
+    bool transmitInetStream(SocketState& from, SocketState& to, std::span<const uint8_t> payload, uint32_t flags);
+    std::shared_ptr<void> lookupInetSocket(std::span<const uint8_t> tuple, bool tcp,
+        const SocketState* receiving = nullptr) const;
     uint64_t sendInetDatagram(Machine& machine, const std::shared_ptr<SocketState>& socket,
         std::span<const std::array<uint64_t, 2>> vectors, uint64_t address = 0, uint64_t addressLength = 0);
     uint64_t receiveInetDatagram(Machine& machine, SocketState& socket, uint64_t address, uint64_t size,
@@ -246,7 +252,7 @@ private:
     using CgroupSocketHooks = std::map<std::string, CgroupSocketPrograms, std::less<>>;
     CgroupSocketHooks inetCreatePrograms, inetGetOptionPrograms, inetSetOptionPrograms;
     std::map<uint32_t, CgroupSocketHooks> inetAddressPrograms;
-    CgroupSocketHooks inetIngressPrograms, inetEgressPrograms;
+    CgroupSocketHooks inetIngressPrograms, inetEgressPrograms, inetSocketOperationPrograms;
     std::map<std::tuple<uint32_t, uint32_t, uint16_t>, std::weak_ptr<SocketState>> inetBindings;
     uint16_t nextEphemeralPort = 32768;
     std::shared_ptr<CgroupSocketHooks> inetReleasePrograms = std::make_shared<CgroupSocketHooks>();

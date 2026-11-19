@@ -1794,7 +1794,64 @@ int main() {
             assert(invoke(57, {sender}) == 0 && invoke(57, {receiver}) == 0);
         }
         assert(invoke(57, {blockedIn}) == 0 && invoke(57, {blockedOut}) == 0 &&
-               invoke(57, {allowedOut}) == 0 && invoke(57, {root}) == 0);
+               invoke(57, {allowedOut}) == 0);
+
+        const auto insn = [](uint8_t op, uint8_t registers = 0, int16_t offset = 0, int32_t immediate = 0) {
+            return uint64_t(op) | (uint64_t(registers) << 8) | (uint64_t(uint16_t(offset)) << 16) |
+                   (uint64_t(uint32_t(immediate)) << 32);
+        };
+        const auto loadTcpProgram = [&](uint32_t type, uint32_t direction, const auto& instructions) {
+            load[0] = type | (uint64_t(instructions.size()) << 32);
+            load[8] = uint64_t(direction) << 32;
+            assert(write(releaseEntry, instructions) && write(attr, load));
+            const auto id = invoke(280, {5, attr, sizeof(load)});
+            assert(id < 256);
+            return id;
+        };
+        const std::array sockOps{
+            insn(0xbf, 0x16), insn(0x61, 0x64), insn(0x15, 4, 5, 14), insn(0x15, 4, 9, 15),
+            insn(0xb7, 2, 0, 0x40), insn(0x85, 0, 0, 59), insn(0xb7, 0, 0, 1), insn(0x95),
+            insn(0xb7, 2, 0, 4), insn(0xb7, 3), insn(0x85, 0, 0, 144), insn(0xb7, 0, 0, 1), insn(0x95),
+            insn(0xb7, 2, 0, 0x0101041e), insn(0x63, 0x2a, -4), insn(0xbf, 0xa2), insn(0x07, 2, 0, -4),
+            insn(0xb7, 3, 0, 4), insn(0xb7, 4), insn(0x85, 0, 0, 143), insn(0xb7, 0, 0, 1), insn(0x95)};
+        const auto operations = loadTcpProgram(13, 3, sockOps);
+        assert(attachPacket(8, 3, operations) == 0);
+        for (uint32_t family : {2, 10}) {
+            const uint32_t addressSize = family == 2 ? 16 : 28;
+            const uint32_t ipSize = family == 2 ? 20 : 40;
+            // Require the option in real data segments, irrespective of direction.
+            const std::array inspect{
+                insn(0x61, 0x12, 76), insn(0xb7, 0, 0, 1), insn(0x71, 0x23, ipSize + 13),
+                insn(0x55, 3, 4, 0x18), insn(0xb7, 0), insn(0x71, 0x23, ipSize + 20),
+                insn(0x55, 3, 1, 30), insn(0xb7, 0, 0, 1), insn(0x95)};
+            const auto verifyOptions = loadTcpProgram(8, 1, inspect);
+            assert(attachPacket(8, 1, verifyOptions) == 0);
+            const auto listener = invoke(198, {family, 0x801, 0}), client = invoke(198, {family, 0x801, 0});
+            assert(listener < 256 && client < 256);
+            const auto address = base + 800, buffer = base + 840, fromLength = base + 880;
+            std::array<uint8_t, 28> sockaddr{};
+            sockaddr[0] = family;
+            assert(write(address, sockaddr) && write(fromLength, addressSize));
+            assert(invoke(200, {listener, address, addressSize}) == 0 && invoke(201, {listener, 4}) == 0);
+            assert(invoke(204, {listener, address, fromLength}) == 0);
+            assert(invoke(203, {client, address, addressSize}) == 0);
+            const auto server = invoke(242, {listener, address, fromLength, 0x800});
+            assert(server < 256);
+            const auto* named = task.read(address, addressSize, 4);
+            assert(named && named[0] == family && named[family == 2 ? 7 : 23] == 1);
+            for (const auto& [writer, reader] : {std::pair{client, server}, std::pair{server, client}}) {
+                constexpr uint64_t word = 0xf1e2d3c4b5a69788ULL;
+                assert(write(buffer, word) && invoke(64, {writer, buffer, 8}) == 8);
+                assert(write(buffer, uint64_t{0}) && invoke(63, {reader, buffer, 8}) == 8);
+                uint64_t observed = 0;
+                assert(task.load64(buffer, observed) && observed == word);
+            }
+            assert(invoke(210, {client, 1}) == 0 && invoke(63, {server, buffer, 8}) == 0);
+            assert(invoke(57, {server}) == 0 && invoke(57, {client}) == 0 && invoke(57, {listener}) == 0);
+            assert(attachPacket(9, 1, verifyOptions) == 0 && invoke(57, {verifyOptions}) == 0);
+        }
+        assert(attachPacket(9, 3, operations) == 0);
+        assert(invoke(57, {operations}) == 0 && invoke(57, {root}) == 0);
         assert(invoke(220, {0x1200011, 0, 0, 0, base + 128}) == 2);
         assert(invoke(63, {procs, output, 128}) == 4);
         assert(std::memcmp(task.read(output, 4, 4), "1\n2\n", 4) == 0);

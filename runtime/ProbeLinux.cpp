@@ -2036,6 +2036,8 @@ uint64_t ProbeLinux::socketWrite(Machine& machine, const Descriptor& fd, std::sp
         if (!stream) return uint64_t(-11);
         size = fd.socket->sendBuffer - peer->queuedBytes;
     }
+    if (fd.socket->inetStream())
+        size = std::min<uint64_t>(size, BpfProgram::maxPacketBytes - 100); // IPv6 + TCP with options.
     if (!size && stream) return 0;
     std::vector<uint8_t> packet(size);
     auto remaining = std::span(packet);
@@ -2044,6 +2046,13 @@ uint64_t ProbeLinux::socketWrite(Machine& machine, const Descriptor& fd, std::sp
         const auto count = std::min<uint64_t>(remaining.size(), length);
         if (!machine.readInto(address, remaining.first(count))) return uint64_t(-14);
         remaining = remaining.subspan(count);
+    }
+    if (fd.socket->inetStream()) {
+        try {
+            if (!transmitInetStream(*fd.socket, *peer, packet, 0x18)) return uint64_t(-110); // PSH|ACK
+        } catch (const std::bad_alloc&) {
+            return noMemory;
+        }
     }
     peer->inbox.push_back(std::move(packet));
     peer->queuedBytes += size;
@@ -2186,7 +2195,12 @@ bool ProbeLinux::socketCall(Machine& machine) {
             if (fd == descriptors().end()) { x[0] = uint64_t(-9); break; }
             if (!fd->second.socket) { x[0] = uint64_t(-88); break; }
             if (fd->second.socket->family == 2 || fd->second.socket->family == 10) {
-                x[0] = x[8] == 200 ? bindInetSocket(machine, fd->second.socket) : connectInetSocket(machine, fd->second.socket);
+                const auto status = x[8] == 200 ? bindInetSocket(machine, fd->second.socket) :
+                    connectInetSocket(machine, fd->second.socket);
+                if (status == uint64_t(-11) && !(fd->second.effectiveFlags() & 0x800) &&
+                    waitForSocketTimeout(fd->second.socket->sendTimeout)) return true;
+                current->deadline.reset();
+                x[0] = status;
                 break;
             }
             if (auto& uevent = fd->second.socket->uevent; uevent) {
@@ -2267,18 +2281,27 @@ bool ProbeLinux::socketCall(Machine& machine) {
             }
             break;
         }
-        case 201: // listen
+        case 201: { // listen
             if (fd == descriptors().end()) { x[0] = uint64_t(-9); break; }
             if (!fd->second.socket) { x[0] = uint64_t(-88); break; }
             if (fd->second.socket->type == 2) { x[0] = uint64_t(-95); break; }
-            if (!std::any_of(socketPaths.begin(), socketPaths.end(), [&](const auto& entry) {
-                    return entry.second.endpoint.lock() == fd->second.socket;
+            auto& socket = fd->second.socket;
+            if (socket->inetStream()) {
+                if (socket->connected) { x[0] = invalid; break; }
+                if (!socket->localInetAddress[0]) {
+                    SocketState::InetAddress local{};
+                    local[0] = socket->family;
+                    if (const auto error = reserveInetAddress(socket, local)) { x[0] = error; break; }
+                }
+            } else if (!std::any_of(socketPaths.begin(), socketPaths.end(), [&](const auto& entry) {
+                    return entry.second.endpoint.lock() == socket;
                 })) { x[0] = invalid; break; }
             fd->second.socket->listening = true;
             fd->second.socket->credentials = {uint32_t(processId()), userId(), groupId()};
             fd->second.socket->backlog = std::clamp<int32_t>(int32_t(x[1]), 1, 128);
             x[0] = 0;
             break;
+        }
         case 202: case 242: { // accept, accept4
             if (fd == descriptors().end()) { x[0] = uint64_t(-9); break; }
             const auto endpoint = fd->second.socket;
@@ -2295,12 +2318,14 @@ bool ProbeLinux::socketCall(Machine& machine) {
             const auto number = freeDescriptor();
             if (number == descriptorCapacity) { x[0] = uint64_t(-24); break; }
             if (x[1]) {
-                if (const auto result = writeUnixAddress(endpoint->pending.front()->peerAddress); result) {
-                    x[0] = result;
-                    break;
-                }
+                const auto& peer = *endpoint->pending.front();
+                const auto result = peer.inetStream() ?
+                    writeAddress(std::span(peer.peerInetAddress).first(peer.family == 2 ? 16 : 28)) :
+                    writeUnixAddress(peer.peerAddress);
+                if (result) { x[0] = result; break; }
             }
-            Descriptor entry{"socket:[unix]", {}, uint32_t(flags) | 2, Node::socket};
+            Descriptor entry{endpoint->inetStream() ? "socket:[inet]" : "socket:[unix]", {},
+                             uint32_t(flags) | 2, Node::socket};
             entry.socket = std::move(endpoint->pending.front());
             endpoint->pending.pop_front();
             descriptors().emplace(number, std::move(entry));
@@ -2905,6 +2930,7 @@ bool ProbeLinux::fileCall(Machine& machine) {
                         inetSetOptionPrograms.erase(backing);
                         inetIngressPrograms.erase(backing);
                         inetEgressPrograms.erase(backing);
+                        inetSocketOperationPrograms.erase(backing);
                         x[0] = directories.erase(backing) ? 0 : uint64_t(-2);
                     } else {
                         x[0] = directories.erase(backing) ? 0 : uint64_t(-2);
@@ -5302,17 +5328,18 @@ static bool sameSocketGroup(const auto& socket, const auto& attached, size_t dep
     return depth < ancestry.size() && !order(attached, ancestry[depth]) && !order(ancestry[depth], attached);
 }
 
-bool ProbeLinux::openInetSocket(const std::shared_ptr<SocketState>& socket) {
+bool ProbeLinux::openInetSocket(const std::shared_ptr<SocketState>& socket, const SocketState* listener) {
     socket->storageIdentity = std::make_shared<char>();
-    const auto& group = current->process->cgroup;
+    const auto& group = listener ? listener->inetCgroup : current->process->cgroup;
     const BpfProgram::SocketContext context{socket->storageIdentity, socket->cookie, socket->credentials[1],
         socket->credentials[2], socket->family, socket->type, socket->protocol,
         [&](size_t bytes) { return canAllocateSocketStorage(bytes); }, uint32_t(processId()), uint32_t(currentTid)};
-    if (!runInetPrograms(inetCreatePrograms, group, context, [](const auto&, size_t) { return true; }))
+    if (!listener && !runInetPrograms(inetCreatePrograms, group, context, [](const auto&, size_t) { return true; }))
         return false;
     if (group.empty()) return true;
     socket->inetCgroup = group;
-    for (auto path = std::string_view(group); path == cgroupRoot || inside(path, cgroupRoot);
+    if (listener) socket->inetAncestry = listener->inetAncestry;
+    for (auto path = std::string_view(group); !listener && (path == cgroupRoot || inside(path, cgroupRoot));
          path = path.substr(0, path.rfind('/'))) {
         const auto identity = cgroupFiles.find(std::string(path) + std::string(cgroupProcs));
         socket->inetAncestry.emplace_back(identity == cgroupFiles.end() ? nullptr : identity->second);
@@ -5453,28 +5480,39 @@ void writeNetwork16(std::span<uint8_t> bytes, size_t offset, uint32_t value) {
     bytes[offset + 1] = uint8_t(value);
 }
 
-void encodeLoopbackUdp(std::span<uint8_t> bytes, const InetAddress& source, const InetAddress& destination) {
+void encodeLoopbackIp(std::span<uint8_t> bytes, const InetAddress& source, const InetAddress& destination,
+                      uint8_t protocol) {
     const bool ipv4 = source[0] == 2;
     const auto headerSize = ipv4 ? 20 : 40;
-    auto udp = bytes.subspan(headerSize);
     bytes[0] = ipv4 ? 0x45 : 0x60;
     if (ipv4) {
         writeNetwork16(bytes, 2, bytes.size());
         bytes[8] = 64;
-        bytes[9] = 17;
+        bytes[9] = protocol;
     } else {
-        writeNetwork16(bytes, 4, udp.size());
-        bytes[6] = 17;
+        writeNetwork16(bytes, 4, bytes.size() - headerSize);
+        bytes[6] = protocol;
         bytes[7] = 64;
     }
-    const auto sourceIp = inetHost(source), destinationIp = inetHost(destination);
-    std::ranges::copy(sourceIp, bytes.begin() + (ipv4 ? 12 : 8));
-    std::ranges::copy(destinationIp, bytes.begin() + (ipv4 ? 16 : 24));
+    std::ranges::copy(inetHost(source), bytes.begin() + (ipv4 ? 12 : 8));
+    std::ranges::copy(inetHost(destination), bytes.begin() + (ipv4 ? 16 : 24));
     if (ipv4) writeNetwork16(bytes, 10, ~internetSum(bytes.first(headerSize)));
+}
+
+uint16_t transportChecksum(std::span<const uint8_t> packet, const InetAddress& source,
+                           const InetAddress& destination, uint8_t protocol) {
+    const auto payload = packet.subspan(source[0] == 2 ? 20 : 40);
+    const auto pseudo = internetSum(inetHost(source), internetSum(inetHost(destination), protocol + payload.size()));
+    return uint16_t(~internetSum(payload, pseudo));
+}
+
+void encodeLoopbackUdp(std::span<uint8_t> bytes, const InetAddress& source, const InetAddress& destination) {
+    encodeLoopbackIp(bytes, source, destination, 17);
+    auto udp = bytes.subspan(source[0] == 2 ? 20 : 40);
     writeNetwork16(udp, 0, inetPort(source));
     writeNetwork16(udp, 2, inetPort(destination));
     writeNetwork16(udp, 4, udp.size());
-    const auto checksum = uint16_t(~internetSum(udp, internetSum(sourceIp, internetSum(destinationIp, 17 + udp.size()))));
+    const auto checksum = transportChecksum(bytes, source, destination, 17);
     writeNetwork16(udp, 6, checksum ? checksum : 0xffff);
 }
 } // namespace
@@ -5495,8 +5533,8 @@ uint64_t ProbeLinux::connectInetSocket(Machine& machine, const std::shared_ptr<S
     if (const auto error = readInetDestination(machine, x[1], x[2], socket->family, destination)) return error;
     if (!filterInetAddress(*socket, socket->family == 2 ? BpfProgram::connect4 : BpfProgram::connect6, destination))
         return uint64_t(-1);
-    if (!socket->inetDatagram()) return uint64_t(-95);
     if (const auto error = routeInetDestination(destination)) return error;
+    if (socket->inetStream()) return connectInetStream(socket, destination);
     if (!socket->localInetAddress[0]) {
         InetAddress local{};
         local[0] = socket->family;
@@ -5525,6 +5563,170 @@ static bool filterInetPacket(const auto& hooks, const auto& socket, BpfProgram::
         return true; // Later programs still observe the packet and update accounting.
     });
     return accepted;
+}
+
+std::shared_ptr<void> ProbeLinux::lookupInetSocket(std::span<const uint8_t> tuple, bool tcp,
+                                                    const SocketState* receiving) const {
+    if (tuple.size() != 12 && tuple.size() != 36) return nullptr;
+    const size_t ipBytes = (tuple.size() - 4) / 2;
+    const uint32_t family = ipBytes == 4 ? 2 : 10;
+    const size_t offset = family == 2 ? 4 : 8;
+    InetAddress from{}, to{};
+    from[0] = to[0] = family;
+    std::ranges::copy(tuple.first(ipBytes), from.begin() + offset);
+    std::ranges::copy(tuple.subspan(ipBytes, ipBytes), to.begin() + offset);
+    std::ranges::copy(tuple.subspan(2 * ipBytes, 2), from.begin() + 2);
+    std::ranges::copy(tuple.last(2), to.begin() + 2);
+    const uint32_t protocol = tcp ? 6 : 17;
+    const auto addressMatches = [&](const SocketState& socket) {
+        return socket.protocol == protocol && socket.family == family &&
+            (inetWildcard(socket.localInetAddress) || matchInetPeer(socket.localInetAddress, to)) &&
+            inetPort(socket.localInetAddress) == inetPort(to) &&
+            (!socket.connected || matchInetPeer(socket.peerInetAddress, from));
+    };
+    if (receiving && addressMatches(*receiving)) return receiving->storageIdentity;
+    const auto local = inetBindings.find({family, protocol, inetPort(to)});
+    const auto socket = local == inetBindings.end() ? nullptr : local->second.lock();
+    if (!socket || !addressMatches(*socket)) return nullptr;
+    if (tcp && socket->listening) {
+        const auto remote = inetBindings.find({family, protocol, inetPort(from)});
+        const auto sender = remote == inetBindings.end() ? nullptr : remote->second.lock();
+        const auto accepted = sender ? sender->peer.lock() : nullptr;
+        if (accepted && addressMatches(*accepted)) return accepted->storageIdentity;
+    }
+    return socket->storageIdentity;
+}
+
+static void runTcpOperations(const auto& hooks, const auto& socket, BpfProgram::SocketOperations& operation) {
+    const auto isCurrent = [&](const auto& attached, size_t depth) {
+        return sameSocketGroup(socket, attached, depth);
+    };
+    visitInetPrograms(hooks, socket.inetCgroup, isCurrent, [&](const BpfProgram& program) {
+        program.runSocketOperations(operation);
+        return true;
+    });
+}
+
+bool ProbeLinux::transmitInetStream(SocketState& from, SocketState& to, std::span<const uint8_t> payload,
+                                    uint32_t flags) {
+    constexpr uint32_t syn = 2, fin = 1, ack = 16;
+    const auto advance = [&] { from.tcpSequence += uint32_t(payload.size()) + bool(flags & (syn | fin)); };
+    const bool optionsEnabled = (from.tcpCallbackFlags & 0x40) && !inetSocketOperationPrograms.empty();
+    if (!optionsEnabled && inetEgressPrograms.empty() && inetIngressPrograms.empty()) {
+        advance();
+        return true;
+    }
+
+    BpfProgram::SocketOperations output{from.storageIdentity, BpfProgram::SocketOperations::writeOption,
+                                         from.tcpCallbackFlags, flags};
+    if (optionsEnabled) {
+        BpfProgram::SocketOperations length{from.storageIdentity, BpfProgram::SocketOperations::optionLength,
+                                            from.tcpCallbackFlags, flags};
+        runTcpOperations(inetSocketOperationPrograms, from, length);
+        output.callbackFlags = length.callbackFlags;
+        output.remaining = length.options.size() - length.remaining;
+        runTcpOperations(inetSocketOperationPrograms, from, output);
+        from.tcpCallbackFlags = output.callbackFlags;
+    }
+    const auto paddedOptions = (output.used + 3) & ~size_t(3);
+    const auto networkSize = from.family == 2 ? 20 : 40;
+    const auto tcpSize = 20 + paddedOptions;
+    BpfProgram::Packet packet;
+    packet.bytes.resize(networkSize + tcpSize + payload.size());
+    encodeLoopbackIp(packet.bytes, from.localInetAddress, to.localInetAddress, 6);
+    auto tcp = std::span(packet.bytes).subspan(networkSize);
+    writeNetwork16(tcp, 0, inetPort(from.localInetAddress));
+    writeNetwork16(tcp, 2, inetPort(to.localInetAddress));
+    writeNetwork16(tcp, 4, from.tcpSequence >> 16);
+    writeNetwork16(tcp, 6, from.tcpSequence);
+    if (flags & ack) {
+        writeNetwork16(tcp, 8, to.tcpSequence >> 16);
+        writeNetwork16(tcp, 10, to.tcpSequence);
+    }
+    tcp[12] = uint8_t(tcpSize / 4 << 4);
+    tcp[13] = uint8_t(flags);
+    writeNetwork16(tcp, 14, 65535);
+    std::ranges::copy(std::span(output.options).first(output.used), tcp.begin() + 20);
+    std::ranges::copy(payload, tcp.begin() + tcpSize);
+    writeNetwork16(tcp, 16, transportChecksum(packet.bytes, from.localInetAddress, to.localInetAddress, 6));
+
+    packet.protocol = from.family == 2 ? 0x0008 : 0xdd86;
+    packet.ifindex = guestLoopbackIndex;
+    packet.socketLookup = [&](std::span<const uint8_t> tuple, bool tcp) {
+        return lookupInetSocket(tuple, tcp, &to);
+    };
+    const bool sent = filterInetPacket(inetEgressPrograms, from, packet, true);
+    if (packet.ringNotification) wakePollers();
+    if (!sent) return false;
+    packet.ingressIfindex = guestLoopbackIndex;
+    const bool received = filterInetPacket(inetIngressPrograms, to, packet, false);
+    if (packet.ringNotification) wakePollers();
+    if (!received) return false;
+    advance();
+    return true;
+}
+
+uint64_t ProbeLinux::connectInetStream(const std::shared_ptr<SocketState>& socket,
+                                       const SocketState::InetAddress& destination) {
+    if (socket->connected) return uint64_t(-106);
+    if (socket->listening) return invalid;
+    const auto binding = inetBindings.find({socket->family, socket->protocol, inetPort(destination)});
+    const auto listener = binding == inetBindings.end() ? nullptr : binding->second.lock();
+    if (!listener || !listener->listening ||
+        (!inetWildcard(listener->localInetAddress) && !matchInetPeer(listener->localInetAddress, destination)))
+        return uint64_t(-111);
+    if (listener->pending.size() >= listener->backlog) return uint64_t(-11);
+    if (!socket->localInetAddress[0]) {
+        InetAddress local{};
+        local[0] = socket->family;
+        setInetLoopback(local);
+        if (const auto error = reserveInetAddress(socket, local)) return error;
+    }
+    if (inetWildcard(socket->localInetAddress)) setInetLoopback(socket->localInetAddress);
+    try {
+        auto accepted = std::make_shared<SocketState>(socket->type);
+        accepted->protocol = socket->protocol;
+        accepted->family = socket->family;
+        accepted->cookie = nextSocketCookie++;
+        accepted->credentials = listener->credentials;
+        accepted->context = listener->context;
+        accepted->localInetAddress = destination;
+        accepted->peerInetAddress = socket->localInetAddress;
+        openInetSocket(accepted, listener.get());
+
+        socket->tcpSequence = uint32_t(socket->cookie);
+        accepted->tcpSequence = uint32_t(accepted->cookie);
+        constexpr uint32_t syn = 2, ack = 16;
+        BpfProgram::SocketOperations connecting{socket->storageIdentity,
+            BpfProgram::SocketOperations::tcpConnect, socket->tcpCallbackFlags, syn};
+        runTcpOperations(inetSocketOperationPrograms, *socket, connecting);
+        socket->tcpCallbackFlags = connecting.callbackFlags;
+        if (!transmitInetStream(*socket, *accepted, {}, syn) ||
+            !transmitInetStream(*accepted, *socket, {}, syn | ack) ||
+            !transmitInetStream(*socket, *accepted, {}, ack)) return uint64_t(-110);
+
+        BpfProgram::SocketOperations active{socket->storageIdentity,
+            BpfProgram::SocketOperations::activeEstablished, socket->tcpCallbackFlags, ack};
+        runTcpOperations(inetSocketOperationPrograms, *socket, active);
+        socket->tcpCallbackFlags = active.callbackFlags;
+        BpfProgram::SocketOperations passive{accepted->storageIdentity,
+            BpfProgram::SocketOperations::passiveEstablished, accepted->tcpCallbackFlags, ack};
+        runTcpOperations(inetSocketOperationPrograms, *accepted, passive);
+        accepted->tcpCallbackFlags = passive.callbackFlags;
+        listener->pending.push_back(accepted);
+        socket->peerInetAddress = destination;
+        socket->peer = accepted;
+        accepted->peer = socket;
+        socket->connected = accepted->connected = true;
+        socket->peerCredentials = accepted->credentials;
+        accepted->peerCredentials = socket->credentials;
+        socket->peerContext = accepted->context;
+        accepted->peerContext = socket->context;
+        wakePollers();
+        return 0;
+    } catch (const std::bad_alloc&) {
+        return noMemory;
+    }
 }
 
 uint64_t ProbeLinux::sendInetDatagram(Machine& machine, const std::shared_ptr<SocketState>& socket,
@@ -5565,23 +5767,8 @@ uint64_t ProbeLinux::sendInetDatagram(Machine& machine, const std::shared_ptr<So
         encodeLoopbackUdp(packet.bytes, source, destination);
         packet.protocol = ipv4 ? 0x0008 : 0xdd86;
         packet.ifindex = guestLoopbackIndex;
-        packet.socketLookup = [&](std::span<const uint8_t> tuple, bool tcp) -> std::shared_ptr<void> {
-            if (tcp) return nullptr; // The loopback transport currently owns UDP endpoints.
-            const size_t ipBytes = (tuple.size() - 4) / 2;
-            const uint32_t family = ipBytes == 4 ? 2 : 10;
-            const size_t offset = family == 2 ? 4 : 8;
-            InetAddress from{}, to{};
-            from[0] = to[0] = family;
-            std::ranges::copy(tuple.first(ipBytes), from.begin() + offset);
-            std::ranges::copy(tuple.subspan(ipBytes, ipBytes), to.begin() + offset);
-            std::ranges::copy(tuple.subspan(2 * ipBytes, 2), from.begin() + 2);
-            std::ranges::copy(tuple.last(2), to.begin() + 2);
-            const auto candidate = inetBindings.find({family, 17, inetPort(to)});
-            const auto peer = candidate == inetBindings.end() ? nullptr : candidate->second.lock();
-            if (!peer || (!inetWildcard(peer->localInetAddress) &&
-                          !matchInetPeer(peer->localInetAddress, to)) ||
-                (peer->connected && !matchInetPeer(peer->peerInetAddress, from))) return nullptr;
-            return peer->storageIdentity;
+        packet.socketLookup = [&](std::span<const uint8_t> tuple, bool tcp) {
+            return lookupInetSocket(tuple, tcp);
         };
         const bool sent = filterInetPacket(inetEgressPrograms, *socket, packet, true);
         if (packet.ringNotification) wakePollers();
@@ -5736,12 +5923,14 @@ uint64_t ProbeLinux::changeBpfCgroupAttachment(Machine& machine) {
     const auto [targetFd, programFd, type, flags] = fields;
     const bool attach = x[0] == 8;
     const bool packet = type == BpfProgram::cgroupIngress || type == BpfProgram::cgroupEgress;
+    const bool socketOperations = type == BpfProgram::cgroupSocketOperations;
     const bool address = BpfProgram::inetAddressAttach(type);
     const bool option = type == BpfProgram::getOption || type == BpfProgram::setOption;
-    if (!packet && !address && !option && type != BpfProgram::cgroupInetCreate && type != BpfProgram::cgroupInetRelease)
+    if (!packet && !address && !option && !socketOperations && type != BpfProgram::cgroupInetCreate && type != BpfProgram::cgroupInetRelease)
         return uint64_t(-95);
     auto& hooks = type == BpfProgram::cgroupIngress ? inetIngressPrograms :
-                  type == BpfProgram::cgroupEgress ? inetEgressPrograms : address ? inetAddressPrograms[type] :
+                  type == BpfProgram::cgroupEgress ? inetEgressPrograms :
+                  socketOperations ? inetSocketOperationPrograms : address ? inetAddressPrograms[type] :
                   type == BpfProgram::getOption ? inetGetOptionPrograms : type == BpfProgram::setOption ? inetSetOptionPrograms :
                   type == BpfProgram::cgroupInetCreate ? inetCreatePrograms : *inetReleasePrograms;
     if (flags > multi || (!attach && flags) ||
@@ -5769,7 +5958,8 @@ uint64_t ProbeLinux::changeBpfCgroupAttachment(Machine& machine) {
         return 0;
     }
     if (!program) return source == descriptors().end() ? uint64_t(-9) : invalid;
-    const auto programType = packet ? BpfProgram::cgroupPacket : address ? BpfProgram::socketAddress :
+    const auto programType = packet ? BpfProgram::cgroupPacket :
+        socketOperations ? BpfProgram::socketOperations : address ? BpfProgram::socketAddress :
         option ? BpfProgram::socketOption : BpfProgram::cgroupSocket;
     const auto expected = program->info().attachType;
     const bool legacyPacket = packet && expected == BpfProgram::cgroupIngress;
