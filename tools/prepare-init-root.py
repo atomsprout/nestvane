@@ -128,6 +128,7 @@ def collect(serial, readelf, destination, small_art_heap):
         aconfigd = "/system/bin/aconfigd-system"
         bpfloader = "/system/bin/bpfloader"
         netd = "/system/bin/netd"
+        iptables = "/system/bin/iptables"
         uprobestats = "/apex/com.android.uprobestats/bin/uprobestatsbpfload"
         keymint = "/vendor/bin/hw/android.hardware.security.keymint-service"
         lights = "/vendor/bin/hw/android.hardware.lights-service.example"
@@ -135,7 +136,7 @@ def collect(serial, readelf, destination, small_art_heap):
         composer = "/vendor/bin/hw/android.hardware.graphics.composer3-service.ranchu"
         allocator = "/vendor/bin/hw/android.hardware.graphics.allocator-service.ranchu"
         for programs, search_paths in (
-            ((vold, service, cmd, vdc, keystore, casefold, vold_prepare, odsign, bpfloader), ("/system/lib64",)),
+            ((vold, service, cmd, vdc, keystore, casefold, vold_prepare, odsign, bpfloader, iptables), ("/system/lib64",)),
             ((zygote, installd, system_suspend, surfaceflinger, bootanimation, aconfigd, netd), ("/system/lib64", "/system_ext/lib64")),
             ((keymint, lights, health, composer, allocator), ("/vendor/lib64", "/system/lib64")),
         ):
@@ -335,7 +336,7 @@ def collect(serial, readelf, destination, small_art_heap):
         sdkext = "/apex/com.android.sdkext/bin"
         programs = ("/system/bin/apexd", system_self_test, vendor_self_test, vold, vdc, keystore, keymint,
                     casefold, vold_prepare, odsign, zygote, installd, system_suspend, lights, health, surfaceflinger,
-                    bootanimation, composer, allocator, aconfigd, netd,
+                    bootanimation, composer, allocator, aconfigd, netd, iptables,
                     f"{sdkext}/derive_sdk", f"{sdkext}/derive_classpath",
                     "/apex/com.android.art/bin/art_boot", "/apex/com.android.art/bin/odrefresh",
                     "/apex/com.android.tethering/bin/netbpfload", uprobestats, bpfloader,
@@ -348,6 +349,7 @@ def collect(serial, readelf, destination, small_art_heap):
                 vold_prepare: "u:r:vold:s0",
                 uprobestats: "u:r:bpfloader:s0",
                 bpfloader: "u:r:bpfloader:s0",
+                iptables: "u:r:netd:s0",
                 "/apex/com.android.art/bin/odrefresh": "u:r:odsign:s0",
             }.get(path, init_context)
             query = f"{source} {file_context} {process_class}"
@@ -395,6 +397,11 @@ def collect(serial, readelf, destination, small_art_heap):
             if not re.fullmatch(r"/apex/com\.android\.runtime/(?:bin|lib64/bionic)/[a-z0-9.]+", target):
                 raise SystemExit(f"Unexpected Runtime APEX alias: {guest} -> {target}")
             aliases.append(f"{guest} {target}\n")
+        for guest in ("/system/bin/iptables-restore", "/system/bin/ip6tables-restore"):
+            target = shell("readlink", guest)
+            if target != "iptables":
+                raise SystemExit(f"Unexpected iptables executable alias: {guest} -> {target}")
+            aliases.append(f"{guest} {iptables}\n")
         (manifest.parent / "runtime-links.txt").write_text("".join(aliases))
 
         for partition in ("/system", "/vendor", "/product", "/system_ext", "/odm"):

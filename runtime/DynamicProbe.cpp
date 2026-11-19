@@ -544,10 +544,12 @@ DynamicReport probeInit(const std::string& directory, const std::string& databas
             std::istringstream manifest(std::string(bytes.begin(), bytes.end()));
             std::string path, target;
             while (manifest >> path) {
-                if (!(manifest >> target) ||
-                    (!path.starts_with("/system/bin/") && !path.starts_with("/system/lib64/")) ||
-                    !target.starts_with("/apex/com.android.runtime/") ||
-                    fs::path(path).lexically_normal() != fs::path(path) ||
+                if (!(manifest >> target)) throw std::runtime_error("incomplete runtime alias");
+                const bool runtimeLink = (path.starts_with("/system/bin/") || path.starts_with("/system/lib64/")) &&
+                    target.starts_with("/apex/com.android.runtime/");
+                const bool firewallLink = (path == "/system/bin/iptables-restore" || path == "/system/bin/ip6tables-restore") &&
+                    target == "/system/bin/iptables" && files.contains(target);
+                if ((!runtimeLink && !firewallLink) || fs::path(path).lexically_normal() != fs::path(path) ||
                     fs::path(target).lexically_normal() != fs::path(target))
                     throw std::runtime_error("invalid runtime linker alias");
                 linux.alias(path, target);

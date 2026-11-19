@@ -309,3 +309,5 @@
 - 为客体回环补齐接口标志、开关状态、索引与 MTU 查询。参考 Android 17 和 Mac 的同一 ARM64 探针均读到标志 0x49、索引 1、MTU 65536，未知接口返回 ENODEV。宿主 ABI 回归验证关闭接口后的路由失败与重新打开。Mac 原版 netd 越过接口标志查询，接下来在一次 `connect` 调用收到 ECONNREFUSED。最新真机构建已安装复验，`sys.boot_completed=1` 尚未通过。[Linux 回环接口实现](https://codebrowser.dev/linux/linux/drivers/net/loopback.c.html)
 - iPhone 11 进程 8385 中，读取回环接口标志、索引和 MTU 的独立 ARM64 探针退出 0。原版 netd 与 Mac 一样到达本地连接自检。Mac 跟踪确认它先在 IPv6 通配地址监听，再从 IPv4 连接该端口。
 - 客体现在支持默认 IPv6 双栈监听接收 IPv4 连接和报文，向 IPv6 端报告映射后的 IPv4 地址。宿主回归覆盖 TCP 双向发送、UDP 来源、双栈端口冲突和 `IPV6_V6ONLY`。相同 ARM64 Bionic 探针在 Android 17 参考内核和 Mac 均完成 IPv4 到 IPv6 监听的双向读写。Mac 标准启动链中的原版 `netd1shot` 以 0 退出，常驻 netd 日志报告 `libnetd_updatable_init success`。原版 init 启动 Zygote 并进入类预加载。常驻 netd 随后报告镜像缺少 `iptables-restore` 和 `ip6tables-restore`，完整启动尚未验证。
+- iPhone 11 进程 8399 的双栈探针正常退出。原版 `netd1shot` 以 0 退出，常驻 netd 报告 `libnetd_updatable_init success`。真机 Zygote 输出 `begin preload`，尚未满足 `sys.boot_completed=1`。
+- 补齐参考镜像的原版 `iptables` 多调用程序和 `iptables-restore`、`ip6tables-restore` 两个名称。完整重采集得到 1232 个文件，程序字节、链接与 SELinux 域均已核对。Mac 冷启动日志确认两个原版命令在 `u:r:netd:s0` 中执行，后续工具子进程退出，常驻 netd 重试。防火墙内核接口与完整启动仍待验证。
