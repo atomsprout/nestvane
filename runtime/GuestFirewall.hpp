@@ -1,5 +1,6 @@
 #pragma once
 
+#include "BpfProgram.hpp"
 #include "Runtime.hpp"
 
 #include <algorithm>
@@ -36,12 +37,15 @@ public:
         uint32_t mark;
     };
     using LogPacket = std::function<void(const LogRecord&)>;
+    using ResolveBpf = std::function<uint64_t(std::string_view, int32_t, std::shared_ptr<const BpfProgram>&)>;
+    using RunBpf = std::function<bool(const BpfProgram&, Hook)>;
     struct PacketState {
         uint32_t* mark = nullptr;
         uint32_t* connectionMark = nullptr;
         ConnectionState connection = invalidConnection;
         Rejection* rejection = nullptr;
         const LogPacket* logger = nullptr;
+        const RunBpf* runBpf = nullptr;
     };
 
     uint64_t get(Machine& machine, bool ipv6) {
@@ -57,6 +61,7 @@ public:
             const bool match = option == (ipv6 ? 68 : 66);
             const auto version = revision.back();
             if (match && (name == "connmark" || name == "mark")) return version == 1 ? 0 : uint64_t(-93);
+            if (match && name == "bpf") return version == 1 ? 0 : uint64_t(-93);
             if (!match && name == "MARK") return version == 2 ? 0 : uint64_t(-93);
             if (!match && name == "CONNMARK") return (version == 1 || version == 2) ? 0 : uint64_t(-93);
             const bool known = match ? name == "comment" || name == "tcp" || name == "udp" || name == "u32" || name == "state" : name == "TCPMSS" || name == "REJECT" || name == "NFLOG";
@@ -82,7 +87,7 @@ public:
         return machine.write(x[3] + 40, table->entries) ? 0 : fault;
     }
 
-    uint64_t set(Machine& machine, bool ipv6) {
+    uint64_t set(Machine& machine, bool ipv6, const ResolveBpf& resolve = {}) {
         const auto& x = machine.cpu.x;
         const uint32_t option = x[2];
         if (option != 64 && option != 65) return unsupported;
@@ -117,7 +122,7 @@ public:
         if (request.previousCount != table->offsets.size()) return uint64_t(-11);
         Table replacement{request.hooks, request.starts, request.policies, std::vector<uint8_t>(request.size), {}};
         if (!machine.readInto(x[3] + sizeof(request), replacement.entries)) return fault;
-        const auto status = validate(replacement, layout, request.count, string(name));
+        const auto status = validate(replacement, layout, request.count, string(name), resolve);
         if (status) return status;
 
         std::vector<Counters> previous;
@@ -205,6 +210,7 @@ private:
         std::vector<uint8_t> entries;
         std::vector<uint32_t> offsets;
         bool usesConnectionTracking = false;
+        std::map<size_t, std::shared_ptr<const BpfProgram>> bpfMatches{};
     };
     std::map<std::pair<bool, std::string>, Table> tables;
 
@@ -336,7 +342,8 @@ private:
         return code < codes.size() ? codes[code] : Rejection{};
     }
 
-    static uint64_t validate(Table& table, const Layout& layout, uint32_t count, std::string_view name) {
+    static uint64_t validate(Table& table, const Layout& layout, uint32_t count, std::string_view name,
+                             const ResolveBpf& resolve) {
         std::vector<uint32_t> jumps;
         auto bytes = std::span(table.entries);
         for (size_t at = 0; at < bytes.size();) {
@@ -354,6 +361,25 @@ private:
                 const auto length = load<uint16_t>(extension, 0);
                 if (length < targetHeader || length % 8 || length > extension.size()) return invalid;
                 const auto matchName = string(extension.subspan(2, 29));
+                if (matchName == "bpf") {
+                    constexpr size_t pathBytes = 512, infoOffset = 8, kernelOffset = infoOffset + pathBytes;
+                    if (extension[31] != 1) return unsupported;
+                    if (length != targetHeader + kernelOffset + 8) return invalid;
+                    const auto body = extension.subspan(targetHeader, length - targetHeader);
+                    const auto mode = load<uint16_t>(body, 0);
+                    if (!mode || !resolve) return unsupported; // Legacy inline classic BPF is not used here.
+                    if (mode != 1 && mode != 2) return invalid;
+                    const auto path = mode == 1 ? string(body.subspan(infoOffset, pathBytes)) : std::string_view{};
+                    if (mode == 1 && path.empty()) return invalid;
+                    std::shared_ptr<const BpfProgram> program;
+                    const auto status = resolve(path, load<int32_t>(body, 4), program);
+                    if (status) return status;
+                    if (!program || program->type() != BpfProgram::socketFilter) return invalid;
+                    table.bpfMatches.emplace(at + match, std::move(program));
+                    store(body, kernelOffset, uint64_t(0));
+                    match += length;
+                    continue;
+                }
                 if (matchName == "connmark" || matchName == "mark") {
                     if (extension[31] != 1) return unsupported;
                     if (length != 48 || extension[40] > 1) return invalid;
@@ -441,7 +467,7 @@ private:
         return 0;
     }
 
-    static bool matches(std::span<const uint8_t> entry, const Layout& layout,
+    static bool matches(const Table& table, size_t at, std::span<const uint8_t> entry, const Layout& layout,
                         std::span<const uint8_t> packet, Hook hook, PacketState state) {
         const size_t ipBytes = layout.ipv6 ? 16 : 4;
         const size_t ipOffset = layout.ipv6 ? 8 : 12;
@@ -471,6 +497,10 @@ private:
                 if (type == "connmark" && !mark) return false;
                 const bool same = ((mark ? *mark : 0) & load<uint32_t>(body, 4)) == load<uint32_t>(body, 0);
                 if (same == bool(body[8])) return false;
+            } else if (type == "bpf") {
+                const auto program = table.bpfMatches.find(at + match);
+                if (program == table.bpfMatches.end() || !state.runBpf || !(*state.runBpf)(*program->second, hook))
+                    return false;
             } else if (type == "state") {
                 if (!(load<uint32_t>(body, 0) & state.connection)) return false;
             } else if (type == "u32") {
@@ -603,7 +633,7 @@ private:
             auto entry = std::span(table.entries).subspan(at);
             const size_t next = at + load<uint16_t>(entry, layout.nextOffset());
             const auto target = load<uint16_t>(entry, layout.targetOffset());
-            if (!matches(entry, layout, packet, hook, state)) { at = next; continue; }
+            if (!matches(table, at, entry, layout, packet, hook, state)) { at = next; continue; }
             const size_t counter = layout.entrySize - sizeof(Counters);
             const auto previous = load<Counters>(entry, counter);
             store(entry, counter, Counters{previous.packets + 1, previous.bytes + packet.size()});

@@ -328,3 +328,4 @@
 - 支持 IPv4/IPv6 的报文标记匹配修订 1 与 MARK 目标修订 2。宿主回归确认仅修改匹配报文的掩码位，并保留其余位。Android 17 参考镜像的原版恢复工具接受同一条掩码规则。[Linux 报文标记](https://codebrowser.dev/linux/linux/net/netfilter/xt_mark.c.html)
 - iPhone 11 进程 8464 通过 NFLOG 端到端探针。客体的原版 IPv4/IPv6 restore 工具各自安装测试规则，Bionic 探针实际发送和接收 UDP，并核验 netlink 日志中的组、挂钩、前缀和截取后的报文内容，随后撤销规则。该诊断仍未达到 sys.boot_completed=1。
 - 加入报文标记后的 Mac 冷启动越过 mark/MARK 参数解析，原版 netd 进一步停在 BandwidthController。原版 restore 请求 bpf 匹配的 --object-pinned，客体尚未支持该 xtables ABI。规则列表中的 state 扩展警告仍在。
+- 实现 IPv4/IPv6 xtables bpf 修订 1 的固定路径和程序 FD 模式，原子替换规则时解析程序并持有引用，在客体报文路径调用原有 BPF 执行器。宿主回归验证真实 UDP 丢弃与放行、删除固定名称和关闭 FD 后继续执行、无效替换保留旧规则。参考 Android 17 的原版双栈工具接受实际 netd denylist 路径。Mac 冷启动越过 --object-pinned 解析，BandwidthController 下一处提示是 policy 匹配扩展。经典内联 BPF 字节码模式尚未实现。[Linux xt_bpf](https://codebrowser.dev/linux/linux/net/netfilter/xt_bpf.c.html)

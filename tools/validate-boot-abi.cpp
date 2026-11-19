@@ -1606,7 +1606,81 @@ int main() {
         assert(call(57, {control}) == 0 && call(57, {uevent}) == 0);
         assert(machine.store64(attr, 0) && machine.store64(attr + 8, 0));
         assert(call(280, {11, attr, 12}) == uint64_t(-2));
+
+        // Install a real pinned socket filter through the same xtables ABI netd uses.
+        std::vector<uint8_t> savedScratch(pageSize);
+        assert(machine.readInto(base, savedScratch));
+        constexpr auto table = base + 0x760, optLength = base + 0xe40, counters = base + 0xe60;
+        const auto firewallFd = call(198, {2, 3, 255});
+        const auto receiver = call(198, {2, 0x802, 0}), sender = call(198, {2, 0x802, 0});
+        assert(firewallFd < 256 && receiver < 256 && sender < 256);
+        const auto write = [&](uint64_t guest, const auto& value) {
+            return machine.write(guest, {reinterpret_cast<const uint8_t*>(&value), sizeof(value)});
+        };
+        const auto store = [](auto& bytes, size_t offset, const auto& value) {
+            std::memcpy(bytes.data() + offset, &value, sizeof(value));
+        };
+        struct Info { char name[32]; uint32_t hooks, starts[5], policies[5], count, size; };
+        static_assert(sizeof(Info) == 84);
+        const Info blank{"mangle", 0, {}, {}, 0, 0};
+        assert(write(table, blank) && write(optLength, uint32_t(sizeof(blank))));
+        assert(call(209, {firewallFd, 0, 64, table, optLength}) == 0);
+        Info info{};
+        assert(machine.readInto(table, {reinterpret_cast<uint8_t*>(&info), sizeof(info)}));
+        assert(write(table + 32, info.size) && write(optLength, info.size + 40));
+        assert(call(209, {firewallFd, 0, 65, table, optLength}) == 0);
+        std::vector<uint8_t> original(info.size);
+        assert(machine.readInto(table + 40, original));
+        std::vector<uint8_t> rule(112 + 560 + 40);
+        store(rule, 88, uint16_t(112 + 560));
+        store(rule, 90, uint16_t(rule.size()));
+        store(rule, 112, uint16_t(560));
+        std::memcpy(rule.data() + 114, "bpf", 3);
+        rule[143] = 1;
+        store(rule, 144, uint16_t(1)); // Pinned object mode.
+        constexpr std::string_view pinnedName = "/sys/fs/bpf/prog_nestvane_filter";
+        std::ranges::copy(pinnedName, rule.begin() + 152);
+        store(rule, 672, uint16_t(40));
+        store(rule, 704, int32_t(-1));
+        const auto install = [&](uint32_t oldCount, bool enabled = true) {
+            auto entries = original;
+            const auto length = enabled ? rule.size() : 0;
+            if (enabled) entries.insert(entries.begin() + info.starts[3], rule.begin(), rule.end());
+            std::array<uint8_t, 96> replace{};
+            std::memcpy(replace.data(), info.name, sizeof(info.name));
+            store(replace, 32, info.hooks);
+            store(replace, 36, info.count + uint32_t(enabled));
+            store(replace, 40, uint32_t(entries.size()));
+            for (unsigned h = 0; h < 5; ++h) {
+                store(replace, 44 + 4 * h, info.starts[h] + uint32_t(h > 3 ? length : 0));
+                store(replace, 64 + 4 * h, info.policies[h] + uint32_t(h >= 3 ? length : 0));
+            }
+            store(replace, 84, oldCount);
+            store(replace, 88, counters);
+            assert(machine.write(table, replace) && machine.write(table + replace.size(), entries));
+            return call(208, {firewallFd, 0, 64, table, replace.size() + entries.size()});
+        };
+        std::array<uint8_t, 16> local{2, 0, 0, 0, 127, 0, 0, 1};
+        assert(write(address, local) && call(200, {receiver, address, local.size()}) == 0);
+        assert(write(optLength, uint32_t(local.size())) && call(204, {receiver, address, optLength}) == 0);
+        const auto send = [&] { return call(206, {sender, packet, 8, 0, address, local.size()}); };
+        const auto match = program(0xb7 | (1ULL << 32));
+        assert(match < 256 && write(attr, std::array<uint64_t, 3>{pinned, match, 0}));
+        assert(install(info.count) == uint64_t(-2));
+        assert(call(280, {6, attr, 24}) == 0 && install(info.count) == 0);
+        assert(call(35, {uint32_t(-100), pinned, 0}) == 0 && call(57, {match}) == 0);
+        assert(install(info.count + 1) == uint64_t(-2)); // The old rules retain their program.
+        assert(send() == uint64_t(-1) && call(207, {receiver, packet, 8}) == uint64_t(-11));
+        const auto quiet = program(0xb7); // Return 0, so the rule does not match.
+        assert(quiet < 256);
+        store(rule, 144, uint16_t(2));
+        store(rule, 148, uint32_t(quiet));
+        assert(install(info.count + 1) == 0 && call(57, {quiet}) == 0);
+        assert(send() == 8 && call(207, {receiver, packet, 8}) == 8);
+        assert(install(info.count + 1, false) == 0);
+        assert(call(57, {firewallFd}) == 0 && call(57, {receiver}) == 0 && call(57, {sender}) == 0);
         assert(call(39, {mountpoint, 0}) == 0);
+        assert(machine.write(base, savedScratch));
     }
     {
         constexpr auto code = base + 0x100, attr = base + 0x200, license = base + 0x280;

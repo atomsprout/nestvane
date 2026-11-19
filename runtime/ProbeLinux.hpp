@@ -247,6 +247,8 @@ private:
     uint64_t connectInetSocket(Machine& machine, const std::shared_ptr<SocketState>& socket, bool nonblocking);
     uint64_t connectInetStream(const std::shared_ptr<SocketState>& socket,
         const SocketState::InetAddress& destination, bool nonblocking);
+    uint64_t resolveFirewallBpf(std::string_view path, int32_t fd, std::shared_ptr<const BpfProgram>& program);
+    bool matchFirewallBpf(const BpfProgram& program, GuestFirewall::Hook hook, BpfProgram::Packet& packet);
     bool transmitInetStream(SocketState& from, SocketState& to, std::span<const uint8_t> payload,
         uint32_t flags, GuestFirewall::Rejection& rejection);
     std::shared_ptr<void> lookupInetSocket(std::span<const uint8_t> tuple, bool tcp,

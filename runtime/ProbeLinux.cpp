@@ -2867,7 +2867,9 @@ bool ProbeLinux::socketCall(Machine& machine) {
             if (endpoint.firewallSocket() && x[1] == (endpoint.family == 10 ? 41 : 0)) {
                 if (!(current->process->effectiveCaps & (1ULL << 12))) { x[0] = uint64_t(-1); break; }
                 try {
-                    x[0] = firewall.set(machine, endpoint.family == 10);
+                    x[0] = firewall.set(machine, endpoint.family == 10, [&](auto path, auto fd, auto& program) {
+                        return resolveFirewallBpf(path, fd, program);
+                    });
                 } catch (const std::bad_alloc&) {
                     x[0] = noMemory;
                 }
@@ -5944,13 +5946,44 @@ uint64_t ProbeLinux::connectInetSocket(Machine& machine, const std::shared_ptr<S
     return 0;
 }
 
+uint64_t ProbeLinux::resolveFirewallBpf(std::string_view path, int32_t fd,
+                                        std::shared_ptr<const BpfProgram>& program) {
+    if (path.empty()) {
+        const auto descriptor = descriptors().find(uint32_t(fd));
+        if (descriptor == descriptors().end()) return uint64_t(-9);
+        program = descriptor->second.bpfProgram;
+        return program ? 0 : invalid;
+    }
+    const auto target = followLinks(normalizePath(path), true);
+    if (!target) return uint64_t(-40);
+    const auto backing = backingPath(*target);
+    const auto entry = find(backing, 0);
+    if (!canAccessParent(backing, false)) return uint64_t(-13);
+    if (!entry) return uint64_t(-2);
+    if (!entry->temporary || !entry->temporary->pinnedProgram) return invalid;
+    const auto& inode = *entry->temporary;
+    if (userId() && !(inode.mode >> permissionShift(inode.uid, inode.gid) & 4)) return uint64_t(-13);
+    program = inode.pinnedProgram;
+    return 0;
+}
+
+bool ProbeLinux::matchFirewallBpf(const BpfProgram& program, GuestFirewall::Hook hook, BpfProgram::Packet& packet) {
+    packet.ingressIfindex = (hook == GuestFirewall::prerouting || hook == GuestFirewall::input) ? guestLoopbackIndex : 0;
+    const auto matched = program.classify(packet).value_or(0) != 0;
+    if (packet.ringNotification) {
+        wakePollers();
+        packet.ringNotification = false;
+    }
+    return matched;
+}
+
 static bool filterInetPacket(const auto& hooks, const auto& socket, BpfProgram::Packet& packet, bool egress) {
     packet.ringNotification = false;
-    if (hooks.empty()) return true;
     packet.socket = socket.storageIdentity;
     packet.socketCookie = socket.cookie;
     packet.socketUid = socket.credentials[1];
     packet.socketMark = socket.socketMark;
+    if (hooks.empty()) return true;
     const auto isCurrent = [&](const auto& attached, size_t depth) {
         return sameSocketGroup(socket, attached, depth);
     };
@@ -6056,7 +6089,11 @@ bool ProbeLinux::transmitInetStream(SocketState& from, SocketState& to, std::spa
     const auto connection = (flags & (syn | ack)) == syn ? GuestFirewall::newConnection :
                                                           GuestFirewall::establishedConnection;
     const GuestFirewall::LogPacket logger = [&](const auto& record) { emitNetfilterLog(record, from); };
-    const GuestFirewall::PacketState state{&packet.mark, from.tcpConnectionMark.get(), connection, &rejection, &logger};
+    const GuestFirewall::RunBpf classify = [&](const auto& program, auto hook) {
+        return matchFirewallBpf(program, hook, packet);
+    };
+    const GuestFirewall::PacketState state{&packet.mark, from.tcpConnectionMark.get(), connection,
+                                            &rejection, &logger, &classify};
     packet.ifindex = guestLoopbackIndex;
     packet.socketLookup = [&](std::span<const uint8_t> tuple, bool tcp) {
         return lookupInetSocket(tuple, tcp, &to);
@@ -6224,8 +6261,11 @@ uint64_t ProbeLinux::sendInetDatagram(Machine& machine, const std::shared_ptr<So
                                                                 GuestFirewall::newConnection;
         GuestFirewall::Rejection rejection;
         const GuestFirewall::LogPacket logger = [&](const auto& record) { emitNetfilterLog(record, *socket); };
+        const GuestFirewall::RunBpf classify = [&](const auto& program, auto hook) {
+            return matchFirewallBpf(program, hook, packet);
+        };
         const GuestFirewall::PacketState state{&packet.mark, connection ? &connection->mark : nullptr,
-                                                status, &rejection, &logger};
+                                                status, &rejection, &logger, &classify};
         const auto deliverRejection = [&] {
             if (!rejection.hard || !socket->connected || !matchInetPeer(socket->peerInetAddress, destination)) return;
             socket->inetError = rejection.error;
