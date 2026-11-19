@@ -274,3 +274,12 @@ SystemServiceManager: Starting com.android.server.power.PowerManagerService
   no runnable guest threads
   guest execution wall time: 233709 ms
 Guest scheduler regression: a 1050 ms guest sleep survives a shorter probe deadline and is resumed when the permitted deadline extends past the timer. Host suite, ASan/UBSan and iOS Release build passed.
+
+PowerManager dependency diagnosis
+init: Could not start service 'system_suspend' as part of class 'early_hal': Cannot find '/system/bin/hw/android.system.suspend-service': No such file or directory
+Watchdog: main annotated stack trace:
+    at com.android.server.power.PowerManagerService.nativeAcquireSuspendBlocker(Native Method)
+Clean SDK API 37 collection included the original 170328-byte suspend service and its ELF dependencies.
+SELinux: /system/bin/hw/android.system.suspend-service u:r:init:s0 u:object_r:system_suspend_exec:s0 2 u:r:system_suspend:s0
+Collected 1131 reference files. Guest root: 784687973 file bytes before probe fixtures.
+Signed iOS Release build passed.

@@ -88,3 +88,5 @@
 - iPhone 11 确认原版平台 Aconfig 初始化退出 0，并取得 HIDL 服务管理器，随后复现同一个 `inotify_init1` 停点。真机保留的数据还触发了临时 Wi-Fi 标志文件的创建上限，宿主回归已验证持久文件和临时文件可分别使用各自的数量上限。真机数据保持原状，下一轮验证主线 Aconfig 和 inotify。[运行记录](p2-zygote-eager.txt)
 
 - Mac 复测已完成原版 ActivityManager、DataLoaderManager 和 IncrementalService 启动，进入 PowerManager 后暂时没有可运行的客体线程。原调度器只会等待一秒内的定时事件，现按探针总时限等待客体定时事件。已通过宿主、ASan/UBSan 和 iOS Release 构建验证。iPhone 11 正在复测上一版的 inotify 和文件数上限修复。[运行记录](p2-zygote-eager.txt)
+
+- PowerManager 等待唤醒锁时，init 日志显示原版 `system_suspend` 可执行文件缺失。已将原版服务、ELF 依赖和 SELinux 启动规则纳入采集，干净重建了 Android 17 离线镜像，iOS 签名构建通过。原版 suspend 服务在没有客体电源节点时支持 socketpair 回退，后续核对实际注册和 PowerManager 交互。[运行记录](p2-zygote-eager.txt) · [Android suspend 服务](https://android.googlesource.com/platform/system/hardware/interfaces/+/refs/heads/main/suspend/1.0/default/main.cpp)

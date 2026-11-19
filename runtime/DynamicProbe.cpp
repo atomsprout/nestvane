@@ -431,7 +431,9 @@ DynamicReport probeInit(const std::string& directory, const std::string& databas
                 "Zygote: Preloading classes", "Zygote: ...preloaded", "Zygote: end preload",
                 "Zygote: System zygote died", "Resources: Preloading resources",
                 "nativeloader: Load libperfetto_framework_jni.so", "nativeloader: Load libcompiler_rt.so",
-                "SystemServer: Entered the Android system server", "SystemServerTiming: StartPackageManagerService"
+                "SystemServer: Entered the Android system server", "SystemServerTiming: StartActivityManager",
+                "SystemServerTiming: StartPowerManager", "SystemServerTiming: StartPackageManagerService",
+                "Watchdog: *** WATCHDOG KILLING SYSTEM PROCESS"
             };
             if (std::any_of(std::begin(milestones), std::end(milestones),
                             [message](auto prefix) { return message.starts_with(prefix); }))
