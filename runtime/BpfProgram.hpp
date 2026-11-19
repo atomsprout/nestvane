@@ -182,9 +182,12 @@ public:
     static constexpr uint32_t socketFilter = 1, classifier = 3, trafficAction = 4, cgroupPacket = 8, cgroupSocket = 9, socketOperations = 13, socketAddress = 18, socketOption = 25;
     static constexpr uint32_t cgroupIngress = 0, cgroupEgress = 1;
     static constexpr uint32_t cgroupInetCreate = 2, cgroupSocketOperations = 3, cgroupInetRelease = 34;
-    static constexpr uint32_t bind4 = 8, bind6 = 9, getOption = 21, setOption = 22;
+    static constexpr uint32_t bind4 = 8, bind6 = 9, connect4 = 10, connect6 = 11;
+    static constexpr uint32_t send4 = 14, send6 = 15, receive4 = 19, receive6 = 20;
+    static constexpr uint32_t getOption = 21, setOption = 22;
     static bool inetAddressAttach(uint32_t type) {
-        return (type >= bind4 && type <= 11) || type == 14 || type == 15 || type == 19 || type == 20;
+        return (type >= bind4 && type <= connect6) || type == send4 || type == send6 ||
+               type == receive4 || type == receive6;
     }
     static constexpr size_t maxInstructions = 4096, maxPacketBytes = 65535;
     using MapResolver = std::function<std::shared_ptr<BpfMap>(uint32_t)>;
@@ -265,13 +268,18 @@ public:
         int32_t error = -1;
     };
 
+    struct SocketAddress {
+        uint32_t port = 0;
+        std::array<uint32_t, 4> ip{};
+    };
+
     struct SocketContext {
         std::shared_ptr<void> socket;
         uint64_t cookie;
         uint32_t uid, gid, family, type, protocol;
         std::function<bool(size_t)> canAllocateStorage;
-        uint32_t pid = 0, tid = 0, port = 0;
-        std::array<uint32_t, 4> address{};
+        uint32_t pid = 0, tid = 0;
+        SocketAddress* address = nullptr;
         SocketOption* option = nullptr;
     };
 
@@ -430,7 +438,8 @@ public:
 
     std::optional<uint32_t> runSocketContext(const SocketContext& socket) const {
         if ((programType != cgroupSocket && programType != socketAddress && programType != socketOption) ||
-            !socket.socket || (programType == socketOption && !socket.option)) return std::nullopt;
+            !socket.socket || (programType == socketAddress && !socket.address) ||
+            (programType == socketOption && !socket.option)) return std::nullopt;
         return execute({}, nullptr, nullptr, &socket);
     }
 
@@ -1121,10 +1130,10 @@ private:
                             if (i.width() == 8 && offset == 64) dst = socketHandle;
                             else if (i.width() != 4) return std::nullopt;
                             else if (offset == 0 || offset == 28) dst = socketContext->family;
-                            else if (offset == 4 && socketContext->family == 2) dst = socketContext->address[0];
+                            else if (offset == 4 && socketContext->family == 2) dst = socketContext->address->ip[0];
                             else if (offset >= 8 && offset < 24 && !(offset & 3) && socketContext->family == 10)
-                                dst = socketContext->address[(offset - 8) / 4];
-                            else if (offset == 24) dst = socketContext->port;
+                                dst = socketContext->address->ip[(offset - 8) / 4];
+                            else if (offset == 24) dst = socketContext->address->port;
                             else if (offset == 32) dst = socketContext->type;
                             else if (offset == 36) dst = socketContext->protocol;
                             else return std::nullopt;
@@ -1182,6 +1191,17 @@ private:
                                 case 36: if (option->setting) return std::nullopt; option->retval = int32_t(src); break;
                                 default: return std::nullopt;
                             }
+                            break;
+                        }
+                        if (socketContext && socketContext->address && address >= context && address < context + 72) {
+                            if (i.code != 0x63) return std::nullopt;
+                            const auto offset = address - context;
+                            auto& target = *socketContext->address;
+                            if (offset == 4 && socketContext->family == 2) target.ip[0] = uint32_t(src);
+                            else if (offset >= 8 && offset < 24 && !(offset & 3) && socketContext->family == 10)
+                                target.ip[(offset - 8) / 4] = uint32_t(src);
+                            else if (offset == 24) target.port = uint16_t(src);
+                            else return std::nullopt;
                             break;
                         }
                         if (classifierPacket && i.code == 0x63 && address == context + 8) {

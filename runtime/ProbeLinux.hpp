@@ -228,7 +228,9 @@ private:
     bool openInetSocket(const std::shared_ptr<SocketState>& socket);
     uint64_t bindInetSocket(Machine& machine, const std::shared_ptr<SocketState>& socket);
     uint64_t reserveInetAddress(const std::shared_ptr<SocketState>& socket, SocketState::InetAddress address);
-    uint64_t connectInetDatagram(Machine& machine, const std::shared_ptr<SocketState>& socket);
+    bool filterInetAddress(const SocketState& socket, uint32_t type, SocketState::InetAddress& address,
+        bool* skipBindCapability = nullptr);
+    uint64_t connectInetSocket(Machine& machine, const std::shared_ptr<SocketState>& socket);
     uint64_t sendInetDatagram(Machine& machine, const std::shared_ptr<SocketState>& socket,
         std::span<const std::array<uint64_t, 2>> vectors, uint64_t address = 0, uint64_t addressLength = 0);
     uint64_t receiveInetDatagram(Machine& machine, SocketState& socket, uint64_t address, uint64_t size,
@@ -242,7 +244,8 @@ private:
         std::vector<std::shared_ptr<const BpfProgram>> programs;
     };
     using CgroupSocketHooks = std::map<std::string, CgroupSocketPrograms, std::less<>>;
-    CgroupSocketHooks inetCreatePrograms, inet4BindPrograms, inet6BindPrograms, inetGetOptionPrograms, inetSetOptionPrograms;
+    CgroupSocketHooks inetCreatePrograms, inetGetOptionPrograms, inetSetOptionPrograms;
+    std::map<uint32_t, CgroupSocketHooks> inetAddressPrograms;
     CgroupSocketHooks inetIngressPrograms, inetEgressPrograms;
     std::map<std::tuple<uint32_t, uint32_t, uint16_t>, std::weak_ptr<SocketState>> inetBindings;
     uint16_t nextEphemeralPort = 32768;

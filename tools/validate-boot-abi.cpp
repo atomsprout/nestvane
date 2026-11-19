@@ -1745,6 +1745,52 @@ int main() {
             assert(invoke(205, {sender, from, fromLength}) == 0);
             assert(invoke(64, {sender, payload, 8}) == 8 && recv() == 8);
             assert(attachPacket(9, 1, allowedOut) == 0);
+
+            const auto addressProgram = [&](uint32_t direction, uint32_t verdict, std::optional<uint16_t> port) {
+                std::vector<uint64_t> instructions;
+                if (port) {
+                    instructions.push_back(0x02b7 | (uint64_t(*port) << 32)); // r2 = new network-order port
+                    instructions.push_back(0x182163); // *(u32 *)(r1 + 24) = r2
+                }
+                instructions.push_back(0xb7 | (uint64_t(verdict) << 32));
+                instructions.push_back(0x95);
+                load[0] = 18 | (uint64_t(instructions.size()) << 32); // BPF_PROG_TYPE_CGROUP_SOCK_ADDR
+                load[8] = uint64_t(direction) << 32;
+                assert(task.write(releaseEntry, {reinterpret_cast<const uint8_t*>(instructions.data()),
+                                                instructions.size() * sizeof(instructions.front())}));
+                assert(write(attr, load));
+                const auto id = invoke(280, {5, attr, sizeof(load)});
+                assert(id < 256);
+                return id;
+            };
+            const uint32_t ip = family == 2 ? 0 : 1;
+            const auto denyConnect = addressProgram(10 + ip, 0, {});
+            assert(attachPacket(8, 10 + ip, denyConnect) == 0);
+            assert(invoke(203, {sender, socketAddress, addressSize}) == uint64_t(-1));
+            assert(attachPacket(9, 10 + ip, denyConnect) == 0);
+            const auto* destination = task.read(socketAddress, addressSize, 4);
+            assert(destination);
+            uint16_t correctPort = 0;
+            std::memcpy(&correctPort, destination + 2, 2);
+            std::memcpy(address.data(), destination, addressSize);
+            address[2] = 0x10;
+            address[3] = 0x20;
+            assert(write(socketAddress, address));
+            const auto redirectConnect = addressProgram(10 + ip, 1, correctPort);
+            assert(attachPacket(8, 10 + ip, redirectConnect) == 0);
+            assert(invoke(203, {sender, socketAddress, addressSize}) == 0);
+            assert(invoke(205, {sender, from, fromLength}) == 0);
+            const auto* connected = task.read(from, addressSize, 4);
+            assert(connected && !std::memcmp(connected + 2, &correctPort, 2));
+            assert(attachPacket(9, 10 + ip, redirectConnect) == 0);
+            const auto redirectSend = addressProgram(14 + ip, 1, correctPort);
+            const auto rewriteFrom = addressProgram(19 + ip, 1, 0x3412);
+            assert(attachPacket(8, 14 + ip, redirectSend) == 0 && attachPacket(8, 19 + ip, rewriteFrom) == 0);
+            assert(send() == 8 && recv() == 8);
+            const auto* rewritten = task.read(from, addressSize, 4);
+            assert(rewritten && rewritten[2] == 0x12 && rewritten[3] == 0x34);
+            assert(attachPacket(9, 14 + ip, redirectSend) == 0 && attachPacket(9, 19 + ip, rewriteFrom) == 0);
+            for (const auto id : {denyConnect, redirectConnect, redirectSend, rewriteFrom}) assert(invoke(57, {id}) == 0);
             assert(invoke(57, {sender}) == 0 && invoke(57, {receiver}) == 0);
         }
         assert(invoke(57, {blockedIn}) == 0 && invoke(57, {blockedOut}) == 0 &&
