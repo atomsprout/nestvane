@@ -326,3 +326,5 @@
 - iPhone 11 进程 8461 的 IPv4/IPv6 规则表和 REJECT 修订号查询探针均退出 0。原版工具越过 REJECT，仍缺 NFLOG，尚未完整启动。
 - 支持 xtables NFLOG 与客体 NETLINK_NETFILTER 日志组。按组绑定、设置复制模式和长度、限制其他套接字访问同组，并通过真实 UDP 数据路径交付客体日志。当前记录逐条交付。宿主 ABI 回归与参考 Android 17 隔离网络测试均验证 IPv4/IPv6 报文前缀、挂钩、限定后的载荷及组所有权。Mac 原版 netd 进入子链创建，出现 mark/MARK 与规则列表读取问题，尚未达到 sys.boot_completed=1。[Linux NFLOG](https://codebrowser.dev/linux/linux/net/netfilter/nfnetlink_log.c.html)
 - 支持 IPv4/IPv6 的报文标记匹配修订 1 与 MARK 目标修订 2。宿主回归确认仅修改匹配报文的掩码位，并保留其余位。Android 17 参考镜像的原版恢复工具接受同一条掩码规则。[Linux 报文标记](https://codebrowser.dev/linux/linux/net/netfilter/xt_mark.c.html)
+- iPhone 11 进程 8464 通过 NFLOG 端到端探针。客体的原版 IPv4/IPv6 restore 工具各自安装测试规则，Bionic 探针实际发送和接收 UDP，并核验 netlink 日志中的组、挂钩、前缀和截取后的报文内容，随后撤销规则。该诊断仍未达到 sys.boot_completed=1。
+- 加入报文标记后的 Mac 冷启动越过 mark/MARK 参数解析，原版 netd 进一步停在 BandwidthController。原版 restore 请求 bpf 匹配的 --object-pinned，客体尚未支持该 xtables ABI。规则列表中的 state 扩展警告仍在。
