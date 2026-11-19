@@ -469,6 +469,12 @@ private:
     uint64_t writeDescriptor(Machine& machine, const Descriptor& fd, uint64_t address, uint64_t size,
                              std::optional<uint64_t> position = {});
     uint64_t open(const Machine& machine, const std::string& path, uint32_t flags, uint32_t mode);
+    bool lockWholeFile(Machine& machine, const Descriptor& file);
+    struct WholeFileLock {
+        std::weak_ptr<uint64_t> owner;
+        bool exclusive;
+    };
+    std::map<std::pair<uint64_t, std::string>, std::vector<WholeFileLock>> wholeFileLocks;
     uint64_t stat(Machine& machine, uint64_t address, const Descriptor& fd) const;
     uint64_t resize(const WritableFile& file, uint64_t size);
     uint64_t readGraphics(Machine& machine, GraphicsPipeState& pipe, uint64_t address, uint64_t size);

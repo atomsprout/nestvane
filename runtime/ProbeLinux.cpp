@@ -1460,6 +1460,48 @@ uint64_t ProbeLinux::open(const Machine& machine, const std::string& path, uint3
     return fd;
 }
 
+bool ProbeLinux::lockWholeFile(Machine& machine, const Descriptor& file) {
+    auto& x = machine.cpu.x;
+    constexpr uint32_t shared = 1, exclusive = 2, nonblocking = 4, unlock = 8;
+    const auto operation = uint32_t(x[1]);
+    if (file.pathOnly()) { x[0] = uint64_t(-9); return true; }
+    const auto action = operation & ~nonblocking;
+    if (action != shared && action != exclusive && action != unlock) { x[0] = invalid; return true; }
+    if (file.node != Node::regular && file.node != Node::temporary && file.node != Node::directory) {
+        x[0] = uint64_t(-95);
+        return true;
+    }
+
+    for (auto it = wholeFileLocks.begin(); it != wholeFileLocks.end();) {
+        auto& holders = it->second;
+        std::erase_if(holders, [](const auto& lock) { return lock.owner.expired(); });
+        if (holders.empty()) it = wholeFileLocks.erase(it);
+        else ++it;
+    }
+    const auto key = file.temporary ? std::pair{file.temporary->inode, std::string{}} :
+        std::pair{uint64_t{0}, file.path};
+    auto& holders = wholeFileLocks[key];
+    const auto sameOwner = [&](const auto& lock) { return lock.owner.lock() == file.offset; };
+    const auto previous = std::ranges::find_if(holders, sameOwner);
+    if (previous != holders.end()) {
+        if (action != unlock && previous->exclusive == (action == exclusive)) { x[0] = 0; return true; }
+        holders.erase(previous);
+        wakePollers();
+    }
+    if (action == unlock) {
+        if (holders.empty()) wholeFileLocks.erase(key);
+        x[0] = 0;
+        return true;
+    }
+    if (std::ranges::any_of(holders, [action](const auto& lock) { return action == exclusive || lock.exclusive; })) {
+        if (operation & nonblocking) { x[0] = uint64_t(-11); return true; }
+        return waitForEvents();
+    }
+    holders.push_back({file.offset, action == exclusive});
+    x[0] = 0;
+    return true;
+}
+
 uint32_t ProbeLinux::descriptorLimit() const {
     const auto resource = current->process->limits.find(7); // RLIMIT_NOFILE
     return resource == current->process->limits.end()
@@ -6971,6 +7013,9 @@ bool ProbeLinux::syscall(Machine& machine) {
         case 282: // userfaultfd is unavailable in this virtual Linux kernel.
             x[0] = uint64_t(-38);
             break;
+        case 32: // flock
+            if (descriptor == descriptors().end()) { x[0] = uint64_t(-9); break; }
+            return lockWholeFile(machine, descriptor->second);
         case 29: // ioctl
             if (descriptor == descriptors().end()) { x[0] = uint64_t(-9); break; }
             if (x[1] == 0x8913 || x[1] == 0x8914 || x[1] == 0x8921 || x[1] == 0x8933) {

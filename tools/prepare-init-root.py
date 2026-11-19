@@ -238,6 +238,11 @@ def collect(serial, readelf, destination, small_art_heap):
                 local.parent.mkdir(parents=True, exist_ok=True)
                 subprocess.run(adb + ["pull", guest, str(local)], check=True)
                 copied.add(guest)
+        lockfile = "/system/etc/xtables.lock"
+        local = root / lockfile.lstrip("/")
+        local.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(adb + ["pull", lockfile, str(local)], check=True)
+        copied.add(lockfile)
         for partition in ("/system", "/vendor", "/odm", "/product", "/system_ext"):
             guest = partition + "/etc/ueventd.rc"
             if not shell("ls", "-d", guest, "2>/dev/null", "||", "true"):

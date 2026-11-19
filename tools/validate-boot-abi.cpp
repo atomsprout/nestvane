@@ -553,12 +553,35 @@ int main() {
     }
     ProbeLinux linux(1, 0);
     linux.addDirectory("/test", 0755);
+    linux.mount("/system/etc/xtables.lock", {});
     const auto call = [&](uint64_t number, std::array<uint64_t, 6> args = {}) {
         std::copy(args.begin(), args.end(), machine.cpu.x.begin());
         machine.cpu.x[8] = number;
         assert(linux.syscall(machine));
         return machine.cpu.x[0];
     };
+    {
+        const std::string_view filename = "/system/etc/xtables.lock";
+        assert(machine.write(base, {reinterpret_cast<const uint8_t*>(filename.data()), filename.size() + 1}));
+        constexpr uint64_t cwd = uint32_t(-100);
+        const auto first = call(56, {cwd, base, 0x80040, 0600}); // O_RDONLY | O_CREAT | O_CLOEXEC
+        const auto second = call(56, {cwd, base, 0});
+        assert(first < 256 && second < 256);
+        assert(call(56, {cwd, base, 1}) == uint64_t(-30));
+        const auto duplicate = call(23, {first});
+        assert(duplicate < 256);
+        assert(call(32, {first, 6}) == 0); // LOCK_EX | LOCK_NB
+        assert(call(32, {second, 5}) == uint64_t(-11));
+        assert(call(57, {first}) == 0 && call(32, {second, 6}) == uint64_t(-11));
+        assert(call(32, {duplicate, 8}) == 0 && call(32, {second, 5}) == 0);
+        assert(call(32, {duplicate, 5}) == 0);
+        assert(call(32, {second, 6}) == uint64_t(-11));
+        assert(call(57, {duplicate}) == 0 && call(32, {second, 6}) == 0);
+        assert(call(32, {second, 3}) == uint64_t(-22));
+        const auto pathOnly = call(56, {cwd, base, 0x200000});
+        assert(pathOnly < 256 && call(32, {pathOnly, 6}) == uint64_t(-9));
+        assert(call(57, {second}) == 0 && call(57, {pathOnly}) == 0);
+    }
     const auto put = [&](uint64_t address, const char* data) {
         assert(machine.write(address, {reinterpret_cast<const uint8_t*>(data), std::strlen(data) + 1}));
     };
