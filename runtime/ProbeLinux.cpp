@@ -5429,12 +5429,15 @@ uint64_t ProbeLinux::loadBpfProgram(Machine& machine) {
     std::memcpy(&source, input.data() + 8, sizeof(source));
     std::memcpy(&license, input.data() + 16, sizeof(license));
     std::memcpy(&flags, input.data() + 44, sizeof(flags));
-    if (type != BpfProgram::socketFilter && type != BpfProgram::classifier) return uint64_t(-95);
+    if (!BpfProgram::supports(type)) return uint64_t(-95);
     const auto caps = current->process->effectiveCaps;
-    if (type == BpfProgram::classifier && (!(caps & (capBpf | capSysAdmin)) || !(caps & (1ULL << 12))))
-        return uint64_t(-1); // SCHED_CLS also requires CAP_NET_ADMIN.
-    if ((flags & ~3U) || flags == 3 ||
-        std::any_of(input.begin() + 64, input.begin() + 72, [](auto b) { return b != 0; }) ||
+    if (type != BpfProgram::socketFilter && (!(caps & (capBpf | capSysAdmin)) || !(caps & (1ULL << 12))))
+        return uint64_t(-1);
+    uint32_t ifindex = 0, attachType = 0;
+    std::memcpy(&ifindex, input.data() + 64, sizeof(ifindex));
+    std::memcpy(&attachType, input.data() + 68, sizeof(attachType));
+    const auto expected = type == BpfProgram::socketOperations ? BpfProgram::cgroupSocketOperations : 0;
+    if ((flags & ~3U) || flags == 3 || ifindex || (attachType && attachType != expected) ||
         std::any_of(input.begin() + 108, input.end(), [](auto b) { return b != 0; }))
         return uint64_t(-95);
     if (!count || count > BpfProgram::maxInstructions) return uint64_t(-7);

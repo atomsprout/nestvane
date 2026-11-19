@@ -82,6 +82,47 @@ int main() {
         cache->storeHash(third, {30, 0, 0, 0}, cache->hash.end());
         assert(cache->hash.size() == 2 && cache->hash.contains(first) && !cache->hash.contains(second));
     }
+    {
+        using Callback = BpfProgram::SocketOperations;
+        const auto socket = std::make_shared<int>(0), other = std::make_shared<int>(1);
+        auto storage = std::make_shared<BpfMap>();
+        storage->type = BpfMap::socketStorage;
+        storage->valueSize = 4;
+        storage->socketValues[socket] = {42, 0, 0, 0};
+        const auto encode = [](uint8_t op, uint8_t registers, int16_t offset = 0, int32_t immediate = 0) {
+            return op | (uint64_t(registers) << 8) | (uint64_t(uint16_t(offset)) << 16) |
+                   (uint64_t(uint32_t(immediate)) << 32);
+        };
+        const auto run = [&](Callback& callback, const auto& code) {
+            BpfProgram program({}, {});
+            const auto bytes = std::span(reinterpret_cast<const uint8_t*>(code.data()), sizeof(code));
+            assert(program.load(BpfProgram::socketOperations, bytes, [&](uint32_t fd) {
+                return fd == 12 ? storage : nullptr;
+            }));
+            return program.runSocketOperations(callback);
+        };
+        const std::array lookup{
+            encode(0x79, 0x12, 184), encode(0x18, 0x11, 0, 12), uint64_t{0},
+            encode(0xb7, 3), encode(0xb7, 4), encode(0x85, 0, 0, 107),
+            encode(0x15, 0, 1), encode(0x61, 0), encode(0x95, 0)};
+        Callback connect{socket, Callback::tcpConnect}, unrelated{other, Callback::tcpConnect};
+        assert(run(connect, lookup) == 42 && run(unrelated, lookup) == 0);
+        const std::array setFlags{encode(0xb7, 2, 0, 0x40), encode(0x85, 0, 0, 59), encode(0x95, 0)};
+        assert(run(connect, setFlags) == 0 && connect.callbackFlags == 0x40);
+        const std::array reserve{
+            encode(0xb7, 2, 0, 3), encode(0xb7, 3), encode(0x85, 0, 0, 144), encode(0x95, 0)};
+        assert(run(connect, reserve) == uint32_t(-1));
+        Callback length{socket, Callback::optionLength};
+        assert(run(length, reserve) == 0 && length.remaining == 37);
+        const std::array write{
+            encode(0xb7, 3, 0, 0x6503ae), encode(0x63, 0x3a, -4), encode(0xbf, 0xa2), encode(0x07, 2, 0, -4),
+            encode(0xb7, 3, 0, 3), encode(0xb7, 4), encode(0x85, 0, 0, 143), encode(0x95, 0)};
+        Callback option{socket, Callback::writeOption};
+        option.remaining = 3;
+        assert(run(option, write) == 0 && option.used == 3 && !option.remaining);
+        assert(option.options[0] == 174 && option.options[1] == 3 && option.options[2] == 101);
+        assert(run(option, write) == uint32_t(-28));
+    }
     constexpr uint64_t base = 0x2000;
     Machine machine(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
     {

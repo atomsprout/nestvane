@@ -169,7 +169,8 @@ struct BpfMap {
 
 class BpfProgram {
 public:
-    static constexpr uint32_t socketFilter = 1, classifier = 3;
+    static constexpr uint32_t socketFilter = 1, classifier = 3, socketOperations = 13;
+    static constexpr uint32_t cgroupSocketOperations = 3;
     static constexpr size_t maxInstructions = 4096, maxPacketBytes = 65535;
     using MapResolver = std::function<std::shared_ptr<BpfMap>(uint32_t)>;
 
@@ -198,8 +199,51 @@ public:
         bool ringNotification = false;
     };
 
+    struct SocketOperations {
+        static constexpr uint32_t tcpConnect = 3, passiveEstablished = 5, optionLength = 14, writeOption = 15;
+        static constexpr uint32_t allCallbackFlags = 0x7f;
+
+        std::shared_ptr<void> socket;
+        uint32_t operation, callbackFlags = 0, tcpFlags = 0;
+        std::array<uint8_t, 40> options{};
+        size_t used = 0, remaining = options.size();
+
+        uint64_t reserveOption(uint32_t length, uint64_t flags) {
+            if (flags || !length) return uint64_t(-22);
+            if (operation != optionLength) return uint64_t(-1);
+            if (length > remaining) return uint64_t(-28);
+            remaining -= length;
+            return 0;
+        }
+
+        uint64_t storeOption(std::span<const uint8_t> data, uint64_t flags) {
+            if (flags || data.size() < 2 || data[0] < 2 || data[0] >= 253 ||
+                data[1] < 2 || data[1] > data.size()) return uint64_t(-22);
+            if (operation != writeOption) return uint64_t(-1);
+            const size_t length = data[1];
+            if (length > remaining) return uint64_t(-28);
+            for (size_t offset = 0; offset < used;) {
+                const auto kind = options[offset];
+                if (!kind) break;
+                if (kind == 1) { ++offset; continue; }
+                if (used - offset < 2 || options[offset + 1] < 2 || options[offset + 1] > used - offset)
+                    return uint64_t(-14);
+                if (kind == data[0]) return uint64_t(-17);
+                offset += options[offset + 1];
+            }
+            std::ranges::copy(data.first(length), options.begin() + used);
+            used += length;
+            remaining -= length;
+            return 0;
+        }
+    };
+
+    static bool supports(uint32_t type) {
+        return type == socketFilter || type == classifier || type == socketOperations;
+    }
+
     bool load(uint32_t type, std::span<const uint8_t> bytes, const MapResolver& resolve) {
-        if ((type != socketFilter && type != classifier) || bytes.empty() ||
+        if (!supports(type) || bytes.empty() ||
             bytes.size() % sizeof(Instruction) || bytes.size() / sizeof(Instruction) > maxInstructions)
             return false;
         std::vector<Instruction> decoded(bytes.size() / sizeof(Instruction));
@@ -214,7 +258,7 @@ public:
                 const auto& upper = decoded[pc + 1];
                 if (upper.code || upper.registers || upper.offset) return false;
                 if (i.source() == 1) { // BPF_PSEUDO_MAP_FD
-                    if (type != classifier || upper.immediate) return false;
+                    if (type == socketFilter || upper.immediate) return false;
                     auto map = resolve(uint32_t(i.immediate));
                     if (!map || map->type == 25) return false;
                     maps.emplace(pc, std::move(map));
@@ -231,8 +275,16 @@ public:
             } else if (i.code == 0x85) {
                 if (i.registers || i.offset) return false;
                 switch (i.immediate) {
-                    case 26: break; // skb_load_bytes
-                    case 1: case 9: case 10: case 11: case 23: case 31: case 39: case 40: case 43: case 46: case 50: case 125: case 130: case 131:
+                    case 26: // skb_load_bytes
+                        if (type == socketOperations) return false;
+                        break;
+                    case 1:
+                        if (type == socketFilter) return false;
+                        break;
+                    case 59: case 107: case 143: case 144:
+                        if (type != socketOperations) return false;
+                        break;
+                    case 9: case 10: case 11: case 23: case 31: case 39: case 40: case 43: case 46: case 50: case 125: case 130: case 131:
                     case 132: case 133: case 134: case 164:
                         if (type != classifier) return false;
                         break;
@@ -298,6 +350,12 @@ public:
     std::optional<uint32_t> classify(Packet& packet) const {
         if (programType != classifier || packet.bytes.size() > maxPacketBytes) return std::nullopt;
         return execute(packet.bytes, &packet);
+    }
+
+    std::optional<uint32_t> runSocketOperations(SocketOperations& socket) const {
+        if (programType != socketOperations || socket.used > socket.options.size() ||
+            socket.remaining > socket.options.size() - socket.used) return std::nullopt;
+        return execute({}, nullptr, &socket);
     }
 
 private:
@@ -452,11 +510,13 @@ private:
         uint64_t position = 0;
     };
 
-    std::optional<uint32_t> execute(std::span<const uint8_t> packet, Packet* classifierPacket) const {
+    std::optional<uint32_t> execute(std::span<const uint8_t> packet, Packet* classifierPacket,
+                                    SocketOperations* sockOps = nullptr) const {
         // Interpreter addresses identify bounded packet, stack and map regions. The guest never
         // receives host addresses. Guest execution is serialized, so an atomic ADD needs no lock.
         constexpr size_t maxDepth = 8;
         constexpr uint64_t stackBase = 0x1000, stackStride = 0x1000, context = 0xf000, packetBase = 0x10000;
+        constexpr uint64_t socketHandle = 0xe000;
         constexpr uint64_t callbackBase = 1ULL << 29, keyBase = 1ULL << 30;
         constexpr uint64_t mapHandleBase = 1ULL << 31, mapValueBase = 1ULL << 32, mapStride = 1ULL << 26;
         std::array<std::array<uint8_t, 512>, maxDepth> stacks{};
@@ -547,7 +607,7 @@ private:
             }
         };
 
-        size_t fuel = classifierPacket ? 65536 : 16384;
+        size_t fuel = programType == socketFilter ? 16384 : 65536;
         auto run = [&](auto&& self, size_t start, size_t depth,
                        std::array<uint64_t, 11> registers) -> std::optional<uint32_t> {
             if (depth >= maxDepth) return std::nullopt;
@@ -648,6 +708,31 @@ private:
                                 result = adjustRoom(*classifierPacket, int32_t(r2), uint32_t(r3), registers[4]);
                                 packet = classifierPacket->bytes;
                                 break;
+                            case 59: // bpf_sock_ops_cb_flags_set
+                                if (r1 != context) return std::nullopt;
+                                if (!sockOps->socket) { result = uint64_t(-22); break; }
+                                sockOps->callbackFlags = uint32_t(r2) & SocketOperations::allCallbackFlags;
+                                result = uint32_t(r2) & ~SocketOperations::allCallbackFlags;
+                                break;
+                            case 107: { // bpf_sk_storage_get for an existing socket entry.
+                                auto* map = mapFor(r1);
+                                if (!map || map->type != BpfMap::socketStorage || r3 || registers[4]) return std::nullopt;
+                                if (r2 != socketHandle || !sockOps->socket) break;
+                                const auto found = map->socketValues.find(sockOps->socket);
+                                if (found != map->socketValues.end()) result = valueAddress(*map, found->second);
+                                break;
+                            }
+                            case 143: { // bpf_store_hdr_opt
+                                if (r1 != context) return std::nullopt;
+                                const auto data = read(r2, uint32_t(r3));
+                                if (r3 && data.empty()) return std::nullopt;
+                                result = sockOps->storeOption(data, registers[4]);
+                                break;
+                            }
+                            case 144: // bpf_reserve_hdr_opt
+                                if (r1 != context) return std::nullopt;
+                                result = sockOps->reserveOption(uint32_t(r2), r3);
+                                break;
                             case 125: // bpf_ktime_get_boot_ns uses the guest's CLOCK_BOOTTIME clock.
                                 result = std::chrono::duration_cast<std::chrono::nanoseconds>(
                                     std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -741,6 +826,16 @@ private:
                 switch (i.kind()) {
                     case 1: {
                         const auto address = src + i.offset;
+                        if (sockOps && address >= context && address < context + 216) {
+                            const auto offset = address - context;
+                            if (i.width() == 8 && offset == 184) dst = sockOps->socket ? socketHandle : 0;
+                            else if (i.width() != 4) return std::nullopt;
+                            else if (offset == 0) dst = sockOps->operation;
+                            else if (offset == 84) dst = sockOps->callbackFlags;
+                            else if (offset == 212) dst = sockOps->tcpFlags;
+                            else return std::nullopt;
+                            break;
+                        }
                         if (i.width() == 4 && address >= context && address < context + 180) {
                             const auto field = skbField(address - context);
                             if (!field) return std::nullopt;
