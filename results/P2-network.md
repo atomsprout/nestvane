@@ -112,3 +112,5 @@
   ANDROID_GFXSTREAM_EGL=1 DYLD_LIBRARY_PATH="$sdk_lib:$sdk_lib/gles_angle:$sdk_lib/vulkan" \
     /tmp/nestvane-probe-gfxstream-host "$sdk_lib/libgfxstream_backend.dylib"
   ```
+
+- iPhone 11 第 7167 号进程的实时记录复现了 Mac 的图形停点。init 开始后 55,782 ms，原版图形模块打开 `/dev/goldfish_pipe_dprctd` 收到 `ENOENT`。SurfaceFlinger 启动后再次尝试，64,653 ms 时记录 `eglInitialize` 失败。此时真机温度为 nominal。
