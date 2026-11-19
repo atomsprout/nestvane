@@ -2152,7 +2152,7 @@ bool ProbeLinux::socketCall(Machine& machine) {
             endpoint->family = x[0];
             endpoint->protocol = inet ? inetProtocol : x[2];
             endpoint->cookie = nextSocketCookie++;
-            if (inet && !allowInetSocket(endpoint)) { x[0] = uint64_t(-1); break; }
+            if (inet && !openInetSocket(endpoint)) { x[0] = uint64_t(-1); break; }
             entry.socket = endpoint;
             descriptors().emplace(first, entry);
             if (x[8] == 198) { x[0] = first; break; }
@@ -2840,6 +2840,7 @@ bool ProbeLinux::fileCall(Machine& machine) {
                             })) { x[0] = uint64_t(-16); break; }
                         cgroupFiles.erase(file);
                         inetCreatePrograms.erase(backing);
+                        inetReleasePrograms->erase(backing);
                         x[0] = directories.erase(backing) ? 0 : uint64_t(-2);
                     } else {
                         x[0] = directories.erase(backing) ? 0 : uint64_t(-2);
@@ -5200,25 +5201,60 @@ bool ProbeLinux::enforceSeccomp(Machine& machine) {
     return true;
 }
 
-bool ProbeLinux::allowInetSocket(const std::shared_ptr<SocketState>& socket) {
-    if (inetCreatePrograms.empty()) return true;
+static bool runInetPrograms(const auto& hooks, std::string_view group, const BpfProgram::SocketContext& context,
+                            const auto& isGroupCurrent) {
     constexpr uint32_t multi = 2;
-    const BpfProgram::SocketCreate context{socket, socket->cookie, socket->credentials[1], socket->credentials[2],
-        socket->family, socket->type, socket->protocol, [&](size_t bytes) { return canAllocateSocketStorage(bytes); }};
     bool evaluated = false;
-    auto group = std::string_view(current->process->cgroup);
+    size_t depth = 0;
     while (group == cgroupRoot || inside(group, cgroupRoot)) {
-        const auto attachment = inetCreatePrograms.find(group);
-        if (attachment != inetCreatePrograms.end() && (!evaluated || (attachment->second.flags & multi))) {
+        const auto attachment = hooks.find(group);
+        if (attachment != hooks.end() && (!evaluated || (attachment->second.flags & multi)) &&
+            isGroupCurrent(attachment->second.group, depth)) {
             for (const auto& program : attachment->second.programs) {
-                const auto result = program->runSocketCreate(context);
+                const auto result = program->runSocketContext(context);
                 if (!result || *result != 1) return false;
             }
             evaluated = true;
         }
         if (group == cgroupRoot) break;
         group = group.substr(0, group.rfind('/'));
+        ++depth;
     }
+    return true;
+}
+
+bool ProbeLinux::openInetSocket(const std::shared_ptr<SocketState>& socket) {
+    socket->storageIdentity = std::make_shared<char>();
+    const auto& group = current->process->cgroup;
+    const BpfProgram::SocketContext context{socket->storageIdentity, socket->cookie, socket->credentials[1],
+        socket->credentials[2], socket->family, socket->type, socket->protocol,
+        [&](size_t bytes) { return canAllocateSocketStorage(bytes); }};
+    if (!runInetPrograms(inetCreatePrograms, group, context, [](const auto&, size_t) { return true; }))
+        return false;
+    if (group.empty()) return true;
+    std::vector<std::weak_ptr<Directory>> ancestry;
+    for (auto path = std::string_view(group); path == cgroupRoot || inside(path, cgroupRoot);
+         path = path.substr(0, path.rfind('/'))) {
+        const auto identity = cgroupFiles.find(std::string(path) + std::string(cgroupProcs));
+        ancestry.emplace_back(identity == cgroupFiles.end() ? nullptr : identity->second);
+        if (path == cgroupRoot) break;
+    }
+    socket->onClose = [hooks = std::weak_ptr(inetReleasePrograms), group, ancestry = std::move(ancestry)](
+                          const SocketState& endpoint) {
+        if (const auto programs = hooks.lock(); programs && !programs->empty()) {
+            constexpr std::owner_less<void> order{};
+            const auto isCurrent = [&](const auto& attached, size_t depth) {
+                return depth < ancestry.size() && !order(attached, ancestry[depth]) && !order(ancestry[depth], attached);
+            };
+            try {
+                const BpfProgram::SocketContext release{endpoint.storageIdentity, endpoint.cookie, endpoint.credentials[1],
+                    endpoint.credentials[2], endpoint.family, endpoint.type, endpoint.protocol, {}};
+                runInetPrograms(*programs, group, release, isCurrent);
+            } catch (const std::bad_alloc&) {
+                // Socket teardown still releases the descriptor and its storage identity.
+            }
+        }
+    };
     return true;
 }
 
@@ -5233,7 +5269,8 @@ uint64_t ProbeLinux::changeBpfCgroupAttachment(Machine& machine) {
     std::memcpy(fields.data(), input.data(), sizeof(fields));
     const auto [targetFd, programFd, type, flags] = fields;
     const bool attach = x[0] == 8;
-    if (type != BpfProgram::cgroupInetCreate) return uint64_t(-95);
+    if (type != BpfProgram::cgroupInetCreate && type != BpfProgram::cgroupInetRelease) return uint64_t(-95);
+    auto& hooks = type == BpfProgram::cgroupInetCreate ? inetCreatePrograms : *inetReleasePrograms;
     if (flags > multi || (!attach && flags) ||
         std::ranges::any_of(std::span(input).subspan(sizeof(fields)), [](auto byte) { return byte != 0; }))
         return invalid;
@@ -5243,11 +5280,11 @@ uint64_t ProbeLinux::changeBpfCgroupAttachment(Machine& machine) {
     if (!target.cgroupDirectory) return invalid;
     const auto live = cgroupFiles.find(target.path + std::string(cgroupProcs));
     if (live == cgroupFiles.end() || live->second != target.cgroupDirectory) return uint64_t(-19);
-    const auto attachment = inetCreatePrograms.find(target.path);
+    const auto attachment = hooks.find(target.path);
     const auto source = descriptors().find(programFd);
     const auto program = source == descriptors().end() ? nullptr : source->second.bpfProgram;
     if (!attach) {
-        if (attachment == inetCreatePrograms.end()) return uint64_t(-2);
+        if (attachment == hooks.end()) return uint64_t(-2);
         auto& programs = attachment->second.programs;
         if (attachment->second.flags & multi) {
             if (!program) return source == descriptors().end() ? uint64_t(-9) : invalid;
@@ -5255,18 +5292,18 @@ uint64_t ProbeLinux::changeBpfCgroupAttachment(Machine& machine) {
         } else {
             programs.clear();
         }
-        if (programs.empty()) inetCreatePrograms.erase(attachment);
+        if (programs.empty()) hooks.erase(attachment);
         return 0;
     }
     if (!program) return source == descriptors().end() ? uint64_t(-9) : invalid;
-    if (program->type() != BpfProgram::cgroupSocket) return invalid;
-    for (const auto& [path, item] : inetCreatePrograms) {
+    if (program->type() != BpfProgram::cgroupSocket || program->info().attachType != type) return invalid;
+    for (const auto& [path, item] : hooks) {
         if (inside(target.path, path) && !(item.flags & (multi | allowOverride))) return uint64_t(-1);
         if (inside(path, target.path) && !flags) return uint64_t(-1);
     }
-    if (attachment != inetCreatePrograms.end() && attachment->second.flags != flags) return uint64_t(-1);
-    if (attachment == inetCreatePrograms.end()) {
-        inetCreatePrograms.emplace(target.path, CgroupSocketPrograms{flags, {program}});
+    if (attachment != hooks.end() && attachment->second.flags != flags) return uint64_t(-1);
+    if (attachment == hooks.end()) {
+        hooks.emplace(target.path, CgroupSocketPrograms{flags, target.cgroupDirectory, {program}});
     } else if (flags & multi) {
         auto& programs = attachment->second.programs;
         if (std::ranges::find(programs, program) != programs.end()) return uint64_t(-17);
@@ -5431,7 +5468,8 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
         const auto descriptor = descriptors().find(socketFd);
         if (descriptor == descriptors().end()) return uint64_t(-9);
         if (!descriptor->second.socket) return uint64_t(-88); // ENOTSOCK
-        const auto& socket = descriptor->second.socket;
+        const auto& endpoint = descriptor->second.socket;
+        const auto socket = endpoint->storageIdentity ? endpoint->storageIdentity : std::shared_ptr<void>(endpoint);
         const auto storage = map.socketValues.find(socket);
         if (command == lookup || command == erase) {
             if (storage == map.socketValues.end()) return uint64_t(-2);
@@ -5549,7 +5587,9 @@ uint64_t ProbeLinux::loadBpfProgram(Machine& machine) {
     std::memcpy(&attachType, input.data() + 68, sizeof(attachType));
     const auto expected = type == BpfProgram::socketOperations ? BpfProgram::cgroupSocketOperations :
         type == BpfProgram::cgroupSocket ? BpfProgram::cgroupInetCreate : 0;
-    const bool validAttach = type == BpfProgram::cgroupPacket ? attachType <= 1 : !attachType || attachType == expected;
+    const bool validAttach = type == BpfProgram::cgroupPacket ? attachType <= 1 :
+        !attachType || attachType == expected ||
+        (type == BpfProgram::cgroupSocket && attachType == BpfProgram::cgroupInetRelease);
     if ((flags & ~3U) || flags == 3 || ifindex || !validAttach ||
         std::any_of(input.begin() + 108, input.end(), [](auto b) { return b != 0; }))
         return uint64_t(-95);
@@ -5569,6 +5609,7 @@ uint64_t ProbeLinux::loadBpfProgram(Machine& machine) {
         BpfProgram::Identity identity{};
         identity.id = nextBpfProgramId;
         identity.uid = current->process->userIds[1];
+        identity.attachType = attachType ? attachType : expected;
         identity.loadTime = std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
         identity.gplCompatible = std::ranges::find(gplLicenses, *licenseText) != gplLicenses.end();

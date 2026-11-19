@@ -12,6 +12,7 @@
 #include <tuple>
 #include <deque>
 #include <memory>
+#include <functional>
 #include <utility>
 
 struct sqlite3;
@@ -170,6 +171,9 @@ private:
         uint32_t type;
         uint32_t family = 1, protocol = 0;
         uint64_t cookie = 0;
+        std::shared_ptr<void> storageIdentity;
+        std::function<void(const SocketState&)> onClose;
+        ~SocketState() { if (onClose) onClose(*this); }
         std::array<uint32_t, 3> peerCredentials{0, UINT32_MAX, UINT32_MAX};
         std::string context, peerContext;
         std::string localAddress, peerAddress;
@@ -209,12 +213,16 @@ private:
     size_t bpfMapBytes();
     bool canAllocateSocketStorage(size_t valueSize);
     uint64_t changeBpfCgroupAttachment(Machine& machine);
-    bool allowInetSocket(const std::shared_ptr<SocketState>& socket);
+    bool openInetSocket(const std::shared_ptr<SocketState>& socket);
+    struct Directory;
     struct CgroupSocketPrograms {
         uint32_t flags;
+        std::weak_ptr<Directory> group;
         std::vector<std::shared_ptr<const BpfProgram>> programs;
     };
-    std::map<std::string, CgroupSocketPrograms, std::less<>> inetCreatePrograms;
+    using CgroupSocketHooks = std::map<std::string, CgroupSocketPrograms, std::less<>>;
+    CgroupSocketHooks inetCreatePrograms;
+    std::shared_ptr<CgroupSocketHooks> inetReleasePrograms = std::make_shared<CgroupSocketHooks>();
     uint64_t bpfMapCall(Machine& machine);
     uint64_t loadBpfProgram(Machine& machine);
     uint64_t testBpfProgram(Machine& machine);
@@ -373,7 +381,6 @@ private:
         std::set<uint64_t> loopers;
         explicit BinderConnection(uint64_t owner) : owner(owner) {}
     };
-    struct Directory;
     struct Ashmem {
         WritableFile file{};
         uint64_t size = 0;

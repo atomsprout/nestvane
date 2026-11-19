@@ -1619,7 +1619,32 @@ int main() {
         assert(invoke(198, {2, 1, 0}) == uint64_t(-1)); // Attached parent applies inside the child.
         assert(invoke(280, {9, attr, sizeof(attach)}) == 0);
         const auto stream = invoke(198, {2, 1, 0});
-        assert(stream < 256 && invoke(57, {stream}) == 0);
+        assert(stream < 256);
+        const std::array<uint32_t, 5> createTags{1, 8, 8, 2, 0};
+        assert(write(attr, createTags));
+        const auto tags = invoke(280, {0, attr, sizeof(createTags)});
+        assert(tags < 256);
+        // A release hook is attached after the socket was opened.
+        const std::array<uint64_t, 9> releaseCode{
+            0x2e00000085, 0xfff80a7b, 0xa2bf, 0xfffffff800000207,
+            (tags << 32) | 0x1118, 0, 0x300000085, 0x1000000b7, 0x95};
+        load[0] = 9 | (uint64_t(releaseCode.size()) << 32);
+        load[8] = 34ULL << 32; // BPF_CGROUP_INET_SOCK_RELEASE
+        const auto releaseEntry = base + 544;
+        load[1] = releaseEntry;
+        assert(write(releaseEntry, releaseCode) && write(attr, load));
+        const auto release = invoke(280, {5, attr, sizeof(load)});
+        assert(release < 256);
+        const std::array<uint32_t, 4> releaseAttach{uint32_t(root), uint32_t(release), 34, 0};
+        assert(write(attr, releaseAttach) && invoke(280, {8, attr, sizeof(releaseAttach)}) == 0);
+        const auto cookie = output + 8, length = output + 16, value = output + 24;
+        assert(write(length, uint32_t(8)) && invoke(209, {stream, 1, 57, cookie, length}) == 0);
+        const std::array<uint64_t, 4> tag{tags, cookie, value, 0};
+        assert(write(value, uint64_t(99)) && write(attr, tag) && invoke(280, {2, attr, sizeof(tag)}) == 0);
+        const auto alias = invoke(23, {stream});
+        assert(alias < 256 && invoke(57, {stream}) == 0);
+        assert(invoke(280, {1, attr, sizeof(tag)}) == 0);
+        assert(invoke(57, {alias}) == 0 && invoke(280, {1, attr, sizeof(tag)}) == uint64_t(-2));
         assert(invoke(57, {root}) == 0);
         assert(invoke(220, {0x1200011, 0, 0, 0, base + 128}) == 2);
         assert(invoke(63, {procs, output, 128}) == 4);

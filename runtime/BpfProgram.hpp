@@ -180,12 +180,12 @@ struct BpfMap {
 class BpfProgram {
 public:
     static constexpr uint32_t socketFilter = 1, classifier = 3, trafficAction = 4, cgroupPacket = 8, cgroupSocket = 9, socketOperations = 13;
-    static constexpr uint32_t cgroupInetCreate = 2, cgroupSocketOperations = 3;
+    static constexpr uint32_t cgroupInetCreate = 2, cgroupSocketOperations = 3, cgroupInetRelease = 34;
     static constexpr size_t maxInstructions = 4096, maxPacketBytes = 65535;
     using MapResolver = std::function<std::shared_ptr<BpfMap>(uint32_t)>;
 
     struct Identity {
-        uint32_t id = 0, uid = 0;
+        uint32_t id = 0, uid = 0, attachType = 0;
         uint64_t loadTime = 0;
         std::array<char, 16> name{};
         bool gplCompatible = false;
@@ -253,7 +253,7 @@ public:
         }
     };
 
-    struct SocketCreate {
+    struct SocketContext {
         std::shared_ptr<void> socket;
         uint64_t cookie;
         uint32_t uid, gid, family, type, protocol;
@@ -310,6 +310,9 @@ public:
                     case 1: break; // bpf_map_lookup_elem
                     case 2: case 47:
                         if (type == socketOperations || type == cgroupSocket) return false;
+                        break;
+                    case 3: // bpf_map_delete_elem
+                        if (type == socketOperations) return false;
                         break;
                     case 15: // bpf_get_current_uid_gid
                         if (type != cgroupSocket) return false;
@@ -404,7 +407,7 @@ public:
         return execute(packet.bytes, &packet);
     }
 
-    std::optional<uint32_t> runSocketCreate(const SocketCreate& socket) const {
+    std::optional<uint32_t> runSocketContext(const SocketContext& socket) const {
         if (programType != cgroupSocket || !socket.socket) return std::nullopt;
         return execute({}, nullptr, nullptr, &socket);
     }
@@ -571,7 +574,7 @@ private:
 
     std::optional<uint32_t> execute(std::span<const uint8_t> packet, Packet* classifierPacket,
                                     SocketOperations* sockOps = nullptr,
-                                    const SocketCreate* createSocket = nullptr) const {
+                                    const SocketContext* socketContext = nullptr) const {
         // Interpreter addresses identify bounded packet, stack and map regions. The guest never
         // receives host addresses. Guest execution is serialized, so an atomic ADD needs no lock.
         constexpr size_t maxDepth = 8;
@@ -595,6 +598,7 @@ private:
         std::unordered_map<const uint8_t*, size_t> valueRegions;
         std::vector<std::vector<uint8_t>> retiredValues;
         size_t retiredBytes = 0;
+        constexpr size_t maxRetiredBytes = 2 * 1024 * 1024;
         const auto slice = [](auto memory, uint64_t base, uint64_t address, uint64_t size) -> decltype(memory) {
             if (address < base || address - base > memory.size() || size > memory.size() - (address - base))
                 return {};
@@ -678,7 +682,6 @@ private:
                 return map->type == BpfMap::prefixMap ? uint64_t(-28) : uint64_t(-7);
             // A loaded program may retain a pointer obtained before a map update.
             // Keep replaced and evicted values alive until this invocation ends.
-            constexpr size_t maxRetiredBytes = 2 * 1024 * 1024;
             if ((exists || full) && map->valueStride > maxRetiredBytes - retiredBytes) return uint64_t(-12);
             try {
                 std::vector<uint8_t>* retired = nullptr;
@@ -699,7 +702,7 @@ private:
             }
         };
 
-        const auto* socket = createSocket ? &createSocket->socket : sockOps ? &sockOps->socket :
+        const auto* socket = socketContext ? &socketContext->socket : sockOps ? &sockOps->socket :
                              classifierPacket ? &classifierPacket->socket : nullptr;
         const bool hasSocket = socket && *socket;
         constexpr uint64_t socketStride = 256;
@@ -791,6 +794,28 @@ private:
                                 result = update(map, key, value, registers[4]);
                                 break;
                             }
+                            case 3: { // bpf_map_delete_elem
+                                auto* map = mapFor(r1);
+                                if (!map || map->type == BpfMap::socketStorage || map->type == BpfMap::ringBuffer)
+                                    return std::nullopt;
+                                const auto key = read(r2, map->keySize);
+                                if (key.empty()) return std::nullopt;
+                                if (map->flags & (1U << 7)) { result = uint64_t(-1); break; }
+                                if (map->array || (map->type == BpfMap::prefixMap && !map->validPrefix(key))) {
+                                    result = uint64_t(-22);
+                                    break;
+                                }
+                                const auto found = map->hash.find(key);
+                                if (found == map->hash.end()) { result = uint64_t(-2); break; }
+                                const auto bytes = found->second.bytes.size();
+                                if (bytes > maxRetiredBytes - retiredBytes) { result = uint64_t(-12); break; }
+                                try {
+                                    retiredValues.push_back(std::move(found->second.bytes));
+                                    retiredBytes += bytes;
+                                    map->hash.erase(found);
+                                } catch (const std::bad_alloc&) { result = uint64_t(-12); }
+                                break;
+                            }
                             case 9: { // bpf_skb_store_bytes
                                 if (r1 != context) return std::nullopt;
                                 const auto offset = uint32_t(r2), length = uint32_t(registers[4]);
@@ -860,11 +885,11 @@ private:
                                 break;
                             }
                             case 15: // bpf_get_current_uid_gid
-                                result = uint64_t(createSocket->gid) << 32 | createSocket->uid;
+                                result = uint64_t(socketContext->gid) << 32 | socketContext->uid;
                                 break;
                             case 46: // bpf_get_socket_cookie
                                 if (r1 != context) return std::nullopt;
-                                result = createSocket ? createSocket->cookie : classifierPacket ? classifierPacket->socketCookie : 0;
+                                result = socketContext ? socketContext->cookie : classifierPacket ? classifierPacket->socketCookie : 0;
                                 break;
                             case 47: // bpf_get_socket_uid
                                 if (r1 != context) return std::nullopt;
@@ -908,12 +933,12 @@ private:
                                 const auto flags = registers[4];
                                 if (!map || map->type != BpfMap::socketStorage || (flags & ~1ULL) ||
                                     (r3 && !flags)) return std::nullopt;
-                                const auto* owner = r2 == socketHandle || (createSocket && r2 == context)
+                                const auto* owner = r2 == socketHandle || (socketContext && r2 == context)
                                     ? socket : socketReference(r2);
                                 if (!owner || !*owner) break;
                                 auto found = map->socketValues.find(*owner);
-                                if (found == map->socketValues.end() && flags && createSocket &&
-                                    createSocket->canAllocateStorage && createSocket->canAllocateStorage(map->valueSize)) {
+                                if (found == map->socketValues.end() && flags && socketContext &&
+                                    socketContext->canAllocateStorage && socketContext->canAllocateStorage(map->valueSize)) {
                                     const auto initial = r3 ? read(r3, map->valueSize) : std::span<const uint8_t>{};
                                     if (r3 && initial.empty()) return std::nullopt;
                                     try {
@@ -1034,13 +1059,13 @@ private:
                 switch (i.kind()) {
                     case 1: {
                         const auto address = src + i.offset;
-                        if (createSocket && address >= context && address < context + 24) {
+                        if (socketContext && address >= context && address < context + 24) {
                             if (i.width() != 4) return std::nullopt;
                             switch (address - context) {
                                 case 0: case 16: case 20: dst = 0; break; // Bound interface, mark and priority.
-                                case 4: dst = createSocket->family; break;
-                                case 8: dst = createSocket->type; break;
-                                case 12: dst = createSocket->protocol; break;
+                                case 4: dst = socketContext->family; break;
+                                case 8: dst = socketContext->type; break;
+                                case 12: dst = socketContext->protocol; break;
                                 default: return std::nullopt;
                             }
                             break;
