@@ -531,6 +531,13 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
             const auto value = std::bit_cast<float>(uint32_t(lane(source, first + i, 4)));
             setLane(result, i, 8, std::bit_cast<uint64_t>(static_cast<double>(value)));
         }
+    } else if ((word & 0xbffffc00) == 0x0e616800) { // FCVTN / FCVTN2 from D to S.
+        const unsigned first = width == 16 ? 2 : 0;
+        if (first) result = cpu.v[rd];
+        for (unsigned i = 0; i < 2; ++i) {
+            const auto value = std::bit_cast<double>(lane(source, i, 8));
+            setLane(result, first + i, 4, std::bit_cast<uint32_t>(static_cast<float>(value)));
+        }
     } else if ((word & 0xbf3ffc00) == 0x0e209800) { // CMEQ (zero).
         for (unsigned i = 0; i < width / size; ++i) {
             setLane(result, i, size, lane(source, i, size) == 0 ? UINT64_MAX : 0);

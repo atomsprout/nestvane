@@ -122,6 +122,14 @@ int main() {
         assert(std::memcmp(permute.cpu.v[2].data(), widenedLow.data(), sizeof(widenedLow)) == 0);
         assert(executeStartupInstruction(permute, 0x4e617883)); // fcvtl2 v3.2d, v4.4s
         assert(std::memcmp(permute.cpu.v[3].data(), widenedHigh.data(), sizeof(widenedHigh)) == 0);
+        const std::array<float, 4> narrowedLow{1.75f, -0.0f, 0, 0}, narrowedHigh{42, 12, 1.75f, -0.0f};
+        const std::array<float, 4> narrowDestination{42, 12, 79, 22};
+        assert(executeStartupInstruction(permute, 0x0e616842)); // fcvtn v2.2s, v2.2d
+        assert(std::memcmp(permute.cpu.v[2].data(), narrowedLow.data(), sizeof(narrowedLow)) == 0);
+        std::memcpy(permute.cpu.v[1].data(), narrowDestination.data(), sizeof(narrowDestination));
+        std::memcpy(permute.cpu.v[2].data(), widenedLow.data(), sizeof(widenedLow));
+        assert(executeStartupInstruction(permute, 0x4e616841)); // fcvtn2 v1.4s, v2.2d
+        assert(std::memcmp(permute.cpu.v[1].data(), narrowedHigh.data(), sizeof(narrowedHigh)) == 0);
         const double half = -2.5, beyondSignedMax = 0x1p63;
         std::memcpy(permute.cpu.v[5].data(), &half, sizeof(half));
         assert(executeStartupInstruction(permute, 0x9e6400a9)); // fcvtas x9, d5
