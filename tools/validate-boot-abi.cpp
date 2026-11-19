@@ -648,6 +648,32 @@ int main() {
             uint64_t dropped = 0;
             assert(machine.load64(oldCounters + 2 * 16, dropped) && dropped == 2);
             assert(send() == 8 && call(207, {reader, payload, 8}) == 8);
+
+            // Once the reply is seen, the state match applies in both directions.
+            const auto store = [](auto& bytes, size_t offset, const auto& value) {
+                std::memcpy(bytes.data() + offset, &value, sizeof(value));
+            };
+            std::vector<uint8_t> stateRule(entrySize + 80);
+            const auto targetOffset = ipv6 ? 140 : 88;
+            store(stateRule, targetOffset, uint16_t(entrySize + 40));
+            store(stateRule, targetOffset + 2, uint16_t(stateRule.size()));
+            store(stateRule, entrySize, uint16_t(40));
+            std::memcpy(stateRule.data() + entrySize + 2, "state", 5);
+            store(stateRule, entrySize + 32, uint32_t(2)); // ESTABLISHED
+            store(stateRule, entrySize + 40, uint16_t(40));
+            store(stateRule, entrySize + 72, int32_t(-1)); // DROP
+            rules.insert(rules.begin() + actual.starts[3], stateRule.begin(), stateRule.end());
+            request.bytes = rules.size();
+            ++request.count;
+            request.policies[3] += stateRule.size();
+            assert(write(input, request) && machine.write(input + sizeof(request), rules));
+            assert(call(208, {control, level, 64, input, sizeof(request) + rules.size()}) == 0);
+            assert(send() == 8 && call(207, {reader, payload, 8}) == 8);
+            assert(send() == 8 && call(207, {reader, payload, 8}) == 8);
+            constexpr auto replyAddress = base + 1552;
+            assert(write(length, addressSize) && call(204, {writer, replyAddress, length}) == 0);
+            assert(call(206, {reader, payload, 8, 0, replyAddress, addressSize}) == uint64_t(-1));
+            assert(send() == uint64_t(-1) && call(207, {reader, payload, 8}) == uint64_t(-11));
             assert(call(57, {reader}) == 0 && call(57, {writer}) == 0 && call(57, {control}) == 0);
         }
     }
@@ -773,7 +799,7 @@ int main() {
             store(update, 84, metadata[11] + 1);
             assert(data.write(address, update) && data.write(address + update.size(), old));
             data.cpu.x = {0, level, 64, address, update.size() + old.size()};
-            assert(firewall.set(data, ipv6) == 0 && firewall.tracksMarks());
+            assert(firewall.set(data, ipv6) == 0 && firewall.tracksConnections());
             uint32_t packetMark = 0x1234, connectionMark = 0;
             assert(firewall.allows(packet, GuestFirewall::output, 65536, {&packetMark, &connectionMark}));
             assert(packetMark == 0x3434 && connectionMark == 0x34);

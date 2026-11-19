@@ -16,9 +16,14 @@ namespace nestvane {
 class GuestFirewall {
 public:
     enum Hook : unsigned { prerouting, input, forward, output, postrouting };
+    enum ConnectionState : uint32_t {
+        invalidConnection = 1, establishedConnection = 2, relatedConnection = 4, newConnection = 8,
+        untrackedConnection = 64
+    };
     struct PacketState {
         uint32_t* mark = nullptr;
         uint32_t* connectionMark = nullptr;
+        ConnectionState connection = invalidConnection;
     };
 
     uint64_t get(Machine& machine, bool ipv6) {
@@ -35,7 +40,7 @@ public:
             const auto version = revision.back();
             if (match && name == "connmark") return version == 1 ? 0 : uint64_t(-93);
             if (!match && name == "CONNMARK") return (version == 1 || version == 2) ? 0 : uint64_t(-93);
-            const bool known = match ? name == "comment" || name == "tcp" || name == "udp" || name == "u32" : name == "TCPMSS";
+            const bool known = match ? name == "comment" || name == "tcp" || name == "udp" || name == "u32" || name == "state" : name == "TCPMSS";
             return !known ? missing : version ? uint64_t(-93) : 0;
         }
         if (option != 64 && option != 65) return unsupported;
@@ -106,8 +111,8 @@ public:
     }
 
     bool empty() const { return tables.empty(); }
-    bool tracksMarks() const {
-        return std::ranges::any_of(tables, [](const auto& entry) { return entry.second.usesMarks; });
+    bool tracksConnections() const {
+        return std::ranges::any_of(tables, [](const auto& entry) { return entry.second.usesConnectionTracking; });
     }
 
     bool allows(std::vector<uint8_t>& packet, Hook hook, uint32_t mtu, PacketState state) {
@@ -120,7 +125,10 @@ public:
             const auto table = tables.find({ipv6, name});
             if (table == tables.end() || !(table->second.hooks & (1U << hook))) continue;
             auto visible = state;
-            if (std::string_view(name) == "raw") visible.connectionMark = nullptr;
+            if (std::string_view(name) == "raw") {
+                visible.connectionMark = nullptr;
+                visible.connection = invalidConnection;
+            }
             if (!evaluate(table->second, layout, packet, hook, mtu, visible)) return false;
         }
         return true;
@@ -177,7 +185,7 @@ private:
         Positions starts{}, policies{};
         std::vector<uint8_t> entries;
         std::vector<uint32_t> offsets;
-        bool usesMarks = false;
+        bool usesConnectionTracking = false;
     };
     std::map<std::pair<bool, std::string>, Table> tables;
 
@@ -316,13 +324,18 @@ private:
                 if (matchName == "connmark") {
                     if (extension[31] != 1) return unsupported;
                     if (length != 48 || extension[40] > 1) return invalid;
-                    table.usesMarks = true;
+                    table.usesConnectionTracking = true;
                     match += length;
                     continue;
                 }
                 if (extension[31]) return missing;
                 if (matchName == "comment") {
                     if (length != 288) return invalid;
+                } else if (matchName == "state") {
+                    constexpr uint32_t states = invalidConnection | establishedConnection | relatedConnection |
+                                                newConnection | untrackedConnection;
+                    if (length != 40 || (load<uint32_t>(extension, targetHeader) & ~states)) return invalid;
+                    table.usesConnectionTracking = true;
                 } else if (matchName == "u32") {
                     if (!validU32(extension.subspan(targetHeader, length - targetHeader))) return invalid;
                 } else if (matchName == "tcp") {
@@ -357,7 +370,7 @@ private:
                     const bool shift = target[31] == 2;
                     if (target[shift ? 46 : 44] > 2 || (shift && (target[44] > 1 || target[45] > 31)))
                         return invalid;
-                    table.usesMarks = true;
+                    table.usesConnectionTracking = true;
                 } else {
                     return missing;
                 }
@@ -413,6 +426,8 @@ private:
                 if (!state.connectionMark) return false;
                 const bool same = (*state.connectionMark & load<uint32_t>(body, 4)) == load<uint32_t>(body, 0);
                 if (same == bool(body[8])) return false;
+            } else if (type == "state") {
+                if (!(load<uint32_t>(body, 0) & state.connection)) return false;
             } else if (type == "u32") {
                 if (!matchU32(body, packet)) return false;
             } else if (type != "comment" && !matchTransport(type, body, packet, layout.ipv6)) {

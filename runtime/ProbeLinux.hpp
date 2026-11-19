@@ -266,12 +266,13 @@ private:
     bool inetLoopbackUp = true;
     GuestFirewall firewall;
     struct DatagramConnection {
+        bool sawReply = false, confirmed = false;
         std::weak_ptr<SocketState> first, second;
         std::chrono::steady_clock::time_point expires;
         uint32_t mark = 0;
     };
     std::map<std::pair<uint64_t, uint64_t>, DatagramConnection> datagramConnections;
-    uint32_t* trackDatagramConnection(const std::shared_ptr<SocketState>& first,
+    DatagramConnection* trackDatagramConnection(const std::shared_ptr<SocketState>& first,
         const std::shared_ptr<SocketState>& second);
     std::shared_ptr<CgroupSocketHooks> inetReleasePrograms = std::make_shared<CgroupSocketHooks>();
     uint64_t bpfMapCall(Machine& machine);

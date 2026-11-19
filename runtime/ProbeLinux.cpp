@@ -5793,7 +5793,9 @@ bool ProbeLinux::transmitInetStream(SocketState& from, SocketState& to, std::spa
 
     packet.protocol = source[0] == 2 ? 0x0008 : 0xdd86;
     packet.mark = from.socketMark;
-    const GuestFirewall::PacketState state{&packet.mark, from.tcpConnectionMark.get()};
+    const auto connection = (flags & (syn | ack)) == syn ? GuestFirewall::newConnection :
+                                                          GuestFirewall::establishedConnection;
+    const GuestFirewall::PacketState state{&packet.mark, from.tcpConnectionMark.get(), connection};
     packet.ifindex = guestLoopbackIndex;
     packet.socketLookup = [&](std::span<const uint8_t> tuple, bool tcp) {
         return lookupInetSocket(tuple, tcp, &to);
@@ -5876,14 +5878,14 @@ uint64_t ProbeLinux::connectInetStream(const std::shared_ptr<SocketState>& socke
     }
 }
 
-uint32_t* ProbeLinux::trackDatagramConnection(const std::shared_ptr<SocketState>& first,
+ProbeLinux::DatagramConnection* ProbeLinux::trackDatagramConnection(const std::shared_ptr<SocketState>& first,
     const std::shared_ptr<SocketState>& second) {
     const auto now = std::chrono::steady_clock::now();
     const auto key = std::minmax(first->cookie, second->cookie);
     auto existing = datagramConnections.find(key);
     if (existing != datagramConnections.end() && existing->second.expires > now) {
         existing->second.expires = now + std::chrono::seconds(30);
-        return &existing->second.mark;
+        return &existing->second;
     }
     std::erase_if(datagramConnections, [&](const auto& entry) {
         const auto& connection = entry.second;
@@ -5891,8 +5893,8 @@ uint32_t* ProbeLinux::trackDatagramConnection(const std::shared_ptr<SocketState>
     });
     if (datagramConnections.size() >= 1024) return nullptr;
     const auto at = datagramConnections.try_emplace(key,
-        DatagramConnection{first, second, now + std::chrono::seconds(30)}).first;
-    return &at->second.mark;
+        DatagramConnection{false, false, first, second, now + std::chrono::seconds(30)}).first;
+    return &at->second;
 }
 
 uint64_t ProbeLinux::sendInetDatagram(Machine& machine, const std::shared_ptr<SocketState>& socket,
@@ -5935,19 +5937,28 @@ uint64_t ProbeLinux::sendInetDatagram(Machine& machine, const std::shared_ptr<So
         packet.protocol = ipv4 ? 0x0008 : 0xdd86;
         packet.mark = socket->socketMark;
         const auto peer = findInetDestination(socket->protocol, destination);
-        const bool tracked = peer && firewall.tracksMarks();
-        auto* connection = tracked ? trackDatagramConnection(socket, peer) : nullptr;
-        if (tracked && !connection) return uint64_t(-105);
-        const GuestFirewall::PacketState state{&packet.mark, connection};
         packet.ifindex = guestLoopbackIndex;
         packet.socketLookup = [&](std::span<const uint8_t> tuple, bool tcp) {
             return lookupInetSocket(tuple, tcp);
         };
         const bool sent = filterInetPacket(inetEgressPrograms, *socket, packet, true);
         if (packet.ringNotification) wakePollers();
-        if (!sent || !firewall.allows(packet.bytes, GuestFirewall::output, guestLoopbackMtu, state) ||
-            !firewall.allows(packet.bytes, GuestFirewall::postrouting, guestLoopbackMtu, state)) return uint64_t(-1);
+        if (!sent) return uint64_t(-1);
+        const bool tracked = peer && firewall.tracksConnections();
+        auto* connection = tracked ? trackDatagramConnection(socket, peer) : nullptr;
+        if (tracked && !connection) return uint64_t(-105);
+        if (connection && connection->first.lock() != socket) connection->sawReply = true;
+        const auto status = connection && connection->sawReply ? GuestFirewall::establishedConnection :
+                                                                GuestFirewall::newConnection;
+        const GuestFirewall::PacketState state{&packet.mark, connection ? &connection->mark : nullptr, status};
+        if (!firewall.allows(packet.bytes, GuestFirewall::output, guestLoopbackMtu, state) ||
+            !firewall.allows(packet.bytes, GuestFirewall::postrouting, guestLoopbackMtu, state)) {
+            if (connection && !connection->confirmed)
+                datagramConnections.erase(std::minmax(socket->cookie, peer->cookie));
+            return uint64_t(-1);
+        }
 
+        if (connection) connection->confirmed = true;
         if (!peer || peer->receiveShutdown) return size;
         const auto reportedSource = socket->family == peer->family ? source : asMappedIpv4(source);
         if (peer->connected && !matchInetPeer(peer->peerInetAddress, reportedSource)) return size;
