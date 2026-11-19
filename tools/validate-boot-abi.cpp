@@ -805,6 +805,37 @@ int main() {
         assert(call(39, {mountpoint, 0}) == 0);
     }
     {
+        constexpr auto attr = base + 96, code = base + 256, license = base + 280, address = base + 384;
+        constexpr auto message = base + 512, buffers = base + 600, packet = base + 640;
+        put(license, "Apache 2.0");
+        const auto program = [&](uint64_t first) {
+            assert(machine.store64(code, first) && machine.store64(code + 8, 0x95)); // EXIT
+            const std::array<uint64_t, 8> request{(2ULL << 32) | 1, code, license, 0, 0, 0, 0, 0};
+            assert(machine.write(attr, {reinterpret_cast<const uint8_t*>(request.data()), sizeof(request)}));
+            return call(280, {5, attr, sizeof(request)}); // BPF_PROG_LOAD
+        };
+        assert(program(0xff) == uint64_t(-22));
+        assert(program(0x05 | (uint64_t{3} << 16)) == uint64_t(-22)); // Out-of-range jump.
+        const auto uevent = call(198, {16, 2 | 0x80800, 15});
+        assert(uevent < 256);
+        assert(machine.store64(address, 16) && machine.store64(address + 8, 1));
+        assert(call(200, {uevent, address, 12}) == 0);
+        put(base, "/dev/loop-control");
+        const auto control = call(56, {uint32_t(-100), base, 2});
+        assert(control < 256);
+        for (const uint64_t limit : {0, 16}) {
+            const auto fd = program(0xb7 | (limit << 32)); // MOV64 r0, immediate
+            assert(fd < 256 && machine.store64(address, fd));
+            assert(call(208, {uevent, 1, 50, address, 4}) == 0 && call(57, {fd}) == 0);
+            assert(call(29, {control, 0x4c80, 31 + limit}) == 31 + limit); // LOOP_CTL_ADD
+            const std::array<uint64_t, 7> header{0, 0, buffers, 1, 0, 0, 0};
+            assert(machine.store64(buffers, packet) && machine.store64(buffers + 8, 256));
+            assert(machine.write(message, {reinterpret_cast<const uint8_t*>(header.data()), sizeof(header)}));
+            assert(call(212, {uevent, message, 0}) == (limit ? limit : uint64_t(-11)));
+        }
+        assert(call(57, {control}) == 0 && call(57, {uevent}) == 0);
+    }
+    {
         constexpr auto attr = base + 96;
         put(base, "/sys/fs/bpf/map_missing");
         assert(machine.store64(attr, base) && machine.store64(attr + 8, 0));

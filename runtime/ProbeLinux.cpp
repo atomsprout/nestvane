@@ -1,5 +1,7 @@
 #include "ProbeLinux.hpp"
 
+#include "BpfSocket.hpp"
+
 #include <algorithm>
 #include <atomic>
 #include <charconv>
@@ -2070,10 +2072,12 @@ void ProbeLinux::emitLoopUevent(unsigned number) {
     std::erase_if(ueventListeners, [](const auto& endpoint) { return endpoint.expired(); });
     for (const auto& listener : ueventListeners) {
         const auto endpoint = listener.lock();
-        if (endpoint && endpoint->inbox.size() < 256 &&
-            endpoint->queuedBytes + packet.size() <= endpoint->uevent->receiveBuffer) {
-            endpoint->inbox.emplace_back(packet.begin(), packet.end());
-            endpoint->queuedBytes += packet.size();
+        if (!endpoint || endpoint->inbox.size() >= 256) continue;
+        const auto size = endpoint->bpfFilter ?
+            endpoint->bpfFilter->accept({reinterpret_cast<const uint8_t*>(packet.data()), packet.size()}) : packet.size();
+        if (size && endpoint->queuedBytes + size <= endpoint->uevent->receiveBuffer) {
+            endpoint->inbox.emplace_back(packet.begin(), packet.begin() + size);
+            endpoint->queuedBytes += size;
         }
     }
     wakePollers();
@@ -2455,6 +2459,20 @@ bool ProbeLinux::socketCall(Machine& machine) {
                 const auto delay = sec < 0 ? -1 : sec > (largest - usec) / 1'000'000 ?
                     largest : sec * 1'000'000 + usec;
                 (sendTimeout ? endpoint.sendTimeout : endpoint.receiveTimeout) = std::chrono::microseconds(delay);
+                x[0] = 0;
+                break;
+            }
+            if (x[2] == 50 && endpoint.uevent) { // SO_ATTACH_BPF
+                uint32_t programFd = 0;
+                if (x[4] != sizeof(programFd)) { x[0] = invalid; break; }
+                if (!machine.readInto(x[3], {reinterpret_cast<uint8_t*>(&programFd), sizeof(programFd)})) {
+                    x[0] = uint64_t(-14);
+                    break;
+                }
+                const auto program = descriptors().find(programFd);
+                if (program == descriptors().end()) { x[0] = uint64_t(-9); break; }
+                if (!program->second.bpfFilter) { x[0] = invalid; break; }
+                endpoint.bpfFilter = program->second.bpfFilter;
                 x[0] = 0;
                 break;
             }
@@ -5244,6 +5262,45 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
     }
 }
 
+uint64_t ProbeLinux::loadBpfSocketFilter(Machine& machine) {
+    constexpr uint64_t capBpf = 1ULL << 39, capSysAdmin = 1ULL << 21;
+    const auto& x = machine.cpu.x;
+    if (kernelSettings.at("/proc/sys/kernel/unprivileged_bpf_disabled").value &&
+        !(current->process->effectiveCaps & (capBpf | capSysAdmin)))
+        return uint64_t(-1);
+    if (x[2] > pageSize) return uint64_t(-7);
+    std::array<uint8_t, pageSize> input{};
+    if (!machine.readInto(x[1], std::span(input).first(x[2]))) return uint64_t(-14);
+    uint32_t type = 0, count = 0, flags = 0;
+    uint64_t source = 0, license = 0;
+    std::memcpy(&type, input.data(), sizeof(type));
+    std::memcpy(&count, input.data() + 4, sizeof(count));
+    std::memcpy(&source, input.data() + 8, sizeof(source));
+    std::memcpy(&license, input.data() + 16, sizeof(license));
+    std::memcpy(&flags, input.data() + 44, sizeof(flags));
+    if (type != 1 || flags || std::any_of(input.begin() + 64, input.end(), [](auto b) { return b != 0; }))
+        return uint64_t(-95); // Only baseline BPF_PROG_TYPE_SOCKET_FILTER attributes.
+    if (!count || count > BpfSocketFilter::maxInstructions) return uint64_t(-7);
+    if (!readPath(machine, license)) return uint64_t(-14);
+    const auto fd = freeDescriptor();
+    if (fd == descriptorCapacity) return uint64_t(-24);
+    std::erase_if(bpfFilters, [](const auto& filter) { return filter.expired(); });
+    if (bpfFilters.size() >= 256) return noMemory;
+    try {
+        std::vector<uint8_t> bytecode(count * 8);
+        if (!machine.readInto(source, bytecode)) return uint64_t(-14);
+        auto filter = std::make_shared<BpfSocketFilter>();
+        if (!filter->load(bytecode)) return invalid;
+        Descriptor result{"anon_inode:bpf-prog", {}, 0x80002, Node::bpfProgram};
+        result.bpfFilter = filter;
+        bpfFilters.emplace_back(filter);
+        descriptors().emplace(fd, std::move(result));
+        return fd;
+    } catch (const std::bad_alloc&) {
+        return noMemory;
+    }
+}
+
 bool ProbeLinux::syscall(Machine& machine) {
     auto& x = machine.cpu.x;
     const uint64_t number = x[8];
@@ -5255,6 +5312,7 @@ bool ProbeLinux::syscall(Machine& machine) {
     switch (number) {
         case 280: { // bpf
             if (x[0] <= 4) { x[0] = bpfMapCall(machine); break; }
+            if (x[0] == 5) { x[0] = loadBpfSocketFilter(machine); break; }
             const bool pin = x[0] == 6; // BPF_OBJ_PIN
             if (!pin && x[0] != 7) return false; // BPF_OBJ_GET
             if (x[2] > pageSize) { x[0] = uint64_t(-7); break; }
