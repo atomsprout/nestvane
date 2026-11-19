@@ -642,16 +642,17 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
         uint64_t sum = 0;
         for (unsigned i = 0; i < width / size; ++i) sum += lane(source, i, size);
         setLane(result, 0, size, sum);
-    } else if (const auto reduction = word & 0xbf3ffc00;
-               reduction == 0x2e30a800 || reduction == 0x2e31a800) { // UMAXV, UMINV.
+    } else if ((word & 0x9f3efc00) == 0x0e30a800) { // SMAXV, SMINV, UMAXV, UMINV.
         if (size == 8 || (size == 4 && width == 8)) return false;
-        const bool minimum = reduction == 0x2e31a800;
-        auto value = lane(source, 0, size);
+        const bool minimum = word & 0x00010000;
+        const uint64_t signBit = word & 0x20000000 ? 0 : uint64_t{1} << (size * 8 - 1);
+        // Flipping the sign bit orders two's-complement lanes as unsigned values.
+        auto value = lane(source, 0, size) ^ signBit;
         for (unsigned i = 1; i < width / size; ++i) {
-            const auto next = lane(source, i, size);
+            const auto next = lane(source, i, size) ^ signBit;
             value = minimum ? std::min(value, next) : std::max(value, next);
         }
-        setLane(result, 0, size, value);
+        setLane(result, 0, size, value ^ signBit);
     } else if (fmov == 0x1e260000 || fmov == 0x9e660000) {
         put(cpu, rd, lane(source, 0, word >> 31 ? 8 : 4), word >> 31 ? 64 : 32);
         return true;

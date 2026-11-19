@@ -426,6 +426,21 @@ int main() {
         std::memcpy(permute.cpu.v[2].data(), reductionInput.data(), sizeof(reductionInput));
         assert(executeStartupInstruction(permute, 0x2e71a842)); // uminv h2, v2.4h
         assert(std::memcmp(permute.cpu.v[2].data(), reductionOutput.data(), sizeof(reductionOutput)) == 0);
+        const std::array<int16_t, 8> signedHalfwords{-301, -9, -32768, -120, 302, 303, 304, 305};
+        const std::array<int16_t, 8> largestHalfword{-9};
+        std::memcpy(permute.cpu.v[0].data(), signedHalfwords.data(), sizeof(signedHalfwords));
+        assert(executeStartupInstruction(permute, 0x0e70a800)); // smaxv h0, v0.4h
+        assert(std::memcmp(permute.cpu.v[0].data(), largestHalfword.data(), sizeof(largestHalfword)) == 0);
+        const std::array<int8_t, 16> signedBytes{6, 7, 8, -1, -4, 127, -128, 25};
+        const std::array<int8_t, 16> smallestByte{-128};
+        std::memcpy(permute.cpu.v[2].data(), signedBytes.data(), sizeof(signedBytes));
+        assert(executeStartupInstruction(permute, 0x4e31a841)); // sminv b1, v2.16b
+        assert(std::memcmp(permute.cpu.v[1].data(), smallestByte.data(), sizeof(smallestByte)) == 0);
+        const std::array<int32_t, 4> signedWords{INT32_MIN, -2, 25, 951};
+        const std::array<int32_t, 4> largestWord{951};
+        std::memcpy(permute.cpu.v[4].data(), signedWords.data(), sizeof(signedWords));
+        assert(executeStartupInstruction(permute, 0x4eb0a883)); // smaxv s3, v4.4s
+        assert(std::memcmp(permute.cpu.v[3].data(), largestWord.data(), sizeof(largestWord)) == 0);
         const int32_t negativeLane = -123;
         std::memcpy(permute.cpu.v[0].data(), &negativeLane, sizeof(negativeLane));
         assert(executeStartupInstruction(permute, 0x4e042c0b)); // smov x11, v0.s[0]
@@ -4383,10 +4398,23 @@ int main() {
         const auto quotaBlocks = load(base + 0x460);
         assert(quotaBlocks == (128 * 1024 * 1024) / pageSize);
         assert(load(base + 0x468) == quotaBlocks && load(base + 0x470) == quotaBlocks);
+        constexpr auto markerName = base + 0x530, markerValue = base + 0x590;
+        put(markerName, "user.restorecon_in_progress");
+        assert(machine.store64(markerValue, 1));
         constexpr auto legacyPath = base + 0x510;
         put(legacyPath, "/data/legacy");
         assert(invoke(writer, 34, {atCwd, legacyPath, 0755}) == 0);
         assert(invoke(writer, 6, {legacyPath, payload, 0, 0, 0}) == 0);
+        assert(invoke(writer, 14, {legacyPath, markerName}) == uint64_t(-61));
+        assert(invoke(writer, 5, {legacyPath, markerName, markerValue, 1, 1}) == 0);
+        assert(invoke(writer, 5, {legacyPath, markerName, markerValue, 1, 1}) == uint64_t(-17));
+        assert(invoke(writer, 8, {legacyPath, markerName, 0, 0}) == 1);
+        const auto markerDirectory = invoke(writer, 56, {atCwd, legacyPath, 0x4000});
+        assert(markerDirectory < 256);
+        assert(invoke(writer, 16, {markerDirectory, markerName}) == 0);
+        assert(invoke(writer, 10, {markerDirectory, markerName, 0, 0}) == uint64_t(-61));
+        assert(invoke(writer, 7, {markerDirectory, markerName, markerValue, 1, 0}) == 0);
+        assert(invoke(writer, 57, {markerDirectory}) == 0);
         put(firstPath, "/proc/thread-self/attr/fscreate");
         const auto labelFd = invoke(writer, 56, {atCwd, firstPath, 2});
         assert(labelFd < 256);
@@ -4431,6 +4459,9 @@ int main() {
         reopened.mountData(database);
         other.mountData(database);
         put(payload, "security.selinux");
+        assert(invoke(reopened, 8, {legacyPath, markerName, markerValue, 1}) == 1);
+        assert(*machine.read(markerValue, 1, 4) == 1);
+        assert(invoke(reopened, 14, {legacyPath, markerName}) == uint64_t(-13));
         constexpr char legacyLabel[] = "u:object_r:unlabeled:s0";
         assert(invoke(reopened, 9, {legacyPath, payload, base + 0x480, 128}) == sizeof(legacyLabel));
         assert(std::memcmp(machine.read(base + 0x480, sizeof(legacyLabel), 4), legacyLabel, sizeof(legacyLabel)) == 0);

@@ -69,7 +69,8 @@ void ProbeLinux::mountData(const std::string& databasePath) {
         "INSERT OR IGNORE INTO state VALUES(1,0);"
         "CREATE TABLE IF NOT EXISTS entries (path TEXT PRIMARY KEY, kind INTEGER NOT NULL,"
         " mode INTEGER NOT NULL, uid INTEGER NOT NULL, gid INTEGER NOT NULL, inode INTEGER NOT NULL,"
-        " bytes BLOB NOT NULL, label BLOB NOT NULL); BEGIN;"))
+        " bytes BLOB NOT NULL, label BLOB NOT NULL);"
+        "CREATE TABLE IF NOT EXISTS restorecon_progress (path TEXT PRIMARY KEY, value INTEGER NOT NULL); BEGIN;"))
         throw std::runtime_error("cannot open guest data database");
 
     auto version = prepare(raw, "SELECT generation FROM state WHERE singleton=1");
@@ -131,6 +132,19 @@ void ProbeLinux::mountData(const std::string& databasePath) {
         }
     }
     records.reset();
+    if (result != SQLITE_DONE) throw std::runtime_error("cannot read guest data entries");
+    auto markers = prepare(raw, "SELECT path,value FROM restorecon_progress");
+    if (!markers) throw std::runtime_error("cannot read guest restorecon progress");
+    while ((result = sqlite3_step(markers.get())) == SQLITE_ROW) {
+        const auto path = columnBytes(markers.get(), 0);
+        const auto node = loadedDirectories.find(path);
+        const auto value = sqlite3_column_int64(markers.get(), 1);
+        if (node == loadedDirectories.end() || sqlite3_column_type(markers.get(), 1) != SQLITE_INTEGER ||
+            value < 0 || value > UINT8_MAX)
+            throw std::runtime_error("invalid guest restorecon progress");
+        node->second.restoreconInProgress = uint8_t(value);
+    }
+    markers.reset();
     if (result != SQLITE_DONE || !execute(raw, "COMMIT") || directories.contains("/data") ||
         current->mountNamespace->mounts.contains("/data"))
         throw std::runtime_error("cannot mount guest data database");
@@ -158,9 +172,10 @@ bool ProbeLinux::syncData() {
             sqlite3_column_int64(check.get(), 0) != dataGeneration || dataGeneration == INT64_MAX - 1)
             return false;
         check.reset();
-        if (!execute(database, "DELETE FROM entries")) return false;
+        if (!execute(database, "DELETE FROM entries; DELETE FROM restorecon_progress;")) return false;
         auto insert = prepare(database, "INSERT INTO entries VALUES(?,?,?,?,?,?,?,?)");
-        if (!insert) return false;
+        auto marker = prepare(database, "INSERT INTO restorecon_progress VALUES(?,?)");
+        if (!insert || !marker) return false;
         const auto row = [&](const std::string& path, int kind, uint32_t mode, uint32_t uid, uint32_t gid, uint64_t inode,
                              std::span<const uint8_t> bytes = {}, std::span<const uint8_t> label = {}) {
             auto* cursor = insert.get();
@@ -175,9 +190,15 @@ bool ProbeLinux::syncData() {
                 sqlite3_step(cursor) == SQLITE_DONE;
         };
         for (const auto& [path, directory] : directories) {
+            if (!dataPath(path)) continue;
             const auto& context = directory.securityContext;
-            if (dataPath(path) && !row(path, 0, directory.mode, directory.uid, directory.gid, 0, {},
-                    {reinterpret_cast<const uint8_t*>(context.data()), context.size()})) return false;
+            if (!row(path, 0, directory.mode, directory.uid, directory.gid, 0, {},
+                     {reinterpret_cast<const uint8_t*>(context.data()), context.size()})) return false;
+            if (directory.restoreconInProgress &&
+                (sqlite3_reset(marker.get()) != SQLITE_OK ||
+                 sqlite3_bind_text(marker.get(), 1, path.data(), int(path.size()), SQLITE_TRANSIENT) != SQLITE_OK ||
+                 sqlite3_bind_int(marker.get(), 2, *directory.restoreconInProgress) != SQLITE_OK ||
+                 sqlite3_step(marker.get()) != SQLITE_DONE)) return false;
         }
         for (const auto& [path, file] : writableFiles) {
             if (!dataPath(path)) continue;

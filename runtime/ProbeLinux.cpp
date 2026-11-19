@@ -40,6 +40,7 @@ constexpr std::string_view cgroupProcs = "/cgroup.procs";
 constexpr uint64_t lazyAnonymousThreshold = 4 * 1024 * 1024;
 constexpr uint64_t noMemory = uint64_t(-12);
 constexpr char unlabeledFile[] = "u:object_r:unlabeled:s0";
+constexpr std::string_view restoreconMarker = "user.restorecon_in_progress";
 constexpr uint8_t mdweRefuseExecGain = 1, mdweNoInherit = 2;
 constexpr uint32_t sealSeal = 1, sealShrink = 2, sealGrow = 4, sealWrite = 8, sealFutureWrite = 16;
 constexpr unsigned sigChild = 17;
@@ -4087,10 +4088,12 @@ bool ProbeLinux::fileCall(Machine& machine) {
             fileEvent(descriptor->second.path, fileAttributes);
             break;
         }
-        case 5: case 6: case 7: { // setxattr, lsetxattr, fsetxattr on guest-writable nodes.
+        case 5: case 6: case 7: case 14: case 15: case 16: {
+            // setxattr and removexattr, including their link and descriptor variants.
+            const bool removing = x[8] >= 14;
             std::optional<Descriptor> pathEntry;
             const Descriptor* entry = nullptr;
-            if (x[8] == 7) {
+            if (x[8] == 7 || x[8] == 16) {
                 if (descriptor == descriptors().end() || descriptor->second.pathOnly()) {
                     x[0] = uint64_t(-9);
                     break;
@@ -4100,16 +4103,51 @@ bool ProbeLinux::fileCall(Machine& machine) {
                 const auto input = readPath(machine, x[0]);
                 if (!input) { x[0] = uint64_t(-14); break; }
                 if (input->empty()) { x[0] = uint64_t(-2); break; }
-                const auto logical = followLinks(normalizePath(*input), x[8] == 5);
+                const auto logical = followLinks(normalizePath(*input), x[8] == 5 || x[8] == 14);
                 if (!logical) { x[0] = uint64_t(-40); break; }
-                pathEntry = find(backingPath(*logical), 0);
+                const auto backing = backingPath(*logical);
+                if (dataPath(backing) && !canAccessParent(backing, false)) {
+                    x[0] = uint64_t(-13);
+                    break;
+                }
+                pathEntry = find(backing, 0);
                 if (!pathEntry) { x[0] = uint64_t(-2); break; }
                 pathEntry->visiblePath = *logical;
                 entry = &*pathEntry;
             }
             const auto name = readPath(machine, x[1]);
             if (!name) { x[0] = uint64_t(-14); break; }
+            if (*name == restoreconMarker) {
+                const auto directory = directories.find(entry->path);
+                if (entry->node != Node::directory || directory == directories.end() || !dataPath(entry->path)) {
+                    x[0] = uint64_t(-95);
+                    break;
+                }
+                const auto& visible = entry->visiblePath.empty() ? entry->path : entry->visiblePath;
+                if (!writablePath(visible)) { x[0] = uint64_t(-30); break; }
+                auto& node = directory->second;
+                if (userId() != 0 && !(node.mode >> permissionShift(node.uid, node.gid) & 2)) {
+                    x[0] = uint64_t(-13);
+                    break;
+                }
+                auto& marker = node.restoreconInProgress;
+                if (removing) {
+                    if (!marker) { x[0] = uint64_t(-61); break; }
+                    marker.reset();
+                } else {
+                    if (x[3] != 1 || x[4] > 2) { x[0] = invalid; break; }
+                    if (x[4] == 1 && marker) { x[0] = uint64_t(-17); break; }
+                    if (x[4] == 2 && !marker) { x[0] = uint64_t(-61); break; }
+                    const auto* value = machine.read(x[2], 1, 4);
+                    if (!value) { x[0] = uint64_t(-14); break; }
+                    marker = *value;
+                }
+                fileEvent(entry->path, fileAttributes);
+                x[0] = 0;
+                break;
+            }
             if (*name != "security.selinux") { x[0] = uint64_t(-95); break; }
+            if (removing) { x[0] = uint64_t(-13); break; }
             if (x[3] > 4096 || x[4] > 2) { x[0] = invalid; break; }
             if (userId() != 0) { x[0] = uint64_t(-1); break; }
             const auto* bytes = x[3] ? machine.read(x[2], x[3], 4) : nullptr;
@@ -5156,6 +5194,19 @@ bool ProbeLinux::securityCall(Machine& machine) {
         if (!fd) { x[0] = uint64_t(-2); return true; }
     }
     std::span<const uint8_t> value;
+    if (*name == restoreconMarker) {
+        const auto directory = directories.find(fd->path);
+        if (fd->node != Node::directory || directory == directories.end() || !dataPath(fd->path)) {
+            x[0] = uint64_t(-61);
+            return true;
+        }
+        const auto& node = directory->second;
+        if (userId() != 0 && !(node.mode >> permissionShift(node.uid, node.gid) & 4)) {
+            x[0] = uint64_t(-13);
+            return true;
+        }
+        if (node.restoreconInProgress) value = {&*node.restoreconInProgress, 1};
+    }
     if (fd->temporary) {
         const auto attribute = fd->temporary->attributes.find(*name);
         if (attribute != fd->temporary->attributes.end()) value = attribute->second;

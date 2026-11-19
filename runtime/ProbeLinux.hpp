@@ -709,8 +709,10 @@ private:
     std::map<std::string, BoundSocket, std::less<>> socketPaths;
     std::map<std::string, std::shared_ptr<WritableFile>, std::less<>> writableFiles;
     struct Directory {
+        // Stored with the directory across rename, mount aliases and guest restarts.
         uint32_t mode, uid = 0, gid = 0;
         std::string securityContext{};
+        std::optional<uint8_t> restoreconInProgress{};
     };
     struct BinderDevice : Directory {
         uint32_t minor;
