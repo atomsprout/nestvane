@@ -343,3 +343,4 @@
 - iPhone 11 进程 8539 在 103.9 秒报告原版 BootAnimation 已显示。宿主分别于 106.252 秒显示首帧、106.298 秒保存首个非纯色帧。检查该进程独立记录的 640 × 960 PNG，内容为原版 Android 开机标志。215.939 秒进入 Zygote 类预加载。桌面和系统启动完成仍待真机验收。
 - iPhone 11 进程 8539 运行原版 `system_server`，约 12 分 49 秒完成 DisplayManager 首屏等待，约 12 分 50 秒开始初始化 PackageManager。已完成系统配置读取和共享用户注册，Launcher 和 APK 安装还待本轮日志验证。
 - `prepare-boot-image.py --tethering-loader` 将源码构建的 ARM64 加载器随客体镜像打包，保留原版 `trigger load-bpf-programs`，并核对 SDK 工厂 Tethering APEX 的哈希。运行时在客体原 APEX 路径使用这个明确选定的 ELF，保持原模块的链接命名空间和文件元数据。无需临时修改 Mac 或 iPhone 的 C++ 源码。重建核对 11 个启动输入，收集 14 个工厂 APK 和 3 个依赖 APEX。在 Mac 上，原版 init 记录 bpfloader 正常退出，netd 完成服务注册，Zygote 预加载 18,596 个类。iPhoneOS Release 构建与开发签名通过。新包待安装，iPhone 11 进程 8539 继续本轮系统应用扫描。
+- iPhone 11 进程 8539 在 1,316.572 秒记录原版 PackageManager 完成系统应用扫描，扫描耗时 525.756 秒。CoreDevice 截取的实体屏幕确认 iOS 相机授权弹窗已出现。客体启动仍在运行，Launcher、安装与实体相机首帧尚待核对。
