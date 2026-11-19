@@ -214,3 +214,6 @@
 
 - Mac 的 APK 尾页修复版完成系统包扫描并写出包设置。原版 PackageManager 随后报告缺少必需的 `android.ext.shared`。该轮已越过此前的扫描期间内存错误，仍待补齐系统共享库。
 - 匿名私有地址保留区在大范围解除 `PROT_NONE` 时延迟分配实际页面。宿主回归验证未写入页保持零填充、页面在写入后才计入预算、解除映射后归还预算，原区域两侧的保护页继续生效。iPhoneOS 开发签名构建通过。
+
+- 在 Android 17 ARM64 SDK 参考镜像上，`pm path android.ext.shared` 返回工厂 APK `/system/app/ExtShared/ExtShared.apk`，包信息确认其声明同名动态共享库。诊断镜像脚本已将其收录。完整重建采集到 14 个 APK 及 3 个相关 APEX，ExtShared 保留清单和 DEX。完整镜像探针新增独立 Bionic 进程读回 `sys.boot_completed` 的检查，启动验收仍在运行。
+- 第 7999 号 iPhone 11 进程在约 14 分 42 秒进入 PackageManager 首次启动设置及系统包扫描。该轮使用此前的镜像，已观察到热状态为 serious，桌面启动仍待验收。

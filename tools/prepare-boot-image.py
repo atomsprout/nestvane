@@ -13,6 +13,8 @@ from zipfile import ZipFile
 
 
 FRAMEWORK_APPS = (
+    # PackageManager resolves this required shared library from its factory APK.
+    "android.ext.shared",
     "com.android.documentsui",
     "com.android.externalstorage",
     "com.android.inputdevices",

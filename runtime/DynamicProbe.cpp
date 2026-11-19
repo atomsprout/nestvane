@@ -460,7 +460,8 @@ DynamicReport probeInit(const std::string& directory, const std::string& databas
                 "SystemServerTiming: StartDisplayManager", "SystemServerTiming: WaitForDisplay",
                 "SystemServerTiming: StartPackageManagerService", "PackageManagerTiming: ",
                 "SystemServerTiming: StartInputManager", "EventHub: New device:",
-                "mmap APK: ", "PackageManager: Failed to parse",
+                "mmap APK: ", "PackageManager: Failed to parse", "PackageManager: Time to scan packages",
+                "SystemServerTiming: StartWindowManagerService", "SystemServerTiming: StartActivityManagerReadyPhase",
                 "SurfaceFlinger: SurfaceFlinger is starting", "SurfaceFlinger: Using HWComposer service",
                 "SurfaceFlinger: OpenGL ES informations", "mapper.ranchu: GoldfishAddressSpace",
                 "SurfaceFlinger: Can't create AidlComposerClient", "SurfaceFlinger: Loaded AIDL composer3 HAL",
@@ -659,6 +660,8 @@ service nestvane-check-vold-shell /system/bin/service check vold
             verifyGate("odsign.verification.done", "1\n");
             verifyGate("odsign.verification.success", "1\n");
         }
+        if (files.contains("/system_ext/priv-app/Launcher3QuickStep/Launcher3QuickStep.apk"))
+            verifyGate("sys.boot_completed", "1\n");
         const bool activated = linux.kernelOutput.find("apexd-bootstrap: OnBootstrap done,") != std::string::npos;
         const bool runtimeVerified = activated && mountedRuntime && read.passed;
         if (expectRuntime) result.report += runtimeVerified ? "  Runtime APEX activation verified: yes\n"
