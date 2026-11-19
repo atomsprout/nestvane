@@ -3318,6 +3318,23 @@ uint64_t ProbeLinux::map(Machine& machine) {
         if (file == descriptors().end() || file->second.pathOnly()) return uint64_t(-9);
         const auto& fd = file->second;
         if ((fd.flags & 3) == 1) return uint64_t(-13);
+        if (const auto& map = fd.bpfMap) {
+            constexpr uint32_t mappable = 1 << 10, programReadOnly = 1 << 7;
+            if (map->type != 2) return uint64_t(-524); // No mmap operation for this map type.
+            if (sharing != 1 || !(map->flags & mappable)) return invalid;
+            const bool writable = x[2] & 2;
+            if ((x[2] & 4) || (writable && (!(fd.flags & 3) || (map->flags & programReadOnly))))
+                return uint64_t(-13);
+            if (x[5] > map->values.size || length > map->values.size - x[5]) return invalid;
+            // Keep the BPF object alive as long as the guest mapping, even after close().
+            Segment segment{start, {}, guestFlags(x[2]), length, false, {map, &map->values},
+                            x[5], false, !writable, false, true};
+            segment.maxProtection = writable ? 3 : 1;
+            if (atAddress) changeRange(machine, start, end, {});
+            if (!atAddress || (x[3] & fixedNoReplace)) nextMapping = std::max(nextMapping, end);
+            machine.insertSegment(std::move(segment));
+            return start;
+        }
         if (fd.graphicsAddress) {
             if (sharing != 1) return uint64_t(-95);
             if ((x[2] & 4) || ((x[2] & 2) && !(fd.flags & 3))) return uint64_t(-13);
@@ -5150,6 +5167,7 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
     constexpr uint64_t create = 0, lookup = 1, update = 2, erase = 3, nextKey = 4;
     constexpr uint32_t hashType = 1, arrayType = 2, perCpuHash = 5, perCpuArray = 6, deviceHash = 25;
     constexpr uint32_t noPrealloc = 1, readOnly = 1 << 3, writeOnly = 1 << 4, programReadOnly = 1 << 7;
+    constexpr uint32_t mappable = 1 << 10;
     constexpr uint64_t capBpf = 1ULL << 39, capSysAdmin = 1ULL << 21;
     constexpr size_t mapBudget = 32 * 1024 * 1024;
     const auto& x = machine.cpu.x;
@@ -5176,7 +5194,8 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
         const bool device = type == deviceHash;
         if (!array && !device && type != hashType && type != perCpuHash) return uint64_t(-95);
         if (device && !(current->process->effectiveCaps & (1ULL << 12))) return uint64_t(-1); // CAP_NET_ADMIN
-        const uint32_t supportedFlags = readOnly | writeOnly | (device ? programReadOnly : array ? 0 : noPrealloc);
+        const uint32_t arrayFlags = type == arrayType ? mappable | programReadOnly : 0;
+        const uint32_t supportedFlags = readOnly | writeOnly | (device ? programReadOnly : array ? arrayFlags : noPrealloc);
         if (((array || device) && keySize != sizeof(uint32_t)) || !keySize || !valueSize || !entries ||
             (device && valueSize != 4 && valueSize != 8) ||
             (flags & ~supportedFlags) || (flags & (readOnly | writeOnly)) == (readOnly | writeOnly))
@@ -5193,12 +5212,13 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
             if (!types || types->typeSize(keyType) != keySize || types->typeSize(valueType) != valueSize)
                 return invalid;
         }
-        // BPF userspace copies one 8-byte-aligned value per possible guest CPU.
-        // The guest topology exposed above and through sched_getaffinity has one CPU.
-        const uint64_t valueStride = perCpu ? (uint64_t(valueSize) + 7) & ~uint64_t{7} : valueSize;
+        // The mmap array ABI aligns array elements to eight bytes. Per-CPU syscalls copy
+        // one aligned value for each possible guest CPU, of which this guest has one.
+        const uint64_t valueStride = array || perCpu ? (uint64_t(valueSize) + 7) & ~uint64_t{7} : valueSize;
         const uint64_t entryBytes = valueStride + (array ? 0 : uint64_t(keySize) + 128);
         if (entryBytes > mapBudget / entries) return noMemory;
-        const size_t bytes = entryBytes * entries;
+        const size_t valueBytes = entryBytes * entries;
+        const size_t bytes = flags & mappable ? pageAlignedLength(valueBytes) : valueBytes;
         const auto newFd = freeDescriptor();
         if (newFd == descriptorCapacity) return uint64_t(-24);
         std::erase_if(bpfMaps, [](const auto& entry) { return entry.second.expired(); });
@@ -5222,7 +5242,10 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
             map->budgetBytes = bytes;
             map->array = array;
             map->types = std::move(types);
-            if (array) map->values.resize(bytes);
+            if (array) {
+                map->values.pages.resize(bytes);
+                map->values.size = bytes;
+            }
             const uint32_t access = flags & readOnly ? 0 : flags & writeOnly ? 1 : 2;
             Descriptor result{"anon_inode:bpf-map", {}, 0x80000 | access, Node::bpfMap};
             result.bpfMap = map;
@@ -5303,12 +5326,13 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
     }
     if (command == erase) return invalid; // Array entries are allocated at creation.
     if (index >= map.entryCount) return command == update ? tooBig : uint64_t(-2);
-    auto bytes = std::span(map.values).subspan(uint64_t(index) * map.valueStride, map.valueStride);
+    auto bytes = map.arrayElement(index);
+    if (map.type != perCpuArray) bytes = bytes.first(map.valueSize);
     if (command == lookup) return machine.write(value, bytes) ? 0 : fault;
     if (flags == 1) return uint64_t(-17); // BPF_NOEXIST on a preallocated slot.
     // Read into a temporary buffer so a fault on a later guest page leaves the map unchanged.
     try {
-        std::vector<uint8_t> replacement(map.valueStride);
+        std::vector<uint8_t> replacement(bytes.size());
         if (!machine.readInto(value, replacement)) return fault;
         std::ranges::copy(replacement, bytes.begin());
         return 0;

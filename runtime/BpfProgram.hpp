@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Runtime.hpp"
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -26,7 +28,10 @@ struct BpfMap {
     size_t budgetBytes = 0;
     bool array = false;
     std::shared_ptr<const BpfTypes> types;
-    std::vector<uint8_t> values;
+    SharedFileBytes values;
+    std::span<uint8_t> arrayElement(uint32_t index) {
+        return std::span(values.pages).subspan(uint64_t(index) * valueStride, valueStride);
+    }
     struct CompareKeys {
         using is_transparent = void;
         bool operator()(std::span<const uint8_t> left, std::span<const uint8_t> right) const {
@@ -376,7 +381,7 @@ private:
                 uint32_t index = 0;
                 std::memcpy(&index, key.data(), sizeof(index));
                 if (index >= map.entryCount) return 0;
-                value = std::span(map.values).subspan(uint64_t(index) * map.valueStride, map.valueSize);
+                value = map.arrayElement(index).first(map.valueSize);
             } else {
                 const auto found = map.hash.find(key);
                 if (found == map.hash.end()) return 0;
@@ -524,8 +529,7 @@ private:
                                 if (map->array) {
                                     for (uint32_t index = 0; index < map->entryCount; ++index) {
                                         const auto key = std::span(reinterpret_cast<const uint8_t*>(&index), sizeof(index));
-                                        const auto value = std::span(map->values).subspan(uint64_t(index) * map->valueStride,
-                                                                                         map->valueSize);
+                                        const auto value = map->arrayElement(index).first(map->valueSize);
                                         const auto action = invoke(key, value);
                                         if (!action) return std::nullopt;
                                         if (*action) break;

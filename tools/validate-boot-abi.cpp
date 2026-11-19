@@ -26,8 +26,8 @@ int main() {
         map->valueSize = map->valueStride = 8;
         const std::array<uint64_t, 3> values{2, 3, 100};
         const auto initial = std::as_bytes(std::span(values));
-        map->values.resize(initial.size());
-        std::memcpy(map->values.data(), initial.data(), initial.size());
+        map->values.pages.resize(initial.size());
+        std::memcpy(map->values.pages.data(), initial.data(), initial.size());
         const auto encode = [](uint8_t code, uint8_t registers, int16_t offset = 0, int32_t immediate = 0) {
             return uint64_t(code) | (uint64_t(registers) << 8) | (uint64_t(uint16_t(offset)) << 16) |
                    (uint64_t(uint32_t(immediate)) << 32);
@@ -849,6 +849,39 @@ int main() {
         assert(possible < 256 && call(63, {possible, output, 8}) == 2);
         assert((load(output) & 0xffff) == 0x0a30);
         assert(call(57, {possible}) == 0);
+    }
+    {
+        constexpr auto attr = base + 0x180, key = base + 0x300, value = base + 0x320;
+        const auto write = [&](uint64_t address, const auto& record) {
+            return machine.write(address, {reinterpret_cast<const uint8_t*>(&record), sizeof(record)});
+        };
+        const std::array<uint32_t, 5> creation{2, 4, 3, 513, 1U << 10};
+        assert(write(attr, creation));
+        const auto map = call(280, {0, attr, sizeof(creation)});
+        assert(map < 256);
+        assert(call(222, {0, pageSize, 1, 2, map, 0}) == uint64_t(-22)); // MAP_PRIVATE
+        assert(call(222, {0, 2 * pageSize, 1, 1, map, pageSize}) == uint64_t(-22));
+        const auto rw = call(222, {0, 2 * pageSize, 3, 1, map, 0});
+        const auto ro = call(222, {0, pageSize, 1, 1, map, pageSize});
+        assert(rw < ro && ro < 0x20'0000'0000);
+        assert(call(226, {ro, pageSize, 3}) == uint64_t(-13)); // A read-only VMA cannot gain write permission.
+        const std::array<uint8_t, 3> initial{12, 34, 56}, updated{7, 8, 9};
+        const std::array<uint64_t, 4> element{map, key, value, 0};
+        assert(write(attr, element) && machine.store64(key, 1) && write(value, initial));
+        assert(call(280, {2, attr, sizeof(element)}) == 0);
+        assert(!std::memcmp(machine.read(rw + 8, initial.size(), 4), initial.data(), initial.size()));
+        assert(write(rw + pageSize, updated) && machine.store64(key, 512));
+        assert(call(280, {1, attr, sizeof(element)}) == 0);
+        assert(!std::memcmp(machine.read(value, updated.size(), 4), updated.data(), updated.size()));
+        const std::array<uint64_t, 2> identity{map | (8ULL << 32), value};
+        assert(write(attr, identity) && call(280, {15, attr, sizeof(identity)}) == 0);
+        const uint64_t id = load(value) >> 32;
+        assert(id && call(57, {map}) == 0 && machine.store64(attr, id));
+        assert(!std::memcmp(machine.read(ro, updated.size(), 4), updated.data(), updated.size()));
+        const auto reopened = call(280, {14, attr, 8});
+        assert(reopened < 256 && call(57, {reopened}) == 0);
+        assert(call(215, {ro, pageSize}) == 0 && call(215, {rw, 2 * pageSize}) == 0);
+        assert(call(280, {14, attr, 8}) == uint64_t(-2)); // The last VMA releases the map.
     }
     {
         constexpr auto from = base + 0x600, to = base + 0x680, attr = base + 0x700;
