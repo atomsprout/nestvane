@@ -18,7 +18,8 @@ struct sqlite3;
 
 namespace nestvane {
 
-class BpfSocketFilter;
+class BpfProgram;
+struct BpfMap;
 class BpfTypes;
 
 struct ProbeLinux {
@@ -152,7 +153,6 @@ private:
         uint64_t owner, start, end;
         int16_t type;
     };
-    struct BpfMap;
     struct WritableFile {
         uint64_t inode;
         uint32_t mode;
@@ -163,8 +163,8 @@ private:
         std::shared_ptr<SharedFileBytes> storage = std::make_shared<SharedFileBytes>();
         std::map<std::string, std::vector<uint8_t>, std::less<>> attributes;
         std::shared_ptr<BpfMap> pinnedMap{};
-        std::shared_ptr<const BpfSocketFilter> pinnedFilter{};
-        bool pinnedBpfObject() const { return pinnedMap || pinnedFilter; }
+        std::shared_ptr<const BpfProgram> pinnedProgram{};
+        bool pinnedBpfObject() const { return pinnedMap || pinnedProgram; }
     };
     struct SocketState {
         uint32_t type;
@@ -186,7 +186,7 @@ private:
         bool logWriter = false;
         struct UeventSocket { uint32_t pid = 0, groups = 0, receiveBuffer = 212992; };
         std::optional<UeventSocket> uevent;
-        std::shared_ptr<const BpfSocketFilter> bpfFilter;
+        std::shared_ptr<const BpfProgram> socketFilter;
         explicit SocketState(uint32_t type) : type(type) {}
     };
     bool waitForSocketTimeout(std::chrono::microseconds timeout);
@@ -200,21 +200,12 @@ private:
 
         uint16_t pollEvents() const;
     };
-    struct BpfMap {
-        uint32_t id = 0, type = 0, flags = 0, entryCount = 0;
-        uint32_t keySize = 0, valueSize = 0, valueStride = 0, btfKeyType = 0, btfValueType = 0;
-        std::array<char, 16> name{};
-        size_t budgetBytes = 0;
-        bool array = false;
-        std::shared_ptr<const BpfTypes> types;
-        std::vector<uint8_t> values;
-        std::map<std::vector<uint8_t>, std::vector<uint8_t>> hash;
-    };
     std::map<uint32_t, std::weak_ptr<BpfMap>> bpfMaps;
-    std::map<uint32_t, std::weak_ptr<const BpfSocketFilter>> bpfFilters;
+    std::map<uint32_t, std::weak_ptr<const BpfProgram>> bpfPrograms;
     uint32_t nextBpfMapId = 1, nextBpfProgramId = 1, nextBpfTypeId = 1;
     uint64_t bpfMapCall(Machine& machine);
-    uint64_t loadBpfSocketFilter(Machine& machine);
+    uint64_t loadBpfProgram(Machine& machine);
+    uint64_t testBpfProgram(Machine& machine);
     uint64_t bpfObjectIdCall(Machine& machine);
     uint64_t loadBpfTypes(Machine& machine);
     uint64_t bpfObjectInfo(Machine& machine);
@@ -405,7 +396,7 @@ private:
         std::shared_ptr<GuestTouch::Reader> touchReader{};
         std::shared_ptr<BpfMap> bpfMap{};
         std::shared_ptr<const BpfTypes> btf{};
-        std::shared_ptr<const BpfSocketFilter> bpfFilter{};
+        std::shared_ptr<const BpfProgram> bpfProgram{};
         std::span<const uint8_t> contents() const { return ext4File ? ext4File->bytes() : bytes; }
         uint64_t contentSize() const { return ext4File ? ext4File->size : bytes.size(); }
         static constexpr uint32_t mutableStatus = 0xc00; // O_APPEND and O_NONBLOCK

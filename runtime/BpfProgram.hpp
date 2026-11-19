@@ -1,0 +1,346 @@
+#pragma once
+
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <cstring>
+#include <functional>
+#include <map>
+#include <memory>
+#include <optional>
+#include <span>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+namespace nestvane {
+
+class BpfTypes;
+
+struct BpfMap {
+    uint32_t id = 0, type = 0, flags = 0, entryCount = 0;
+    uint32_t keySize = 0, valueSize = 0, valueStride = 0, btfKeyType = 0, btfValueType = 0;
+    std::array<char, 16> name{};
+    size_t budgetBytes = 0;
+    bool array = false;
+    std::shared_ptr<const BpfTypes> types;
+    std::vector<uint8_t> values;
+    struct CompareKeys {
+        using is_transparent = void;
+        bool operator()(std::span<const uint8_t> left, std::span<const uint8_t> right) const {
+            return std::ranges::lexicographical_compare(left, right);
+        }
+    };
+    std::map<std::vector<uint8_t>, std::vector<uint8_t>, CompareKeys> hash;
+};
+
+class BpfProgram {
+public:
+    static constexpr uint32_t socketFilter = 1, classifier = 3;
+    static constexpr size_t maxInstructions = 4096, maxPacketBytes = 65535;
+    using MapResolver = std::function<std::shared_ptr<BpfMap>(uint32_t)>;
+
+    struct Packet {
+        std::vector<uint8_t> bytes;
+        uint32_t protocol = 0, packetType = 0, ingressIfindex = 0, ifindex = 0;
+    };
+
+    bool load(uint32_t type, std::span<const uint8_t> bytes, const MapResolver& resolve) {
+        if ((type != socketFilter && type != classifier) || bytes.empty() ||
+            bytes.size() % sizeof(Instruction) || bytes.size() / sizeof(Instruction) > maxInstructions)
+            return false;
+        std::vector<Instruction> decoded(bytes.size() / sizeof(Instruction));
+        std::memcpy(decoded.data(), bytes.data(), bytes.size());
+        std::map<size_t, std::shared_ptr<BpfMap>> maps;
+        for (size_t pc = 0; pc < decoded.size(); ++pc) {
+            const auto& i = decoded[pc];
+            if (i.destination() > 10 || i.source() > 10) return false;
+            if (i.code == 0x18) { // The second slot carries the high half of the immediate.
+                if (i.destination() == 10 || i.offset || pc + 1 >= decoded.size()) return false;
+                const auto& upper = decoded[pc + 1];
+                if (upper.code || upper.registers || upper.offset) return false;
+                if (i.source()) {
+                    if (type != classifier || i.source() != 1 || upper.immediate) return false;
+                    auto map = resolve(uint32_t(i.immediate)); // BPF_PSEUDO_MAP_FD
+                    if (!map || map->type == 25) return false; // Device maps have a distinct helper ABI.
+                    maps.emplace(pc, std::move(map));
+                }
+                ++pc;
+            } else if (i.code == 0x85) {
+                if (i.registers || i.offset) return false;
+                switch (i.immediate) {
+                    case 26: break; // skb_load_bytes
+                    case 1: case 23: case 39: case 40: case 43:
+                        if (type != classifier) return false;
+                        break;
+                    default: return false;
+                }
+            } else if (i.code == 0x95) {
+                if (i.registers || i.offset || i.immediate) return false;
+            } else if (i.kind() == 5) {
+                if (!jump(i.operation(), 0, 0).has_value() || (i.operation() == 0 && i.code != 0x05))
+                    return false;
+                if ((!i.fromRegister() && i.source()) || (i.fromRegister() && i.immediate) ||
+                    (i.code == 0x05 && (i.registers || i.immediate))) return false;
+                const auto target = int64_t(pc) + 1 + i.offset;
+                if (target < 0 || uint64_t(target) >= decoded.size() || !decoded[target].code) return false;
+            } else if (i.kind() == 7) {
+                if (i.destination() == 10 || i.offset || (!i.fromRegister() && i.source()) ||
+                    (i.fromRegister() && i.immediate) || !arithmetic(i.operation(), 0, 0).has_value()) return false;
+                if (!i.fromRegister() && (i.operation() == 0x60 || i.operation() == 0x70 ||
+                    i.operation() == 0xc0) && uint32_t(i.immediate) >= 64) return false;
+            } else if (i.kind() == 1 || i.kind() == 3) {
+                if (i.kind() == 1 && i.destination() == 10) return false;
+                if (i.mode() != 0x60 && (type != classifier || i.kind() != 3 || i.mode() != 0xc0 ||
+                    (i.width() != 4 && i.width() != 8))) return false;
+                if (i.immediate) return false; // The only supported atomic operation is ADD without fetch.
+            } else {
+                return false;
+            }
+        }
+        if ((decoded.back().code != 0x95 && decoded.back().code != 0x05) ||
+            std::none_of(decoded.begin(), decoded.end(), [](const auto& i) { return i.code == 0x95; })) return false;
+        instructions = std::move(decoded);
+        referencedMaps = std::move(maps);
+        programType = type;
+        return true;
+    }
+
+    uint32_t type() const { return programType; }
+
+    size_t accept(std::span<const uint8_t> packet) const {
+        if (programType != socketFilter) return 0;
+        return std::min<size_t>(execute(packet, nullptr).value_or(0), packet.size());
+    }
+
+    std::optional<uint32_t> classify(Packet& packet) const {
+        if (programType != classifier || packet.bytes.size() > maxPacketBytes) return std::nullopt;
+        return execute(packet.bytes, &packet);
+    }
+
+private:
+    struct Instruction {
+        uint8_t code, registers;
+        int16_t offset;
+        int32_t immediate;
+        unsigned destination() const { return registers & 15; }
+        unsigned source() const { return registers >> 4; }
+        unsigned kind() const { return code & 7; }
+        unsigned operation() const { return code & 0xf0; }
+        bool fromRegister() const { return code & 8; }
+        unsigned mode() const { return code & 0xe0; }
+        size_t width() const {
+            constexpr std::array<size_t, 4> widths{4, 2, 1, 8};
+            return widths[(code >> 3) & 3];
+        }
+    };
+    static_assert(sizeof(Instruction) == 8);
+
+    static std::optional<uint64_t> arithmetic(unsigned operation, uint64_t left, uint64_t right) {
+        switch (operation) {
+            case 0x00: return left + right;
+            case 0x10: return left - right;
+            case 0x20: return left * right;
+            case 0x40: return left | right;
+            case 0x50: return left & right;
+            case 0x60: return left << (right & 63);
+            case 0x70: return left >> (right & 63);
+            case 0xa0: return left ^ right;
+            case 0xb0: return right;
+            case 0xc0: return uint64_t(int64_t(left) >> (right & 63));
+            default: return std::nullopt;
+        }
+    }
+
+    static std::optional<bool> jump(unsigned operation, uint64_t left, uint64_t right) {
+        switch (operation) {
+            case 0x00: return true;
+            case 0x10: return left == right;
+            case 0x20: return left > right;
+            case 0x30: return left >= right;
+            case 0x40: return (left & right) != 0;
+            case 0x50: return left != right;
+            case 0x60: return int64_t(left) > int64_t(right);
+            case 0x70: return int64_t(left) >= int64_t(right);
+            case 0xa0: return left < right;
+            case 0xb0: return left <= right;
+            case 0xc0: return int64_t(left) < int64_t(right);
+            case 0xd0: return int64_t(left) <= int64_t(right);
+            default: return std::nullopt;
+        }
+    }
+
+    struct Region {
+        std::span<uint8_t> bytes;
+        bool writable;
+    };
+
+    std::optional<uint32_t> execute(std::span<const uint8_t> packet, Packet* classifierPacket) const {
+        // Interpreter addresses identify bounded packet, stack and map regions. The guest never
+        // receives host addresses. Guest execution is serialized, so an atomic ADD needs no lock.
+        constexpr uint64_t stackBase = 0x1000, context = 0x2000, packetBase = 0x10000;
+        constexpr uint64_t mapHandleBase = 1ULL << 31, mapValueBase = 1ULL << 32, mapStride = 1ULL << 26;
+        std::array<uint8_t, 512> stack{};
+        std::array<uint64_t, 11> registers{};
+        std::vector<Region> values;
+        std::unordered_map<const uint8_t*, size_t> valueRegions;
+        registers[1] = context;
+        registers[10] = stackBase + stack.size();
+        auto bytes = [&](uint64_t address, uint64_t size, bool write) -> std::span<uint8_t> {
+            const auto region = [&](uint64_t base, std::span<uint8_t> memory) -> std::span<uint8_t> {
+                if (address < base || address - base > memory.size() || size > memory.size() - (address - base))
+                    return {};
+                return memory.subspan(address - base, size);
+            };
+            if (address >= mapValueBase) {
+                const auto index = (address - mapValueBase) / mapStride;
+                if (index >= values.size() || (write && !values[index].writable)) return {};
+                return region(mapValueBase + index * mapStride, values[index].bytes);
+            }
+            if (address >= packetBase && classifierPacket) return region(packetBase, classifierPacket->bytes);
+            return region(stackBase, stack);
+        };
+
+        auto lookup = [&](uint64_t handle, uint64_t keyAddress) -> uint64_t {
+            if (handle < mapHandleBase || handle - mapHandleBase >= instructions.size()) return 0;
+            const auto entry = referencedMaps.find(handle - mapHandleBase);
+            if (entry == referencedMaps.end()) return 0;
+            auto& map = *entry->second;
+            const auto key = bytes(keyAddress, map.keySize, false);
+            if (key.empty()) return 0;
+            std::span<uint8_t> value;
+            if (map.array) {
+                uint32_t index = 0;
+                std::memcpy(&index, key.data(), sizeof(index));
+                if (index >= map.entryCount) return 0;
+                value = std::span(map.values).subspan(uint64_t(index) * map.valueStride, map.valueSize);
+            } else {
+                const auto found = map.hash.find(key);
+                if (found == map.hash.end()) return 0;
+                value = std::span(found->second).first(map.valueSize);
+            }
+            const auto [region, inserted] = valueRegions.try_emplace(value.data(), values.size());
+            if (inserted) values.push_back({value, !(map.flags & (1U << 7))});
+            return mapValueBase + region->second * mapStride;
+        };
+
+        auto skbField = [&](uint64_t offset) -> std::optional<uint32_t> {
+            if (offset == 0) return uint32_t(packet.size()); // __sk_buff.len
+            if (!classifierPacket) return std::nullopt;
+            switch (offset) {
+                case 4: return classifierPacket->packetType;
+                case 16: return classifierPacket->protocol;
+                case 36: return classifierPacket->ingressIfindex;
+                case 40: return classifierPacket->ifindex;
+                case 76: return uint32_t(packetBase);
+                case 80: return uint32_t(packetBase + packet.size());
+                case 164: case 176: return 0; // No segmentation offload on the linear test packet.
+                default: return std::nullopt;
+            }
+        };
+
+        size_t pc = 0;
+        for (size_t fuel = 0; fuel < 16384 && pc < instructions.size(); ++fuel) {
+            const auto& i = instructions[pc++];
+            auto& dst = registers[i.destination()];
+            const auto src = registers[i.source()];
+            const auto imm = uint64_t(int64_t(i.immediate));
+            const auto operand = i.fromRegister() ? src : imm;
+            switch (i.code) {
+                case 0x18:
+                    dst = i.source() ? mapHandleBase + pc - 1 :
+                        uint32_t(imm) | (uint64_t(uint32_t(instructions[pc].immediate)) << 32);
+                    ++pc;
+                    continue;
+                case 0x85: {
+                    const auto r1 = registers[1], r2 = registers[2], r3 = registers[3];
+                    uint64_t result = 0;
+                    switch (i.immediate) {
+                        case 1: result = lookup(r1, r2); break;
+                        case 23: // bpf_redirect returns a TC action; test-run never transmits the frame.
+                            result = r2 & ~1ULL ? 2 : 7; // TC_ACT_SHOT or TC_ACT_REDIRECT
+                            break;
+                        case 26: {
+                            const auto offset = uint32_t(r2), length = uint32_t(registers[4]);
+                            const auto to = bytes(r3, length, true);
+                            if (r1 != context || to.empty()) return std::nullopt;
+                            if (offset > packet.size() || length > packet.size() - offset) {
+                                std::ranges::fill(to, 0);
+                                result = uint64_t(-14);
+                            } else {
+                                std::memmove(to.data(), packet.data() + offset, length);
+                            }
+                            break;
+                        }
+                        case 39: // The guest packet is already linear.
+                            if (r1 != context) return std::nullopt;
+                            if (uint32_t(r2) > packet.size()) result = uint64_t(-12);
+                            break;
+                        case 40: // Test-run supplies a CHECKSUM_NONE packet.
+                            if (r1 != context) return std::nullopt;
+                            result = uint64_t(-524); // ENOTSUPP
+                            break;
+                        case 43: {
+                            if (r1 != context) return std::nullopt;
+                            const auto headroom = uint32_t(r2);
+                            if (r3 || headroom > maxPacketBytes - packet.size()) {
+                                result = uint64_t(-22);
+                            } else {
+                                classifierPacket->bytes.insert(classifierPacket->bytes.begin(), headroom, 0);
+                                packet = classifierPacket->bytes;
+                            }
+                            break;
+                        }
+                        default: return std::nullopt;
+                    }
+                    registers[0] = result;
+                    std::fill_n(registers.begin() + 1, 5, 0);
+                    continue;
+                }
+                case 0x95: return uint32_t(registers[0]);
+                default: break;
+            }
+
+            switch (i.kind()) {
+                case 1: {
+                    const auto address = src + i.offset;
+                    if (i.width() == 4 && address >= context && address < context + 84) {
+                        const auto field = skbField(address - context);
+                        if (!field) return std::nullopt;
+                        dst = *field;
+                        break;
+                    }
+                    const auto from = bytes(address, i.width(), false);
+                    if (from.empty()) return std::nullopt;
+                    dst = 0;
+                    std::memcpy(&dst, from.data(), from.size());
+                    break;
+                }
+                case 3: {
+                    const auto address = dst + i.offset;
+                    const auto to = bytes(address, i.width(), true);
+                    if (to.empty()) return std::nullopt;
+                    uint64_t value = src;
+                    if (i.mode() == 0xc0) {
+                        if (address % to.size() || address < mapValueBase) return std::nullopt;
+                        uint64_t previous = 0;
+                        std::memcpy(&previous, to.data(), to.size());
+                        value += previous;
+                    }
+                    std::memcpy(to.data(), &value, to.size());
+                    break;
+                }
+                case 5: if (*jump(i.operation(), dst, operand)) pc += i.offset; break;
+                case 7: dst = *arithmetic(i.operation(), dst, operand); break;
+                default: return std::nullopt;
+            }
+        }
+        return std::nullopt;
+    }
+
+    uint32_t programType = 0;
+    std::vector<Instruction> instructions;
+    std::map<size_t, std::shared_ptr<BpfMap>> referencedMaps;
+};
+
+} // namespace nestvane

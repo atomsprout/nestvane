@@ -902,6 +902,67 @@ int main() {
         assert(call(39, {mountpoint, 0}) == 0);
     }
     {
+        constexpr auto code = base + 0x100, attr = base + 0x200, license = base + 0x280;
+        constexpr auto packet = base + 0x300, output = base + 0x380, key = base + 0x400;
+        const auto write = [&](uint64_t address, const auto& record) {
+            return machine.write(address, {reinterpret_cast<const uint8_t*>(&record), sizeof(record)});
+        };
+        const std::array<uint32_t, 5> create{2, 4, 8, 1, 0}; // ARRAY
+        assert(write(attr, create));
+        const auto counter = call(280, {0, attr, sizeof(create)});
+        assert(counter < 256);
+        auto encode = [](uint8_t op, uint8_t regs, int16_t off = 0, int32_t imm = 0) {
+            return uint64_t(op) | (uint64_t(regs) << 8) | (uint64_t(uint16_t(off)) << 16) |
+                (uint64_t(uint32_t(imm)) << 32);
+        };
+        const std::array<uint64_t, 18> instructions{
+            encode(0xb7, 0x00, 0, 0),                     // default TC action
+            encode(0x61, 0x16, 76),                        // r6 = skb.data
+            encode(0x61, 0x17, 80),                        // r7 = skb.data_end
+            encode(0xbf, 0x68), encode(0x07, 0x08, 0, 15), // r8 = r6 + 15
+            encode(0x2d, 0x78, 10),                       // if r8 > r7, exit
+            encode(0xb7, 0x00, 0, 0),                     // zero key on the stack
+            encode(0x63, 0x0a, -4),
+            encode(0xbf, 0xa2), encode(0x07, 0x02, 0, -4), // r2 = &key
+            encode(0x18, 0x11, 0, counter), 0,             // r1 = relocated array map
+            encode(0x85, 0x00, 0, 1),                      // r0 = map_lookup_elem(r1, r2)
+            encode(0x15, 0x00, 2),                         // if r0 == nullptr, exit
+            encode(0x71, 0x61, 14),                        // r1 = frame[14]
+            encode(0xdb, 0x10),                            // atomic *(u64 *)r0 += r1
+            encode(0xb7, 0x00, 0, 0),
+            encode(0x95, 0x00),
+        };
+        put(license, "GPL");
+        const auto loadProgram = [&](uint32_t type) {
+            const std::array<uint64_t, 8> request{(uint64_t(instructions.size()) << 32) | type, code, license};
+            assert(write(attr, request));
+            return call(280, {5, attr, sizeof(request)});
+        };
+        assert(write(code, instructions));
+        assert(loadProgram(1) == uint64_t(-22)); // A socket filter cannot load this program.
+        const auto program = loadProgram(3);
+        assert(program < 256);
+        const auto socket = call(198, {16, 2 | 0x80800, 15});
+        assert(socket < 256 && machine.store64(output, program));
+        assert(call(208, {socket, 1, 50, output, 4}) == uint64_t(-22));
+        assert(call(57, {socket}) == 0);
+        const std::array<uint8_t, 16> frame{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x86, 0xdd, 7};
+        assert(write(packet, frame));
+        const auto test = [&](uint32_t length, uint32_t capacity, uint32_t repeat) {
+            const std::array<uint64_t, 5> request{program, uint64_t(capacity) << 32 | length, packet, output, repeat};
+            assert(write(attr, request));
+            return call(280, {10, attr, sizeof(request)});
+        };
+        assert(test(14, 14, 1) == 0 && load(attr) >> 32 == 0); // Bounds branch bypasses the counter.
+        assert(test(16, 16, 2) == 0 && load(attr + 8) >> 32 == frame.size());
+        assert(!std::memcmp(machine.read(output, frame.size(), 4), frame.data(), frame.size()));
+        assert(test(16, 15, 1) == uint64_t(-28) && load(attr + 8) >> 32 == frame.size());
+        const std::array<uint64_t, 4> lookup{counter, key, output, 0};
+        assert(machine.store64(key, 0) && write(attr, lookup));
+        assert(call(280, {1, attr, sizeof(lookup)}) == 0 && load(output) == 21);
+        assert(call(57, {counter}) == 0 && call(57, {program}) == 0);
+    }
+    {
         constexpr auto source = base + 256, attr = base + 400, key = base + 512, value = base + 520;
         constexpr char names[] = "\0u32\0u64";
         const std::array<uint32_t, 14> input{0x0001eb9f, 24, 0, 32, 32, sizeof(names),
