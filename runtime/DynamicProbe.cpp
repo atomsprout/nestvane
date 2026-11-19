@@ -130,6 +130,16 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
         ? initLimit("NESTVANE_INIT_SNAPSHOT_SECONDS", 0, UINT32_MAX) : 0);
     auto nextSnapshot = snapshotInterval.count() ? start + snapshotInterval : steady_clock::time_point::max();
     auto scheduleDeadline = std::min(deadline, nextSnapshot);
+    const auto captureSnapshot = [&](steady_clock::time_point now) {
+        std::ostringstream snapshot;
+        snapshot << "Android init at " << duration_cast<milliseconds>(now - start).count()
+                 << " ms, " << cpu.retired << " guest instructions, "
+                 << syscallCount << " guest syscalls\n";
+        snapshot << linux.workerReport(machine, linux.processId());
+        liveSnapshot(snapshot.str());
+        nextSnapshot = now + snapshotInterval;
+        scheduleDeadline = std::min(deadline, nextSnapshot);
+    };
     while (cpu.retired < instructionLimit) {
         if (cpu.stop == Stop::fault) {
             const auto pc = cpu.pc, address = cpu.faultAddress, lr = cpu.x[30], sp = cpu.sp;
@@ -156,20 +166,16 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
                 timedOut = true;
                 break;
             }
-            if (now >= nextSnapshot) {
-                std::ostringstream snapshot;
-                snapshot << "Android init at " << duration_cast<milliseconds>(now - start).count()
-                         << " ms, " << cpu.retired << " guest instructions, "
-                         << syscallCount << " guest syscalls\n";
-                snapshot << linux.workerReport(machine, linux.processId());
-                liveSnapshot(snapshot.str());
-                nextSnapshot = now + snapshotInterval;
-                scheduleDeadline = std::min(deadline, nextSnapshot);
-            }
+            if (now >= nextSnapshot) captureSnapshot(now);
         }
         if (!linux.schedule(machine, scheduleDeadline, stop)) {
             const auto now = steady_clock::now();
-            if (now >= nextSnapshot && now < deadline && !stop.stop_requested()) continue;
+            if (now >= nextSnapshot && now < deadline && !stop.stop_requested()) {
+                // A timed guest wait can become runnable while the snapshot deadline expires.
+                // Capture before retrying, even when the instruction counter is mid-slice.
+                captureSnapshot(now);
+                continue;
+            }
             timedOut = now >= deadline;
             idle = !timedOut;
             break;
