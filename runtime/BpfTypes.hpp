@@ -12,9 +12,12 @@ namespace nestvane {
 
 class BpfTypes {
 public:
-    size_t byteSize() const { return size; }
+    explicit BpfTypes(uint32_t id) : objectId(id) {}
+    uint32_t id() const { return objectId; }
+    std::span<const uint8_t> bytes() const { return blob; }
 
-    bool load(std::span<const uint8_t> bytes) {
+    bool load(std::vector<uint8_t> object) {
+        const auto bytes = std::span<const uint8_t>(object);
         constexpr size_t headerBytes = 24;
         if (bytes.size() < headerBytes || read32(bytes, 0) != 0x0001eb9f) return false;
         const auto header = read32(bytes, 4);
@@ -75,7 +78,7 @@ public:
         }
         if (highestReference > decoded.size()) return false;
         records = std::move(decoded);
-        size = bytes.size();
+        blob = std::move(object);
         return true;
     }
 
@@ -112,7 +115,8 @@ private:
         return value;
     }
     std::vector<Record> records;
-    size_t size = 0;
+    uint32_t objectId;
+    std::vector<uint8_t> blob;
 };
 
 } // namespace nestvane

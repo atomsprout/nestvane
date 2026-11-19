@@ -201,7 +201,9 @@ private:
         uint16_t pollEvents() const;
     };
     struct BpfMap {
-        uint32_t entryCount = 0, keySize = 0, valueStride = 0;
+        uint32_t id = 0, type = 0, flags = 0, entryCount = 0;
+        uint32_t keySize = 0, valueSize = 0, valueStride = 0, btfKeyType = 0, btfValueType = 0;
+        std::array<char, 16> name{};
         size_t budgetBytes = 0;
         bool array = false;
         std::shared_ptr<const BpfTypes> types;
@@ -210,11 +212,12 @@ private:
     };
     std::map<uint32_t, std::weak_ptr<BpfMap>> bpfMaps;
     std::map<uint32_t, std::weak_ptr<const BpfSocketFilter>> bpfFilters;
-    uint32_t nextBpfMapId = 1, nextBpfProgramId = 1;
+    uint32_t nextBpfMapId = 1, nextBpfProgramId = 1, nextBpfTypeId = 1;
     uint64_t bpfMapCall(Machine& machine);
     uint64_t loadBpfSocketFilter(Machine& machine);
     uint64_t bpfObjectIdCall(Machine& machine);
     uint64_t loadBpfTypes(Machine& machine);
+    uint64_t bpfObjectInfo(Machine& machine);
     std::vector<std::weak_ptr<const BpfTypes>> bpfTypes;
     struct Descriptor;
     struct GraphicsRegion {

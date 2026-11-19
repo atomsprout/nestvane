@@ -901,7 +901,18 @@ int main() {
         assert(machine.store64(attr + 16, bytes));
         const auto btf = call(280, {18, attr, 32});
         assert(btf < 256 && call(25, {btf, 1}) == 1);
+        constexpr auto info = base + 600, raw = base + 760;
+        const auto objectInfo = [&](uint64_t fd, uint64_t size) {
+            assert(machine.store64(attr, fd | (size << 32)) && machine.store64(attr + 8, info));
+            return call(280, {15, attr, 16});
+        };
+        const std::array<uint8_t, 88> zero{};
+        assert(machine.write(info, zero) && machine.store64(info, raw) && machine.store64(info + 8, bytes));
+        assert(objectInfo(btf, 32) == 0 && (load(info + 8) & UINT32_MAX) == bytes);
+        const auto btfId = load(info + 8) >> 32;
+        assert(btfId && std::memcmp(machine.read(raw, bytes, 4), machine.read(source, bytes, 4), bytes) == 0);
         std::array<uint32_t, 15> map{2, 4, 8, 2};
+        std::memcpy(reinterpret_cast<uint8_t*>(map.data()) + 28, "typed_array", sizeof("typed_array"));
         map[12] = btf;
         map[13] = 2;
         map[14] = 1;
@@ -912,6 +923,12 @@ int main() {
         assert(machine.write(attr, {reinterpret_cast<const uint8_t*>(map.data()), sizeof(map)}));
         const auto fd = call(280, {0, attr, sizeof(map)});
         assert(fd < 256 && call(57, {btf}) == 0);
+        assert(machine.write(info, zero) && objectInfo(fd, 88) == 0 && (load(attr) >> 32) == 88);
+        assert((load(info) & UINT32_MAX) == 2 && (load(info) >> 32) != 0);
+        assert(load(info + 8) == ((8ULL << 32) | 4) && (load(info + 16) & UINT32_MAX) == 2);
+        assert(std::memcmp(machine.read(info + 24, sizeof("typed_array"), 4), "typed_array", sizeof("typed_array")) == 0);
+        assert(load(info + 64) == ((1ULL << 32) | btfId) && (load(info + 72) & UINT32_MAX) == 2);
+        assert(objectInfo(fd, 8) == 0 && (load(attr) >> 32) == 8);
         assert(machine.store64(key, 0) && machine.store64(value, 99));
         assert(machine.store64(attr, fd) && machine.store64(attr + 8, key));
         assert(machine.store64(attr + 16, value) && machine.store64(attr + 24, 0));

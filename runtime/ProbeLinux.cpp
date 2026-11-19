@@ -5195,7 +5195,14 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
         if (nextBpfMapId >= INT32_MAX) return uint64_t(-28);
         try {
             auto map = std::make_shared<BpfMap>();
+            map->id = nextBpfMapId;
+            map->type = type;
+            map->flags = flags & ~(readOnly | writeOnly);
             map->entryCount = entries;
+            map->valueSize = valueSize;
+            map->btfKeyType = keyType;
+            map->btfValueType = valueType;
+            std::memcpy(map->name.data(), input.data() + 28, map->name.size() - 1);
             map->keySize = keySize;
             map->valueStride = valueStride;
             map->budgetBytes = bytes;
@@ -5397,15 +5404,16 @@ uint64_t ProbeLinux::loadBpfTypes(Machine& machine) {
     std::erase_if(bpfTypes, [](const auto& entry) { return entry.expired(); });
     size_t used = 0;
     for (const auto& entry : bpfTypes)
-        if (const auto types = entry.lock()) used += types->byteSize();
+        if (const auto types = entry.lock()) used += types->bytes().size();
     if (used > budget - attr.size || bpfTypes.size() >= 64) return noMemory;
+    if (nextBpfTypeId >= INT32_MAX) return uint64_t(-28);
     const auto fd = freeDescriptor();
     if (fd == descriptorCapacity) return uint64_t(-24);
     try {
         std::vector<uint8_t> bytes(attr.size);
         if (!machine.readInto(attr.address, bytes)) return uint64_t(-14);
-        auto types = std::make_shared<BpfTypes>();
-        const bool valid = types->load(bytes);
+        auto types = std::make_shared<BpfTypes>(nextBpfTypeId);
+        const bool valid = types->load(std::move(bytes));
         if (attr.logLevel) {
             const std::string_view message = valid ? "" : "invalid BPF type metadata";
             const auto count = uint32_t(message.size() + 1);
@@ -5417,11 +5425,77 @@ uint64_t ProbeLinux::loadBpfTypes(Machine& machine) {
         Descriptor entry{"anon_inode:bpf-btf", {}, 0x80000, Node::bpfBtf};
         entry.btf = types;
         bpfTypes.emplace_back(types);
+        ++nextBpfTypeId;
         descriptors().emplace(fd, std::move(entry));
         return fd;
     } catch (const std::bad_alloc&) {
         return noMemory;
     }
+}
+
+uint64_t ProbeLinux::bpfObjectInfo(Machine& machine) {
+    const auto& x = machine.cpu.x;
+    if (x[2] > pageSize) return uint64_t(-7);
+    std::array<uint8_t, pageSize> attr{};
+    if (!machine.readInto(x[1], std::span(attr).first(x[2]))) return uint64_t(-14);
+    if (std::any_of(attr.begin() + 16, attr.end(), [](auto b) { return b != 0; })) return invalid;
+    uint32_t fd = 0, length = 0;
+    uint64_t address = 0;
+    std::memcpy(&fd, attr.data(), sizeof(fd));
+    std::memcpy(&length, attr.data() + 4, sizeof(length));
+    std::memcpy(&address, attr.data() + 8, sizeof(address));
+    if (length > pageSize) return uint64_t(-7);
+    const auto descriptor = descriptors().find(fd);
+    if (descriptor == descriptors().end()) return uint64_t(-77); // EBADFD
+
+    std::array<uint8_t, pageSize> request{};
+    if (!machine.readInto(address, std::span(request).first(length))) return uint64_t(-14);
+    const auto validTail = [&](size_t used) {
+        return length <= used || std::none_of(request.begin() + used, request.begin() + length,
+                                              [](auto byte) { return byte != 0; });
+    };
+    const auto writeInfo = [&](const auto& info) {
+        const auto size = uint32_t(std::min<size_t>(length, sizeof(info)));
+        const auto output = std::span(reinterpret_cast<const uint8_t*>(&info), size);
+        return machine.write(address, output) && writeGuest(machine, x[1] + 4, size) ? 0 : uint64_t(-14);
+    };
+
+    if (const auto map = descriptor->second.bpfMap) {
+        struct Info {
+            uint32_t type, id, key, value, entries, flags;
+            std::array<char, 16> name;
+            uint32_t ifindex, vmlinuxValueType;
+            uint64_t namespaceDevice, namespaceInode;
+            uint32_t btf, keyType, valueType, vmlinuxBtf;
+            uint64_t extra;
+        };
+        static_assert(sizeof(Info) == 88);
+        if (!validTail(sizeof(Info))) return uint64_t(-7);
+        const Info info{map->type, map->id, map->keySize, map->valueSize, map->entryCount, map->flags,
+            map->name, 0, 0, 0, 0, map->types ? map->types->id() : 0, map->btfKeyType, map->btfValueType, 0, 0};
+        return writeInfo(info);
+    }
+    if (const auto types = descriptor->second.btf) {
+        struct Info {
+            uint64_t address;
+            uint32_t size, id;
+            uint64_t nameAddress;
+            uint32_t nameSize, kernel;
+        };
+        static_assert(sizeof(Info) == 32);
+        if (!validTail(sizeof(Info))) return uint64_t(-7);
+        Info info{};
+        std::memcpy(&info, request.data(), std::min<size_t>(length, sizeof(info)));
+        const auto bytes = types->bytes();
+        const auto copy = std::min<size_t>(info.size, bytes.size());
+        if (copy && !machine.write(info.address, bytes.first(copy))) return uint64_t(-14);
+        info.size = bytes.size();
+        info.id = types->id();
+        info.nameSize = 0;
+        info.kernel = 0;
+        return writeInfo(info);
+    }
+    return invalid;
 }
 
 bool ProbeLinux::syscall(Machine& machine) {
@@ -5437,6 +5511,7 @@ bool ProbeLinux::syscall(Machine& machine) {
             if (x[0] <= 4) { x[0] = bpfMapCall(machine); break; }
             if (x[0] == 5) { x[0] = loadBpfSocketFilter(machine); break; }
             if (x[0] >= 11 && x[0] <= 14) { x[0] = bpfObjectIdCall(machine); break; }
+            if (x[0] == 15) { x[0] = bpfObjectInfo(machine); break; }
             if (x[0] == 18) { x[0] = loadBpfTypes(machine); break; }
             const bool pin = x[0] == 6; // BPF_OBJ_PIN
             if (!pin && x[0] != 7) return false; // BPF_OBJ_GET
