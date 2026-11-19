@@ -345,6 +345,8 @@ int main() {
         ProbeLinux guest(1, 0);
         guest.addBootTmpfs("/metadata", 0755, 0, 6);
         guest.addBootTmpfs("/scratch", 0777, 0, 6);
+        constexpr std::array<uint8_t, 2> defaults{'o', 'k'};
+        guest.mount("/system/etc/example", defaults);
         Machine task(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
         const auto invoke = [&](uint64_t number, std::array<uint64_t, 6> args = {}) {
             std::copy(args.begin(), args.end(), task.cpu.x.begin());
@@ -372,10 +374,29 @@ int main() {
         assert(invoke(56, {cwd, base, 0x41, 0600}) == uint64_t(-13));
         path("/metadata/maps/test");
         const auto file = invoke(56, {cwd, base, 0x42, 0600});
-        assert(file < 256 && invoke(64, {file, scratch, 8}) == 8 && invoke(57, {file}) == 0);
+        path("/system/etc/example");
+        const auto input = invoke(56, {cwd, base, 0});
+        assert(input < 256 && file < 256);
+        assert(invoke(285, {input, 0, file, 0, 2}) == uint64_t(-18));
+        assert(invoke(285, {file, 0, file, 0, 2}) == uint64_t(-95));
+        assert(invoke(285, {input, 0xdead, file, 0, 2}) == uint64_t(-14));
+        assert(invoke(285, {input, 0, input, 0, 2}) == uint64_t(-9));
+        assert(invoke(285, {input, 0, file, 0, 2, 1}) == uint64_t(-22));
+        uint64_t contents = 0;
+        assert(task.store64(scratch + 8, 1));
+        assert(invoke(71, {file, input, 0xdead, 2}) == uint64_t(-14));
+        assert(invoke(71, {file, input, scratch + 8, 2}) == 1);
+        assert(invoke(62, {input, 0, 1}) == 0);
+        assert(task.load64(scratch + 8, contents) && contents == 2);
+        assert(invoke(71, {file, input, 0, 2}) == 2);
+        assert(invoke(71, {file, input, 0, 2}) == 0);
+        assert(invoke(67, {file, scratch + 8, 3, 0}) == 3);
+        assert(std::memcmp(task.read(scratch + 8, 3, 4), "kok", 3) == 0);
+        assert(invoke(62, {file, 0, 0}) == 0);
+        assert(invoke(64, {file, scratch, 8}) == 8 && invoke(57, {file}) == 0);
+        path("/metadata/maps/test");
         const auto reopened = invoke(56, {cwd, base, 0});
         assert(reopened < 256 && invoke(63, {reopened, scratch, 8}) == 8);
-        uint64_t contents = 0;
         assert(task.load64(scratch, contents) && contents == 1000);
         constexpr char across[] = "/scratch/test";
         constexpr char moved[] = "/metadata/maps/moved";
@@ -1209,11 +1230,12 @@ int main() {
 
     const auto bindRequest = [&](uint64_t channel, uint32_t operation, uint64_t tag,
                                  std::string_view message, bool receive,
-                                 std::span<const uint64_t> offsets = {}, uint64_t handle = 0) {
+                                 std::span<const uint64_t> offsets = {}, uint64_t handle = 0,
+                                 uint64_t extraSize = 0) {
         constexpr auto command = base + 0x600, arguments = base + 0x690, output = base + 0x720;
         constexpr auto payload = base + 0x800, offsetList = base + 0x850;
-        const std::array<uint64_t, 8> callData{handle, 0, tag, UINT64_MAX,
-                                               message.size(), offsets.size_bytes(), payload, offsetList};
+        const std::array<uint64_t, 9> callData{handle, 0, tag, UINT64_MAX,
+                                               message.size(), offsets.size_bytes(), payload, offsetList, extraSize};
         assert(machine.write(command, {reinterpret_cast<const uint8_t*>(&operation), 4}));
         const auto size = (operation >> 16) & 0x3fff;
         if (size) assert(machine.write(command + 4, {reinterpret_cast<const uint8_t*>(callData.data()), size}));
@@ -1254,6 +1276,43 @@ int main() {
     assert(bindRequest(channel, 0, 0, "", true) == 0);
     assert(uint32_t(load(base + 0x720)) == 0x80407203);
     assert(std::memcmp(machine.read(clientMap, 5, 4), "reply", 5) == 0);
+    {
+        constexpr uint32_t transactionSg = 0x40486311, replySg = 0x40486312;
+        constexpr uint64_t bufferType = 0x70742a85, childFlag = uint64_t{1} << 32;
+        constexpr uint64_t parentSource = base + 0xa00, childSource = base + 0xa10;
+        constexpr std::array<uint64_t, 2> offsets{0, 40};
+        std::array<uint64_t, 10> buffers{bufferType, parentSource, 16, 0, 0,
+                                        bufferType | childFlag, childSource, 8, 0, 8};
+        const std::string_view bytes(reinterpret_cast<const char*>(buffers.data()), sizeof buffers);
+        assert(machine.store64(parentSource, 0xabc) && machine.store64(parentSource + 8, childSource));
+        assert(machine.store64(childSource, 0x12345678));
+        assert(bindRequest(channel, transactionSg, 45, bytes, true, offsets, 0, 16) == 0);
+        assert(uint32_t(load(base + 0x720)) == 0x7211);
+        buffers[9] = 12;
+        assert(bindRequest(channel, transactionSg, 45, bytes, true, offsets, 0, 24) == 0);
+        assert(uint32_t(load(base + 0x720)) == 0x7211);
+        buffers[9] = 8;
+        assert(bindRequest(channel, transactionSg, 45, bytes, true, offsets, 0, 24) == 0);
+        assert(uint32_t(load(base + 0x720)) == 0x7206);
+        assert(bindRequest(channel, 0, 0, "", true) == channel && linux.blocked());
+        assert(linux.schedule(machine) && linux.processId() == 1);
+        assert(bindRequest(manager, 0, 0, "", true) == 0);
+        assert(uint32_t(load(base + 0x720)) == 0x80407202);
+        const auto packet = load(base + 0x724 + 6 * 8);
+        const auto parent = load(packet + 8), child = load(packet + 48);
+        assert(parent == packet + sizeof(buffers) + sizeof(offsets) && child == parent + 16);
+        assert(parent != parentSource && child != childSource);
+        assert(load(parent) == 0xabc && load(parent + 8) == child && load(child) == 0x12345678);
+        assert(bindRequest(manager, replySg, 0, "sg reply", true) == 0);
+        assert(uint32_t(load(base + 0x720)) == 0x7206);
+        assert(bindRequest(manager, 0x40086303, 0, "", false, {}, packet) == 0);
+        machine.cpu.retired += 4096;
+        assert(linux.schedule(machine) && linux.processId() == binderChild);
+        assert(bindRequest(channel, 0, 0, "", true) == 0 && uint32_t(load(base + 0x720)) == 0x80407203);
+        const auto response = load(base + 0x724 + 6 * 8);
+        assert(std::memcmp(machine.read(response, 8, 4), "sg reply", 8) == 0);
+        assert(load(parentSource + 8) == childSource);
+    }
     constexpr uint32_t flatBinder = 0x73622a85, flatHandle = 0x73682a85;
     constexpr uint64_t objectPtr = base + 0x990, objectCookie = base + 0x9b0;
     constexpr std::array<uint64_t, 3> object{flatBinder, objectPtr, objectCookie};

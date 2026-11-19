@@ -317,6 +317,7 @@ private:
     std::vector<std::weak_ptr<SharedFileBytes>> memoryFiles;
     std::optional<Descriptor> find(std::string_view path, uint32_t flags, const Machine* machine = nullptr) const;
     uint64_t freeMemory(const Machine& machine) const;
+    uint64_t writeFileBytes(const WritableFile& file, uint64_t offset, std::span<const uint8_t> bytes);
     std::string backingPath(std::string_view path) const;
     static std::string backingPath(std::string_view path, const MountNamespace& mountNamespace);
     const MountView* mountFor(std::string_view path) const;
@@ -329,7 +330,7 @@ private:
     uint64_t binderWriteRead(Machine& machine, const Descriptor& fd);
     bool binderReadable(const BinderConnection& connection) const;
     uint64_t storeBinderBuffer(BinderConnection& target, std::span<const uint8_t> data,
-                              std::span<const uint8_t> offsets, std::string_view context);
+                              std::span<const uint8_t> offsets, std::span<const uint8_t> extra, std::string_view context);
     uint64_t mountExt4(const std::string& device, const std::string& path, uint64_t flags);
     uint64_t loopIoctl(Machine& machine, const Descriptor& fd);
     uint64_t ptyIoctl(Machine& machine, const Descriptor& fd);

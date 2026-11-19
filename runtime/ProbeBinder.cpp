@@ -8,10 +8,12 @@ namespace {
 
 constexpr uint64_t invalid = uint64_t(-22), fault = uint64_t(-14);
 constexpr uint32_t bcTransaction = 0x40406300, bcReply = 0x40406301, bcFreeBuffer = 0x40086303;
+constexpr uint32_t bcTransactionSg = 0x40486311, bcReplySg = 0x40486312;
 constexpr uint32_t brTransaction = 0x80407202, brTransactionSecctx = 0x80487202, brReply = 0x80407203;
 constexpr uint32_t brDeadReply = 0x7205, brComplete = 0x7206, brFailedReply = 0x7211;
 constexpr uint32_t oneWay = 1, sendSecurityContext = 0x1000;
 constexpr uint32_t binderObject = 0x73622a85, binderHandle = 0x73682a85;
+constexpr uint32_t binderBuffer = 0x70742a85, hasParent = 1;
 constexpr uint32_t brIncrefs = 0x80107207, brAcquire = 0x80107208;
 constexpr uint32_t brDeadBinder = 0x8008720f, brClearDeath = 0x80087210;
 
@@ -38,11 +40,13 @@ bool ProbeLinux::binderReadable(const BinderConnection& connection) const {
 }
 
 uint64_t ProbeLinux::storeBinderBuffer(BinderConnection& target, std::span<const uint8_t> data,
-                                      std::span<const uint8_t> offsets, std::string_view context) {
+                                      std::span<const uint8_t> offsets, std::span<const uint8_t> extra,
+                                      std::string_view context) {
     if (!target.mapped) return 0;
     const auto endPayload = (data.size() + size_t{7}) & ~size_t{7};
     const auto endOffsets = endPayload + offsets.size();
-    const auto size = (endOffsets + (context.empty() ? 0 : context.size() + 1) + size_t{7}) & ~size_t{7};
+    const auto endBuffers = endOffsets + extra.size();
+    const auto size = (endBuffers + (context.empty() ? 0 : context.size() + 1) + size_t{7}) & ~size_t{7};
     const auto needed = std::max(size_t{8}, size);
     uint64_t offset = 0;
     for (const auto& [start, buffer] : target.allocations) {
@@ -55,7 +59,8 @@ uint64_t ProbeLinux::storeBinderBuffer(BinderConnection& target, std::span<const
     std::fill_n(begin, needed, 0);
     std::copy(data.begin(), data.end(), begin);
     std::copy(offsets.begin(), offsets.end(), begin + endPayload);
-    std::copy(context.begin(), context.end(), begin + endOffsets);
+    std::copy(extra.begin(), extra.end(), begin + endOffsets);
+    std::copy(context.begin(), context.end(), begin + endBuffers);
     return target.address + offset;
 }
 
@@ -175,7 +180,7 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
             }
             return 0;
         }
-        case bcTransaction: case bcReply:
+        case bcTransaction: case bcReply: case bcTransactionSg: case bcReplySg:
             break;
         default:
             return invalid;
@@ -188,13 +193,17 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
     };
     BinderTransaction transaction;
     std::memcpy(&transaction, data.data(), sizeof transaction);
+    const bool scatterGather = command == bcTransactionSg || command == bcReplySg;
+    uint64_t extraSize = 0;
+    if (scatterGather) std::memcpy(&extraSize, data.data() + sizeof transaction, sizeof extraSize);
     if (transaction.dataSize > 64 * 1024 || transaction.offsetsSize % sizeof(uint64_t) ||
-        transaction.offsetsSize > 64 * sizeof(uint64_t)) return fail(brFailedReply);
+        transaction.offsetsSize > 64 * sizeof(uint64_t) || extraSize > 64 * 1024 || extraSize % 8)
+        return fail(brFailedReply);
     const auto* bytes = transaction.dataSize ? machine.read(transaction.buffer, transaction.dataSize, 4) : nullptr;
     if (transaction.dataSize && !bytes) return fail(brFailedReply);
     const auto* offsets = transaction.offsetsSize ? machine.read(transaction.offsets, transaction.offsetsSize, 4) : nullptr;
     if (transaction.offsetsSize && !offsets) return fail(brFailedReply);
-    const bool replying = command == bcReply;
+    const bool replying = command == bcReply || command == bcReplySg;
     auto& outstanding = connection.replies[currentTid];
     std::shared_ptr<BinderConnection> target;
     uint64_t replyThread = 0;
@@ -234,7 +243,18 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
         BinderObject object;
         uint32_t handle;
     };
+    struct BufferObject {
+        uint32_t type, flags;
+        uint64_t address, length, parent, parentOffset;
+    };
+    static_assert(sizeof(BufferObject) == 40);
+    struct BufferTranslation {
+        size_t objectIndex, objectOffset, extraOffset, parentIndex;
+        BufferObject object;
+    };
     std::vector<Translation> translations;
+    std::vector<BufferTranslation> buffers;
+    std::vector<uint8_t> extra(extraSize);
     std::map<uint64_t, std::shared_ptr<BinderNode>> newNodes;
     std::map<const BinderNode*, uint32_t> knownHandles;
     std::map<uint32_t, BinderReference> newHandles;
@@ -242,6 +262,7 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
         for (const auto& [handle, ref] : target->handles) knownHandles.emplace(ref.node.get(), handle);
     }
     size_t previousEnd = 0;
+    size_t nextExtraOffset = 0;
     auto nextHandle = target->nextHandle;
     for (size_t index = 0; index < transaction.offsetsSize; index += sizeof(uint64_t)) {
         uint64_t offset = 0;
@@ -251,6 +272,34 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
         previousEnd = offset + sizeof(BinderObject);
         BinderObject object{};
         std::memcpy(&object, bytes + offset, sizeof object);
+        if (object.type == binderBuffer) {
+            if (!scatterGather || sizeof(BufferObject) > transaction.dataSize - offset) return fail(brFailedReply);
+            BufferObject buffer;
+            std::memcpy(&buffer, bytes + offset, sizeof buffer);
+            if (buffer.flags & ~hasParent || buffer.length > extra.size() - nextExtraOffset)
+                return fail(brFailedReply);
+            size_t parentIndex = 0;
+            if (buffer.flags & hasParent) {
+                if (buffers.empty()) return fail(brFailedReply);
+                parentIndex = buffers.size() - 1;
+                uint64_t minimum = 0;
+                while (buffers[parentIndex].objectIndex != buffer.parent) {
+                    const auto& prior = buffers[parentIndex];
+                    if (!(prior.object.flags & hasParent)) return fail(brFailedReply);
+                    minimum = prior.object.parentOffset + sizeof(uint64_t);
+                    parentIndex = prior.parentIndex;
+                }
+                const auto length = buffers[parentIndex].object.length;
+                if (buffer.parentOffset < minimum || buffer.parentOffset > length ||
+                    sizeof(uint64_t) > length - buffer.parentOffset) return fail(brFailedReply);
+            }
+            if (buffer.length && !machine.readInto(buffer.address, std::span(extra).subspan(nextExtraOffset, buffer.length)))
+                return fail(brFailedReply);
+            buffers.push_back({index / sizeof(uint64_t), size_t(offset), nextExtraOffset, parentIndex, buffer});
+            nextExtraOffset += (buffer.length + 7) & ~uint64_t{7};
+            previousEnd = offset + sizeof buffer;
+            continue;
+        }
         if (object.type == binderObject && object.value == 0 && object.cookie == 0) continue;
         std::shared_ptr<BinderNode> node;
         if (object.type == binderObject && object.value) {
@@ -285,7 +334,7 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
     }
     if (notices.size() + 2 * newNodes.size() + 1 > 64) return fail(brFailedReply);
     const auto address = storeBinderBuffer(*target, {bytes, size_t(transaction.dataSize)},
-                                          {offsets, size_t(transaction.offsetsSize)}, label);
+                                          {offsets, size_t(transaction.offsetsSize)}, extra, label);
     if (!address) return fail(brFailedReply);
     target->nextHandle = nextHandle;
     target->handles.merge(newHandles);
@@ -296,6 +345,17 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
         if (item.handle) {
             ++target->handles.at(item.handle).inBuffer;
             allocation.handles.push_back(item.handle);
+        }
+    }
+    const auto extraOffset = ((transaction.dataSize + 7) & ~uint64_t{7}) + transaction.offsetsSize;
+    auto* targetBytes = target->mapped->pages.data() + (address - target->address);
+    for (const auto& item : buffers) {
+        auto buffer = item.object;
+        buffer.address = address + extraOffset + item.extraOffset;
+        std::memcpy(targetBytes + item.objectOffset, &buffer, sizeof buffer);
+        if (buffer.flags & hasParent) {
+            const auto offset = buffers[item.parentIndex].extraOffset + buffer.parentOffset;
+            std::memcpy(targetBytes + extraOffset + offset, &buffer.address, sizeof buffer.address);
         }
     }
     for (const auto& [pointer, node] : newNodes) {
@@ -313,7 +373,7 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
     transaction.buffer = address;
     transaction.offsets = address + ((transaction.dataSize + 7) & ~uint64_t{7});
     const auto opcode = replying ? brReply : label.empty() ? brTransaction : brTransactionSecctx;
-    BinderPacket packet{opcode, transaction, label.empty() ? 0 : transaction.offsets + transaction.offsetsSize};
+    BinderPacket packet{opcode, transaction, label.empty() ? 0 : address + extraOffset + extra.size()};
     if (!replying && !(transaction.flags & oneWay)) packet.reply = BinderRoute{fd.binder, currentTid};
     destination.push_back(packet);
     if (binderTrace.size() < 8192) {

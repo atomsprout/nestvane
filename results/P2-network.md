@@ -80,3 +80,5 @@
 - Mac 复测中，原版 `installd` 越过配额查询，完成布局初始化。原版框架通过 Binder 找到它，并推进到 ActivityManager。随后 `SystemServer` 停在 `setsockopt(SOL_SOCKET, SO_REUSEADDR)`。已补齐该选项的读写，宿主回归、ASan/UBSan 和 iOS Release 构建通过。[运行记录](p2-zygote-eager.txt) · [Linux socket 选项](https://raw.githubusercontent.com/torvalds/linux/master/net/core/sock.c)
 
 - iPhone 11 同样确认原版框架找到了 `installd`。它随后在 watchdog 查询 `HwBinder` 服务时抛出异常。Mac 越过 `SO_REUSEADDR` 后到达 ActivityManager 的调度线程创建，原先 64 个客体任务上限导致 `pthread_create` 失败。已提高到 256，并补齐客体 tmpfs 的目录访问、文件权限和同挂载点改名，使原版 Aconfig 能尝试在具有组写权限的目录里生成标志表。宿主回归、ASan/UBSan 和 iOS Release 构建通过。[运行记录](p2-zygote-eager.txt)
+
+- 权限修复后，Mac 和 iPhone 11 都确认原版 Aconfig 能打开默认标志和 `/metadata` 目标文件，随后停在 `copy_file_range`。Mac 返回跨挂载点错误后观察到原版代码改用 `sendfile`，现已实现客体常规文件间复制。并实现 HIDL 使用的 Binder scatter/gather 请求和回复。宿主回归覆盖跨进程缓冲区复制、父指针修正和非法偏移，ASan/UBSan 通过。最新版已在 iPhone 11 开始复测。[运行记录](p2-zygote-eager.txt) · [HwBinder 传输](https://android.googlesource.com/platform/system/libhwbinder/+/refs/heads/main/IPCThreadState.cpp)

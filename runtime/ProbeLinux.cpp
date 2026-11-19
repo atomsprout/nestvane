@@ -1026,6 +1026,18 @@ uint64_t ProbeLinux::resize(const WritableFile& file, uint64_t size) {
     return 0;
 }
 
+uint64_t ProbeLinux::writeFileBytes(const WritableFile& file, uint64_t offset, std::span<const uint8_t> bytes) {
+    if (offset + bytes.size() > file.storage->size) {
+        // An input mapping may share the output storage, whose allocation can move.
+        const std::vector<uint8_t> copy(bytes.begin(), bytes.end());
+        if (const auto error = resize(file, offset + bytes.size()); error) return error;
+        std::copy(copy.begin(), copy.end(), file.storage->pages.begin() + offset);
+    } else {
+        std::memmove(file.storage->pages.data() + offset, bytes.data(), bytes.size());
+    }
+    return 0;
+}
+
 bool ProbeLinux::canAccessParent(std::string_view path, bool modify) const {
     if (!userId()) return true;
     const MountView* view = nullptr;
@@ -2396,6 +2408,62 @@ bool ProbeLinux::fileCall(Machine& machine) {
             x[0] = uint64_t(mounted ? -38 : -19);
             break;
         }
+        case 285: { // copy_file_range, when guest filesystems require buffered copying.
+            if (x[5]) { x[0] = invalid; break; }
+            const auto target = descriptors().find(uint32_t(x[2]));
+            if (descriptor == descriptors().end() || target == descriptors().end() ||
+                descriptor->second.pathOnly() || target->second.pathOnly() ||
+                (descriptor->second.flags & 3) == 1 || !(target->second.flags & 3) ||
+                (target->second.effectiveFlags() & 0x400)) { x[0] = uint64_t(-9); break; }
+            const auto regular = [](const Descriptor& file) { return file.node == Node::regular || file.temporary; };
+            if (!regular(descriptor->second) || !regular(target->second)) { x[0] = invalid; break; }
+            uint64_t position = 0;
+            if ((x[1] && !machine.load64(x[1], position)) || (x[3] && !machine.load64(x[3], position))) {
+                x[0] = uint64_t(-14);
+                break;
+            }
+            const auto& input = descriptor->second;
+            const auto& output = target->second;
+            x[0] = uint64_t(mountFor(input.path) != mountFor(output.path) ? -18 : -95);
+            break;
+        }
+        case 71: { // sendfile between guest regular files.
+            const auto input = descriptors().find(uint32_t(x[1]));
+            if (descriptor == descriptors().end() || input == descriptors().end() ||
+                descriptor->second.pathOnly() || input->second.pathOnly() ||
+                !(descriptor->second.flags & 3) || (input->second.flags & 3) == 1) {
+                x[0] = uint64_t(-9);
+                break;
+            }
+            const auto& output = descriptor->second;
+            const auto& source = input->second;
+            if (!output.temporary || (!source.temporary && source.node != Node::regular) ||
+                (output.effectiveFlags() & 0x400)) { x[0] = invalid; break; }
+            uint64_t position = *source.offset;
+            if (x[2] && (!machine.load64(x[2], position) || !machine.store64(x[2], position))) {
+                x[0] = uint64_t(-14);
+                break;
+            }
+            if (position > INT64_MAX) { x[0] = invalid; break; }
+            const auto data = source.temporary
+                ? std::span<const uint8_t>(source.temporary->storage->pages).first(source.temporary->storage->size)
+                : source.contents();
+            if (!x[3] || position >= data.size()) { x[0] = 0; break; }
+            const auto& file = *output.temporary;
+            if (file.seals & (sealWrite | sealFutureWrite)) { x[0] = uint64_t(-1); break; }
+            const auto count = std::min<uint64_t>(x[3], data.size() - position);
+            const auto offset = *output.offset;
+            const auto limit = file.persistent || file.memoryFile ? maxDataFileBytes : maxGuestFileBytes;
+            if (offset > limit || count > limit - offset) { x[0] = uint64_t(-27); break; }
+            if (const auto error = writeFileBytes(file, offset, data.subspan(position, count)); error) {
+                x[0] = error;
+                break;
+            }
+            *output.offset = offset + count;
+            if (!x[2]) *source.offset = position + count;
+            x[0] = !x[2] || machine.store64(x[2], position + count) ? count : uint64_t(-14);
+            break;
+        }
         case 63: case 67: { // read, pread64
             if (descriptor == descriptors().end() || descriptor->second.pathOnly()) { x[0] = uint64_t(-9); break; }
             auto& fd = descriptor->second;
@@ -2965,14 +3033,7 @@ uint64_t ProbeLinux::writeDescriptor(Machine& machine, const Descriptor& fd, uin
         if (offset > limit || size > limit - offset) return uint64_t(-27);
         const auto* data = machine.read(address, size, 4);
         if (!data) return uint64_t(-14);
-        if (offset + size > file.storage->size) {
-            // A guest buffer may alias the file being extended.
-            const std::vector<uint8_t> copy(data, data + size);
-            if (const auto result = resize(file, offset + size); result) return result;
-            std::copy(copy.begin(), copy.end(), file.storage->pages.begin() + offset);
-        } else {
-            std::memmove(file.storage->pages.data() + offset, data, size);
-        }
+        if (const auto error = writeFileBytes(file, offset, {data, size}); error) return error;
         if (!position) *fd.offset = offset + size;
         return size;
     }

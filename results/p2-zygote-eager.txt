@@ -226,3 +226,18 @@ Caused by: java.lang.OutOfMemoryError: pthread_create (1040KB stack) failed: Try
 aconfigd_system: failed to copy file from /system/etc/aconfig/package.map to /metadata/aconfig/maps/system.package.new: Permission denied
   guest execution wall time: 230095 ms
 Host regressions cover 256 guest tasks, tmpfs directory mode bits, supplementary groups, temporary file ownership and a same-volume rename. Host suite and ASan/UBSan passed.
+
+Mac and iPhone 11 with metadata permissions fixed
+open /system/etc/aconfig/package.map -> 4
+open /metadata/aconfig/maps/system.package.new -> 5
+  syscall 285 (copy_file_range) [unimplemented in guest PID 74, suspended]
+iPhone 11 process 6971 guest execution wall time: 17980 ms
+Mac after handling copy_file_range across mounts
+  syscall 71 (sendfile) [unimplemented in guest PID 74, suspended]
+Host regression covers copying guest file bytes, partial input, EOF and explicit offsets.
+
+HwBinder scatter/gather host regression
+BC_TRANSACTION_SG and BC_REPLY_SG passed across guest processes.
+Parent buffer pointers refer to the copied buffer in the receiver.
+Undersized extra storage and out-of-range parent offsets were rejected.
+Host ABI suite, ASan/UBSan and iOS Release build passed.
