@@ -928,8 +928,14 @@ bool floatInstruction(CPU& cpu, uint32_t word) {
         setLane(cpu.v[rd], 0, sizeof(Float), std::bit_cast<UInt>(value));
     };
     const unsigned bits = word >> 31 ? 64 : 32;
-    const uint32_t unary = word & 0x7fbffc00;
+    const bool fixedToInteger = (word & 0x7fbe0000) == 0x1e180000;
+    const unsigned fractionalBits = fixedToInteger ? 64 - ((word >> 10) & 63) : 0;
+    if (fractionalBits > bits) return false;
+    const uint32_t unary = fixedToInteger ? 0x1e380000 | (word & 0x10000) : word & 0x7fbffc00;
     const uint32_t binary = word & 0xffa0fc00;
+    const auto integerInput = [&] {
+        return fixedToInteger ? std::ldexp(get(rn), int(fractionalBits)) : get(rn);
+    };
     if ((word & 0xffa01fe0) == 0x1e201000) { // FMOV immediate.
         store(floatingImmediate<Float>((word >> 13) & 255U));
     } else if ((word & 0xfffffc00) == 0x1e22c000 || (word & 0xfffffc00) == 0x1e624000) { // FCVT between S and D.
@@ -971,7 +977,7 @@ bool floatInstruction(CPU& cpu, uint32_t word) {
         store(std::ldexp(number, -int(fractionalBits)));
     } else if (unary == 0x1e380000 || unary == 0x1e240000 ||
                unary == 0x1e280000 || unary == 0x1e300000) { // FCVTZS / FCVTAS / FCVTPS / FCVTMS.
-        const auto input = get(rn);
+        const auto input = integerInput();
         const auto value = unary == 0x1e240000 ? std::round(input) :
                            unary == 0x1e280000 ? std::ceil(input) :
                            unary == 0x1e300000 ? std::floor(input) : input;
@@ -981,7 +987,7 @@ bool floatInstruction(CPU& cpu, uint32_t word) {
             value <= -bound ? sign : uint64_t(int64_t(value));
         put(cpu, rd, integer, bits);
     } else if (unary == 0x1e290000 || unary == 0x1e390000 || unary == 0x1e250000) { // FCVTPU / FCVTZU / FCVTAU.
-        const Float input = get(rn);
+        const Float input = integerInput();
         const Float value = unary == 0x1e290000 ? std::ceil(input) : unary == 0x1e250000 ? std::round(input) : input;
         const Float bound = std::ldexp(Float{1}, bits);
         put(cpu, rd, !(value > 0) ? 0 : value >= bound ? mask(bits) : uint64_t(value), bits);

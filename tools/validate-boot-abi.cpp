@@ -433,6 +433,23 @@ int main() {
         permute.cpu.v[2][15] = 0x80;
         assert(executeStartupInstruction(permute, 0x0e1f2c49)); // smov w9, v2.b[15]
         assert(permute.cpu.x[9] == 0xffffff80);
+        const float fixedSingle = 1.625125f;
+        const double fixedDouble = -1.753;
+        const double unsignedOverflow = 1.0;
+        const float signedOverflow = 1.0f;
+        std::memcpy(permute.cpu.v[0].data(), &fixedSingle, sizeof(fixedSingle));
+        std::memcpy(permute.cpu.v[1].data(), &fixedDouble, sizeof(fixedDouble));
+        std::memcpy(permute.cpu.v[2].data(), &unsignedOverflow, sizeof(unsignedOverflow));
+        std::memcpy(permute.cpu.v[3].data(), &signedOverflow, sizeof(signedOverflow));
+        assert(executeStartupInstruction(permute, 0x9e19d019)); // fcvtzu x25, s0, #12
+        assert(permute.cpu.x[25] == 6656);
+        assert(executeStartupInstruction(permute, 0x1e58e439)); // fcvtzs w25, d1, #7
+        assert(permute.cpu.x[25] == uint32_t(-224));
+        assert(executeStartupInstruction(permute, 0x1e59805b)); // fcvtzu w27, d2, #32
+        assert(permute.cpu.x[27] == UINT32_MAX);
+        assert(executeStartupInstruction(permute, 0x9e18007c)); // fcvtzs x28, s3, #64
+        assert(permute.cpu.x[28] == INT64_MAX);
+        assert(!executeStartupInstruction(permute, 0x1e18007c)); // 64 fractional bits in a W result.
         const std::array<float, 4> ceilSingles{-0.5f, 2.1f, 17, 42}, ceilSinglesResult{-0.0f, 3, 0, 0};
         std::memcpy(permute.cpu.v[1].data(), ceilSingles.data(), sizeof(ceilSingles));
         assert(executeStartupInstruction(permute, 0x0ea18821)); // frintp v1.2s, v1.2s
