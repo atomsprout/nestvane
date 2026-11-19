@@ -106,6 +106,13 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
         else report << ", no wall-time deadline\n";
     }
     uint32_t word = 0;
+    // Decode depends only on the fetched bits, so shared code, mappings and code edits
+    // need no invalidation. Cache unknown words as well as the basic instructions.
+    struct DecodedWord {
+        uint64_t word = UINT64_MAX;
+        Instruction instruction;
+    };
+    std::array<DecodedWord, 2048> decodedWords{};
     uint64_t syscallCount = 0;
     const unsigned traceLimit = init ? 100000 : kind == ProbeKind::art ? 16000 : 20000;
     unsigned protectionLogs = 0, syncLogs = 0, suppressedLogs = 0, zygoteSyscalls = 0, zygoteSamples = 0;
@@ -169,7 +176,12 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
             continue;
         }
         std::memcpy(&word, bytes, sizeof(word));
-        const auto instruction = decode(word);
+        auto& decoded = decodedWords[((word ^ (word >> 16)) * 0x9e3779b9U) >> 21];
+        if (decoded.word != word) {
+            decoded.word = word;
+            decoded.instruction = decode(word);
+        }
+        const auto& instruction = decoded.instruction;
         if (instruction.op != Op::unsupported) {
             if (instruction.op != Op::svc) {
                 executeDecoded(machine, instruction);
