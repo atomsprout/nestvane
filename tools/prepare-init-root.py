@@ -128,12 +128,13 @@ def collect(serial, readelf, destination, small_art_heap):
         aconfigd = "/system/bin/aconfigd-system"
         keymint = "/vendor/bin/hw/android.hardware.security.keymint-service"
         lights = "/vendor/bin/hw/android.hardware.lights-service.example"
+        health = "/vendor/bin/hw/android.hardware.health-service.example"
         composer = "/vendor/bin/hw/android.hardware.graphics.composer3-service.ranchu"
         allocator = "/vendor/bin/hw/android.hardware.graphics.allocator-service.ranchu"
         for programs, search_paths in (
             ((vold, service, cmd, vdc, keystore, casefold, vold_prepare, odsign), ("/system/lib64",)),
             ((zygote, installd, system_suspend, surfaceflinger, bootanimation, aconfigd), ("/system/lib64", "/system_ext/lib64")),
-            ((keymint, lights, composer, allocator), ("/vendor/lib64", "/system/lib64")),
+            ((keymint, lights, health, composer, allocator), ("/vendor/lib64", "/system/lib64")),
         ):
             dependencies = {}
             for directory in search_paths:
@@ -314,7 +315,7 @@ def collect(serial, readelf, destination, small_art_heap):
         boot_domains = []
         sdkext = "/apex/com.android.sdkext/bin"
         programs = ("/system/bin/apexd", system_self_test, vendor_self_test, vold, vdc, keystore, keymint,
-                    casefold, vold_prepare, odsign, zygote, installd, system_suspend, lights, surfaceflinger,
+                    casefold, vold_prepare, odsign, zygote, installd, system_suspend, lights, health, surfaceflinger,
                     bootanimation, composer, allocator, aconfigd,
                     f"{sdkext}/derive_sdk", f"{sdkext}/derive_classpath",
                     "/apex/com.android.art/bin/art_boot", "/apex/com.android.art/bin/odrefresh",

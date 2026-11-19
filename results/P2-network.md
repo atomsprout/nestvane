@@ -222,3 +222,5 @@
 - 带 ExtShared 的 Mac 启动记录显示系统包扫描用时 141.722 秒，PackageManager 写出设置并完成创建。持久化的 `/data/system/packages.list` 有 41 行，按包名确认包含 `android.ext.shared`、Launcher3、SystemUI 和 PackageInstaller。此时尚未确认桌面显示或客体完成启动。
 - 新增可选的 `--smoke-apk` 镜像输入。客体 init 在 `sys.boot_completed=1` 后以 shell 身份调用原版 Android `cmd` 安装并冷启动项目自有 APK，报告分别记录安装、启动命令和 Activity 实际创建。参考 SDK 上命令返回 `Success` 和 `LaunchState: COLD`，应用读回此前保存的计数 1。Mac Nestvane 镜像复测已开始，包含测试 APK 的 iPhoneOS 开发签名包通过校验。
 - 4 倍硬件超时的 Mac 镜像完成包管理后，Android Watchdog 报告主线程阻塞 246 秒。4 秒宿主 CPU 采样中，Binder 死亡轮询占该执行线程 671 个样本中的 104 个，热点为每次检查扫描所有客体线程。活着的进程首线程现在用索引查找；首线程退出后保留扫描后备路径。回归覆盖 Binder 对端首线程退出时无通知、最后一个线程退出后收到通知。宿主验证和包含验收 APK 的 iPhoneOS 签名构建通过。新增完整的 SystemServerTiming 日志，并保留离线镜像 12 倍超时的对照运行。
+- Watchdog 的主线程堆栈定位到原版 `BatteryService.registerHealthCallback` 阻塞在 `android.hardware.health.IHealth/default`。服务管理器反复查找，镜像中的 VINTF 和 init 文件声明了该服务，但之前缺少可执行文件。采集脚本现收录 SDK 原版 Health HAL、ELF 依赖和参考策略，确认 init 转到 `u:r:hal_health_default:s0`，且参考策略允许注册该实例。重新生成的 Mac 镜像已启动，带 12 倍诊断超时和自有 APK 的 iPhoneOS 构建通过签名及文件校验。
+- iPhone 11 第 8152 号进程捕获到 640×960 Android 画面，耗时 114,038 ms，Zygote 预加载 18,596 个类，进入 `system_server` 耗时 756,725 ms。这次运行仍使用早期镜像，未包含 Health HAL。
