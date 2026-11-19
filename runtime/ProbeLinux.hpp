@@ -173,6 +173,8 @@ private:
         uint32_t type;
         uint32_t family = 1, protocol = 0;
         uint64_t cookie = 0;
+        uint32_t socketMark = 0;
+        std::shared_ptr<uint32_t> tcpConnectionMark;
         std::shared_ptr<void> storageIdentity;
         std::string inetCgroup;
         std::vector<std::weak_ptr<Directory>> inetAncestry;
@@ -263,6 +265,14 @@ private:
     uint16_t nextEphemeralPort = 32768;
     bool inetLoopbackUp = true;
     GuestFirewall firewall;
+    struct DatagramConnection {
+        std::weak_ptr<SocketState> first, second;
+        std::chrono::steady_clock::time_point expires;
+        uint32_t mark = 0;
+    };
+    std::map<std::pair<uint64_t, uint64_t>, DatagramConnection> datagramConnections;
+    uint32_t* trackDatagramConnection(const std::shared_ptr<SocketState>& first,
+        const std::shared_ptr<SocketState>& second);
     std::shared_ptr<CgroupSocketHooks> inetReleasePrograms = std::make_shared<CgroupSocketHooks>();
     uint64_t bpfMapCall(Machine& machine);
     uint64_t loadBpfProgram(Machine& machine);

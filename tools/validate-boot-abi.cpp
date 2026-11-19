@@ -678,6 +678,7 @@ int main() {
             assert(firewall.get(data, ipv6) == 0);
             std::vector<uint8_t> old(size);
             assert(data.readInto(address + 40, old));
+            const auto initial = old;
             std::vector<uint8_t> rule(header + 48 + 40);
             store(rule, protocol, uint16_t(6));
             if (ipv6) rule[131] = 1; // IP6T_F_PROTO
@@ -717,8 +718,8 @@ int main() {
             packet[ipSize + 13] = 2;
             auto differentPort = packet;
             differentPort[ipSize + 3] = 188;
-            assert(firewall.allows(differentPort, GuestFirewall::output, 65536) && differentPort.size() == packet.size());
-            assert(firewall.allows(packet, GuestFirewall::output, 65536) && packet.size() == ipSize + 24);
+            assert(firewall.allows(differentPort, GuestFirewall::output, 65536, {}) && differentPort.size() == packet.size());
+            assert(firewall.allows(packet, GuestFirewall::output, 65536, {}) && packet.size() == ipSize + 24);
             assert(packet[ipSize + 12] == 0x60 && packet[ipSize + 20] == 2 && packet[ipSize + 21] == 4);
             assert(packet[ipSize + 22] == 1 && packet[ipSize + 23] == 164);
             const auto checkSum = [](std::span<const uint8_t> bytes, uint32_t sum = 0) {
@@ -731,8 +732,63 @@ int main() {
             const auto addresses = std::span(packet).subspan(ipv6 ? 8 : 12, ipv6 ? 32 : 8);
             assert(checkSum(std::span(packet).subspan(ipSize), checkSum(addresses, 30)) == 0xffff);
             packet[ipSize + 23] = 64;
-            assert(firewall.allows(packet, GuestFirewall::output, 65536));
+            assert(firewall.allows(packet, GuestFirewall::output, 65536, {}));
             assert(packet[ipSize + 23] == 64); // A smaller existing MSS is preserved.
+
+            const auto markRule = [&](uint32_t expected, uint8_t mode) {
+                std::vector<uint8_t> ruleBytes(header + 48 + 48);
+                store(ruleBytes, offsets, uint16_t(header + 48));
+                store(ruleBytes, offsets + 2, uint16_t(ruleBytes.size()));
+                store(ruleBytes, header, uint16_t(48));
+                std::memcpy(ruleBytes.data() + header + 2, "connmark", 8);
+                ruleBytes[header + 31] = 1;
+                store(ruleBytes, header + 32, expected);
+                store(ruleBytes, header + 36, uint32_t(0xff));
+                const auto target = header + 48;
+                store(ruleBytes, target, uint16_t(48));
+                std::memcpy(ruleBytes.data() + target + 2, "CONNMARK", 8);
+                ruleBytes[target + 31] = mode == 1 ? 1 : 2;
+                store(ruleBytes, target + 36, uint32_t(0xff));
+                store(ruleBytes, target + 40, uint32_t(mode == 1 ? 0xff : 0xff00));
+                if (mode == 1) {
+                    ruleBytes[target + 44] = 1; // Save the packet's low byte to the connection.
+                } else {
+                    ruleBytes[target + 45] = 8; // Restore the connection mark eight bits to the left.
+                    ruleBytes[target + 46] = 2;
+                }
+                return ruleBytes;
+            };
+            const auto save = markRule(0, 1), restore = markRule(0x34, 2);
+            old = initial;
+            old.insert(old.begin() + start, save.begin(), save.end());
+            old.insert(old.begin() + start + save.size(), restore.begin(), restore.end());
+            store(update, 36, metadata[11] + 2);
+            store(update, 40, uint32_t(old.size()));
+            const auto markBytes = save.size() + restore.size();
+            for (unsigned hook = 0; hook < 5; ++hook) {
+                const auto entry = metadata[1 + hook], policy = metadata[6 + hook];
+                store(update, 44 + hook * 4, uint32_t(entry + (entry > start ? markBytes : 0)));
+                store(update, 64 + hook * 4, uint32_t(policy + (policy >= start ? markBytes : 0)));
+            }
+            store(update, 84, metadata[11] + 1);
+            assert(data.write(address, update) && data.write(address + update.size(), old));
+            data.cpu.x = {0, level, 64, address, update.size() + old.size()};
+            assert(firewall.set(data, ipv6) == 0 && firewall.tracksMarks());
+            uint32_t packetMark = 0x1234, connectionMark = 0;
+            assert(firewall.allows(packet, GuestFirewall::output, 65536, {&packetMark, &connectionMark}));
+            assert(packetMark == 0x3434 && connectionMark == 0x34);
+            packetMark = 0;
+            assert(firewall.allows(packet, GuestFirewall::output, 65536, {&packetMark, &connectionMark}));
+            assert(packetMark == 0x3400 && connectionMark == 0x34);
+
+            std::array<uint8_t, 30> version{};
+            std::memcpy(version.data(), "connmark", 8);
+            assert(data.write(address, version) && data.store64(length, version.size()));
+            data.cpu.x = {0, level, ipv6 ? 68U : 66U, address, length};
+            assert(firewall.get(data, ipv6) == uint64_t(-93));
+            version.back() = 1;
+            assert(data.write(address, version) && firewall.get(data, ipv6) == 0);
+
         }
     }
     const auto put = [&](uint64_t address, const char* data) {

@@ -16,6 +16,10 @@ namespace nestvane {
 class GuestFirewall {
 public:
     enum Hook : unsigned { prerouting, input, forward, output, postrouting };
+    struct PacketState {
+        uint32_t* mark = nullptr;
+        uint32_t* connectionMark = nullptr;
+    };
 
     uint64_t get(Machine& machine, bool ipv6) {
         const auto& x = machine.cpu.x;
@@ -28,9 +32,11 @@ public:
             if (!read(machine, x[3], revision)) return fault;
             const auto name = string(std::span(revision).first(29));
             const bool match = option == (ipv6 ? 68 : 66);
-            if (revision.back()) return missing;
-            return (match ? name == "comment" || name == "tcp" || name == "udp" : name == "TCPMSS")
-                ? 0 : missing;
+            const auto version = revision.back();
+            if (match && name == "connmark") return version == 1 ? 0 : uint64_t(-93);
+            if (!match && name == "CONNMARK") return (version == 1 || version == 2) ? 0 : uint64_t(-93);
+            const bool known = match ? name == "comment" || name == "tcp" || name == "udp" : name == "TCPMSS";
+            return !known ? missing : version ? uint64_t(-93) : 0;
         }
         if (option != 64 && option != 65) return unsupported;
         std::array<char, 32> name{};
@@ -100,8 +106,11 @@ public:
     }
 
     bool empty() const { return tables.empty(); }
+    bool tracksMarks() const {
+        return std::ranges::any_of(tables, [](const auto& entry) { return entry.second.usesMarks; });
+    }
 
-    bool allows(std::vector<uint8_t>& packet, Hook hook, uint32_t mtu) {
+    bool allows(std::vector<uint8_t>& packet, Hook hook, uint32_t mtu, PacketState state) {
         if (tables.empty()) return true;
         if (packet.size() < 20) return false;
         const bool ipv6 = packet[0] >> 4 == 6;
@@ -110,7 +119,9 @@ public:
         for (const auto name : {"raw", "mangle", "nat", "filter"}) {
             const auto table = tables.find({ipv6, name});
             if (table == tables.end() || !(table->second.hooks & (1U << hook))) continue;
-            if (!evaluate(table->second, layout, packet, hook, mtu)) return false;
+            auto visible = state;
+            if (std::string_view(name) == "raw") visible.connectionMark = nullptr;
+            if (!evaluate(table->second, layout, packet, hook, mtu, visible)) return false;
         }
         return true;
     }
@@ -152,6 +163,7 @@ private:
         Positions starts{}, policies{};
         std::vector<uint8_t> entries;
         std::vector<uint32_t> offsets;
+        bool usesMarks = false;
     };
     std::map<std::pair<bool, std::string>, Table> tables;
 
@@ -239,6 +251,13 @@ private:
                 const auto length = load<uint16_t>(extension, 0);
                 if (length < targetHeader || length % 8 || length > extension.size()) return invalid;
                 const auto matchName = string(extension.subspan(2, 29));
+                if (matchName == "connmark") {
+                    if (extension[31] != 1) return unsupported;
+                    if (length != 48 || extension[40] > 1) return invalid;
+                    table.usesMarks = true;
+                    match += length;
+                    continue;
+                }
                 if (extension[31]) return missing;
                 if (matchName == "comment") {
                     if (length != 288) return invalid;
@@ -257,18 +276,24 @@ private:
 
             const auto target = entry.subspan(targetAt, end - targetAt);
             const auto length = load<uint16_t>(target, 0);
-            if (length != target.size() || target[31]) return invalid;
+            if (length != target.size()) return invalid;
             if (target[2] == 0) {
-                if (length != 40) return invalid;
+                if (length != 40 || target[31]) return invalid;
                 const auto verdict = load<int32_t>(target, targetHeader);
                 if (verdict >= 0) jumps.push_back(verdict);
                 else if (verdict != drop && verdict != accept && verdict != returnToCaller) return unsupported;
             } else {
                 const auto targetName = string(target.subspan(2, 29));
                 if (targetName == "ERROR") {
-                    if (length != 64 || string(target.subspan(targetHeader, 30)).empty()) return invalid;
+                    if (length != 64 || target[31] || string(target.subspan(targetHeader, 30)).empty()) return invalid;
                 } else if (targetName == "TCPMSS") {
-                    if (length != 40 || name != "mangle" || protocol != 6 || !synMatch) return invalid;
+                    if (length != 40 || target[31] || name != "mangle" || protocol != 6 || !synMatch) return invalid;
+                } else if (targetName == "CONNMARK") {
+                    if (length != 48 || (target[31] != 1 && target[31] != 2)) return invalid;
+                    const bool shift = target[31] == 2;
+                    if (target[shift ? 46 : 44] > 2 || (shift && (target[44] > 1 || target[45] > 31)))
+                        return invalid;
+                    table.usesMarks = true;
                 } else {
                     return missing;
                 }
@@ -296,7 +321,7 @@ private:
     }
 
     static bool matches(std::span<const uint8_t> entry, const Layout& layout,
-                        std::span<const uint8_t> packet, Hook hook) {
+                        std::span<const uint8_t> packet, Hook hook, PacketState state) {
         const size_t ipBytes = layout.ipv6 ? 16 : 4;
         const size_t ipOffset = layout.ipv6 ? 8 : 12;
         const auto inversions = entry[layout.inversions];
@@ -319,8 +344,14 @@ private:
         for (size_t match = layout.entrySize; match < targetAt;) {
             const auto extension = entry.subspan(match);
             const auto type = string(extension.subspan(2, 29));
-            if (type != "comment" && !matchTransport(type, extension.subspan(targetHeader), packet, layout.ipv6))
+            const auto body = extension.subspan(targetHeader);
+            if (type == "connmark") {
+                if (!state.connectionMark) return false;
+                const bool same = (*state.connectionMark & load<uint32_t>(body, 4)) == load<uint32_t>(body, 0);
+                if (same == bool(body[8])) return false;
+            } else if (type != "comment" && !matchTransport(type, body, packet, layout.ipv6)) {
                 return false;
+            }
             match += load<uint16_t>(extension, 0);
         }
         return true;
@@ -416,7 +447,29 @@ private:
         return true;
     }
 
-    static bool evaluate(Table& table, const Layout& layout, std::vector<uint8_t>& packet, Hook hook, uint32_t mtu) {
+    static void applyConnectionMark(std::span<const uint8_t> data, uint8_t version, PacketState state) {
+        if (!state.connectionMark) return;
+        const auto ctmark = load<uint32_t>(data, 0);
+        const auto ctmask = load<uint32_t>(data, 4);
+        const auto nfmask = load<uint32_t>(data, 8);
+        const bool shifted = version == 2;
+        const unsigned width = shifted ? data[13] : 0;
+        const auto shift = [&](uint32_t value) {
+            return shifted && data[12] ? value >> width : value << width;
+        };
+        const auto mode = data[shifted ? 14 : 12];
+        auto& connection = *state.connectionMark;
+        switch (mode) {
+            case 0: connection = shift((connection & ~ctmask) ^ ctmark); break;
+            case 1: connection = (connection & ~ctmask) ^ shift((state.mark ? *state.mark : 0) & nfmask); break;
+            case 2:
+                if (state.mark) *state.mark = (*state.mark & ~nfmask) ^ shift(connection & ctmask);
+                break;
+        }
+    }
+
+    static bool evaluate(Table& table, const Layout& layout, std::vector<uint8_t>& packet, Hook hook,
+                         uint32_t mtu, PacketState state) {
         std::array<uint32_t, 64> stack{};
         size_t depth = 0;
         size_t at = table.starts[hook];
@@ -424,14 +477,18 @@ private:
             auto entry = std::span(table.entries).subspan(at);
             const size_t next = at + load<uint16_t>(entry, layout.nextOffset());
             const auto target = load<uint16_t>(entry, layout.targetOffset());
-            if (!matches(entry, layout, packet, hook)) { at = next; continue; }
+            if (!matches(entry, layout, packet, hook, state)) { at = next; continue; }
             const size_t counter = layout.entrySize - sizeof(Counters);
             const auto previous = load<Counters>(entry, counter);
             store(entry, counter, Counters{previous.packets + 1, previous.bytes + packet.size()});
             if (entry[target + 2]) {
                 const auto type = string(entry.subspan(target + 2, 29));
-                if (type != "TCPMSS" || !applyMss(packet, layout.ipv6,
-                                                 load<uint16_t>(entry, target + targetHeader), mtu)) return false;
+                const auto parameters = entry.subspan(target + targetHeader);
+                if (type == "CONNMARK") {
+                    applyConnectionMark(parameters, entry[target + 31], state);
+                } else if (type != "TCPMSS" || !applyMss(packet, layout.ipv6, load<uint16_t>(parameters, 0), mtu)) {
+                    return false;
+                }
                 at = next;
                 continue;
             }

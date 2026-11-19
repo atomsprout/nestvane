@@ -2654,6 +2654,19 @@ bool ProbeLinux::socketCall(Machine& machine) {
                 x[0] = uint64_t(-92);
                 break;
             }
+            if (name == 36 && endpoint.storageIdentity) { // SO_MARK
+                constexpr uint64_t capNet = (1ULL << 12) | (1ULL << 13);
+                if (!(current->process->effectiveCaps & capNet)) { x[0] = uint64_t(-1); break; }
+                uint32_t mark = 0;
+                if (size < sizeof(mark)) { x[0] = invalid; break; }
+                if (!readOption({reinterpret_cast<uint8_t*>(&mark), sizeof(mark)})) {
+                    x[0] = uint64_t(-14);
+                    break;
+                }
+                endpoint.socketMark = mark;
+                x[0] = 0;
+                break;
+            }
             const bool sendTimeout = name == sendTimeoutOld || name == sendTimeoutNew;
             if (sendTimeout || name == receiveTimeoutOld || name == receiveTimeoutNew) {
                 std::array<int64_t, 2> timeout{};
@@ -5677,6 +5690,7 @@ static bool filterInetPacket(const auto& hooks, const auto& socket, BpfProgram::
     packet.socket = socket.storageIdentity;
     packet.socketCookie = socket.cookie;
     packet.socketUid = socket.credentials[1];
+    packet.socketMark = socket.socketMark;
     const auto isCurrent = [&](const auto& attached, size_t depth) {
         return sameSocketGroup(socket, attached, depth);
     };
@@ -5778,16 +5792,18 @@ bool ProbeLinux::transmitInetStream(SocketState& from, SocketState& to, std::spa
     writeNetwork16(tcp, 16, transportChecksum(packet.bytes, source, destination, 6));
 
     packet.protocol = source[0] == 2 ? 0x0008 : 0xdd86;
+    packet.mark = from.socketMark;
+    const GuestFirewall::PacketState state{&packet.mark, from.tcpConnectionMark.get()};
     packet.ifindex = guestLoopbackIndex;
     packet.socketLookup = [&](std::span<const uint8_t> tuple, bool tcp) {
         return lookupInetSocket(tuple, tcp, &to);
     };
     const bool sent = filterInetPacket(inetEgressPrograms, from, packet, true);
     if (packet.ringNotification) wakePollers();
-    if (!sent || !firewall.allows(packet.bytes, GuestFirewall::output, guestLoopbackMtu) ||
-        !firewall.allows(packet.bytes, GuestFirewall::postrouting, guestLoopbackMtu) ||
-        !firewall.allows(packet.bytes, GuestFirewall::prerouting, guestLoopbackMtu) ||
-        !firewall.allows(packet.bytes, GuestFirewall::input, guestLoopbackMtu)) return false;
+    if (!sent || !firewall.allows(packet.bytes, GuestFirewall::output, guestLoopbackMtu, state) ||
+        !firewall.allows(packet.bytes, GuestFirewall::postrouting, guestLoopbackMtu, state) ||
+        !firewall.allows(packet.bytes, GuestFirewall::prerouting, guestLoopbackMtu, state) ||
+        !firewall.allows(packet.bytes, GuestFirewall::input, guestLoopbackMtu, state)) return false;
     packet.ingressIfindex = guestLoopbackIndex;
     const bool received = filterInetPacket(inetIngressPrograms, to, packet, false);
     if (packet.ringNotification) wakePollers();
@@ -5817,11 +5833,13 @@ uint64_t ProbeLinux::connectInetStream(const std::shared_ptr<SocketState>& socke
         accepted->inetV6Only = listener->inetV6Only;
         accepted->cookie = nextSocketCookie++;
         accepted->credentials = listener->credentials;
+        accepted->socketMark = listener->socketMark;
         accepted->context = listener->context;
         const bool mapped = socket->family != accepted->family;
         accepted->localInetAddress = mapped ? asMappedIpv4(destination) : destination;
         accepted->peerInetAddress = mapped ? asMappedIpv4(socket->localInetAddress) : socket->localInetAddress;
         openInetSocket(accepted, listener.get());
+        socket->tcpConnectionMark = accepted->tcpConnectionMark = std::make_shared<uint32_t>(0);
 
         socket->tcpSequence = uint32_t(socket->cookie);
         accepted->tcpSequence = uint32_t(accepted->cookie);
@@ -5856,6 +5874,25 @@ uint64_t ProbeLinux::connectInetStream(const std::shared_ptr<SocketState>& socke
     } catch (const std::bad_alloc&) {
         return noMemory;
     }
+}
+
+uint32_t* ProbeLinux::trackDatagramConnection(const std::shared_ptr<SocketState>& first,
+    const std::shared_ptr<SocketState>& second) {
+    const auto now = std::chrono::steady_clock::now();
+    const auto key = std::minmax(first->cookie, second->cookie);
+    auto existing = datagramConnections.find(key);
+    if (existing != datagramConnections.end() && existing->second.expires > now) {
+        existing->second.expires = now + std::chrono::seconds(30);
+        return &existing->second.mark;
+    }
+    std::erase_if(datagramConnections, [&](const auto& entry) {
+        const auto& connection = entry.second;
+        return connection.expires <= now || connection.first.expired() || connection.second.expired();
+    });
+    if (datagramConnections.size() >= 1024) return nullptr;
+    const auto at = datagramConnections.try_emplace(key,
+        DatagramConnection{first, second, now + std::chrono::seconds(30)}).first;
+    return &at->second.mark;
 }
 
 uint64_t ProbeLinux::sendInetDatagram(Machine& machine, const std::shared_ptr<SocketState>& socket,
@@ -5896,21 +5933,26 @@ uint64_t ProbeLinux::sendInetDatagram(Machine& machine, const std::shared_ptr<So
         if (inetWildcard(source)) setInetLoopback(source);
         encodeLoopbackUdp(packet.bytes, source, destination);
         packet.protocol = ipv4 ? 0x0008 : 0xdd86;
+        packet.mark = socket->socketMark;
+        const auto peer = findInetDestination(socket->protocol, destination);
+        const bool tracked = peer && firewall.tracksMarks();
+        auto* connection = tracked ? trackDatagramConnection(socket, peer) : nullptr;
+        if (tracked && !connection) return uint64_t(-105);
+        const GuestFirewall::PacketState state{&packet.mark, connection};
         packet.ifindex = guestLoopbackIndex;
         packet.socketLookup = [&](std::span<const uint8_t> tuple, bool tcp) {
             return lookupInetSocket(tuple, tcp);
         };
         const bool sent = filterInetPacket(inetEgressPrograms, *socket, packet, true);
         if (packet.ringNotification) wakePollers();
-        if (!sent || !firewall.allows(packet.bytes, GuestFirewall::output, guestLoopbackMtu) ||
-            !firewall.allows(packet.bytes, GuestFirewall::postrouting, guestLoopbackMtu)) return uint64_t(-1);
+        if (!sent || !firewall.allows(packet.bytes, GuestFirewall::output, guestLoopbackMtu, state) ||
+            !firewall.allows(packet.bytes, GuestFirewall::postrouting, guestLoopbackMtu, state)) return uint64_t(-1);
 
-        const auto peer = findInetDestination(socket->protocol, destination);
         if (!peer || peer->receiveShutdown) return size;
         const auto reportedSource = socket->family == peer->family ? source : asMappedIpv4(source);
         if (peer->connected && !matchInetPeer(peer->peerInetAddress, reportedSource)) return size;
-        if (!firewall.allows(packet.bytes, GuestFirewall::prerouting, guestLoopbackMtu) ||
-            !firewall.allows(packet.bytes, GuestFirewall::input, guestLoopbackMtu)) return size;
+        if (!firewall.allows(packet.bytes, GuestFirewall::prerouting, guestLoopbackMtu, state) ||
+            !firewall.allows(packet.bytes, GuestFirewall::input, guestLoopbackMtu, state)) return size;
         packet.ingressIfindex = guestLoopbackIndex;
         const bool received = filterInetPacket(inetIngressPrograms, *peer, packet, false);
         if (packet.ringNotification) wakePollers();
@@ -5985,6 +6027,7 @@ uint64_t ProbeLinux::getInetSocketOption(Machine& machine, SocketState& socket) 
             case 7: store(socket.sendBuffer); break;
             case 8: store(socket.receiveBuffer); break;
             case 38: store(socket.protocol); break;
+            case 36: store(socket.socketMark); break;
             case 39: store(socket.family); break;
             case 57:
                 if (capacity < sizeof(socket.cookie)) status = -22;
