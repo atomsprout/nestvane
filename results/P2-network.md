@@ -226,3 +226,5 @@
 - iPhone 11 第 8152 号进程捕获到 640×960 Android 画面，耗时 114,038 ms，Zygote 预加载 18,596 个类，进入 `system_server` 耗时 756,725 ms。这次运行仍使用早期镜像，未包含 Health HAL。
 - Mac 的短程探针确认原版 Health HAL 在 `hal_health_default` 域启动，服务管理器找到对应 VINTF 声明。HAL 的下一条日志为 `wakealarm_init: timerfd_create failed`，原版 ELF 对该调用传入 `CLOCK_BOOTTIME_ALARM`。现由客体的计时器和调度器兑现该时钟，创建及设定时保留 `CAP_WAKE_ALARM` 检查。宿主回归验证权限、计时器到期和 epoll 可读性，iPhoneOS 签名构建通过。客体计时仅在宿主 App 正常运行时服务。[Linux timerfd 实现](https://android.googlesource.com/kernel/common/+/2d74e4b8afbf07c148e08b4524ccfc9987d34373/fs/timerfd.c)
 - iPhone 11 第 8152 号进程到达 1,200 秒诊断时限。真机 Watchdog 堆栈定位到 DisplayManagerService 等待 SyncRoot，发生在包管理前，和之前 Mac 的 Health 等待位置不同。已备份报告。包含原版 Health HAL 和自有 APK 的第 8205 号进程已启动，运行上限设为 1,800 秒，已确认 SurfaceFlinger 连接显示。该轮启动早于闹钟 ABI 签名包完成。
+- 在 Android Watchdog 写出终止原因时，探针现在记录发出日志的 Android 进程线程状态和当前的图形工作线程，避免正常停机报告缺少已经退出的 `system_server`。宿主回归从客体 liblog 写入路径验证被观察进程进入快照，iPhoneOS 签名构建通过。
+- Mac 短程探针启用闹钟 ABI 后，原版 Health HAL 的日志由计时器创建错误推进到等待 `bpf.progs_loaded`。离线镜像跳过原版的 BPF 启动动作。另建了恢复 `trigger load-bpf-programs` 的对照镜像，用来确认真实加载路径和下一处失败，不改写该属性。

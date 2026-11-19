@@ -1067,6 +1067,29 @@ int main() {
     assert(call(57, {file}) == 0);
     assert(call(39, {base + 16}) == uint64_t(-16));
 
+    {
+        linux.captureAndroidLogs = true;
+        const auto logSocket = call(198, {1, 2, 0}); // AF_UNIX SOCK_DGRAM
+        assert(logSocket < 256);
+        constexpr char address[] = "\x01\0/dev/socket/logdw";
+        constexpr char tag[] = "Watchdog";
+        constexpr char message[] = "*** WATCHDOG KILLING SYSTEM PROCESS: test";
+        const auto write = [&](uint64_t destination, const auto& data) {
+            assert(machine.write(destination, {reinterpret_cast<const uint8_t*>(&data), sizeof(data)}));
+        };
+        write(base + 256, address);
+        assert(call(203, {logSocket, base + 256, sizeof(address)}) == 0);
+        write(base + 288, tag);
+        write(base + 320, message);
+        const std::array<std::array<uint64_t, 2>, 4> vectors{{
+            {base, 1}, {base, 1}, {base + 288, sizeof(tag)}, {base + 320, sizeof(message)},
+        }};
+        write(base + 384, vectors);
+        assert(call(66, {logSocket, base + 384, vectors.size()}) == 2 + sizeof(tag) + sizeof(message));
+        assert(linux.watchdogReport.find("guest task 1/1 ") != std::string::npos);
+        assert(call(57, {logSocket}) == 0);
+        linux.captureAndroidLogs = false;
+    }
     const auto poll = call(20, {0x80000});
     const auto event = call(19, {0, 0x80800});
     assert(poll == 3 && event == 4);

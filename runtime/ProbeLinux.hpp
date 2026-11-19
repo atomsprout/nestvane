@@ -48,7 +48,7 @@ struct ProbeLinux {
                   std::chrono::steady_clock::time_point::max()) {
         return machine.cpu.retired < sliceEnd || switchThread(machine, deadline);
     }
-    std::string workerReport(const Machine& machine) const;
+    std::string workerReport(const Machine& machine, uint64_t observedProcess = 0) const;
     void setBootContext(std::string context);
     void setCommandLine(const Startup& startup);
     bool loadBootTransition(std::string_view manifest);
@@ -68,6 +68,7 @@ struct ProbeLinux {
     std::string recentKernelOutput;
     std::string androidOutput;
     std::string recentAndroidOutput;
+    std::string watchdogReport;
     bool captureAndroidLogs = false;
     std::function<void(std::string_view)> androidLogObserver;
     size_t exportFiles(ProbeLinux& reader, std::string_view prefix) const;

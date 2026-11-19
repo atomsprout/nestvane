@@ -4643,7 +4643,7 @@ bool ProbeLinux::poll(Machine& machine) {
     return complete(!length || machine.write(x[0], bytes) ? ready : uint64_t(-14));
 }
 
-std::string ProbeLinux::workerReport(const Machine& machine) const {
+std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedProcess) const {
     std::string report;
     for (const auto& [path, tid] : propertyPollers) {
         report += "  guest worker " + std::to_string(tid) + " waited in epoll for " + path + "\n";
@@ -4652,7 +4652,7 @@ std::string ProbeLinux::workerReport(const Machine& machine) const {
     for (const auto& [tid, thread] : threads) {
         const auto& process = *thread.process;
         if (thread.wait == Wait::exited) continue;
-        if (process.executable != "/system/bin/bootanimation" &&
+        if (process.id != observedProcess && process.executable != "/system/bin/bootanimation" &&
             process.executable != "/system/bin/surfaceflinger" &&
             !process.executable.starts_with("/vendor/bin/hw/android.hardware.graphics.") &&
             process.programName != "system_server") continue;
@@ -5757,6 +5757,8 @@ bool ProbeLinux::syscall(Machine& machine) {
                         if (character >= 32 || character == '\n' || character == '\t') message.push_back(character);
                 }
                 if (readable && !message.empty()) {
+                    if (watchdogReport.empty() && message.starts_with("Watchdog: *** WATCHDOG KILLING SYSTEM PROCESS"))
+                        watchdogReport = workerReport(machine, processId());
                     if (androidLogObserver) androidLogObserver(message);
                     message.push_back('\n');
                     captureLog(androidOutput, recentAndroidOutput, 128 * 1024, message);

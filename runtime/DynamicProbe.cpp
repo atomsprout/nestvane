@@ -299,6 +299,8 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
     } else {
         report << "  guest instruction limit reached at PC=0x" << std::hex << cpu.pc << std::dec << '\n';
     }
+    if (!linux.watchdogReport.empty())
+        report << "  guest threads at Android Watchdog termination:\n" << linux.watchdogReport;
     report << linux.workerReport(machine);
     if (!linux.stderrOutput.empty()) report << "  guest stderr: " << linux.stderrOutput;
     if (!linux.kernelOutput.empty()) report << "  guest kernel log:\n" << linux.kernelOutput;
@@ -460,7 +462,7 @@ DynamicReport probeInit(const std::string& directory, const std::string& databas
                 "Resources: Preloading resources",
                 "nativeloader: Load libperfetto_framework_jni.so", "nativeloader: Load libcompiler_rt.so",
                 "SystemServer: Entered the Android system server", "SystemServerTiming: ",
-                "PackageManagerTiming: ", "EventHub: New device:",
+                "PackageManagerTiming: ", "EventHub: New device:", "HealthLoop: ",
                 "mmap APK: ", "PackageManager: Failed to parse", "PackageManager: Time to scan packages",
                 "NestvaneSmoke: ", "ActivityTaskManager: Displayed dev.nestvane.smoke/",
                 "SurfaceFlinger: SurfaceFlinger is starting", "SurfaceFlinger: Using HWComposer service",
