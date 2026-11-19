@@ -246,6 +246,29 @@ int main() {
     };
     {
         using namespace std::chrono;
+        constexpr uint64_t pair = base + 512, timeout = base + 544, length = base + 576;
+        assert(call(199, {1, 1, 0, pair}) == 0);
+        const auto sender = uint32_t(load(pair)), receiver = uint32_t(load(pair) >> 32);
+        assert(machine.store64(timeout, 0) && machine.store64(timeout + 8, 1'000'000));
+        assert(call(208, {receiver, 1, 20, timeout, 16}) == uint64_t(-33));
+        assert(machine.store64(timeout + 8, 20'000));
+        assert(call(208, {receiver, 1, 20, timeout, 8}) == uint64_t(-22));
+        assert(call(208, {receiver, 1, 20, timeout, 16}) == 0);
+        assert(machine.store64(length, 16) && machine.store64(timeout + 8, 0));
+        assert(call(209, {receiver, 1, 66, timeout, length}) == 0);
+        assert(load(length) == 16 && load(timeout) == 0 && load(timeout + 8) == 20'000);
+        assert(call(207, {receiver, base, 1, 0x40}) == uint64_t(-11) && !linux.blocked());
+        assert(call(63, {receiver, base, 1}) == receiver && linux.blocked());
+        assert(linux.schedule(machine, steady_clock::now() + seconds(1)));
+        assert(call(63, {receiver, base, 1}) == uint64_t(-11) && !linux.blocked());
+        assert(call(63, {receiver, base, 1}) == receiver && linux.blocked());
+        put(base + 16, "x");
+        assert(call(64, {sender, base + 16, 1}) == 1 && !linux.blocked());
+        assert(call(63, {receiver, base, 1}) == 1 && *machine.read(base, 1, 4) == 'x');
+        assert(call(57, {sender}) == 0 && call(57, {receiver}) == 0);
+    }
+    {
+        using namespace std::chrono;
         assert(machine.store64(base, 1) && machine.store64(base + 8, 50'000'000));
         assert(call(101, {base, 0}) == base && linux.blocked());
         assert(!linux.schedule(machine, steady_clock::now() + milliseconds(10)) && linux.blocked());

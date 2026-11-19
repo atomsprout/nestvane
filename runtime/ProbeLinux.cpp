@@ -28,6 +28,7 @@ constexpr uint64_t noMemory = uint64_t(-12);
 constexpr uint8_t mdweRefuseExecGain = 1, mdweNoInherit = 2;
 constexpr uint32_t sealSeal = 1, sealShrink = 2, sealGrow = 4, sealWrite = 8, sealFutureWrite = 16;
 constexpr unsigned sigChild = 17;
+constexpr uint64_t receiveTimeoutOld = 20, receiveTimeoutNew = 66;
 constexpr uint32_t fileAccessed = 1, fileModified = 2, fileAttributes = 4, fileClosedWrite = 8,
                    fileClosedRead = 16, fileOpened = 32, fileMovedFrom = 64, fileMovedTo = 128,
                    fileCreated = 256, fileDeleted = 512, fileDeletedSelf = 1024, fileMovedSelf = 2048;
@@ -1853,10 +1854,12 @@ bool ProbeLinux::socketCall(Machine& machine) {
             const uint64_t flags = x[8] == 242 ? x[3] : 0;
             if (!endpoint->listening || (flags & ~0x80800ULL)) { x[0] = invalid; break; }
             if (endpoint->pending.empty()) {
-                if (!(fd->second.effectiveFlags() & 0x800)) return waitForEvents();
+                if (!(fd->second.effectiveFlags() & 0x800) && waitForSocketReceive(*endpoint)) return true;
+                current->deadline.reset();
                 x[0] = uint64_t(-11);
                 break;
             }
+            current->deadline.reset();
             const auto number = freeDescriptor();
             if (number == descriptorCapacity) { x[0] = uint64_t(-24); break; }
             if (x[1]) {
@@ -1893,13 +1896,16 @@ bool ProbeLinux::socketCall(Machine& machine) {
             if (x[4] || x[5] || (x[3] & ~(send ? 0x4040ULL : 0x140ULL))) return false;
             const auto& endpoint = *fd->second.socket;
             const auto peer = endpoint.peer.lock();
-            if (!send && (x[3] & 0x100) && !(x[3] & 0x40) && !(fd->second.effectiveFlags() & 0x800) &&
+            const bool blocking = !(x[3] & 0x40) && !(fd->second.effectiveFlags() & 0x800);
+            const bool waitAll = !send && (x[3] & 0x100) && blocking &&
                 endpoint.type == 1 && x[2] > endpoint.queuedBytes && peer &&
-                !peer->sendShutdown && !endpoint.receiveShutdown) return waitForEvents();
+                !peer->sendShutdown && !endpoint.receiveShutdown;
+            if (waitAll && waitForSocketReceive(endpoint)) return true;
             const auto result = send ? socketWrite(machine, fd->second, x[1], x[2])
                                      : socketRead(machine, fd->second, x[1], x[2]);
-            if (result == uint64_t(-11) && !(x[3] & 0x40) && !(fd->second.effectiveFlags() & 0x800))
-                return waitForEvents();
+            if (result == uint64_t(-11) && blocking &&
+                (send ? waitForEvents() : !waitAll && waitForSocketReceive(endpoint))) return true;
+            if (!send) current->deadline.reset();
             x[0] = result;
             break;
         }
@@ -1919,8 +1925,9 @@ bool ProbeLinux::socketCall(Machine& machine) {
             if (fd == descriptors().end()) { x[0] = uint64_t(-9); break; }
             if (!fd->second.socket || !fd->second.socket->uevent) return false;
             auto& endpoint = *fd->second.socket;
-            if (endpoint.inbox.empty() && !(fd->second.effectiveFlags() & 0x800) && !(x[2] & 0x40))
-                return waitForEvents();
+            if (endpoint.inbox.empty() && !(fd->second.effectiveFlags() & 0x800) && !(x[2] & 0x40) &&
+                waitForSocketReceive(endpoint)) return true;
+            current->deadline.reset();
             x[0] = recvUevent(machine, endpoint);
             break;
         }
@@ -1933,6 +1940,14 @@ bool ProbeLinux::socketCall(Machine& machine) {
             if (!pointer) { x[0] = uint64_t(-14); break; }
             std::memcpy(&size, pointer, sizeof(size));
             const auto& endpoint = *fd->second.socket;
+            if (x[2] == receiveTimeoutOld || x[2] == receiveTimeoutNew) {
+                const auto usec = std::max<int64_t>(0, endpoint.receiveTimeout.count());
+                const std::array<int64_t, 2> timeout{usec / 1'000'000, usec % 1'000'000};
+                size = std::min<uint32_t>(size, sizeof timeout);
+                x[0] = (!size || machine.write(x[3], {reinterpret_cast<const uint8_t*>(timeout.data()), size})) &&
+                    writeGuest(machine, x[4], size) ? 0 : uint64_t(-14);
+                break;
+            }
             std::span<const uint8_t> bytes;
             if (x[2] == 2 || x[2] == 3 || x[2] == 7 || x[2] == 8 || x[2] == 38 || x[2] == 39) {
                 uint32_t value = 0;
@@ -1971,8 +1986,23 @@ bool ProbeLinux::socketCall(Machine& machine) {
             if (fd == descriptors().end()) { x[0] = uint64_t(-9); break; }
             if (!fd->second.socket) { x[0] = uint64_t(-88); break; }
             auto& endpoint = *fd->second.socket;
-            if (x[1] != 1 || (x[2] != 2 && x[2] != 16 && x[2] != 7 && x[2] != 8 &&
-                              (x[2] != 33 || !endpoint.uevent)))
+            if (x[1] != 1) return false;
+            if (x[2] == receiveTimeoutOld || x[2] == receiveTimeoutNew) {
+                std::array<int64_t, 2> timeout{};
+                if (x[4] < sizeof timeout) { x[0] = invalid; break; }
+                auto bytes = std::span(reinterpret_cast<uint8_t*>(timeout.data()), sizeof timeout);
+                if (!machine.readInto(x[3], bytes)) { x[0] = uint64_t(-14); break; }
+                const auto [sec, usec] = timeout;
+                if (usec < 0 || usec >= 1'000'000) { x[0] = uint64_t(-33); break; }
+                constexpr auto largest = std::chrono::microseconds::max().count();
+                const auto delay = sec < 0 ? -1 : sec > (largest - usec) / 1'000'000 ?
+                    largest : sec * 1'000'000 + usec;
+                endpoint.receiveTimeout = std::chrono::microseconds(delay);
+                x[0] = 0;
+                break;
+            }
+            if (x[2] != 2 && x[2] != 16 && x[2] != 7 && x[2] != 8 &&
+                (x[2] != 33 || !endpoint.uevent))
                 return false;
             if (x[4] < 4) { x[0] = invalid; break; }
             const auto* value = machine.read(x[3], 4, 4);
@@ -2570,7 +2600,9 @@ bool ProbeLinux::fileCall(Machine& machine) {
             if (fd.socket) {
                 if (x[8] == 67) { x[0] = uint64_t(-29); break; }
                 const auto result = socketRead(machine, fd, x[1], x[2]);
-                if (result == uint64_t(-11) && !(fd.effectiveFlags() & 0x800)) return waitForEvents();
+                if (result == uint64_t(-11) && !(fd.effectiveFlags() & 0x800) &&
+                    waitForSocketReceive(*fd.socket)) return true;
+                current->deadline.reset();
                 x[0] = result;
                 break;
             }
@@ -3384,7 +3416,9 @@ bool ProbeLinux::loadFsCreatePolicy(std::string_view manifest) {
 bool ProbeLinux::loadAccessClass(std::string_view manifest, std::string_view name,
                                  std::span<const std::string_view> permissions) {
     const auto path = "/sys/fs/selinux/class/" + std::string(name);
-    if (manifest.size() > 1024 * 1024) return false;
+    // Reference policy decisions include every captured subject and service label.
+    // Leave room for framework HALs while keeping startup memory bounded.
+    if (manifest.size() > 4 * 1024 * 1024) return false;
     std::istringstream stream{std::string(manifest)};
     uint32_t type = 0;
     if (!(stream >> type) || !type || type > UINT16_MAX || accessClasses.contains(type)) return false;
@@ -3821,6 +3855,21 @@ bool ProbeLinux::waitForEvents() {
     current->wait = Wait::poll;
     sliceEnd = 0;
     return true;
+}
+
+bool ProbeLinux::waitForSocketReceive(const SocketState& socket) {
+    using namespace std::chrono;
+    const auto timeout = socket.receiveTimeout;
+    if (timeout.count() < 0) return false;
+    if (timeout.count()) {
+        const auto now = steady_clock::now();
+        if (!current->deadline) {
+            const auto maximum = steady_clock::time_point::max();
+            current->deadline = timeout >= duration_cast<microseconds>(maximum - now) ? maximum : now + timeout;
+        }
+        if (*current->deadline <= now) return false;
+    }
+    return waitForEvents();
 }
 
 void ProbeLinux::EventState::queueFileEvent(FileEvent event) {

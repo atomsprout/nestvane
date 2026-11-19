@@ -283,3 +283,17 @@ Clean SDK API 37 collection included the original 170328-byte suspend service an
 SELinux: /system/bin/hw/android.system.suspend-service u:r:init:s0 u:object_r:system_suspend_exec:s0 2 u:r:system_suspend:s0
 Collected 1131 reference files. Guest root: 784687973 file bytes before probe fixtures.
 Signed iOS Release build passed.
+
+Mac with the original suspend service and expanded policy input bound
+Original SDK service decision file: 1074726 bytes; load test reached init second stage.
+[Android boot] SystemServerTiming: StartActivityManager took to complete: 12684ms
+[Android boot] SystemServerTiming: StartPowerManager took to complete: 327ms
+
+iPhone 11 with inotify and separate temporary-file counts
+iOS device 26.0.1 | process 7105
+SystemServer: Entered the Android system server!
+SystemServerTiming: StartActivityManager
+  syscall 208 ... x1=0x1 x2=0x14 ... x4=0x10 [unimplemented in guest PID 165, suspended]
+  diagnostic wall-time deadline reached
+  guest execution wall time: 720796 ms
+Guest SO_RCVTIMEO coverage: set/get, invalid timeval, nonblocking reads, expiration, and wakeup on data. Host suite and ASan/UBSan passed.

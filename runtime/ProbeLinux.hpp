@@ -163,6 +163,7 @@ private:
         size_t backlog = 0;
         size_t queuedBytes = 0;
         uint32_t sendBuffer = 262144, receiveBuffer = 212992;
+        std::chrono::microseconds receiveTimeout{};
         bool connected = false;
         bool listening = false;
         bool receiveShutdown = false, sendShutdown = false;
@@ -172,6 +173,7 @@ private:
         std::optional<UeventSocket> uevent;
         explicit SocketState(uint32_t type) : type(type) {}
     };
+    bool waitForSocketReceive(const SocketState& socket);
     struct BinderConnection;
     struct Descriptor;
     struct EventState;
