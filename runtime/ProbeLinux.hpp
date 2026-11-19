@@ -144,7 +144,7 @@ private:
     uint64_t installSeccomp(Machine& machine, uint64_t address);
     bool enforceSeccomp(Machine& machine);
 
-    enum class Node { regular, temporary, directory, input, output, error, null, entropy, kernelLog, poller, event, inotify, signal, socket, mountNamespace, pipeRead, pipeWrite, execLabel, fsCreateLabel, socketCreateLabel, securityInfo, securityCreate, securityAccess, securityValidate, loopControl, loopDevice, timer, ptyMaster, ptySlave, ueventTrigger, kernelSetting, binder, processHandle, cgroupProcs, ashmem, graphicsPipe, graphicsAddressSpace, touchDevice };
+    enum class Node { regular, temporary, directory, input, output, error, null, entropy, kernelLog, poller, event, inotify, signal, socket, mountNamespace, pipeRead, pipeWrite, execLabel, fsCreateLabel, socketCreateLabel, securityInfo, securityCreate, securityAccess, securityValidate, loopControl, loopDevice, timer, ptyMaster, ptySlave, ueventTrigger, kernelSetting, binder, processHandle, cgroupProcs, ashmem, graphicsPipe, graphicsAddressSpace, touchDevice, bpfMap };
     struct RecordLock {
         uint64_t owner, start, end;
         int16_t type;
@@ -192,6 +192,12 @@ private:
 
         uint16_t pollEvents() const;
     };
+    struct BpfArray {
+        uint32_t entryCount = 0, valueSize = 0;
+        std::vector<uint8_t> values;
+    };
+    std::vector<std::weak_ptr<BpfArray>> bpfArrays;
+    uint64_t bpfArrayCall(Machine& machine);
     struct Descriptor;
     struct GraphicsRegion {
         uint64_t offset = 0;
@@ -376,6 +382,7 @@ private:
         std::shared_ptr<GraphicsAddressSpace> graphicsAddress{};
         std::shared_ptr<GuestTouch> touch{};
         std::shared_ptr<GuestTouch::Reader> touchReader{};
+        std::shared_ptr<BpfArray> bpfArray{};
         std::span<const uint8_t> contents() const { return ext4File ? ext4File->bytes() : bytes; }
         uint64_t contentSize() const { return ext4File ? ext4File->size : bytes.size(); }
         static constexpr uint32_t mutableStatus = 0xc00; // O_APPEND and O_NONBLOCK

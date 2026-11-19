@@ -705,6 +705,46 @@ int main() {
         assert(load(base + 128 + 48) == input.size());
     }
     {
+        constexpr auto attr = base + 96, key = base + 384, data = base + 392, output = base + 400;
+        const auto create = [&](uint32_t entries, uint32_t flags = 0) {
+            const std::array<uint32_t, 5> args{2, 4, 8, entries, flags};
+            assert(machine.write(attr, {reinterpret_cast<const uint8_t*>(args.data()), sizeof(args)}));
+            return call(280, {0, attr, sizeof(args)});
+        };
+        const auto fd = create(2);
+        assert(fd < 256 && call(25, {fd, 1}) == 1);
+        const auto invoke = [&](uint64_t command, uint64_t descriptor, uint64_t index,
+                                uint64_t value, uint64_t flags = 0) {
+            assert(machine.store64(attr, descriptor) && machine.store64(attr + 8, index));
+            assert(machine.store64(attr + 16, value) && machine.store64(attr + 24, flags));
+            return call(280, {command, attr, 32});
+        };
+        assert(machine.store64(key, 1) && machine.store64(output, UINT64_MAX));
+        assert(invoke(1, fd, key, output) == 0 && load(output) == 0);
+        constexpr uint64_t expected = 0x1122334455667788ULL;
+        assert(machine.store64(data, expected));
+        assert(invoke(2, fd, key, data) == 0 && invoke(2, fd, key, data, 1) == uint64_t(-17));
+        assert(invoke(2, fd, key, UINT64_MAX, 2) == uint64_t(-14));
+        const auto dup = call(25, {fd, 0, 0});
+        assert(dup < 256 && dup != fd && call(57, {fd}) == 0);
+        assert(invoke(1, fd, key, output) == uint64_t(-9));
+        assert(invoke(1, dup, key, output) == 0 && load(output) == expected);
+        assert(invoke(3, dup, key, 0) == uint64_t(-22));
+        assert(invoke(4, dup, 0, output) == 0 && (load(output) & UINT32_MAX) == 0);
+        assert(invoke(4, dup, key, output) == uint64_t(-2));
+        assert(machine.store64(key, 2));
+        assert(invoke(1, dup, key, output) == uint64_t(-2));
+        assert(invoke(2, dup, key, data, 2) == uint64_t(-7));
+        assert(invoke(4, dup, key, output) == 0 && (load(output) & UINT32_MAX) == 0);
+        assert(call(57, {dup}) == 0);
+        assert(machine.store64(key, 0));
+        const auto readOnly = create(2, 8);
+        assert(readOnly < 256 && invoke(1, readOnly, key, output) == 0);
+        assert(invoke(2, readOnly, key, data) == uint64_t(-1));
+        assert(call(57, {readOnly}) == 0);
+        assert(create(0) == uint64_t(-22) && create(UINT32_MAX) == uint64_t(-12));
+    }
+    {
         constexpr auto attr = base + 96;
         put(base, "/sys/fs/bpf/map_missing");
         assert(machine.store64(attr, base) && machine.store64(attr + 8, 0));
