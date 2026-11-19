@@ -230,7 +230,7 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "[Android boot] %.*s\n", int(event.size()), event.data());
             }, std::move(factory));
         }();
-        std::fputs(report.report.c_str(), stdout);
+        std::fwrite(report.report.data(), 1, report.report.size(), stdout);
         std::fflush(stdout);
         destroy();
         return report.passed ? 0 : 1;

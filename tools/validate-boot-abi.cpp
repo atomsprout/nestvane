@@ -490,10 +490,15 @@ int main() {
         };
         assert(claim(importer, length + 1) == uint64_t(-22));
         assert(claim(owner, length) == 0 && claim(importer, length) == 0 && claim(importer, length) == 0);
-        const auto left = call(222, {0, length, 3, 1, owner, offset});
-        const auto right = call(222, {0, length, 3, 1, importer, offset});
+        const auto left = call(222, {0, length, 2, 1, owner, offset});
+        const auto right = call(222, {0, length, 2, 1, importer, offset});
         assert(left < (uint64_t{1} << 45) && right < (uint64_t{1} << 45) && left != right);
         assert(machine.store64(left + pageSize, 0x09375674a1b2c3d4) && load(right + pageSize) == 0x09375674a1b2c3d4);
+        assert(call(226, {right + pageSize, pageSize, 0}) == 0);
+        uint64_t protectedValue = 0;
+        assert(!machine.load64(right + pageSize, protectedValue));
+        assert(call(226, {right + pageSize, pageSize, 2}) == 0);
+        assert(load(right + pageSize) == 0x09375674a1b2c3d4);
         assert(machine.store64(buffer, offset) && call(29, {importer, 0xc008470e, buffer}) == 0);
         const auto third = call(222, {0, pageSize, 3, 1, importer, offset + pageSize});
         assert(third < (uint64_t{1} << 45) && load(third) == load(right + pageSize));

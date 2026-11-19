@@ -109,7 +109,8 @@ void captureLog(std::string& initial, std::string& recent, size_t initialLimit, 
 
 
 unsigned guestFlags(uint64_t prot) {
-    return ((prot & 1) ? 4 : 0) | (prot & 2) | ((prot & 4) ? 1 : 0);
+    // AArch64 page permissions allow reads on writable mappings.
+    return ((prot & 3) ? 4 : 0) | (prot & 2) | ((prot & 4) ? 1 : 0);
 }
 
 uint64_t pageAlignedLength(uint64_t length) {

@@ -112,11 +112,21 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
     const auto deadline = start + wallTime;
     while (cpu.retired < instructionLimit) {
         if (cpu.stop == Stop::fault) {
-            const auto pc = cpu.pc, address = cpu.faultAddress;
+            const auto pc = cpu.pc, address = cpu.faultAddress, lr = cpu.x[30], sp = cpu.sp;
+            const auto* code = machine.read(pc, sizeof(uint32_t), 1);
+            uint32_t faultWord = 0;
+            if (code) std::memcpy(&faultWord, code, sizeof(faultWord));
             if (!linux.deliverMemoryFault(machine)) break;
             if (deliveredFaults++ < 32) {
-                report << "  guest SIGSEGV delivered to TID=" << linux.threadId() << std::hex
-                       << " PC=0x" << pc << " address=0x" << address << " handler=0x" << cpu.pc << std::dec << '\n';
+                std::ostringstream fault;
+                fault << "guest SIGSEGV delivered to PID=" << linux.processId() << " TID=" << linux.threadId()
+                      << std::hex << " PC=0x" << pc << " address=0x" << address << " word=0x" << faultWord
+                      << " SP=0x" << sp << " LR=0x" << lr << " handler=0x" << cpu.pc << std::dec;
+                report << "  " << fault.str() << '\n';
+                if (init && linux.androidLogObserver) {
+                    const auto message = fault.str();
+                    linux.androidLogObserver(message);
+                }
             }
         } else if (cpu.stop != Stop::running) break;
         if (init && (linux.blocked() || !(cpu.retired & 4095)) && std::chrono::steady_clock::now() >= deadline) {
@@ -454,7 +464,7 @@ DynamicReport probeInit(const std::string& directory, const std::string& databas
                 "SurfaceFlinger: Connecting display", "RanchuHwc: init display",
                 "RanchuHwc: createHostComposerDisplayInfo", "GraphicBufferAllocator: Failed to allocate",
                 "BootAnimation: BootAnimationStartTiming", "BootAnimation: BootAnimationShownTiming",
-                "BootAnimation: Unable to", "BootAnimation: egl",
+                "BootAnimation: Unable to", "BootAnimation: egl", "guest SIGSEGV delivered",
                 "libEGL: couldn't find an OpenGL ES implementation", "libEGL: eglInitialize(",
                 "Watchdog: *** WATCHDOG KILLING SYSTEM PROCESS"
             };
