@@ -1605,6 +1605,45 @@ int main() {
     assert(bindRequest(channel, 0, 0, "", true) == 0 && uint32_t(load(base + 0x720)) == 0x80407203);
     const auto roundTrip = load(base + 0x724 + 6 * 8);
     assert(std::memcmp(machine.read(roundTrip, sizeof object, 4), object.data(), sizeof object) == 0);
+    {
+        constexpr uint64_t fixedFd = 100;
+        constexpr uint64_t fileType = 0x66642a85, acceptFiles = uint64_t{0x10} << 32;
+        const std::array<uint64_t, 3> file{fileType, fixedFd, 1};
+        const std::string_view fileBytes(reinterpret_cast<const char*>(file.data()), sizeof file);
+        assert(call(24, {channel, fixedFd, 0}) == fixedFd);
+        for (const bool accepts : {false, true}) {
+            const auto tag = uint64_t{46} | (accepts ? acceptFiles : 0);
+            assert(bindRequest(channel, 0x40406300, tag, "request a file", true) == 0);
+            assert(uint32_t(load(base + 0x720)) == 0x7206);
+            assert(bindRequest(channel, 0, 0, "", true) == channel && linux.blocked());
+            assert(linux.schedule(machine) && linux.processId() == 1);
+            assert(bindRequest(manager, 0, 0, "", true) == 0);
+            assert(uint32_t(load(base + 0x720)) == 0x80407202);
+            const auto requestBuffer = load(base + 0x724 + 6 * 8);
+            const auto origin = call(19, {29, 0}); // eventfd2
+            assert(origin < fixedFd && call(24, {origin, fixedFd, 0}) == fixedFd);
+            assert(bindRequest(manager, 0x40406301, 0, fileBytes, true, objectOffset) == 0);
+            assert(uint32_t(load(base + 0x720)) == 0x7206);
+            assert(call(57, {fixedFd}) == 0 && call(57, {origin}) == 0);
+            assert(bindRequest(manager, 0x40086303, 0, "", false, {}, requestBuffer) == 0);
+            machine.cpu.retired += 4096;
+            assert(linux.schedule(machine) && linux.processId() == binderChild);
+            assert(bindRequest(channel, 0, 0, "", true) == 0);
+            if (accepts) {
+                assert(uint32_t(load(base + 0x720)) == 0x80407203);
+                const auto response = load(base + 0x724 + 6 * 8);
+                const auto received = load(response + 8);
+                assert(load(response) == fileType && received < fixedFd);
+                assert(call(25, {received, 1}) == 1); // F_GETFD, FD_CLOEXEC
+                assert(bindRequest(channel, 0x40086303, 0, "", false, {}, response) == 0);
+                assert(call(63, {received, base + 0x900, 8}) == 8 && load(base + 0x900) == 29);
+                assert(call(57, {received}) == 0);
+            } else {
+                assert(uint32_t(load(base + 0x720)) == 0x7211);
+            }
+        }
+        assert(call(57, {fixedFd}) == 0);
+    }
     call(94, {0});
     assert(linux.schedule(machine) && linux.processId() == 1);
 

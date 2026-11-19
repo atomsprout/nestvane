@@ -281,6 +281,7 @@ private:
     struct BinderAllocation {
         size_t size;
         std::vector<uint32_t> handles;
+        bool delivered = false;
     };
     struct BinderTransaction {
         uint64_t target, cookie;
@@ -290,6 +291,11 @@ private:
     struct BinderRoute {
         std::weak_ptr<BinderConnection> connection;
         uint64_t thread;
+        bool acceptsFiles = false;
+    };
+    struct BinderFileTransfer {
+        size_t offset;
+        std::shared_ptr<Descriptor> file;
     };
     struct BinderPacket {
         uint32_t command;
@@ -297,6 +303,7 @@ private:
         uint64_t securityContext = 0;
         std::optional<BinderRoute> reply{};
         std::array<uint64_t, 2> reference{};
+        std::vector<BinderFileTransfer> files{};
     };
     struct BinderDeath {
         std::weak_ptr<BinderConnection> target;
@@ -308,7 +315,7 @@ private:
         uint32_t maxThreads = 15;
         std::shared_ptr<SharedFileBytes> mapped{};
         uint64_t address = 0, target = 0, cookie = 0;
-        bool sendSecurityContext = false;
+        bool sendSecurityContext = false, managerAcceptsFiles = true;
         std::map<uint64_t, BinderAllocation> allocations;
         std::map<uint32_t, BinderReference> handles;
         std::map<uint32_t, BinderDeath> deaths;
@@ -392,6 +399,7 @@ private:
                            std::span<const uint8_t> data);
     uint64_t binderWriteRead(Machine& machine, const Descriptor& fd);
     bool binderReadable(const BinderConnection& connection) const;
+    bool freeBinderBuffer(BinderConnection& connection, uint64_t address, bool delivered);
     uint64_t storeBinderBuffer(BinderConnection& target, std::span<const uint8_t> data,
                               std::span<const uint8_t> offsets, std::span<const uint8_t> extra, std::string_view context);
     uint64_t mountExt4(const std::string& device, const std::string& path, uint64_t flags);

@@ -11,7 +11,9 @@ constexpr uint32_t bcTransaction = 0x40406300, bcReply = 0x40406301, bcFreeBuffe
 constexpr uint32_t bcTransactionSg = 0x40486311, bcReplySg = 0x40486312;
 constexpr uint32_t brTransaction = 0x80407202, brTransactionSecctx = 0x80487202, brReply = 0x80407203;
 constexpr uint32_t brDeadReply = 0x7205, brComplete = 0x7206, brFailedReply = 0x7211;
-constexpr uint32_t oneWay = 1, sendSecurityContext = 0x1000;
+constexpr uint32_t oneWay = 1, acceptReplyFiles = 0x10;
+constexpr uint32_t acceptNodeFiles = 0x100, sendSecurityContext = 0x1000;
+constexpr uint32_t binderFile = 0x66642a85, closeOnExec = 0x80000;
 constexpr uint32_t binderObject = 0x73622a85, binderHandle = 0x73682a85;
 constexpr uint32_t binderBuffer = 0x70742a85, hasParent = 1;
 constexpr uint32_t brIncrefs = 0x80107207, brAcquire = 0x80107208;
@@ -64,6 +66,19 @@ uint64_t ProbeLinux::storeBinderBuffer(BinderConnection& target, std::span<const
     return target.address + offset;
 }
 
+bool ProbeLinux::freeBinderBuffer(BinderConnection& connection, uint64_t address, bool delivered) {
+    if (address < connection.address) return false;
+    const auto buffer = connection.allocations.find(address - connection.address);
+    if (buffer == connection.allocations.end() || buffer->second.delivered != delivered) return false;
+    for (const auto handle : buffer->second.handles) {
+        const auto it = connection.handles.find(handle);
+        auto& ref = it->second;
+        if (!--ref.inBuffer && !ref.strong && !ref.weak) connection.handles.erase(it);
+    }
+    connection.allocations.erase(buffer);
+    return true;
+}
+
 bool ProbeLinux::refreshBinderDeaths() {
     bool queued = false;
     std::erase_if(binderDeathSubscribers, [&](const auto& subscriber) {
@@ -105,16 +120,7 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
         case bcFreeBuffer: {
             uint64_t address = 0;
             std::memcpy(&address, data.data(), sizeof address);
-            if (address < connection.address) return invalid;
-            const auto buffer = connection.allocations.find(address - connection.address);
-            if (buffer == connection.allocations.end()) return invalid;
-            for (const auto handle : buffer->second.handles) {
-                const auto it = connection.handles.find(handle);
-                auto& ref = it->second;
-                if (!--ref.inBuffer && !ref.strong && !ref.weak) connection.handles.erase(it);
-            }
-            connection.allocations.erase(buffer);
-            return 0;
+            return freeBinderBuffer(connection, address, true) ? 0 : invalid;
         }
         case 0x40046304: case 0x40046305: case 0x40046306: case 0x40046307: {
             uint32_t handle = 0;
@@ -187,7 +193,19 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
     }
     auto& notices = connection.directed[currentTid];
     if (notices.size() >= 64) return uint64_t(-28);
+    const bool replying = command == bcReply || command == bcReplySg;
+    auto& outstanding = connection.replies[currentTid];
     const auto fail = [&](uint32_t status) {
+        if (replying && !outstanding.empty()) {
+            const auto route = outstanding.back();
+            outstanding.pop_back();
+            if (const auto caller = route.connection.lock()) {
+                caller->directed[route.thread].push_back({status});
+                notices.push_back({brComplete});
+                wakePollers();
+                return uint64_t{0};
+            }
+        }
         notices.push_back({status});
         return uint64_t{0};
     };
@@ -203,23 +221,23 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
     if (transaction.dataSize && !bytes) return fail(brFailedReply);
     const auto* offsets = transaction.offsetsSize ? machine.read(transaction.offsets, transaction.offsetsSize, 4) : nullptr;
     if (transaction.offsetsSize && !offsets) return fail(brFailedReply);
-    const bool replying = command == bcReply || command == bcReplySg;
-    auto& outstanding = connection.replies[currentTid];
     std::shared_ptr<BinderConnection> target;
     uint64_t replyThread = 0;
     uint64_t targetPointer = 0, targetCookie = 0;
-    bool sendLabel = false;
+    bool sendLabel = false, acceptsFiles = false;
     if (replying) {
         if (outstanding.empty()) return fail(brFailedReply);
         auto route = outstanding.back();
         target = route.connection.lock();
         replyThread = route.thread;
+        acceptsFiles = route.acceptsFiles;
     } else if (uint32_t(transaction.target) == 0) {
         target = binderDevices.at(fd.path).manager.lock();
         if (target) {
             targetPointer = target->target;
             targetCookie = target->cookie;
             sendLabel = target->sendSecurityContext;
+            acceptsFiles = target->managerAcceptsFiles;
         }
     } else {
         const auto ref = connection.handles.find(uint32_t(transaction.target));
@@ -229,11 +247,9 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
         targetPointer = node.object.value;
         targetCookie = node.object.cookie;
         sendLabel = node.object.flags & sendSecurityContext;
+        acceptsFiles = node.object.flags & acceptNodeFiles;
     }
-    if (!target) {
-        if (replying) outstanding.pop_back();
-        return fail(brDeadReply);
-    }
+    if (!target) return fail(brDeadReply);
     auto& destination = replying ? target->directed[replyThread] : target->incoming;
     if (destination.size() >= 32) return fail(brFailedReply);
     const auto label = sendLabel ? std::string_view(current->process->context) : std::string_view{};
@@ -254,6 +270,7 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
     };
     std::vector<Translation> translations;
     std::vector<BufferTranslation> buffers;
+    std::vector<BinderFileTransfer> files;
     std::vector<uint8_t> extra(extraSize);
     std::map<uint64_t, std::shared_ptr<BinderNode>> newNodes;
     std::map<const BinderNode*, uint32_t> knownHandles;
@@ -298,6 +315,15 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
             buffers.push_back({index / sizeof(uint64_t), size_t(offset), nextExtraOffset, parentIndex, buffer});
             nextExtraOffset += (buffer.length + 7) & ~uint64_t{7};
             previousEnd = offset + sizeof buffer;
+            continue;
+        }
+        if (object.type == binderFile) {
+            const auto file = descriptors().find(uint32_t(object.value));
+            // A Binder connection belongs to its opener and can own pending packets itself.
+            if (!acceptsFiles || file == descriptors().end() || file->second.binder)
+                return fail(brFailedReply);
+            files.push_back({size_t(offset) + offsetof(BinderObject, value),
+                             std::make_shared<Descriptor>(file->second)});
             continue;
         }
         if (object.type == binderObject && object.value == 0 && object.cookie == 0) continue;
@@ -374,13 +400,16 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
     transaction.offsets = address + ((transaction.dataSize + 7) & ~uint64_t{7});
     const auto opcode = replying ? brReply : label.empty() ? brTransaction : brTransactionSecctx;
     BinderPacket packet{opcode, transaction, label.empty() ? 0 : address + extraOffset + extra.size()};
-    if (!replying && !(transaction.flags & oneWay)) packet.reply = BinderRoute{fd.binder, currentTid};
-    destination.push_back(packet);
+    if (!replying && !(transaction.flags & oneWay))
+        packet.reply = BinderRoute{fd.binder, currentTid, bool(transaction.flags & acceptReplyFiles)};
+    packet.files = std::move(files);
+    destination.push_back(std::move(packet));
     if (binderTrace.size() < 8192) {
         binderTrace += "  guest binder " + std::string(replying ? "reply" : "transaction") +
             " sender=" + std::to_string(processId()) + " target=" + std::to_string(target->owner) +
             " code=" + std::to_string(transaction.code) + " objects=" +
-            std::to_string(transaction.offsetsSize / sizeof(uint64_t)) + "\n";
+            std::to_string(transaction.offsetsSize / sizeof(uint64_t)) + " files=" +
+            std::to_string(destination.back().files.size()) + "\n";
     }
     if (replying) outstanding.pop_back();
     notices.push_back({brComplete});
@@ -421,7 +450,28 @@ uint64_t ProbeLinux::binderWriteRead(Machine& machine, const Descriptor& fd) {
     }
     auto& directed = connection.directed[currentTid];
     auto& queue = directed.empty() ? connection.incoming : directed;
-    const auto& next = queue.front();
+    auto& next = queue.front();
+    std::vector<uint32_t> fileNumbers;
+    fileNumbers.reserve(next.files.size());
+    for (size_t i = 0; i < next.files.size(); ++i) {
+        const auto number = freeDescriptor(fileNumbers.empty() ? 0 : fileNumbers.back() + 1);
+        if (number == descriptorCapacity) break;
+        fileNumbers.push_back(number);
+    }
+    if (fileNumbers.size() != next.files.size()) {
+        if (next.reply) {
+            if (const auto caller = next.reply->connection.lock())
+                caller->directed[next.reply->thread].push_back({brFailedReply});
+        }
+        freeBinderBuffer(connection, next.transaction.buffer, false);
+        if (next.command == brReply) {
+            next = BinderPacket{brFailedReply};
+        } else {
+            queue.pop_front();
+            wakePollers();
+            return writeGuest(machine, argument, request) ? uint64_t(-11) : fault;
+        }
+    }
     const auto size = (next.command >> 16) & 0x3fffU;
     std::array<uint8_t, sizeof(uint32_t) + sizeof(BinderTransaction) + sizeof(uint64_t)> response{};
     if (size > response.size() - sizeof(uint32_t) ||
@@ -440,6 +490,18 @@ uint64_t ProbeLinux::binderWriteRead(Machine& machine, const Descriptor& fd) {
     if (!machine.write(request.readBuffer + request.readConsumed, std::span(response).first(count))) return fault;
     request.readConsumed += count;
     if (!writeGuest(machine, argument, request)) return fault;
+    if (size >= sizeof(BinderTransaction)) {
+        const auto offset = next.transaction.buffer - connection.address;
+        for (size_t i = 0; i < next.files.size(); ++i) {
+            auto& file = *next.files[i].file;
+            file.flags |= closeOnExec;
+            descriptors().emplace(fileNumbers[i], std::move(file));
+            auto* field = connection.mapped->pages.data() + offset + next.files[i].offset;
+            const uint64_t value = fileNumbers[i];
+            std::memcpy(field, &value, sizeof(value));
+        }
+        connection.allocations.at(offset).delivered = true;
+    }
     if (next.reply) connection.replies[currentTid].push_back(*next.reply);
     queue.pop_front();
     return 0;
@@ -472,7 +534,8 @@ uint64_t ProbeLinux::binderIoctl(Machine& machine, const Descriptor& fd) {
                 if (!readGuest(machine, x[2], value)) return fault;
                 connection.target = value.ptr;
                 connection.cookie = value.cookie;
-                connection.sendSecurityContext = value.flags & 0x1000;
+                connection.sendSecurityContext = value.flags & sendSecurityContext;
+                connection.managerAcceptsFiles = value.flags & acceptNodeFiles;
             }
             node.manager = fd.binder;
             wakePollers();
