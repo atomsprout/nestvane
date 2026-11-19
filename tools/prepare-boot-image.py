@@ -18,7 +18,7 @@ def replace_line(path, pattern, value):
     path.write_text(updated)
 
 
-def make_framework_root(base, image, guest, defer_zygote_preload):
+def make_framework_root(base, image, guest, defer_zygote_preload, hardware_timeout_multiplier=None):
     shutil.copytree(base, guest)
     target = guest / "system/framework/arm64"
     for path in target.iterdir():
@@ -35,6 +35,12 @@ def make_framework_root(base, image, guest, defer_zygote_preload):
     replace_line(guest / "product/etc/build.prop", r"^ro\.dalvik\.vm\.enable_uffd_gc=[^\r\n]*$",
                  "ro.dalvik.vm.enable_uffd_gc=false")
     replace_line(guest / "system/build.prop", r"^dalvik\.vm\.usejit=[^\r\n]*$", "dalvik.vm.usejit=false")
+    if hardware_timeout_multiplier is not None:
+        system_properties = guest / "system/build.prop"
+        values = system_properties.read_text().rstrip("\n")
+        setting = f"ro.hw_timeout_multiplier={hardware_timeout_multiplier}"
+        values, count = re.subn(r"^ro\.hw_timeout_multiplier=[^\r\n]*$", setting, values, flags=re.MULTILINE)
+        system_properties.write_text((values if count else f"{values}\n{setting}") + "\n")
     for key in ("heapgrowthlimit", "heapsize"):
         replace_line(guest / "vendor/build.prop", rf"^dalvik\.vm\.{key}=[^\r\n]*$", f"dalvik.vm.{key}=96m")
     if (guest / "vendor/lib64/egl/libEGL_emulation.so").is_file():
@@ -61,11 +67,16 @@ def main():
                         help="Produce a complete offline diagnostic guest root using the compiled image")
     parser.add_argument("--defer-zygote-preload", action="store_true",
                         help="Use Android's lazy-preload option in the offline framework diagnostic")
+    parser.add_argument("--hardware-timeout-multiplier", type=int,
+                        help="Scale Android's hardware timeouts in the offline framework diagnostic")
     args = parser.parse_args()
     if args.output.exists():
         parser.error("Choose a new output directory")
     if args.defer_zygote_preload and not args.framework_diagnostic:
         parser.error("--defer-zygote-preload requires --framework-diagnostic")
+    if args.hardware_timeout_multiplier is not None:
+        if not args.framework_diagnostic or not 1 <= args.hardware_timeout_multiplier <= 0x7fffffff:
+            parser.error("--hardware-timeout-multiplier requires --framework-diagnostic and a positive Android int")
     if args.framework_diagnostic and args.root.resolve() in args.output.resolve().parents:
         parser.error("Choose an output directory outside the input guest root")
     adb = ["adb", "-s", args.serial]
@@ -147,7 +158,8 @@ def main():
                     raise SystemExit(f"Reference produced an empty {name}")
             if args.framework_diagnostic:
                 guest = Path(temporary) / "guest"
-                make_framework_root(args.root, root, guest, args.defer_zygote_preload)
+                make_framework_root(args.root, root, guest, args.defer_zygote_preload,
+                                    args.hardware_timeout_multiplier)
                 guest.rename(args.output)
             else:
                 root.rename(args.output)

@@ -172,3 +172,5 @@
 
 - iPhone 11 第 7604 号进程完成 DisplayManager（2,458 ms）和 WaitForDisplay（4,291 ms），随后进入 PackageManagerService。系统在包管理初始化期间触发 Watchdog，APK 安装尚待验证。
 - Mac 上原版开机动画触发真实的窗口缓冲区刷新。此前 Gfxstream 启动默认声明 Virtio GPU 同步能力，客体 EGL 随后因无法打开 render node 在同步路径触发空指针异常。[Goldfish 同步补丁](../tools/patches/gfxstream-goldfish-sync.patch) 在缓冲区生命周期补丁之后应用，只对 Nestvane 的旧版 Goldfish 启动器关闭这项不支持的能力。Mac 复测越过这处异常并在 SurfaceFlinger 的向量 `FSQRT` 处停止。iPhoneOS 后端目标已构建。
+
+- 离线诊断镜像支持 `--hardware-timeout-multiplier`。本轮真机签名镜像设置为 4，使用 Android 为软件模拟器定义的 `ro.hw_timeout_multiplier` 观察包管理在较长的 Watchdog 时间内能否启动。启动耗时继续按宿主墙钟记录。此项只用于诊断选项，正常配置保持默认值。[AOSP 硬件超时设置](https://android.googlesource.com/platform/frameworks/base/+/HEAD/core/java/android/os/Build.java)
