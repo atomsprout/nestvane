@@ -100,3 +100,15 @@
 - Mac 复测中，原版 Lights HAL 响应支持灯光查询，LightsService 完成启动（63 ms），随后进入 DisplayManager。框架在 `fnmul d17, d7, d7` 停止，SurfaceFlinger 同时报告缺少 EGL 实现。运行时已实现单精度与双精度 FNMUL，宿主回归和 ASan/UBSan 覆盖本次指令编码、负零和目标寄存器高位清零。[Arm 指令参考](https://documentation-service.arm.com/static/67e40f3398aa3c3b6eea6a85)
 
 - Android 17 参考镜像采集现纳入 Ranchu Composer3、Allocator、EGL 和 Mapper 及各自依赖，干净采集共 1,192 个文件，离线客体镜像为 806,815,781 字节。参考模拟器的图形服务打开了 `goldfish_pipe_dprctd`、`goldfish_address_space` 和 `goldfish_sync`。诊断镜像保留匹配的 EGL、gralloc 和管道选择属性，原版 SurfaceFlinger 已在 Mac 进入进程初始化。只读镜像映射上限已独立于客体可写内存调至 1 GiB。iOS 签名构建通过，真机启动日志保留带相对时间的近期里程碑。[Goldfish 图形传输](https://android.googlesource.com/device/generic/goldfish-opengl/+/a24d1a13e7c6eca9b57a35cdd5fe5e3ac50ec103/system/OpenglSystemCommon/HostConnection.cpp)
+
+- iPhone 11 的第 7150 号进程完成 LightsService（185 ms），进入 DisplayManager，并复现已修复的 `fnmul d17, d7, d7` 停点。Mac 使用后续镜像和 FNMUL 修复越过该指令，DisplayManager 随后等待 `SurfaceFlingerAIDL`。定向跟踪确认原版 Ranchu Composer3 和 Allocator 到达 ELF 入口，原版 EGL 驱动尝试打开 `/dev/goldfish_pipe_dprctd`，收到 `ENOENT` 后初始化失败。图形失败现写入实时里程碑。新版签名构建已在 iPhone 11 启动，进程号 7167。
+
+- macOS 使用 SDK 自带的 `libgfxstream_backend.dylib`，经 Gfxstream 公共 C ABI 实测 64×64 RGBA8 缓冲区上传和读回，16,384 字节一致。复现使用 Gfxstream 头文件版本 `79c2174f9133fa004c1c9c70ecd50970f42fa53b` 和以下命令。该上游版本用 iPhoneOS SDK 构建静态后端时首先在 macOS 的 `libproc.h` 停止，源码还引用了 AppKit 和 macOS OpenGL。iPhone 本地渲染后端和 Goldfish 传输仍待接通。
+
+  ```sh
+  sdk_lib="$HOME/Library/Android/sdk/emulator/lib64"
+  xcrun clang++ -std=c++20 -Wall -Wextra -Werror -I"$GFXSTREAM_SOURCE/host/include" \
+    tools/probe-gfxstream-host.cpp -o /tmp/nestvane-probe-gfxstream-host
+  ANDROID_GFXSTREAM_EGL=1 DYLD_LIBRARY_PATH="$sdk_lib:$sdk_lib/gles_angle:$sdk_lib/vulkan" \
+    /tmp/nestvane-probe-gfxstream-host "$sdk_lib/libgfxstream_backend.dylib"
+  ```

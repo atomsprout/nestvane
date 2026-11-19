@@ -103,6 +103,8 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
     unsigned protectionLogs = 0, syncLogs = 0, suppressedLogs = 0, zygoteSyscalls = 0, zygoteSamples = 0;
     unsigned zygoteMappings = 0, zygoteMemoryFiles = 0, zygoteChildSyscalls = 0, zygoteChildPolicyCalls = 0;
     uint64_t zygotePid = 0;
+    std::vector<uint64_t> graphicsPids;
+    unsigned graphicsCalls = 0;
     uint64_t deliveredFaults = 0, restoredSignals = 0;
     std::optional<uint64_t> unhandled;
     const auto start = std::chrono::steady_clock::now();
@@ -130,6 +132,9 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
             if (auto event = linux.observeEntry(cpu.pc); !event.empty()) {
                 if (event.find(" entered /system/bin/app_process64 ") != std::string::npos)
                     zygotePid = linux.processId();
+                if (event.find(" entered /system/bin/surfaceflinger ") != std::string::npos ||
+                    event.find(" entered /vendor/bin/hw/android.hardware.graphics.") != std::string::npos)
+                    graphicsPids.push_back(linux.processId());
                 report << event;
             }
         }
@@ -172,7 +177,11 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
                     zygoteChildPolicyCalls += zygoteTrace;
                 }
             }
-            const bool trace = stackMemory || zygoteTrace || (!repetitive && syscallCount <= traceLimit);
+            const bool graphicsTrace = graphicsCalls < 512 && syscallCount > traceLimit &&
+                (syscall == 56 || syscall == 29) &&
+                std::ranges::find(graphicsPids, linux.processId()) != graphicsPids.end();
+            graphicsCalls += graphicsTrace;
+            const bool trace = stackMemory || zygoteTrace || graphicsTrace || (!repetitive && syscallCount <= traceLimit);
             if (!trace) ++suppressedLogs;
             if (trace) {
                 describeCall(report, cpu, syscall);
@@ -438,10 +447,13 @@ DynamicReport probeInit(const std::string& directory, const std::string& databas
                 "SystemServerTiming: StartDisplayManager", "SystemServerTiming: WaitForDisplay",
                 "SystemServerTiming: StartPackageManagerService",
                 "SurfaceFlinger: SurfaceFlinger is starting", "SurfaceFlinger: Using HWComposer service",
-                "libEGL: couldn't find an OpenGL ES implementation",
+                "libEGL: couldn't find an OpenGL ES implementation", "libEGL: eglInitialize(",
                 "Watchdog: *** WATCHDOG KILLING SYSTEM PROCESS"
             };
-            if (std::any_of(std::begin(milestones), std::end(milestones),
+            const bool graphicsTransportFailure = message.starts_with("GFXSTREAM: ") &&
+                (message.find("Failed to connect to host") != std::string_view::npos ||
+                 message.find("Could not open '/dev/goldfish") != std::string_view::npos);
+            if (graphicsTransportFailure || std::any_of(std::begin(milestones), std::end(milestones),
                             [message](auto prefix) { return message.starts_with(prefix); }))
                 progress(message.substr(0, message.find('\n')));
         };
