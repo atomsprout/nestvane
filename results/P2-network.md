@@ -180,3 +180,5 @@
 - Mac 复测在修复映射权限后越过两处 Ranchu 元数据读取异常，宿主收到两次开机动画窗口缓冲区刷新。随后原版 `libui.so` 在变换显示区域时使用 `fcvtms w20, s1`，此前解释器未实现。该指令现在支持从单精度和双精度向负无穷取整后转换为有符号整数。宿主 ABI 回归和 iOS 签名构建通过，主显示继续验证。
 
 - 原版 Composer3 在共享映射和 `FCVTMS` 修复后向宿主发送 `rcCompose`。独立 Gfxstream 二进制没有定义 `CONFIG_AEMU`，此前走完同步合成后会跳过提交主屏的步骤。[无窗口合成提交补丁](../tools/patches/gfxstream-headless-compose.patch) 在 Goldfish 同步补丁之后应用，让独立构建也遵守合成请求中的提交语义。补丁栈从固定上游版本依次应用成功，Mac RGBA8 读回回归通过，iPhoneOS 后端和带此后端的签名构建成功。第 7616 号 iPhone 11 进程确认四倍 Watchdog 限时下再次进入 PackageManagerService（563,664 ms），该次启动早于此渲染补丁。
+
+- Mac 调用栈确认独立 Gfxstream 的 `rcCompose` 等待完成回调时，Apple 默认的主线程合成路径把任务交给了未配置的窗口回调。[离屏合成线程补丁](../tools/patches/gfxstream-headless-worker.patch) 在无窗口合成提交补丁之后应用。显式启用 `Surfaceless` 的 Apple 构建改用合成工作线程，有窗口的调用保持原线程行为。Mac 真实 Android 17 启动读回了 640×960 主显示帧（序号 1），RGBA8 逐字节回归也通过。iPhoneOS 后端已签名并以第 7797 号进程安装启动。第 7616 号诊断在第 900 秒结束，已进入系统包管理初始化和尚在运行的客体 `installd`，仍待验证 APK 安装。

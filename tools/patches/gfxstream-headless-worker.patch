@@ -1,0 +1,42 @@
+diff --git a/host/frame_buffer.cpp b/host/frame_buffer.cpp
+--- a/host/frame_buffer.cpp
++++ b/host/frame_buffer.cpp
+@@ -118,9 +118,10 @@
+         GFXSTREAM_FATAL("%s:%d - GL/EGL emulation not enabled.", __func__, __LINE__); \
+     }
+ 
+-bool postOnlyOnMainThread() {
++bool postOnlyOnMainThread([[maybe_unused]] const FeatureSet& features) {
+ #if defined(__APPLE__) && !defined(QEMU_NEXT)
+-    return true;
++    // Offscreen compositing does not require a native UI thread.
++    return !features.Surfaceless.enabled();
+ #else
+     return false;
+ #endif
+@@ -1542,7 +1543,7 @@
+         impl->m_postWorker.reset(
+             new PostWorkerVk(impl.get(), impl->m_compositor, impl->m_displayVk));
+     } else {
+-        const bool shouldPostOnlyOnMainThread = postOnlyOnMainThread();
++        const bool shouldPostOnlyOnMainThread = postOnlyOnMainThread(impl->m_features);
+ 
+ #if GFXSTREAM_ENABLE_HOST_GLES
+         PostWorkerGl* postWorkerGl =
+@@ -1777,7 +1778,7 @@
+         m_postThreadStarted.store(true, std::memory_order_release);
+     }
+ 
+-    bool shouldPostOnlyOnMainThread = postOnlyOnMainThread();
++    bool shouldPostOnlyOnMainThread = postOnlyOnMainThread(m_features);
+     // If we want to run only in the main thread and we are actually running
+     // in the main thread already, don't use the PostWorker thread. Ideally,
+     // PostWorker should handle this and dispatch directly, but we'll need to
+@@ -4647,6 +4648,6 @@
+     // This is only called when using multi window display
+     // It will deadlock when posting from main thread.
+     std::unique_ptr<AutoLock> mutex;
+-    if (!postOnlyOnMainThread()) {
++    if (!postOnlyOnMainThread(m_features)) {
+         mutex = std::make_unique<AutoLock>(m_lock);
+     }
