@@ -174,6 +174,8 @@ private:
         uint32_t family = 1, protocol = 0;
         uint64_t cookie = 0;
         uint32_t socketMark = 0;
+        int inetError = 0;
+        bool tcpConnectFailed = false;
         std::shared_ptr<uint32_t> tcpConnectionMark;
         std::shared_ptr<void> storageIdentity;
         std::string inetCgroup;
@@ -239,9 +241,11 @@ private:
     std::shared_ptr<SocketState> findInetDestination(uint32_t protocol, const SocketState::InetAddress& address) const;
     bool filterInetAddress(const SocketState& socket, uint32_t type, SocketState::InetAddress& address,
         bool* skipBindCapability = nullptr);
-    uint64_t connectInetSocket(Machine& machine, const std::shared_ptr<SocketState>& socket);
-    uint64_t connectInetStream(const std::shared_ptr<SocketState>& socket, const SocketState::InetAddress& destination);
-    bool transmitInetStream(SocketState& from, SocketState& to, std::span<const uint8_t> payload, uint32_t flags);
+    uint64_t connectInetSocket(Machine& machine, const std::shared_ptr<SocketState>& socket, bool nonblocking);
+    uint64_t connectInetStream(const std::shared_ptr<SocketState>& socket,
+        const SocketState::InetAddress& destination, bool nonblocking);
+    bool transmitInetStream(SocketState& from, SocketState& to, std::span<const uint8_t> payload,
+        uint32_t flags, GuestFirewall::Rejection& rejection);
     std::shared_ptr<void> lookupInetSocket(std::span<const uint8_t> tuple, bool tcp,
         const SocketState* receiving = nullptr) const;
     uint64_t sendInetDatagram(Machine& machine, const std::shared_ptr<SocketState>& socket,

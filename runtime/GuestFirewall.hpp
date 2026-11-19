@@ -20,10 +20,16 @@ public:
         invalidConnection = 1, establishedConnection = 2, relatedConnection = 4, newConnection = 8,
         untrackedConnection = 64
     };
+    struct Rejection {
+        int error = 0;
+        bool hard = false;
+        bool reset = false;
+    };
     struct PacketState {
         uint32_t* mark = nullptr;
         uint32_t* connectionMark = nullptr;
         ConnectionState connection = invalidConnection;
+        Rejection* rejection = nullptr;
     };
 
     uint64_t get(Machine& machine, bool ipv6) {
@@ -40,7 +46,7 @@ public:
             const auto version = revision.back();
             if (match && name == "connmark") return version == 1 ? 0 : uint64_t(-93);
             if (!match && name == "CONNMARK") return (version == 1 || version == 2) ? 0 : uint64_t(-93);
-            const bool known = match ? name == "comment" || name == "tcp" || name == "udp" || name == "u32" || name == "state" : name == "TCPMSS";
+            const bool known = match ? name == "comment" || name == "tcp" || name == "udp" || name == "u32" || name == "state" : name == "TCPMSS" || name == "REJECT";
             return !known ? missing : version ? uint64_t(-93) : 0;
         }
         if (option != 64 && option != 65) return unsupported;
@@ -303,6 +309,20 @@ private:
         return matchesAll() != bool(data[u32TestCountOffset + 1]);
     }
 
+    static Rejection rejectionFor(bool ipv6, uint32_t code) {
+        // Table indexes are the REJECT target ABI. Errors are guest Linux errno values.
+        constexpr Rejection ipv4[] = {
+            {101}, {113}, {92, true}, {111, true}, {}, {101, true}, {113, true},
+            {111, true, true}, {113, true},
+        };
+        constexpr Rejection ipv6Codes[] = {
+            {101}, {13, true}, {113}, {113}, {111, true}, {}, {111, true, true},
+            {13, true}, {13, true},
+        };
+        const auto codes = ipv6 ? std::span(ipv6Codes) : std::span(ipv4);
+        return code < codes.size() ? codes[code] : Rejection{};
+    }
+
     static uint64_t validate(Table& table, const Layout& layout, uint32_t count, std::string_view name) {
         std::vector<uint32_t> jumps;
         auto bytes = std::span(table.entries);
@@ -365,6 +385,12 @@ private:
                     if (length != 64 || target[31] || string(target.subspan(targetHeader, 30)).empty()) return invalid;
                 } else if (targetName == "TCPMSS") {
                     if (length != 40 || target[31] || name != "mangle" || protocol != 6 || !synMatch) return invalid;
+                } else if (targetName == "REJECT") {
+                    if (length != 40 || target[31] || name != "filter") return invalid;
+                    const auto rejection = rejectionFor(layout.ipv6, load<uint32_t>(target, targetHeader));
+                    if (!rejection.error || (rejection.reset && (protocol != 6 ||
+                        (entry[layout.inversions] & 0x40) || (layout.ipv6 && !(entry[layout.flags] & 1)))))
+                        return invalid;
                 } else if (targetName == "CONNMARK") {
                     if (length != 48 || (target[31] != 1 && target[31] != 2)) return invalid;
                     const bool shift = target[31] == 2;
@@ -565,6 +591,11 @@ private:
             if (entry[target + 2]) {
                 const auto type = string(entry.subspan(target + 2, 29));
                 const auto parameters = entry.subspan(target + targetHeader);
+                if (type == "REJECT") {
+                    if (state.rejection)
+                        *state.rejection = rejectionFor(layout.ipv6, load<uint32_t>(parameters, 0));
+                    return false;
+                }
                 if (type == "CONNMARK") {
                     applyConnectionMark(parameters, entry[target + 31], state);
                 } else if (type != "TCPMSS" || !applyMss(packet, layout.ipv6, load<uint16_t>(parameters, 0), mtu)) {

@@ -674,6 +674,66 @@ int main() {
             assert(write(length, addressSize) && call(204, {writer, replyAddress, length}) == 0);
             assert(call(206, {reader, payload, 8, 0, replyAddress, addressSize}) == uint64_t(-1));
             assert(send() == uint64_t(-1) && call(207, {reader, payload, 8}) == uint64_t(-11));
+
+            rules.erase(rules.begin() + actual.starts[3], rules.begin() + actual.starts[3] + stateRule.size());
+            const auto installReject = [&](unsigned hook, uint16_t protocol, uint32_t reason) {
+                std::vector<uint8_t> rule(entrySize + 40);
+                store(rule, ipv6 ? 128 : 80, protocol);
+                if (ipv6) rule[131] = 1;
+                store(rule, targetOffset, uint16_t(entrySize));
+                store(rule, targetOffset + 2, uint16_t(rule.size()));
+                store(rule, entrySize, uint16_t(40));
+                std::memcpy(rule.data() + entrySize + 2, "REJECT", 6);
+                store(rule, entrySize + 32, reason);
+                auto next = rules;
+                next.insert(next.begin() + actual.starts[hook], rule.begin(), rule.end());
+                request.bytes = next.size();
+                request.previousCount = request.count;
+                for (unsigned i = 1; i <= 3; ++i) {
+                    request.starts[i] = actual.starts[i] + (i > hook ? rule.size() : 0);
+                    request.policies[i] = actual.policies[i] + (i >= hook ? rule.size() : 0);
+                }
+                assert(write(input, request) && machine.write(input + sizeof(request), next));
+                return call(208, {control, level, 64, input, sizeof(request) + next.size()});
+            };
+            const auto readError = [&](uint64_t socket) {
+                uint32_t error = 0;
+                assert(write(length, uint32_t(sizeof(error))));
+                assert(call(209, {socket, 1, 4, replyAddress, length}) == 0);
+                assert(machine.readInto(replyAddress, {reinterpret_cast<uint8_t*>(&error), sizeof(error)}));
+                return error;
+            };
+            const auto pollSocket = [&](uint64_t socket, uint16_t events) {
+                constexpr auto timeout = base + 1600, pollfd = base + 1624;
+                assert(write(timeout, std::array<uint64_t, 2>{}));
+                assert(write(pollfd, uint64_t(socket) | (uint64_t(events) << 32)));
+                assert(call(73, {pollfd, 1, timeout}) == 1);
+                uint64_t value = 0;
+                assert(machine.load64(pollfd, value));
+                return value >> 48;
+            };
+            assert(call(203, {writer, address, addressSize}) == 0);
+            const uint32_t portUnreachable = ipv6 ? 4 : 3, tcpReset = ipv6 ? 6 : 7;
+            assert(installReject(1, 17, tcpReset) == uint64_t(-22)); // Reset requires TCP.
+            assert(installReject(1, 17, portUnreachable) == 0);
+            assert(send() == 8 && pollSocket(writer, 1) == 8 && readError(writer) == 111 && readError(writer) == 0);
+            assert(call(207, {reader, payload, 8}) == uint64_t(-11));
+            assert(installReject(3, 17, portUnreachable) == 0);
+            assert(send() == uint64_t(-1) && pollSocket(writer, 1) == 8 && readError(writer) == 111);
+            assert(call(207, {reader, payload, 8}) == uint64_t(-11));
+
+            const auto tcpServer = call(198, {family, 0x801, 0});
+            assert(tcpServer < 256 && call(200, {tcpServer, address, addressSize}) == 0);
+            assert(call(201, {tcpServer, 2}) == 0);
+            for (const unsigned hook : {1U, 3U}) {
+                assert(installReject(hook, 6, tcpReset) == 0);
+                const auto tcpClient = call(198, {family, 0x801, 0});
+                assert(tcpClient < 256 && call(203, {tcpClient, address, addressSize}) == uint64_t(-115));
+                assert(pollSocket(tcpClient, 4) == 0x1c && readError(tcpClient) == 111 && readError(tcpClient) == 0);
+                assert(call(202, {tcpServer, 0, 0}) == uint64_t(-11));
+                assert(call(57, {tcpClient}) == 0);
+            }
+            assert(call(57, {tcpServer}) == 0);
             assert(call(57, {reader}) == 0 && call(57, {writer}) == 0 && call(57, {control}) == 0);
         }
     }

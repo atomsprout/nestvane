@@ -1689,15 +1689,18 @@ bool ProbeLinux::eventCall(Machine& machine) {
                     (touch && touch->ready()) ||
                     (endpoint && (endpoint->hasInput() || !endpoint->pending.empty() || (peer && receiveEnded)));
                 const bool writable = (state && watch.eventCounter && state->counter < UINT64_MAX - 1) ||
-                    (endpoint && endpoint->inetDatagram() && !endpoint->sendShutdown) ||
+                    (endpoint && (endpoint->tcpConnectFailed ||
+                        (endpoint->inetDatagram() && !endpoint->sendShutdown))) ||
                     (peer && !endpoint->sendShutdown && !peer->receiveShutdown &&
                      peer->queuedBytes < endpoint->sendBuffer && peer->inbox.size() < 256);
-                const bool hungUp = endpoint && !endpoint->inetDatagram() && endpoint->connected &&
-                    (!peer || (receiveEnded && endpoint->sendShutdown));
+                const bool hungUp = endpoint && (endpoint->tcpConnectFailed ||
+                    (!endpoint->inetDatagram() && endpoint->connected &&
+                     (!peer || (receiveEnded && endpoint->sendShutdown))));
+                const bool socketError = endpoint && endpoint->inetError;
                 const bool mountsChanged = state && state->mountNamespace &&
                     state->observedMountGeneration != state->mountNamespace->generation;
                 const uint64_t mask = ((graphicsEvents | pipeEvents | ringEvents) & (watch.mask | 0x18U)) | (watch.mask & ((readable ? 1U : 0) | (mountsChanged ? 2U : 0) |
-                                                        (writable ? 4U : 0) | (receiveEnded ? 0x2000U : 0))) | (hungUp ? 16U : 0);
+                                                        (writable ? 4U : 0) | (receiveEnded ? 0x2000U : 0))) | (hungUp ? 16U : 0) | (socketError ? 8U : 0);
                 if (mask) {
                     ready.push_back({mask, watch.data});
                     if (mask & 2) readNotifications.push_back(state);
@@ -1747,6 +1750,7 @@ uint64_t ProbeLinux::socketRead(Machine& machine, const Descriptor& fd, uint64_t
     auto& endpoint = *fd.socket;
     if (!size) return 0;
     if (endpoint.inetDatagram()) return receiveInetDatagram(machine, endpoint, address, size);
+    if (endpoint.inetError && endpoint.inbox.empty()) return uint64_t(-std::exchange(endpoint.inetError, 0));
     if (endpoint.inbox.empty()) {
         const auto peer = endpoint.peer.lock();
         if (endpoint.receiveShutdown || (endpoint.connected && (!peer || peer->sendShutdown))) return 0;
@@ -2064,6 +2068,7 @@ uint64_t ProbeLinux::socketWrite(Machine& machine, const Descriptor& fd, uint64_
 uint64_t ProbeLinux::socketWrite(Machine& machine, const Descriptor& fd, std::span<const SocketVector> vectors) {
     if (fd.socket->inetDatagram()) return sendInetDatagram(machine, fd.socket, vectors);
     if (fd.socket->inetStream() && !inetLoopbackUp) return uint64_t(-100);
+    if (fd.socket->inetError) return uint64_t(-std::exchange(fd.socket->inetError, 0));
     constexpr uint64_t maxPacketBytes = 65536;
     auto peer = fd.socket->peer.lock();
     if (!fd.socket->connected) return uint64_t(-107);
@@ -2093,7 +2098,14 @@ uint64_t ProbeLinux::socketWrite(Machine& machine, const Descriptor& fd, std::sp
     }
     if (fd.socket->inetStream()) {
         try {
-            if (!transmitInetStream(*fd.socket, *peer, packet, 0x18)) return uint64_t(-110); // PSH|ACK
+            GuestFirewall::Rejection rejection;
+            if (!transmitInetStream(*fd.socket, *peer, packet, 0x18, rejection)) { // PSH|ACK
+                if (!rejection.reset) return uint64_t(-110);
+                fd.socket->inetError = 104; // ECONNRESET on an established stream.
+                fd.socket->receiveShutdown = fd.socket->sendShutdown = true;
+                wakePollers();
+                return size;
+            }
         } catch (const std::bad_alloc&) {
             return noMemory;
         }
@@ -2245,7 +2257,7 @@ bool ProbeLinux::socketCall(Machine& machine) {
             if (fd->second.socket->firewallSocket()) { x[0] = uint64_t(-95); break; }
             if (fd->second.socket->family == 2 || fd->second.socket->family == 10) {
                 const auto status = x[8] == 200 ? bindInetSocket(machine, fd->second.socket) :
-                    connectInetSocket(machine, fd->second.socket);
+                    connectInetSocket(machine, fd->second.socket, fd->second.effectiveFlags() & 0x800);
                 if (status == uint64_t(-11) && !(fd->second.effectiveFlags() & 0x800) &&
                     waitForSocketTimeout(fd->second.socket->sendTimeout)) return true;
                 current->deadline.reset();
@@ -2483,6 +2495,11 @@ bool ProbeLinux::socketCall(Machine& machine) {
             std::vector<SocketVector> vectors;
             if (const auto error = readSocketMessage(machine, x[1], message, vectors)) {
                 x[0] = error;
+                break;
+            }
+            if (endpoint.inetError) {
+                current->deadline.reset();
+                x[0] = uint64_t(-std::exchange(endpoint.inetError, 0));
                 break;
             }
             if (!endpoint.hasInput()) {
@@ -4902,13 +4919,15 @@ bool ProbeLinux::poll(Machine& machine) {
             const bool receiveEnded = endpoint->receiveShutdown ||
                 (!endpoint->inetDatagram() && endpoint->connected && (!peer || peer->sendShutdown));
             const bool readable = endpoint->hasInput() || !endpoint->pending.empty() || (peer && receiveEnded);
-            const bool writable = (endpoint->inetDatagram() && !endpoint->sendShutdown) ||
+            const bool writable = endpoint->tcpConnectFailed ||
+                (endpoint->inetDatagram() && !endpoint->sendShutdown) ||
                 (peer && !endpoint->sendShutdown && !peer->receiveShutdown &&
                  peer->queuedBytes < endpoint->sendBuffer && peer->inbox.size() < 256);
-            const bool hungUp = !endpoint->inetDatagram() && endpoint->connected &&
-                (!peer || (receiveEnded && endpoint->sendShutdown));
+            const bool hungUp = endpoint->tcpConnectFailed ||
+                (!endpoint->inetDatagram() && endpoint->connected &&
+                 (!peer || (receiveEnded && endpoint->sendShutdown)));
             entry.returned = (entry.events & ((readable ? 1 : 0) | (writable ? 4 : 0) |
-                                              (receiveEnded ? 0x2000 : 0))) | (hungUp ? 16 : 0);
+                                              (receiveEnded ? 0x2000 : 0))) | (hungUp ? 16 : 0) | (endpoint->inetError ? 8 : 0);
         } else {
             switch (descriptor->second.node) {
                 case Node::input: case Node::output: case Node::error: case Node::null:
@@ -5654,7 +5673,8 @@ std::shared_ptr<ProbeLinux::SocketState> ProbeLinux::findInetDestination(
     return nullptr;
 }
 
-uint64_t ProbeLinux::connectInetSocket(Machine& machine, const std::shared_ptr<SocketState>& socket) {
+uint64_t ProbeLinux::connectInetSocket(Machine& machine, const std::shared_ptr<SocketState>& socket,
+                                       bool nonblocking) {
     const auto& x = machine.cpu.x;
     if (x[2] >= 2) {
         uint16_t family = 0;
@@ -5663,6 +5683,7 @@ uint64_t ProbeLinux::connectInetSocket(Machine& machine, const std::shared_ptr<S
             if (!socket->inetDatagram()) return uint64_t(-95);
             socket->connected = false;
             socket->peerInetAddress = {};
+            socket->inetError = 0;
             return 0;
         }
     }
@@ -5672,7 +5693,7 @@ uint64_t ProbeLinux::connectInetSocket(Machine& machine, const std::shared_ptr<S
         return uint64_t(-1);
     if (const auto error = routeInetDestination(destination)) return error;
     if (!inetLoopbackUp) return uint64_t(-100);
-    if (socket->inetStream()) return connectInetStream(socket, destination);
+    if (socket->inetStream()) return connectInetStream(socket, destination, nonblocking);
     if (!socket->localInetAddress[0]) {
         InetAddress local{};
         local[0] = socket->family;
@@ -5681,6 +5702,7 @@ uint64_t ProbeLinux::connectInetSocket(Machine& machine, const std::shared_ptr<S
     }
     socket->peerInetAddress = destination;
     socket->connected = true;
+    socket->inetError = 0;
     return 0;
 }
 
@@ -5748,7 +5770,7 @@ static void runTcpOperations(const auto& hooks, const auto& socket, BpfProgram::
 }
 
 bool ProbeLinux::transmitInetStream(SocketState& from, SocketState& to, std::span<const uint8_t> payload,
-                                    uint32_t flags) {
+                                    uint32_t flags, GuestFirewall::Rejection& rejection) {
     constexpr uint32_t syn = 2, fin = 1, ack = 16;
     const auto advance = [&] { from.tcpSequence += uint32_t(payload.size()) + bool(flags & (syn | fin)); };
     const bool optionsEnabled = (from.tcpCallbackFlags & 0x40) && !inetSocketOperationPrograms.empty();
@@ -5795,7 +5817,7 @@ bool ProbeLinux::transmitInetStream(SocketState& from, SocketState& to, std::spa
     packet.mark = from.socketMark;
     const auto connection = (flags & (syn | ack)) == syn ? GuestFirewall::newConnection :
                                                           GuestFirewall::establishedConnection;
-    const GuestFirewall::PacketState state{&packet.mark, from.tcpConnectionMark.get(), connection};
+    const GuestFirewall::PacketState state{&packet.mark, from.tcpConnectionMark.get(), connection, &rejection};
     packet.ifindex = guestLoopbackIndex;
     packet.socketLookup = [&](std::span<const uint8_t> tuple, bool tcp) {
         return lookupInetSocket(tuple, tcp, &to);
@@ -5815,9 +5837,11 @@ bool ProbeLinux::transmitInetStream(SocketState& from, SocketState& to, std::spa
 }
 
 uint64_t ProbeLinux::connectInetStream(const std::shared_ptr<SocketState>& socket,
-                                       const SocketState::InetAddress& destination) {
+                                       const SocketState::InetAddress& destination, bool nonblocking) {
     if (socket->connected) return uint64_t(-106);
     if (socket->listening) return invalid;
+    socket->tcpConnectFailed = false;
+    socket->inetError = 0;
     const auto listener = findInetDestination(socket->protocol, destination);
     if (!listener || !listener->listening) return uint64_t(-111);
     if (listener->pending.size() >= listener->backlog) return uint64_t(-11);
@@ -5850,9 +5874,17 @@ uint64_t ProbeLinux::connectInetStream(const std::shared_ptr<SocketState>& socke
             BpfProgram::SocketOperations::tcpConnect, socket->tcpCallbackFlags, syn};
         runTcpOperations(inetSocketOperationPrograms, *socket, connecting);
         socket->tcpCallbackFlags = connecting.callbackFlags;
-        if (!transmitInetStream(*socket, *accepted, {}, syn) ||
-            !transmitInetStream(*accepted, *socket, {}, syn | ack) ||
-            !transmitInetStream(*socket, *accepted, {}, ack)) return uint64_t(-110);
+        GuestFirewall::Rejection rejection;
+        if (!transmitInetStream(*socket, *accepted, {}, syn, rejection) ||
+            !transmitInetStream(*accepted, *socket, {}, syn | ack, rejection) ||
+            !transmitInetStream(*socket, *accepted, {}, ack, rejection)) {
+            if (!rejection.error) return uint64_t(-110);
+            socket->tcpConnectFailed = true;
+            if (!nonblocking) return uint64_t(-rejection.error);
+            socket->inetError = rejection.error;
+            wakePollers();
+            return uint64_t(-115); // EINPROGRESS; poll/SO_ERROR report the refusal.
+        }
 
         BpfProgram::SocketOperations active{socket->storageIdentity,
             BpfProgram::SocketOperations::activeEstablished, socket->tcpCallbackFlags, ack};
@@ -5899,6 +5931,7 @@ ProbeLinux::DatagramConnection* ProbeLinux::trackDatagramConnection(const std::s
 
 uint64_t ProbeLinux::sendInetDatagram(Machine& machine, const std::shared_ptr<SocketState>& socket,
     std::span<const SocketVector> vectors, uint64_t address, uint64_t addressLength) {
+    if (socket->inetError) return uint64_t(-std::exchange(socket->inetError, 0));
     InetAddress destination = socket->peerInetAddress;
     if (address) {
         if (const auto error = readInetDestination(machine, address, addressLength, socket->family, destination))
@@ -5950,11 +5983,18 @@ uint64_t ProbeLinux::sendInetDatagram(Machine& machine, const std::shared_ptr<So
         if (connection && connection->first.lock() != socket) connection->sawReply = true;
         const auto status = connection && connection->sawReply ? GuestFirewall::establishedConnection :
                                                                 GuestFirewall::newConnection;
-        const GuestFirewall::PacketState state{&packet.mark, connection ? &connection->mark : nullptr, status};
+        GuestFirewall::Rejection rejection;
+        const GuestFirewall::PacketState state{&packet.mark, connection ? &connection->mark : nullptr, status, &rejection};
+        const auto deliverRejection = [&] {
+            if (!rejection.hard || !socket->connected || !matchInetPeer(socket->peerInetAddress, destination)) return;
+            socket->inetError = rejection.error;
+            wakePollers();
+        };
         if (!firewall.allows(packet.bytes, GuestFirewall::output, guestLoopbackMtu, state) ||
             !firewall.allows(packet.bytes, GuestFirewall::postrouting, guestLoopbackMtu, state)) {
             if (connection && !connection->confirmed)
                 datagramConnections.erase(std::minmax(socket->cookie, peer->cookie));
+            deliverRejection();
             return uint64_t(-1);
         }
 
@@ -5963,7 +6003,10 @@ uint64_t ProbeLinux::sendInetDatagram(Machine& machine, const std::shared_ptr<So
         const auto reportedSource = socket->family == peer->family ? source : asMappedIpv4(source);
         if (peer->connected && !matchInetPeer(peer->peerInetAddress, reportedSource)) return size;
         if (!firewall.allows(packet.bytes, GuestFirewall::prerouting, guestLoopbackMtu, state) ||
-            !firewall.allows(packet.bytes, GuestFirewall::input, guestLoopbackMtu, state)) return size;
+            !firewall.allows(packet.bytes, GuestFirewall::input, guestLoopbackMtu, state)) {
+            deliverRejection();
+            return size;
+        }
         packet.ingressIfindex = guestLoopbackIndex;
         const bool received = filterInetPacket(inetIngressPrograms, *peer, packet, false);
         if (packet.ringNotification) wakePollers();
@@ -5981,6 +6024,7 @@ uint64_t ProbeLinux::sendInetDatagram(Machine& machine, const std::shared_ptr<So
 
 uint64_t ProbeLinux::receiveInetDatagram(Machine& machine, SocketState& socket, uint64_t address, uint64_t size,
     uint64_t flags, uint64_t source, uint64_t sourceLength) {
+    if (socket.inetError) return uint64_t(-std::exchange(socket.inetError, 0));
     if (socket.datagrams.empty()) return socket.receiveShutdown ? 0 : uint64_t(-11);
     const auto& packet = socket.datagrams.front();
     const auto count = std::min<uint64_t>(size, packet.payload.size());
@@ -6034,7 +6078,7 @@ uint64_t ProbeLinux::getInetSocketOption(Machine& machine, SocketState& socket) 
         switch (x[2]) {
             case 2: store(uint32_t(socket.reuseAddress)); break;
             case 3: store(socket.type); break;
-            case 4: store(uint32_t(0)); break; // No asynchronous socket error has been queued.
+            case 4: store(uint32_t(std::exchange(socket.inetError, 0))); break;
             case 7: store(socket.sendBuffer); break;
             case 8: store(socket.receiveBuffer); break;
             case 38: store(socket.protocol); break;
