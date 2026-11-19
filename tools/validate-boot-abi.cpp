@@ -4431,6 +4431,53 @@ int main() {
     assert(call(64, {socketSender, base, 1024}) == 512);
     assert(call(57, {socketSender}) == 0 && call(57, {socketReceiver}) == 0);
 
+    {
+        constexpr auto pair = base + 0x480, msg = base + 0x500, vector = base + 0x540;
+        constexpr auto control = base + 0x580, payload = base + 0x5c0;
+        assert(call(199, {1, 0x801, 0, pair}) == 0);
+        const auto sender = uint32_t(load(pair)), receiver = uint32_t(load(pair) >> 32);
+        const auto original = call(198, {2, 2, 0});
+        assert(original < 256);
+        const auto write = [&](auto addr, const auto& value) {
+            assert(machine.write(addr, {reinterpret_cast<const uint8_t*>(&value), sizeof(value)}));
+        };
+        const auto prepare = [&](uint64_t size, uint64_t capacity, uint64_t address = control) {
+            write(vector, std::array<uint64_t, 2>{payload, size});
+            write(msg, std::array<uint64_t, 7>{0, 0, vector, 1, address, capacity, 0});
+        };
+        const auto send = [&] {
+            prepare(2, 24);
+            write(control, std::array<uint64_t, 3>{20, 0x100000001ULL, original});
+            assert(machine.store64(payload, 0x5958));
+            assert(call(211, {sender, msg, 0}) == 2);
+        };
+        assert(machine.store64(payload, 0x6261) && call(64, {sender, payload, 2}) == 2);
+        send();
+        assert(machine.store64(payload, 'z') && call(64, {sender, payload, 1}) == 1);
+        prepare(8, 24, 0xdead);
+        assert(call(212, {receiver, msg, 0}) == uint64_t(-14));
+        prepare(8, 24);
+        assert(call(212, {receiver, msg, 0x40000002}) == 4);
+        const auto peeked = uint32_t(load(control + 16));
+        assert((load(payload) & 0xffffffff) == 0x59586261 && load(control) == 20 && load(msg + 40) == 24);
+        assert(uint32_t(load(msg + 48)) == 0x40000000);
+        assert(peeked != original && call(25, {peeked, 1}) == 1);
+        prepare(8, 24);
+        assert(call(212, {receiver, msg, 0}) == 4);
+        const auto transferred = uint32_t(load(control + 16));
+        assert(transferred != peeked && transferred != original && call(25, {transferred, 1}) == 0);
+        assert(call(63, {receiver, payload, 8}) == 1 && uint8_t(load(payload)) == 'z');
+        assert(machine.store64(payload, 1));
+        assert(call(208, {transferred, 1, 2, payload, 4}) == 0);
+        assert(machine.store64(vector, 4));
+        assert(call(209, {original, 1, 2, payload, vector}) == 0 && uint32_t(load(payload)) == 1);
+        send();
+        prepare(8, 16);
+        assert(call(212, {receiver, msg, 0}) == 2 && load(msg + 40) == 0 && uint32_t(load(msg + 48)) == 8);
+        for (const auto fd : {sender, receiver, uint32_t(original), peeked, transferred})
+            assert(call(57, {fd}) == 0);
+    }
+
     put(base + 0x320, "/dev/urandom");
     const auto entropyFd = call(56, {uint32_t(-100), base + 0x320, 0});
     assert(entropyFd < 256);

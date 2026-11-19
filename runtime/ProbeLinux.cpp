@@ -1822,19 +1822,7 @@ uint64_t ProbeLinux::socketRead(Machine& machine, const Descriptor& fd, uint64_t
             if (bytes.size() == count) break;
         }
         if (count && !machine.write(address, bytes)) return uint64_t(-14);
-        size_t consumed = count;
-        while (consumed) {
-            auto& packet = endpoint.inbox.front();
-            if (packet.size() <= consumed) {
-                consumed -= packet.size();
-                endpoint.inbox.pop_front();
-            } else {
-                packet.erase(packet.begin(), packet.begin() + consumed);
-                consumed = 0;
-            }
-        }
-        endpoint.queuedBytes -= count;
-        wakePollers();
+        consumeSocketStream(endpoint, count);
         return count;
     }
     auto& packet = endpoint.inbox.front();
@@ -1844,6 +1832,24 @@ uint64_t ProbeLinux::socketRead(Machine& machine, const Descriptor& fd, uint64_t
     endpoint.inbox.pop_front();
     wakePollers();
     return count;
+}
+
+void ProbeLinux::consumeSocketStream(SocketState& endpoint, size_t count) {
+    if (!count) return;
+    endpoint.queuedBytes -= count;
+    endpoint.streamOffset += count;
+    while (!endpoint.rights.empty() && endpoint.rights.front().firstByte < endpoint.streamOffset)
+        endpoint.rights.pop_front();
+    while (count) {
+        auto& packet = endpoint.inbox.front();
+        if (packet.size() > count) {
+            packet.erase(packet.begin(), packet.begin() + count);
+            break;
+        }
+        count -= packet.size();
+        endpoint.inbox.pop_front();
+    }
+    wakePollers();
 }
 
 std::shared_ptr<ProbeLinux::GraphicsRegion> ProbeLinux::GraphicsAddressSpace::mapping(uint64_t offset, uint64_t size) const {
@@ -2133,6 +2139,15 @@ struct SocketMessage {
 };
 static_assert(sizeof(SocketMessage) == 56);
 
+struct SocketControl {
+    uint64_t length;
+    int32_t level, type;
+};
+static_assert(sizeof(SocketControl) == 16);
+constexpr int32_t socketControlLevel = 1, socketControlRights = 1;
+constexpr size_t maxRightsPerMessage = 253;
+constexpr size_t socketControlAlign(size_t size) { return (size + 7) & ~size_t{7}; }
+
 uint64_t readSocketMessage(const Machine& machine, uint64_t address, SocketMessage& message,
                            std::vector<std::array<uint64_t, 2>>& vectors) {
     if (!machine.readInto(address, {reinterpret_cast<uint8_t*>(&message), sizeof(message)})) return uint64_t(-14);
@@ -2149,7 +2164,41 @@ uint64_t ProbeLinux::socketWrite(Machine& machine, const Descriptor& fd, uint64_
     return socketWrite(machine, fd, std::span(&vector, 1));
 }
 
-uint64_t ProbeLinux::socketWrite(Machine& machine, const Descriptor& fd, std::span<const SocketVector> vectors) {
+uint64_t ProbeLinux::readSocketRights(const Machine& machine, uint64_t address, uint64_t length,
+                                      SocketRights& rights) const {
+    if (length > pageSize) return uint64_t(-105);
+    if (length < sizeof(SocketControl)) return invalid;
+    std::array<uint8_t, pageSize> buffer{};
+    if (!machine.readInto(address, std::span(buffer).first(length))) return uint64_t(-14);
+    for (size_t offset = 0; length - offset >= sizeof(SocketControl);) {
+        SocketControl header{};
+        std::memcpy(&header, buffer.data() + offset, sizeof(header));
+        if (header.length < sizeof(header) || header.length > length - offset ||
+            header.level != socketControlLevel || header.type != socketControlRights)
+            return invalid;
+        const auto bytes = header.length - sizeof(header);
+        if (bytes % sizeof(int32_t) || rights.size() + bytes / sizeof(int32_t) > maxRightsPerMessage)
+            return invalid;
+        for (size_t i = 0; i < bytes; i += sizeof(int32_t)) {
+            int32_t number;
+            std::memcpy(&number, buffer.data() + offset + sizeof(header) + i, sizeof(number));
+            const auto descriptor = descriptors().find(uint32_t(number));
+            if (descriptor == descriptors().end()) return uint64_t(-9);
+            const auto& fd = descriptor->second;
+            // Only ordinary files, pipes and INET sockets are transferable here.
+            // Queuing a UNIX endpoint could create an ownership cycle between sockets.
+            const bool transferable = fd.node == Node::regular || fd.node == Node::temporary ||
+                fd.pipe || (fd.socket && (fd.socket->family == 2 || fd.socket->family == 10));
+            if (!transferable) return uint64_t(-95);
+            rights.push_back(std::make_shared<Descriptor>(fd));
+        }
+        offset += std::min<uint64_t>(socketControlAlign(header.length), length - offset);
+    }
+    return 0;
+}
+
+uint64_t ProbeLinux::socketWrite(Machine& machine, const Descriptor& fd, std::span<const SocketVector> vectors,
+                                SocketRights rights) {
     if (fd.socket->inetDatagram()) return sendInetDatagram(machine, fd.socket, vectors);
     if (fd.socket->netlink && fd.socket->protocol != 15) return sendKernelNetlink(machine, fd.socket, vectors);
     if (fd.socket->inetStream() && !inetLoopbackUp) return uint64_t(-100);
@@ -2195,11 +2244,101 @@ uint64_t ProbeLinux::socketWrite(Machine& machine, const Descriptor& fd, std::sp
             return noMemory;
         }
     }
-    peer->inbox.push_back(std::move(packet));
+    const bool hasRights = !rights.empty();
+    if (hasRights && peer->rights.size() >= 64) return uint64_t(-11);
+    try {
+        if (hasRights) {
+            const auto firstByte = peer->streamOffset + peer->queuedBytes;
+            peer->rights.push_back({firstByte, firstByte + size, std::move(rights)});
+        }
+        try {
+            peer->inbox.push_back(std::move(packet));
+        } catch (const std::bad_alloc&) {
+            if (hasRights) peer->rights.pop_back();
+            return noMemory;
+        }
+    } catch (const std::bad_alloc&) {
+        return noMemory;
+    }
     peer->queuedBytes += size;
     ++peer->pollNotifications.readable;
     wakePollers();
     return size;
+}
+
+uint64_t ProbeLinux::receiveUnixStreamMessage(Machine& machine, SocketState& endpoint) {
+    const auto& x = machine.cpu.x;
+    constexpr uint64_t peek = 0x2, dontWait = 0x40, closeOnExec = 0x40000000;
+    constexpr uint32_t controlTruncated = 0x8;
+    if (endpoint.passCredentials || (x[2] & ~(peek | dontWait | closeOnExec))) return uint64_t(-95);
+    SocketMessage message{};
+    std::vector<SocketVector> vectors;
+    if (const auto error = readSocketMessage(machine, x[1], message, vectors)) return error;
+    uint64_t count = 0;
+    for (const auto& vector : vectors) {
+        if (vector[1] > uint64_t(INT64_MAX) - count) return invalid;
+        count += vector[1];
+    }
+    if (count && endpoint.inbox.empty()) {
+        const auto peer = endpoint.peer.lock();
+        if (!endpoint.receiveShutdown && (!endpoint.connected || (peer && !peer->sendShutdown)))
+            return uint64_t(endpoint.connected ? -11 : -107);
+    }
+    count = std::min<uint64_t>(count, endpoint.queuedBytes);
+    const auto* rights = endpoint.rights.empty() ? nullptr : &endpoint.rights.front();
+    if (rights && rights->firstByte - endpoint.streamOffset < count)
+        count = std::min(count, rights->endByte - endpoint.streamOffset);
+    else
+        rights = nullptr;
+
+    std::vector<uint8_t> payload;
+    payload.reserve(count);
+    for (const auto& packet : endpoint.inbox) {
+        const auto chunk = std::min<size_t>(packet.size(), count - payload.size());
+        payload.insert(payload.end(), packet.begin(), packet.begin() + chunk);
+        if (payload.size() == count) break;
+    }
+    auto remaining = std::span(payload);
+    for (const auto& [address, size] : vectors) {
+        if (remaining.empty()) break;
+        const auto copied = std::min<uint64_t>(size, remaining.size());
+        if (!machine.write(address, remaining.first(copied))) return uint64_t(-14);
+        remaining = remaining.subspan(copied);
+    }
+    message.flags = uint32_t(x[2] & closeOnExec);
+    message.nameLength = 0; // Connected stream; no datagram source address.
+    const auto capacity = message.control ? message.controlLength : 0;
+    message.controlLength = 0;
+    std::vector<uint32_t> numbers;
+    if (rights) {
+        const auto fits = capacity > sizeof(SocketControl) ? (capacity - sizeof(SocketControl)) / sizeof(uint32_t) : 0;
+        numbers.reserve(std::min<uint64_t>(fits, rights->files.size()));
+        for (size_t i = 0; i < fits && i < rights->files.size(); ++i) {
+            const auto number = freeDescriptor(numbers.empty() ? 0 : numbers.back() + 1);
+            if (number == descriptorCapacity) break;
+            numbers.push_back(number);
+        }
+        if (numbers.size() < rights->files.size()) message.flags |= controlTruncated;
+        if (!numbers.empty()) {
+            const SocketControl header{sizeof(SocketControl) + numbers.size() * sizeof(numbers[0]),
+                                       socketControlLevel, socketControlRights};
+            message.controlLength = std::min<uint64_t>(capacity, socketControlAlign(header.length));
+            if (header.length > UINT64_MAX - message.control || !writeGuest(machine, message.control, header) ||
+                !machine.write(message.control + sizeof(header), {reinterpret_cast<const uint8_t*>(numbers.data()),
+                                                                  numbers.size() * sizeof(numbers[0])}))
+                return uint64_t(-14);
+        }
+    }
+    std::map<uint32_t, Descriptor> transferred;
+    for (size_t i = 0; i < numbers.size(); ++i) {
+        auto copy = *rights->files[i];
+        copy.flags = (copy.flags & ~0x80000U) | (x[2] & closeOnExec ? 0x80000U : 0);
+        transferred.emplace(numbers[i], std::move(copy));
+    }
+    if (!writeGuest(machine, x[1], message)) return uint64_t(-14);
+    descriptors().merge(transferred);
+    if (!(x[2] & peek)) consumeSocketStream(endpoint, count);
+    return count;
 }
 
 uint64_t ProbeLinux::receiveKernelNetlink(Machine& machine, SocketState& endpoint) {
@@ -2882,7 +3021,19 @@ bool ProbeLinux::socketCall(Machine& machine) {
                 x[0] = error;
                 break;
             }
-            if (message.controlLength) return false;
+            SocketRights rights;
+            if (message.controlLength) {
+                if (endpoint->family != 1 || endpoint->type != 1) { x[0] = uint64_t(-95); break; }
+                try {
+                    if (const auto error = readSocketRights(machine, message.control, message.controlLength, rights)) {
+                        x[0] = error;
+                        break;
+                    }
+                } catch (const std::bad_alloc&) {
+                    x[0] = noMemory;
+                    break;
+                }
+            }
             if (endpoint->netlink) {
                 x[0] = sendKernelNetlink(machine, endpoint, vectors, message.name, message.nameLength);
                 break;
@@ -2890,7 +3041,7 @@ bool ProbeLinux::socketCall(Machine& machine) {
             if (message.nameLength && !endpoint->inetDatagram()) return false;
             const auto result = endpoint->inetDatagram() ?
                 sendInetDatagram(machine, endpoint, vectors, message.name, message.nameLength) :
-                socketWrite(machine, fd->second, vectors);
+                socketWrite(machine, fd->second, vectors, std::move(rights));
             const bool blocking = !(x[2] & 0x40) && !(fd->second.effectiveFlags() & 0x800);
             if (result == uint64_t(-11) && blocking && waitForSocketTimeout(endpoint->sendTimeout)) return true;
             current->deadline.reset();
@@ -2906,6 +3057,19 @@ bool ProbeLinux::socketCall(Machine& machine) {
                     waitForSocketTimeout(endpoint.receiveTimeout)) return true;
                 current->deadline.reset();
                 x[0] = receiveKernelNetlink(machine, endpoint);
+                break;
+            }
+            if (endpoint.family == 1 && endpoint.type == 1) {
+                uint64_t result;
+                try {
+                    result = receiveUnixStreamMessage(machine, endpoint);
+                } catch (const std::bad_alloc&) {
+                    result = noMemory;
+                }
+                if (result == uint64_t(-11) && !(fd->second.effectiveFlags() & 0x800) && !(x[2] & 0x40) &&
+                    waitForSocketTimeout(endpoint.receiveTimeout)) return true;
+                current->deadline.reset();
+                x[0] = result;
                 break;
             }
             constexpr uint64_t peek = 0x2, trunc = 0x20, dontWait = 0x40, cloexec = 0x40000000;

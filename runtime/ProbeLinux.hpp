@@ -186,6 +186,8 @@ private:
         uint64_t writable = 0;
         uint64_t stateChange = 0;
     };
+    struct Descriptor;
+    using SocketRights = std::vector<std::shared_ptr<Descriptor>>;
     struct SocketState {
         uint32_t type;
         uint32_t family = 1, protocol = 0;
@@ -230,6 +232,12 @@ private:
         std::array<uint32_t, 3> credentials{0, UINT32_MAX, UINT32_MAX};
         std::weak_ptr<SocketState> peer;
         std::deque<std::vector<uint8_t>> inbox;
+        struct RightsMessage {
+            uint64_t firstByte, endByte;
+            SocketRights files;
+        };
+        std::deque<RightsMessage> rights;
+        uint64_t streamOffset = 0;
         std::deque<std::shared_ptr<SocketState>> pending;
         size_t backlog = 0;
         size_t queuedBytes = 0;
@@ -322,7 +330,6 @@ private:
     uint64_t bpfObjectInfo(Machine& machine);
     uint64_t createBpfToken(Machine& machine);
     std::vector<std::weak_ptr<const BpfTypes>> bpfTypes;
-    struct Descriptor;
     struct GraphicsRegion {
         uint64_t offset = 0;
         SharedFileBytes storage;
@@ -596,7 +603,11 @@ private:
     uint64_t socketRead(Machine& machine, const Descriptor& fd, uint64_t address, uint64_t size);
     using SocketVector = std::array<uint64_t, 2>; // Guest iovec: pointer and length.
     uint64_t socketWrite(Machine& machine, const Descriptor& fd, uint64_t address, uint64_t size);
-    uint64_t socketWrite(Machine& machine, const Descriptor& fd, std::span<const SocketVector> vectors);
+    uint64_t socketWrite(Machine& machine, const Descriptor& fd, std::span<const SocketVector> vectors,
+                         SocketRights rights = {});
+    void consumeSocketStream(SocketState& endpoint, size_t count);
+    uint64_t readSocketRights(const Machine& machine, uint64_t control, uint64_t length, SocketRights& rights) const;
+    uint64_t receiveUnixStreamMessage(Machine& machine, SocketState& endpoint);
     bool socketCall(Machine& machine);
     uint64_t receiveKernelNetlink(Machine& machine, SocketState& endpoint);
     uint64_t receiveKernelNetlinkFrom(Machine& machine, SocketState& endpoint);
