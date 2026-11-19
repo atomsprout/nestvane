@@ -125,6 +125,7 @@ def collect(serial, readelf, destination, small_art_heap):
         system_suspend = "/system/bin/hw/android.system.suspend-service"
         surfaceflinger = "/system/bin/surfaceflinger"
         bootanimation = "/system/bin/bootanimation"
+        cameraserver = "/system/bin/cameraserver"
         aconfigd = "/system/bin/aconfigd-system"
         bpfloader = "/system/bin/bpfloader"
         netd = "/system/bin/netd"
@@ -135,10 +136,11 @@ def collect(serial, readelf, destination, small_art_heap):
         health = "/vendor/bin/hw/android.hardware.health-service.example"
         composer = "/vendor/bin/hw/android.hardware.graphics.composer3-service.ranchu"
         allocator = "/vendor/bin/hw/android.hardware.graphics.allocator-service.ranchu"
+        camera_provider = "/vendor/bin/hw/android.hardware.camera.provider.ranchu"
         for programs, search_paths in (
             ((vold, service, cmd, vdc, keystore, casefold, vold_prepare, odsign, bpfloader, iptables), ("/system/lib64",)),
-            ((zygote, installd, system_suspend, surfaceflinger, bootanimation, aconfigd, netd), ("/system/lib64", "/system_ext/lib64")),
-            ((keymint, lights, health, composer, allocator), ("/vendor/lib64", "/system/lib64")),
+            ((zygote, installd, system_suspend, surfaceflinger, bootanimation, aconfigd, netd, cameraserver), ("/system/lib64", "/system_ext/lib64")),
+            ((keymint, lights, health, composer, allocator, camera_provider), ("/vendor/lib64", "/system/lib64")),
         ):
             dependencies = {}
             for directory in search_paths:
@@ -341,7 +343,7 @@ def collect(serial, readelf, destination, small_art_heap):
         sdkext = "/apex/com.android.sdkext/bin"
         programs = ("/system/bin/apexd", system_self_test, vendor_self_test, vold, vdc, keystore, keymint,
                     casefold, vold_prepare, odsign, zygote, installd, system_suspend, lights, health, surfaceflinger,
-                    bootanimation, composer, allocator, aconfigd, netd, iptables,
+                    bootanimation, composer, allocator, aconfigd, netd, iptables, cameraserver, camera_provider,
                     f"{sdkext}/derive_sdk", f"{sdkext}/derive_classpath",
                     "/apex/com.android.art/bin/art_boot", "/apex/com.android.art/bin/odrefresh",
                     "/apex/com.android.tethering/bin/netbpfload", uprobestats, bpfloader,
