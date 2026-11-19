@@ -188,3 +188,5 @@
 - Mac 完整验证报告显示，黑色首帧提交后，原版 SurfaceFlinger 的主线程在客体 `sendmsg` 停止。开机动画线程正在等待 Unix 套接字的输入。运行时现可通过已建立连接的 Unix 套接字发送多个 iovec，将它们按一次消息入队，并把发送唤醒交给原有 epoll 路径。回归覆盖坏指针不产生半条消息、单条消息保留边界、接收端收到唤醒及收包后队列为空。宿主回归和 iOS 签名构建通过。客体线程报告同时显示了 epoll 等待的描述符、事件掩码和套接字队列长度，方便确认实际等待对象。
 
 - 补齐发送端后，Mac 原版 Android 17 读回第 3 帧时出现非均匀 RGB。原先的 `sendmsg` 停点经 ELF 符号定位到 Android `BufferReleaseChannel::ProducerEndpoint::writeReleaseFence`。随后开机动画线程在读取释放消息时触发同一通道的 `recvmsg`。已支持 Unix 包套接字无附带描述符的分段接收。回归验证跨 iovec 拷贝、截断标志、peek 保留消息和拷贝故障后的重试。宿主回归和 iOS 签名构建通过。带发送端修复的长时间 Mac 验证已完成 WaitForDisplay 并启动 PackageManagerService。iPhone 11 第 7951 号进程正在验证带发送端和画面采集的构建。
+
+- iPhone 11 第 7951 号进程在 103,451 ms 呈现 640×960 首帧，并成功导出带原版 Android 开机字标的 PNG。原始采集的 SHA-256 为 `79a4b9bc883d62a39303ff689ea21f13eb0ee258b2b6b18d10fa103211947576`。字标上下颠倒，图像检查确认 UIKit 重复调整了客体合成的行序。签名构建已改为直接使用读回行序并单独记录首张有内容画面的呈现时间。修复后的已签名构建已作为真机第 7956 号进程启动。

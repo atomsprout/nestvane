@@ -7,7 +7,6 @@
 #include "Validation.hpp"
 
 #include <chrono>
-#include <cstring>
 #include <thread>
 #include <vector>
 
@@ -20,13 +19,9 @@ UIImage* GuestDisplayImage(std::span<const uint8_t> pixels, uint32_t width, uint
     const size_t bytes = stride * height;
     if (!width || !height || width > 4096 || height > 4096 || bytes > pixels.size()) return nil;
 
-    NSMutableData* upright = [NSMutableData dataWithLength:bytes];
-    auto* output = static_cast<uint8_t*>(upright.mutableBytes);
-    if (!output) return nil;
-    for (uint32_t y = 0; y < height; ++y)
-        std::memcpy(output + y * stride, pixels.data() + (height - y - 1) * stride, stride);
-
-    CGDataProviderRef provider = CGDataProviderCreateWithCFData((__bridge CFDataRef)upright);
+    // The guest compositor has already oriented its output for the display.
+    NSData* frameBytes = [NSData dataWithBytes:pixels.data() length:bytes];
+    CGDataProviderRef provider = CGDataProviderCreateWithCFData((__bridge CFDataRef)frameBytes);
     CGColorSpaceRef color = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
     const CGBitmapInfo bitmap = kCGBitmapByteOrder32Big | CGBitmapInfo(kCGImageAlphaNoneSkipLast);
     CGImageRef frame = provider && color
@@ -236,18 +231,21 @@ static NSString* ThermalState() {
                 auto displayReader = StartDisplayReader(renderer, captureFirstFrame, ^(UIImage* frame, bool content) {
                     const BOOL firstFrame = self.display.hidden;
                     self.display.image = frame;
-                    if (firstFrame) {
-                        self.status.text = @"Android 17 display";
-                        self.details.hidden = YES;
-                        self.display.hidden = NO;
+                    const auto writePresentationTime = [&](NSURL* url) {
                         const auto milliseconds = (NSProcessInfo.processInfo.systemUptime - bootStarted) * 1000;
                         NSString* message = [NSString stringWithFormat:
                             @"process %d | %.0f ms | presented %.0f × %.0f Android pixels\n",
                             NSProcessInfo.processInfo.processIdentifier, milliseconds,
                             frame.size.width, frame.size.height];
                         NSError* error = nil;
-                        if (![message writeToURL:displayProgress atomically:YES encoding:NSUTF8StringEncoding error:&error])
+                        if (![message writeToURL:url atomically:YES encoding:NSUTF8StringEncoding error:&error])
                             NSLog(@"Unable to export display progress: %@", error);
+                    };
+                    if (firstFrame) {
+                        self.status.text = @"Android 17 display";
+                        self.details.hidden = YES;
+                        self.display.hidden = NO;
+                        writePresentationTime(displayProgress);
                     }
                     if (captureFirstFrame && (firstFrame || content)) {
                         NSData* png = UIImagePNGRepresentation(frame);
@@ -258,8 +256,13 @@ static NSString* ThermalState() {
                                 NSLog(@"Unable to export %@: %@", filename, error);
                         };
                         if (firstFrame) save(@"display-first-frame.png");
-                        if (content) save([NSString stringWithFormat:@"display-first-content-%d.png",
-                            NSProcessInfo.processInfo.processIdentifier]);
+                        if (content) {
+                            NSString* name = [NSString stringWithFormat:@"display-first-content-%d",
+                                NSProcessInfo.processInfo.processIdentifier];
+                            writePresentationTime([documents URLByAppendingPathComponent:
+                                [name stringByAppendingPathExtension:@"txt"]]);
+                            save([name stringByAppendingPathExtension:@"png"]);
+                        }
                     }
                 });
                 auto boot = nestvane::probeInit(initRoot.fileSystemRepresentation, database.fileSystemRepresentation,
