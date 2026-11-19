@@ -1886,9 +1886,10 @@ bool ProbeLinux::socketCall(Machine& machine) {
             std::memcpy(&size, pointer, sizeof(size));
             const auto& endpoint = *fd->second.socket;
             std::span<const uint8_t> bytes;
-            if (x[2] == 3 || x[2] == 7 || x[2] == 8 || x[2] == 38 || x[2] == 39) {
+            if (x[2] == 2 || x[2] == 3 || x[2] == 7 || x[2] == 8 || x[2] == 38 || x[2] == 39) {
                 uint32_t value = 0;
                 switch (x[2]) {
+                    case 2: value = endpoint.reuseAddress; break; // SO_REUSEADDR
                     case 3: value = endpoint.type; break; // SO_TYPE
                     case 7: value = endpoint.sendBuffer; break; // SO_SNDBUF
                     case 8: value = endpoint.uevent ? endpoint.uevent->receiveBuffer : endpoint.receiveBuffer; break;
@@ -1918,18 +1919,21 @@ bool ProbeLinux::socketCall(Machine& machine) {
                 ? 0 : uint64_t(-14);
             break;
         }
-        case 208: { // SOL_SOCKET buffer and credential options
+        case 208: { // SOL_SOCKET options
             if (fd == descriptors().end()) { x[0] = uint64_t(-9); break; }
             if (!fd->second.socket) { x[0] = uint64_t(-88); break; }
             auto& endpoint = *fd->second.socket;
-            if (x[1] != 1 || (x[2] != 16 && x[2] != 7 && x[2] != 8 && (x[2] != 33 || !endpoint.uevent)))
+            if (x[1] != 1 || (x[2] != 2 && x[2] != 16 && x[2] != 7 && x[2] != 8 &&
+                              (x[2] != 33 || !endpoint.uevent)))
                 return false;
             if (x[4] < 4) { x[0] = invalid; break; }
             const auto* value = machine.read(x[3], 4, 4);
             if (!value) { x[0] = uint64_t(-14); break; }
             uint32_t enabled = 0;
             std::memcpy(&enabled, value, sizeof(enabled));
-            if (x[2] == 16) {
+            if (x[2] == 2) {
+                endpoint.reuseAddress = enabled != 0;
+            } else if (x[2] == 16) {
                 endpoint.passCredentials = enabled != 0;
             } else if (x[2] == 7) {
                 endpoint.sendBuffer = 2 * std::clamp<uint32_t>(enabled, 1024, 131072);

@@ -165,7 +165,7 @@ private:
         bool connected = false;
         bool listening = false;
         bool receiveShutdown = false, sendShutdown = false;
-        bool passCredentials = false;
+        bool passCredentials = false, reuseAddress = false;
         bool logWriter = false;
         struct UeventSocket { uint32_t pid = 0, groups = 0, receiveBuffer = 212992; };
         std::optional<UeventSocket> uevent;

@@ -1410,6 +1410,17 @@ int main() {
     assert(load(base + 0x390) == sizeof zygoteContext);
     assert(std::memcmp(machine.read(base + 0x3c0, sizeof zygoteContext, 4), zygoteContext, sizeof zygoteContext) == 0);
     const auto socketSender = uint32_t(labeledPair), socketReceiver = uint32_t(labeledPair >> 32);
+    assert(machine.store64(base + 0x390, 4) && machine.store64(base + 0x3c0, 3));
+    assert(call(208, {socketSender, 1, 2, base + 0x3c0, 3}) == uint64_t(-22));
+    assert(call(208, {socketSender, 1, 2, 0xdead, 4}) == uint64_t(-14));
+    assert(call(208, {socketSender, 1, 2, base + 0x3c0, 4}) == 0);
+    assert(call(209, {socketSender, 1, 2, base + 0x3c0, base + 0x390}) == 0);
+    assert((load(base + 0x3c0) & UINT32_MAX) == 1);
+    assert(call(209, {socketReceiver, 1, 2, base + 0x3c0, base + 0x390}) == 0);
+    assert((load(base + 0x3c0) & UINT32_MAX) == 0);
+    assert(call(208, {socketSender, 1, 2, base + 0x3c0, 4}) == 0);
+    assert(call(209, {socketSender, 1, 2, base + 0x3c0, base + 0x390}) == 0);
+    assert((load(base + 0x3c0) & UINT32_MAX) == 0);
     assert(machine.store64(base + 0x390, 4) && machine.store64(base + 0x3c0, 4096));
     assert(call(208, {socketSender, 1, 7, base + 0x3c0, 4}) == 0);
     assert(call(209, {socketSender, 1, 7, base + 0x3c0, base + 0x390}) == 0);

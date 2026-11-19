@@ -197,3 +197,15 @@ nativeloader: Load libwebviewchromium_loader.so using system ns (caller=/system/
   no runnable guest threads
   guest execution wall time: 171843 ms
 Guest quotactl coverage for unavailable and invalid devices: host suite and ASan/UBSan passed.
+
+Mac after handling the quota query
+  guest PID 152 entered /system/bin/installd (guest context u:r:installd:s0)
+installd: installd firing up
+installd: Upgrading to /data/misc/user directories
+libbinder.BackendUnifiedServiceManager: Thread Pool max thread count is 0. Cannot cache binder as linkToDeath cannot be implemented. serviceName: installd
+SystemServerTiming: StartActivityManager
+  syscall 208 ... x1=0x1 x2=0x2 ... x4=0x4 [unimplemented in guest PID 166, suspended]
+  no runnable guest threads
+  guest execution wall time: 177428 ms
+Unix SO_REUSEADDR set/get, socket isolation, and invalid arguments: host suite and ASan/UBSan passed.
+iOS Release build with SO_REUSEADDR: BUILD SUCCEEDED.
