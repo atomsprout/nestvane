@@ -7688,6 +7688,7 @@ bool ProbeLinux::syscall(Machine& machine) {
     auto& x = machine.cpu.x;
     const uint64_t number = x[8];
     current->hostEventRetry.reset();
+    current->idleBinder.reset();
     if (enforceSeccomp(machine)) return true;
     if (number == 139) return restoreSignalContext(machine); // rt_sigreturn
     if (securityCall(machine) || socketCall(machine) || eventCall(machine) || fileCall(machine)) return true;
@@ -7940,8 +7941,14 @@ bool ProbeLinux::syscall(Machine& machine) {
             else if (x[1] == 0x5401) x[0] = uint64_t(-25); // TCGETS on a non-terminal.
             else if (descriptor->second.binder) {
                 const auto result = binderIoctl(machine, descriptor->second);
-                if (result == uint64_t(-11) && x[1] == 0xc0306201 && !(descriptor->second.effectiveFlags() & 0x800))
+                if (result == uint64_t(-11) && x[1] == 0xc0306201 && !(descriptor->second.effectiveFlags() & 0x800)) {
+                    const auto& connection = descriptor->second.binder;
+                    const auto replies = connection->replies.find(currentTid);
+                    if (connection->loopers.contains(currentTid) &&
+                        (replies == connection->replies.end() || replies->second.empty()))
+                        current->idleBinder = connection;
                     return waitForEvents();
+                }
                 x[0] = result;
             }
             else if (descriptor->second.node == Node::loopControl || descriptor->second.node == Node::loopDevice)

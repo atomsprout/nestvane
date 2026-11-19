@@ -111,6 +111,7 @@ private:
     };
     enum class Wait { none, poll, futex, signal, sleep, exited, suspended };
     struct Process;
+    struct BinderConnection;
     struct SeccompFilter {
         struct Instruction { uint16_t code; uint8_t yes, no; uint32_t value; };
         std::vector<Instruction> program;
@@ -122,6 +123,7 @@ private:
         std::shared_ptr<Process> process;
         std::shared_ptr<MountNamespace> mountNamespace = {};
         std::shared_ptr<const SeccompFilter> seccomp;
+        std::weak_ptr<BinderConnection> idleBinder;
         bool noNewPrivileges = false;
         Wait wait = Wait::none;
         uint64_t clearTid = 0, futexAddress = 0;
@@ -241,7 +243,6 @@ private:
         explicit SocketState(uint32_t type) : type(type) {}
     };
     bool waitForSocketTimeout(std::chrono::microseconds timeout);
-    struct BinderConnection;
     struct GraphicsPipeState {
         std::string serviceHeader;
         std::unique_ptr<GraphicsPipe> backend;

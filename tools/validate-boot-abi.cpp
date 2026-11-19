@@ -283,6 +283,12 @@ int main() {
         constexpr uint64_t address = base + 0x80;
         pairs.cpu.x[8] = address;
         assert(pairs.store64(address, 0x1122334455667788) && pairs.store64(address + 8, 0x99aabbccddeeff00));
+        for (const uint32_t hint : {0xd503211fU, 0xd503215fU, 0xd503219fU, 0xd50321dfU}) {
+            auto expected = pairs.cpu;
+            expected.pc += 4;
+            ++expected.retired;
+            assert(executeStartupInstruction(pairs, hint) && pairs.cpu == expected);
+        }
         assert(executeStartupInstruction(pairs, 0xc87fd115)); // ldaxp x21, x20, [x8]
         assert(pairs.cpu.x[21] == 0x1122334455667788 && pairs.cpu.x[20] == 0x99aabbccddeeff00);
         pairs.cpu.x[21] = 1;

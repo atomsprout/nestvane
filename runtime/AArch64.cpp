@@ -1393,7 +1393,8 @@ bool executeStartupInstruction(Machine& machine, uint32_t word) {
                                  word == 0xd5033dbf || word == 0xd5033ebf || word == 0xd5033fbf || word == 0xd5033fdf;
             const bool hint = barrier || word == 0xd503201f || word == 0xd503245f || word == 0xd503249f ||
                               word == 0xd50324df || word == 0xd503233f || word == 0xd50323bf ||
-                              word == 0xd503237f || word == 0xd50323ff || word == 0xd50320ff;
+                              word == 0xd503237f || word == 0xd50323ff || word == 0xd50320ff ||
+                              word == 0xd503211f || word == 0xd503215f || word == 0xd503219f || word == 0xd50321df;
             handled = hint || branches(cpu, word, next) || values(cpu, word);
             break;
         }

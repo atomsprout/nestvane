@@ -507,14 +507,8 @@ uint64_t ProbeLinux::binderWriteRead(Machine& machine, const Descriptor& fd) {
         const auto registered = std::ranges::count_if(connection.loopers, [](const auto& looper) { return looper.second; });
         const auto idle = [&](const auto& looper) {
             if (looper.first == currentTid) return false;
-            const auto& task = threads.at(looper.first);
-            const auto& cpu = task.saved;
-            const auto& descriptors = task.process->descriptors;
-            if (task.wait != Wait::poll || cpu.x[8] != 29 || cpu.x[1] != 0xc0306201) return false;
-            const auto descriptor = descriptors.find(uint32_t(cpu.x[0]));
-            const auto replies = connection.replies.find(looper.first);
-            return descriptor != descriptors.end() && descriptor->second.binder.get() == &connection &&
-                (replies == connection.replies.end() || replies->second.empty());
+            // A poll wake makes a thread runnable before it has taken any Binder work.
+            return threads.at(looper.first).idleBinder.lock().get() == &connection;
         };
         requestLooper = registered < connection.maxThreads && std::ranges::none_of(connection.loopers, idle);
     }
