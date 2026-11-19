@@ -261,6 +261,22 @@ def collect(serial, readelf, destination, small_art_heap):
                 local.parent.mkdir(parents=True, exist_ok=True)
                 subprocess.run(adb + ["pull", guest, str(local)], check=True)
                 copied.add(guest)
+        # APEX archives carry their own BPF objects. The loader also reads these partition inputs.
+        for partition in property_inputs:
+            directory = f"{partition}/etc/bpf"
+            pattern = rf"{directory}/(?:[A-Za-z0-9_.@+-]+/)*[A-Za-z0-9_.@+-]+\.(?:o|bpf)"
+            command = rf"find {directory} -type f \( -name '*.o' -o -name '*.bpf' \) 2>/dev/null || true"
+            for guest in shell(command).splitlines():
+                if not re.fullmatch(pattern, guest) or Path(guest).as_posix() != guest or ".." in Path(guest).parts:
+                    raise SystemExit(f"Unexpected BPF object path: {guest}")
+                local = root / guest.lstrip("/")
+                local.parent.mkdir(parents=True, exist_ok=True)
+                subprocess.run(adb + ["pull", guest, str(local)], check=True)
+                with local.open("rb") as file:
+                    header = file.read(20)
+                if header[:6] != b"\x7fELF\x02\x01" or int.from_bytes(header[18:20], "little") != 247:
+                    raise SystemExit(f"Expected a 64-bit little-endian BPF ELF: {guest}")
+                copied.add(guest)
         # Use the reference system's generated classpaths to select platform JARs.
         if not {"/system/framework/framework.jar", "/system/framework/services.jar"} <= framework:
             raise SystemExit("Reference Android classpaths are incomplete")

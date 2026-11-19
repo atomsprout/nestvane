@@ -234,3 +234,4 @@
 - 客体支持装载受限的 `BPF_PROG_TYPE_SOCKET_FILTER` 并通过 `SO_ATTACH_BPF` 应用于客体 uevent。执行器解释字节码，使用有界栈、包访问校验和指令上限。对照测试使用 SDK 参考镜像中由公开 AOSP Health 过滤器编译出的字节码。其 400 字节程序在参考 Android 内核和 Nestvane 解释器都保留 `power_supply` 与未分类数据包，并丢弃 `block` 包。宿主回归验证非法指令和跳转、装载、附着及 FD 关闭后的截断或丢弃，iPhoneOS 开发签名通过。原版全量加载仍待验证。[AOSP Health 过滤器源码](https://android.googlesource.com/platform/hardware/interfaces/+/eb39ea1855023c268b12c226699a0351e101c8b2/health/utils/libhealthloop/filterPowerSupplyEvents.c)
 - iPhone 11 的第 8205 号进程越过了前一轮的显示等待，约 13 分 20 秒进入 PackageManager，14 分 58 秒已记录系统框架扫描进展。该轮测试继续运行，尚未确认客体完整启动。
 - bpffs 固定操作扩展到 socket filter 程序。参考 Android 内核将原版 Health 程序固定后，以只读请求重新打开，移除文件名后附着，过滤结果不变。Nestvane 宿主回归执行同样的程序 FD 生命周期，并验证客体 uevent 的丢弃和截断。包含该改动的 iPhoneOS 开发签名通过。
+- 采集器补齐原版加载器从分区读取的 BPF ELF，保留子目录与文件名并校验 ELF 架构。相同 SDK 的完整采集获得 1,217 个 Android 文件，其中 11 个 `/system/etc/bpf` 对象和一个 vendor Health 对象是此前缺少的输入。采集的 vendor 文件与差分测试所用字节逐一一致。
