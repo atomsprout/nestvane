@@ -57,6 +57,31 @@ int main() {
         BpfProgram::Packet packet;
         assert(callback.classify(packet) == 5);
     }
+    {
+        auto cache = std::make_shared<BpfMap>();
+        cache->type = BpfMap::lruHash;
+        cache->entryCount = 2;
+        cache->keySize = cache->valueSize = cache->valueStride = 4;
+        const std::vector<uint8_t> first{1, 0, 0, 0}, second{2, 0, 0, 0}, third{3, 0, 0, 0};
+        cache->storeHash(first, {10, 0, 0, 0}, cache->hash.end());
+        cache->storeHash(second, {20, 0, 0, 0}, cache->hash.end());
+        const auto encode = [](uint8_t op, uint8_t registers, int16_t offset = 0, int32_t immediate = 0) {
+            return op | (uint64_t(registers) << 8) | (uint64_t(uint16_t(offset)) << 16) |
+                   (uint64_t(uint32_t(immediate)) << 32);
+        };
+        const std::array<uint64_t, 10> code{
+            encode(0x18, 0x11, 0, 12), 0, encode(0xb7, 3, 0, 1), encode(0x63, 0x3a, -4),
+            encode(0xbf, 0xa2), encode(0x07, 2, 0, -4), encode(0x85, 0, 0, 1),
+            encode(0x15, 0, 1), encode(0x61, 0), encode(0x95, 0)};
+        BpfProgram program({}, {});
+        const auto bytes = std::span(reinterpret_cast<const uint8_t*>(code.data()), sizeof(code));
+        assert(program.load(BpfProgram::classifier, bytes, [&](uint32_t fd) { return fd == 12 ? cache : nullptr; }));
+        BpfProgram::Packet packet;
+        assert(program.classify(packet) == 10);
+        assert(cache->findValue(second) != cache->hash.end()); // A userspace lookup leaves recency unchanged.
+        cache->storeHash(third, {30, 0, 0, 0}, cache->hash.end());
+        assert(cache->hash.size() == 2 && cache->hash.contains(first) && !cache->hash.contains(second));
+    }
     constexpr uint64_t base = 0x2000;
     Machine machine(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
     {

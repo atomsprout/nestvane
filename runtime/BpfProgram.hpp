@@ -22,7 +22,7 @@ namespace nestvane {
 class BpfTypes;
 
 struct BpfMap {
-    static constexpr uint32_t prefixMap = 11, socketStorage = 24, ringBuffer = 27;
+    static constexpr uint32_t lruHash = 9, prefixMap = 11, socketStorage = 24, ringBuffer = 27;
     static constexpr size_t minPrefixKey = 5, maxPrefixKey = sizeof(uint32_t) + 256;
     explicit BpfMap(bool prefixes = false) : hash(CompareKeys{prefixes}) {}
     static constexpr uint32_t ringDiscardBit = 1U << 30, ringBusyBit = 1U << 31;
@@ -115,8 +115,39 @@ struct BpfMap {
             return leftLength > rightLength;
         }
     };
-    using Entries = std::map<std::vector<uint8_t>, std::vector<uint8_t>, CompareKeys>;
+    struct Entry {
+        std::vector<uint8_t> bytes;
+        uint64_t lastUsed = 0;
+    };
+    using Entries = std::map<std::vector<uint8_t>, Entry, CompareKeys>;
     Entries hash;
+    uint64_t recency = 0;
+
+    void markUsed(Entry& entry) {
+        if (type == lruHash) entry.lastUsed = ++recency;
+    }
+
+    void storeHash(std::vector<uint8_t> key, std::vector<uint8_t> value, Entries::iterator previous) {
+        Entry item{std::move(value)};
+        markUsed(item);
+        if (type == prefixMap && previous != hash.end()) {
+            // Enumeration reports the entire most recently supplied key, including its suffix.
+            auto node = hash.extract(previous);
+            std::ranges::copy(key, node.key().begin());
+            node.mapped() = std::move(item);
+            hash.insert(std::move(node));
+            return;
+        }
+        auto victim = hash.end();
+        if (type == lruHash && previous == hash.end() && hash.size() == entryCount) {
+            victim = std::min_element(hash.begin(), hash.end(), [](const auto& left, const auto& right) {
+                return left.second.lastUsed < right.second.lastUsed;
+            });
+        }
+        hash.insert_or_assign(std::move(key), std::move(item));
+        // Failure to allocate a new entry leaves the existing cache intact.
+        if (victim != hash.end()) hash.erase(victim);
+    }
 
     Entries::iterator findValue(std::span<const uint8_t> key) {
         if (type != prefixMap) return hash.find(key);
@@ -494,7 +525,8 @@ private:
             } else {
                 const auto found = map.findValue(key);
                 if (found == map.hash.end()) return 0;
-                value = std::span(found->second).first(map.valueSize);
+                map.markUsed(found->second);
+                value = std::span(found->second.bytes).first(map.valueSize);
             }
             return valueAddress(map, value);
         };
@@ -689,7 +721,7 @@ private:
                                     }
                                 } else {
                                     for (auto& [key, value] : map->hash) {
-                                        const auto action = invoke(key, std::span(value).first(map->valueSize));
+                                        const auto action = invoke(key, std::span(value.bytes).first(map->valueSize));
                                         if (!action) return std::nullopt;
                                         if (*action) break;
                                     }

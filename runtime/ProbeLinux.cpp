@@ -5217,9 +5217,10 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
         const bool socket = type == BpfMap::socketStorage;
         const bool ring = type == BpfMap::ringBuffer;
         const bool prefix = type == BpfMap::prefixMap;
-        if (!array && !device && !socket && !ring && !prefix && type != hashType && type != perCpuHash)
+        const bool lru = type == BpfMap::lruHash;
+        if (!array && !device && !socket && !ring && !prefix && !lru && type != hashType && type != perCpuHash)
             return uint64_t(-95);
-        if ((socket || ring || prefix) && !(current->process->effectiveCaps & (capBpf | capSysAdmin))) return uint64_t(-1);
+        if ((socket || ring || prefix || lru) && !(current->process->effectiveCaps & (capBpf | capSysAdmin))) return uint64_t(-1);
         if (device && !(current->process->effectiveCaps & (1ULL << 12))) return uint64_t(-1); // CAP_NET_ADMIN
         const uint32_t arrayFlags = type == arrayType ? mappable | programReadOnly : 0;
         const uint32_t supportedFlags = readOnly | writeOnly | (device ? programReadOnly : array ? arrayFlags : noPrealloc);
@@ -5230,6 +5231,7 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
                    (device && valueSize != 4 && valueSize != 8) || (flags & ~supportedFlags)) {
             return invalid;
         }
+        if (lru && (flags & noPrealloc)) return uint64_t(-524);
         if (prefix && (keySize < BpfMap::minPrefixKey || keySize > BpfMap::maxPrefixKey || !(flags & noPrealloc)))
             return invalid;
         if ((flags & (readOnly | writeOnly)) == (readOnly | writeOnly)) return invalid;
@@ -5356,14 +5358,14 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
             }
             if (command == lookup || command == erase) {
                 if (entry == map.hash.end()) return uint64_t(-2);
-                if (command == lookup) return machine.write(value, entry->second) ? 0 : fault;
+                if (command == lookup) return machine.write(value, entry->second.bytes) ? 0 : fault;
                 map.hash.erase(entry);
                 return 0;
             }
             const bool device = map.type == deviceHash;
             if (!device && entry == map.hash.end() && flags == 2) return uint64_t(-2); // BPF_EXIST
             if (entry != map.hash.end() && flags == 1) return uint64_t(-17); // BPF_NOEXIST
-            if (entry == map.hash.end() && map.hash.size() == map.entryCount)
+            if (entry == map.hash.end() && map.hash.size() == map.entryCount && map.type != BpfMap::lruHash)
                 return prefix ? uint64_t(-28) : tooBig;
             std::vector<uint8_t> replacement(map.valueStride);
             if (!machine.readInto(value, replacement)) return fault;
@@ -5378,15 +5380,7 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
                     std::fill(replacement.begin() + 4, replacement.end(), 0);
                 }
             }
-            if (prefix && entry != map.hash.end()) {
-                // Prefixes ignore trailing bits for matching, but enumeration returns the last supplied key.
-                auto node = map.hash.extract(entry);
-                std::ranges::copy(bytes, node.key().begin());
-                node.mapped() = std::move(replacement);
-                map.hash.insert(std::move(node));
-            } else {
-                map.hash.insert_or_assign(std::move(bytes), std::move(replacement));
-            }
+            map.storeHash(std::move(bytes), std::move(replacement), entry);
             return 0;
         } catch (const std::bad_alloc&) {
             return noMemory;
