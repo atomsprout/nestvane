@@ -1834,23 +1834,48 @@ uint64_t ProbeLinux::writeGraphics(const Machine& machine, GraphicsPipeState& pi
     return sent <= int64_t(input.size()) ? uint64_t(sent) : uint64_t(-5);
 }
 
+namespace {
+struct SocketMessage {
+    uint64_t name;
+    uint32_t nameLength, namePadding;
+    uint64_t vector, vectorCount, control, controlLength;
+    uint32_t flags, tailPadding;
+};
+static_assert(sizeof(SocketMessage) == 56);
+}
+
 uint64_t ProbeLinux::socketWrite(Machine& machine, const Descriptor& fd, uint64_t address, uint64_t size) {
+    const SocketVector vector{address, size};
+    return socketWrite(machine, fd, std::span(&vector, 1));
+}
+
+uint64_t ProbeLinux::socketWrite(Machine& machine, const Descriptor& fd, std::span<const SocketVector> vectors) {
+    constexpr uint64_t maxPacketBytes = 65536;
     auto peer = fd.socket->peer.lock();
     if (!fd.socket->connected) return uint64_t(-107);
     if (!peer || fd.socket->sendShutdown || peer->receiveShutdown) return uint64_t(-32);
-    if (size > 65536 || (fd.socket->type != 1 && size > fd.socket->sendBuffer)) return uint64_t(-90);
+    uint64_t size = 0;
+    for (const auto& vector : vectors) {
+        if (vector[1] > maxPacketBytes - size) return uint64_t(-90);
+        size += vector[1];
+    }
+    const bool stream = fd.socket->type == 1;
+    if (!stream && size > fd.socket->sendBuffer) return uint64_t(-90);
     if (peer->queuedBytes >= fd.socket->sendBuffer || peer->inbox.size() >= 256) return uint64_t(-11);
     if (size > fd.socket->sendBuffer - peer->queuedBytes) {
-        if (fd.socket->type != 1) return uint64_t(-11);
+        if (!stream) return uint64_t(-11);
         size = fd.socket->sendBuffer - peer->queuedBytes;
     }
-    if (!size) {
-        if (fd.socket->type != 1) peer->inbox.emplace_back();
-        return 0;
+    if (!size && stream) return 0;
+    std::vector<uint8_t> packet(size);
+    auto remaining = std::span(packet);
+    for (const auto& [address, length] : vectors) {
+        if (remaining.empty()) break;
+        const auto count = std::min<uint64_t>(remaining.size(), length);
+        if (!machine.readInto(address, remaining.first(count))) return uint64_t(-14);
+        remaining = remaining.subspan(count);
     }
-    const auto* bytes = machine.read(address, size, 4);
-    if (!bytes) return uint64_t(-14);
-    peer->inbox.emplace_back(bytes, bytes + size);
+    peer->inbox.push_back(std::move(packet));
     peer->queuedBytes += size;
     wakePollers();
     return size;
@@ -1860,14 +1885,7 @@ uint64_t ProbeLinux::recvUevent(Machine& machine, SocketState& endpoint) {
     const auto& x = machine.cpu.x;
     if (x[2] & ~0x40ULL) return invalid; // MSG_DONTWAIT
     if (endpoint.inbox.empty()) return uint64_t(-11);
-    struct Message {
-        uint64_t name;
-        uint32_t nameLength, namePadding;
-        uint64_t vector, vectorCount, control, controlLength;
-        uint32_t flags, tailPadding;
-    };
-    static_assert(sizeof(Message) == 56);
-    Message message{};
+    SocketMessage message{};
     const auto* header = machine.read(x[1], sizeof(message), 4);
     if (!header) return uint64_t(-14);
     std::memcpy(&message, header, sizeof(message));
@@ -2147,6 +2165,31 @@ bool ProbeLinux::socketCall(Machine& machine) {
             if (x[1] != 0) endpoint->sendShutdown = true;
             wakePollers();
             x[0] = 0;
+            break;
+        }
+        case 211: { // sendmsg on a connected UNIX socket.
+            if (fd == descriptors().end()) { x[0] = uint64_t(-9); break; }
+            const auto& endpoint = fd->second.socket;
+            if (!endpoint) { x[0] = uint64_t(-88); break; }
+            if (endpoint->uevent || (x[2] & ~0x40c0ULL)) return false; // DONTWAIT, EOR, NOSIGNAL
+            SocketMessage message{};
+            if (!machine.readInto(x[1], {reinterpret_cast<uint8_t*>(&message), sizeof(message)})) {
+                x[0] = uint64_t(-14);
+                break;
+            }
+            if (message.nameLength || message.controlLength) return false;
+            if (message.vectorCount > 1024) { x[0] = uint64_t(-90); break; }
+            std::vector<SocketVector> vectors(message.vectorCount);
+            if (!machine.readInto(message.vector, {reinterpret_cast<uint8_t*>(vectors.data()),
+                                                   vectors.size() * sizeof(SocketVector)})) {
+                x[0] = uint64_t(-14);
+                break;
+            }
+            const auto result = socketWrite(machine, fd->second, vectors);
+            const bool blocking = !(x[2] & 0x40) && !(fd->second.effectiveFlags() & 0x800);
+            if (result == uint64_t(-11) && blocking && waitForSocketTimeout(endpoint->sendTimeout)) return true;
+            current->deadline.reset();
+            x[0] = result;
             break;
         }
         case 212: { // recvmsg on the guest kernel multicast channel.
@@ -4418,13 +4461,35 @@ std::string ProbeLinux::workerReport(const Machine& machine) const {
         tasks << "  guest task " << process.id << '/' << tid << ' ' << process.executable << ' ' << name;
         switch (thread.wait) {
             case Wait::none: tasks << " runnable"; break;
-            case Wait::poll:
+            case Wait::poll: {
                 tasks << " poll syscall=" << cpu.x[8] << " arg0=" << cpu.x[0];
-                if (cpu.x[8] == 29 || cpu.x[8] == 63 || cpu.x[8] == 64) {
-                    auto fd = process.descriptors.find(uint32_t(cpu.x[0]));
-                    if (fd != process.descriptors.end()) tasks << " fd=" << fd->second.path;
+                const auto descriptorName = [](const Descriptor& descriptor) {
+                    if (!descriptor.visiblePath.empty()) return std::string_view(descriptor.visiblePath);
+                    if (descriptor.path.find('\0') == std::string::npos) return std::string_view(descriptor.path);
+                    return std::string_view("(guest namespace)");
+                };
+                const auto fd = process.descriptors.find(uint32_t(cpu.x[0]));
+                if (fd == process.descriptors.end()) break;
+                if (cpu.x[8] == 22 && fd->second.node == Node::poller) {
+                    tasks << " timeout=" << int32_t(cpu.x[3]) << " watches=[";
+                    unsigned count = 0;
+                    for (const auto& [watchedFd, watch] : fd->second.event->watches) {
+                        if (count++) tasks << ", ";
+                        if (count > 12) { tasks << "..."; break; }
+                        const auto watched = process.descriptors.find(watchedFd);
+                        tasks << watchedFd;
+                        if (watched != process.descriptors.end()) {
+                            tasks << ':' << descriptorName(watched->second);
+                            if (auto endpoint = watch.socket.lock()) tasks << ":inbox=" << endpoint->inbox.size();
+                        }
+                        tasks << "/0x" << std::hex << watch.mask << std::dec;
+                    }
+                    tasks << ']';
+                } else if (cpu.x[8] == 29 || cpu.x[8] == 63 || cpu.x[8] == 64) {
+                    tasks << " fd=" << descriptorName(fd->second);
                 }
                 break;
+            }
             case Wait::futex: tasks << " futex=0x" << std::hex << thread.futexAddress << std::dec; break;
             case Wait::signal: tasks << " signal"; break;
             case Wait::sleep: tasks << " sleeping"; break;
