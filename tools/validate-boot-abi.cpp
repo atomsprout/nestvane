@@ -651,6 +651,90 @@ int main() {
             assert(call(57, {reader}) == 0 && call(57, {writer}) == 0 && call(57, {control}) == 0);
         }
     }
+    {
+        Machine data(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
+        for (const bool ipv6 : {false, true}) {
+            GuestFirewall firewall;
+            const auto ipSize = ipv6 ? 40U : 20U;
+            const auto header = ipv6 ? 168U : 112U;
+            const auto level = ipv6 ? 41U : 0U;
+            const auto offsets = ipv6 ? 140U : 88U;
+            const auto protocol = ipv6 ? 128U : 80U;
+            constexpr auto address = base + 64, length = base + 2500, counters = base + 2560;
+            const auto store = [](auto& buffer, size_t at, const auto& value) {
+                std::memcpy(buffer.data() + at, &value, sizeof(value));
+            };
+            std::array<uint8_t, 84> info{};
+            std::memcpy(info.data(), "mangle", 6);
+            assert(data.write(address, info) && data.store64(length, info.size()));
+            data.cpu.x = {0, level, 64, address, length};
+            assert(firewall.get(data, ipv6) == 0 && data.readInto(address, info));
+            std::array<uint32_t, 13> metadata{};
+            std::memcpy(metadata.data(), info.data() + 32, sizeof(metadata));
+            const auto start = metadata[4];
+            const auto size = metadata[12];
+            assert(data.store64(address + 32, size) && data.store64(length, size + 40));
+            data.cpu.x[2] = 65;
+            assert(firewall.get(data, ipv6) == 0);
+            std::vector<uint8_t> old(size);
+            assert(data.readInto(address + 40, old));
+            std::vector<uint8_t> rule(header + 48 + 40);
+            store(rule, protocol, uint16_t(6));
+            if (ipv6) rule[131] = 1; // IP6T_F_PROTO
+            store(rule, offsets, uint16_t(header + 48));
+            store(rule, offsets + 2, uint16_t(rule.size()));
+            store(rule, header, uint16_t(48));
+            std::memcpy(rule.data() + header + 2, "tcp", 3);
+            store(rule, header + 34, uint16_t(65535));
+            store(rule, header + 36, uint16_t(443));
+            store(rule, header + 38, uint16_t(443));
+            rule[header + 41] = rule[header + 42] = 2; // Test only SYN.
+            store(rule, header + 48, uint16_t(40));
+            std::memcpy(rule.data() + header + 50, "TCPMSS", 6);
+            store(rule, header + 80, uint16_t(420));
+            old.insert(old.begin() + start, rule.begin(), rule.end());
+            std::array<uint8_t, 96> update{};
+            std::memcpy(update.data(), "mangle", 6);
+            store(update, 32, metadata[0]);
+            store(update, 36, metadata[11] + 1);
+            store(update, 40, uint32_t(old.size()));
+            for (unsigned hook = 0; hook < 5; ++hook) {
+                const auto entry = metadata[1 + hook], policy = metadata[6 + hook];
+                store(update, 44 + hook * 4, uint32_t(entry + (entry > start ? rule.size() : 0)));
+                store(update, 64 + hook * 4, uint32_t(policy + (policy >= start ? rule.size() : 0)));
+            }
+            store(update, 84, metadata[11]);
+            store(update, 88, counters);
+            assert(data.write(address, update) && data.write(address + update.size(), old));
+            data.cpu.x = {0, level, 64, address, update.size() + old.size()};
+            assert(firewall.set(data, ipv6) == 0);
+            auto packet = std::vector<uint8_t>(ipSize + 20);
+            packet[0] = ipv6 ? 0x60 : 0x45;
+            packet[ipv6 ? 6 : 9] = 6;
+            packet[ipSize + 2] = 1;
+            packet[ipSize + 3] = 187;
+            packet[ipSize + 12] = 0x50;
+            packet[ipSize + 13] = 2;
+            auto differentPort = packet;
+            differentPort[ipSize + 3] = 188;
+            assert(firewall.allows(differentPort, GuestFirewall::output, 65536) && differentPort.size() == packet.size());
+            assert(firewall.allows(packet, GuestFirewall::output, 65536) && packet.size() == ipSize + 24);
+            assert(packet[ipSize + 12] == 0x60 && packet[ipSize + 20] == 2 && packet[ipSize + 21] == 4);
+            assert(packet[ipSize + 22] == 1 && packet[ipSize + 23] == 164);
+            const auto checkSum = [](std::span<const uint8_t> bytes, uint32_t sum = 0) {
+                for (size_t i = 0; i < bytes.size(); i += 2)
+                    sum += (uint32_t(bytes[i]) << 8) | bytes[i + 1];
+                while (sum >> 16) sum = (sum & 0xffff) + (sum >> 16);
+                return sum;
+            };
+            if (!ipv6) assert(checkSum(std::span(packet).first(ipSize)) == 0xffff);
+            const auto addresses = std::span(packet).subspan(ipv6 ? 8 : 12, ipv6 ? 32 : 8);
+            assert(checkSum(std::span(packet).subspan(ipSize), checkSum(addresses, 30)) == 0xffff);
+            packet[ipSize + 23] = 64;
+            assert(firewall.allows(packet, GuestFirewall::output, 65536));
+            assert(packet[ipSize + 23] == 64); // A smaller existing MSS is preserved.
+        }
+    }
     const auto put = [&](uint64_t address, const char* data) {
         assert(machine.write(address, {reinterpret_cast<const uint8_t*>(data), std::strlen(data) + 1}));
     };

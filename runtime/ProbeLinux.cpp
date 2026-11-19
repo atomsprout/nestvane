@@ -5784,10 +5784,10 @@ bool ProbeLinux::transmitInetStream(SocketState& from, SocketState& to, std::spa
     };
     const bool sent = filterInetPacket(inetEgressPrograms, from, packet, true);
     if (packet.ringNotification) wakePollers();
-    if (!sent || !firewall.allows(packet.bytes, GuestFirewall::output) ||
-        !firewall.allows(packet.bytes, GuestFirewall::postrouting) ||
-        !firewall.allows(packet.bytes, GuestFirewall::prerouting) ||
-        !firewall.allows(packet.bytes, GuestFirewall::input)) return false;
+    if (!sent || !firewall.allows(packet.bytes, GuestFirewall::output, guestLoopbackMtu) ||
+        !firewall.allows(packet.bytes, GuestFirewall::postrouting, guestLoopbackMtu) ||
+        !firewall.allows(packet.bytes, GuestFirewall::prerouting, guestLoopbackMtu) ||
+        !firewall.allows(packet.bytes, GuestFirewall::input, guestLoopbackMtu)) return false;
     packet.ingressIfindex = guestLoopbackIndex;
     const bool received = filterInetPacket(inetIngressPrograms, to, packet, false);
     if (packet.ringNotification) wakePollers();
@@ -5902,15 +5902,15 @@ uint64_t ProbeLinux::sendInetDatagram(Machine& machine, const std::shared_ptr<So
         };
         const bool sent = filterInetPacket(inetEgressPrograms, *socket, packet, true);
         if (packet.ringNotification) wakePollers();
-        if (!sent || !firewall.allows(packet.bytes, GuestFirewall::output) ||
-            !firewall.allows(packet.bytes, GuestFirewall::postrouting)) return uint64_t(-1);
+        if (!sent || !firewall.allows(packet.bytes, GuestFirewall::output, guestLoopbackMtu) ||
+            !firewall.allows(packet.bytes, GuestFirewall::postrouting, guestLoopbackMtu)) return uint64_t(-1);
 
         const auto peer = findInetDestination(socket->protocol, destination);
         if (!peer || peer->receiveShutdown) return size;
         const auto reportedSource = socket->family == peer->family ? source : asMappedIpv4(source);
         if (peer->connected && !matchInetPeer(peer->peerInetAddress, reportedSource)) return size;
-        if (!firewall.allows(packet.bytes, GuestFirewall::prerouting) ||
-            !firewall.allows(packet.bytes, GuestFirewall::input)) return size;
+        if (!firewall.allows(packet.bytes, GuestFirewall::prerouting, guestLoopbackMtu) ||
+            !firewall.allows(packet.bytes, GuestFirewall::input, guestLoopbackMtu)) return size;
         packet.ingressIfindex = guestLoopbackIndex;
         const bool received = filterInetPacket(inetIngressPrograms, *peer, packet, false);
         if (packet.ringNotification) wakePollers();

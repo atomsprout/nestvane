@@ -314,3 +314,5 @@
 - 参考镜像预装了零字节的只读分区文件 `/system/etc/xtables.lock`，重新采集确认客体打包中保留。加入客体 `flock` 后，宿主回归验证独立打开间竞争、重复 FD 共享锁、升级竞争和末次关闭释放；Android 17 参考内核的独立 Bionic 夹具通过相同竞争序列。Mac 上原版防火墙工具越过锁文件，开始初始化 `filter`、`raw` 与 `mangle` 规则表，该内核 ABI 仍待补齐。[AOSP 锁文件变更](https://android.googlesource.com/platform/external/iptables.git/+/2bf769bb24c2ecf2ffac37773c1656cc15b654dd%5E%21/)
 - iPhone 11 进程 8406 的独立文件锁测试退出 0，原版 IPv4 和 IPv6 防火墙程序都越过文件锁，并进入规则表查询。
 - 客体实现 IPv4/IPv6 原版 xtables 规则表的查询、基本规则替换、计数器和回环数据路径执行。参考 Android 17 与 Mac 的同一 Bionic 夹具验证标准表、挂钩和结构尺寸，参考镜像无 IPv6 NAT 表。宿主回归用两个地址族的真实 UDP 路径确认 OUTPUT 丢弃与放行、无效替换保留原规则、旧计数器可读。Mac 的 Android 启动已越过规则表初始化，原版工具开始请求 `tcp`、`TCPMSS`、`connmark` 与 `CONNMARK` 扩展。完整启动尚未通过。[Linux xtables 规则表 ABI](https://codebrowser.dev/linux/linux/net/ipv4/netfilter/ip_tables.c.html)
+- iPhone 11 进程 8410 的 IPv4/IPv6 规则表 Bionic 查询探针退出 0。原版防火墙工具随后请求 TCP、TCPMSS 和连接标记扩展。
+- 客体实现 TCP/UDP 端口匹配、TCP 标志和选项匹配，以及在 SYN 上设置或限制 MSS。宿主用两个地址族验证只有匹配端口的 SYN 发生变化，现有较小 MSS 保留，IPv4 头和 TCP 校验和正确。参考 Android 17 的两个原版 restore 工具在测试模式接受同一条规则。Mac 冷启动中原版工具越过 TCP/TCPMSS，常驻 netd 仍因 `connmark` 与 `CONNMARK` 未实现而未能完成规则初始化。[Linux TCPMSS 实现](https://codebrowser.dev/linux/linux/net/netfilter/xt_TCPMSS.c.html)

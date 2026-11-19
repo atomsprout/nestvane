@@ -27,8 +27,10 @@ public:
             if (length != revision.size()) return invalid;
             if (!read(machine, x[3], revision)) return fault;
             const auto name = string(std::span(revision).first(29));
-            if (option != (ipv6 ? 68 : 66) || name != "comment" || revision.back()) return missing;
-            return 0;
+            const bool match = option == (ipv6 ? 68 : 66);
+            if (revision.back()) return missing;
+            return (match ? name == "comment" || name == "tcp" || name == "udp" : name == "TCPMSS")
+                ? 0 : missing;
         }
         if (option != 64 && option != 65) return unsupported;
         std::array<char, 32> name{};
@@ -85,7 +87,7 @@ public:
         if (request.previousCount != table->offsets.size()) return uint64_t(-11);
         Table replacement{request.hooks, request.starts, request.policies, std::vector<uint8_t>(request.size), {}};
         if (!machine.readInto(x[3] + sizeof(request), replacement.entries)) return fault;
-        const auto status = validate(replacement, layout, request.count);
+        const auto status = validate(replacement, layout, request.count, string(name));
         if (status) return status;
 
         std::vector<Counters> previous;
@@ -99,7 +101,7 @@ public:
 
     bool empty() const { return tables.empty(); }
 
-    bool allows(std::span<const uint8_t> packet, Hook hook) {
+    bool allows(std::vector<uint8_t>& packet, Hook hook, uint32_t mtu) {
         if (tables.empty()) return true;
         if (packet.size() < 20) return false;
         const bool ipv6 = packet[0] >> 4 == 6;
@@ -108,7 +110,7 @@ public:
         for (const auto name : {"raw", "mangle", "nat", "filter"}) {
             const auto table = tables.find({ipv6, name});
             if (table == tables.end() || !(table->second.hooks & (1U << hook))) continue;
-            if (!evaluate(table->second, layout, packet, hook)) return false;
+            if (!evaluate(table->second, layout, packet, hook, mtu)) return false;
         }
         return true;
     }
@@ -219,7 +221,7 @@ private:
         return &table;
     }
 
-    static uint64_t validate(Table& table, const Layout& layout, uint32_t count) {
+    static uint64_t validate(Table& table, const Layout& layout, uint32_t count, std::string_view name) {
         std::vector<uint32_t> jumps;
         auto bytes = std::span(table.entries);
         for (size_t at = 0; at < bytes.size();) {
@@ -229,13 +231,27 @@ private:
             if (targetAt < layout.entrySize || targetAt % 8 || end % 8 ||
                 end < size_t(targetAt) + targetHeader || end > entry.size()) return invalid;
             if ((entry[layout.flags] & ~(layout.ipv6 ? 5 : 2)) || (entry[layout.inversions] & ~0x5b)) return unsupported;
+            const auto protocol = load<uint16_t>(entry, layout.ipv6 ? 128 : 80);
+            bool synMatch = false;
             for (size_t match = layout.entrySize; match < targetAt;) {
                 if (targetAt - match < targetHeader) return invalid;
                 const auto extension = entry.subspan(match, targetAt - match);
                 const auto length = load<uint16_t>(extension, 0);
                 if (length < targetHeader || length % 8 || length > extension.size()) return invalid;
-                if (string(extension.subspan(2, 29)) != "comment" || extension[31] || length != 288)
+                const auto matchName = string(extension.subspan(2, 29));
+                if (extension[31]) return missing;
+                if (matchName == "comment") {
+                    if (length != 288) return invalid;
+                } else if (matchName == "tcp") {
+                    if (length != 48 || protocol != 6 || (entry[layout.inversions] & 0x40) ||
+                        (extension[43] & ~15)) return invalid;
+                    synMatch |= (extension[41] & 2) && (extension[42] & 2) && !(extension[43] & 4);
+                } else if (matchName == "udp") {
+                    if (length != 48 || protocol != 17 || (entry[layout.inversions] & 0x40) ||
+                        (extension[40] & ~3)) return invalid;
+                } else {
                     return missing;
+                }
                 match += length;
             }
 
@@ -248,8 +264,14 @@ private:
                 if (verdict >= 0) jumps.push_back(verdict);
                 else if (verdict != drop && verdict != accept && verdict != returnToCaller) return unsupported;
             } else {
-                if (string(target.subspan(2, 29)) != "ERROR") return missing;
-                if (length != 64 || !target[targetHeader] || string(target.subspan(targetHeader, 30)).empty()) return invalid;
+                const auto targetName = string(target.subspan(2, 29));
+                if (targetName == "ERROR") {
+                    if (length != 64 || string(target.subspan(targetHeader, 30)).empty()) return invalid;
+                } else if (targetName == "TCPMSS") {
+                    if (length != 40 || name != "mangle" || protocol != 6 || !synMatch) return invalid;
+                } else {
+                    return missing;
+                }
             }
             table.offsets.push_back(at);
             store(entry, layout.entrySize - sizeof(Counters), Counters{});
@@ -292,10 +314,109 @@ private:
         const auto& out = hook == output || hook == postrouting ? loopback : empty;
         if (!equal(in, interfaces, interfaces + 32, 1) || !equal(out, interfaces + 16, interfaces + 48, 2)) return false;
         const auto protocol = load<uint16_t>(entry, interfaces + 64);
-        return (!protocol || protocol == packet[layout.ipv6 ? 6 : 9]) != bool(inversions & 0x40);
+        if ((!protocol || protocol == packet[layout.ipv6 ? 6 : 9]) == bool(inversions & 0x40)) return false;
+        const auto targetAt = load<uint16_t>(entry, layout.targetOffset());
+        for (size_t match = layout.entrySize; match < targetAt;) {
+            const auto extension = entry.subspan(match);
+            const auto type = string(extension.subspan(2, 29));
+            if (type != "comment" && !matchTransport(type, extension.subspan(targetHeader), packet, layout.ipv6))
+                return false;
+            match += load<uint16_t>(extension, 0);
+        }
+        return true;
     }
 
-    static bool evaluate(Table& table, const Layout& layout, std::span<const uint8_t> packet, Hook hook) {
+    static uint16_t network16(std::span<const uint8_t> bytes, size_t offset) {
+        return uint16_t(uint16_t(bytes[offset]) << 8 | bytes[offset + 1]);
+    }
+    static void setNetwork16(std::span<uint8_t> bytes, size_t offset, uint16_t value) {
+        bytes[offset] = uint8_t(value >> 8);
+        bytes[offset + 1] = uint8_t(value);
+    }
+    static uint32_t checksum(std::span<const uint8_t> bytes, uint32_t sum = 0) {
+        size_t i = 0;
+        for (; i + 1 < bytes.size(); i += 2) sum += network16(bytes, i);
+        if (i < bytes.size()) sum += uint32_t(bytes[i]) << 8;
+        while (sum >> 16) sum = (sum & 0xffff) + (sum >> 16);
+        return sum;
+    }
+    static std::span<const uint8_t> transport(std::span<const uint8_t> packet, bool ipv6) {
+        const size_t offset = ipv6 ? 40 : size_t(packet[0] & 15) * 4;
+        return offset <= packet.size() && offset >= (ipv6 ? 40 : 20) ? packet.subspan(offset) :
+            std::span<const uint8_t>{};
+    }
+
+    static bool matchTransport(std::string_view type, std::span<const uint8_t> match,
+                               std::span<const uint8_t> packet, bool ipv6) {
+        const bool tcp = type == "tcp";
+        const auto segment = transport(packet, ipv6);
+        const auto inverse = match[tcp ? 11 : 8];
+        if (segment.size() < (tcp ? 20 : 8)) return false;
+        for (unsigned field = 0; field < 2; ++field) {
+            const auto port = network16(segment, 2 * field);
+            const bool inRange = port >= load<uint16_t>(match, 4 * field) &&
+                                 port <= load<uint16_t>(match, 4 * field + 2);
+            if (inRange == bool(inverse & (1 << field))) return false;
+        }
+        if (!tcp) return true;
+        if (((segment[13] & match[9]) == match[10]) == bool(inverse & 4)) return false;
+        if (!match[8]) return true;
+        const auto end = size_t(segment[12] >> 4) * 4;
+        if (end < 20 || end > segment.size()) return false;
+        for (size_t option = 20; option < end;) {
+            if (segment[option] == match[8]) return !(inverse & 8);
+            if (segment[option] == 0) break;
+            if (segment[option] == 1) { ++option; continue; }
+            if (end - option < 2 || segment[option + 1] < 2 || segment[option + 1] > end - option) return false;
+            option += segment[option + 1];
+        }
+        return inverse & 8;
+    }
+
+    static bool applyMss(std::vector<uint8_t>& packet, bool ipv6, uint16_t requested, uint32_t mtu) {
+        const auto segment = transport(packet, ipv6);
+        if (segment.size() < 20) return false;
+        if (!(segment[13] & 2)) return true;
+        const auto end = size_t(segment[12] >> 4) * 4;
+        if (end < 20 || end > segment.size()) return false;
+        const size_t ipHeader = packet.size() - segment.size();
+        if (requested == 0xffff && mtu <= ipHeader + 20) return false;
+        uint16_t mss = requested == 0xffff ? std::min<size_t>(mtu - ipHeader - 20, 65535) : requested;
+        size_t data = 0;
+        for (size_t option = 20; option < end;) {
+            if (segment[option] == 0) break;
+            if (segment[option] == 1) { ++option; continue; }
+            if (end - option < 2 || segment[option + 1] < 2 || segment[option + 1] > end - option) return false;
+            if (segment[option] == 2 && segment[option + 1] == 4) {
+                if (network16(segment, option + 2) <= mss) return true;
+                data = ipHeader + option + 2;
+                break;
+            }
+            option += segment[option + 1];
+        }
+        if (!data) {
+            if (segment.size() != end || end == 60 || packet.size() > 65531) return true;
+            mss = std::min<uint16_t>(mss, ipv6 ? 1220 : 536);
+            packet.insert(packet.begin() + ipHeader + 20, {2, 4, 0, 0});
+            packet[ipHeader + 12] += 0x10;
+            data = ipHeader + 22;
+        }
+        setNetwork16(packet, data, mss);
+        auto tcp = std::span(packet).subspan(ipHeader);
+        if (ipv6) {
+            setNetwork16(packet, 4, tcp.size());
+        } else {
+            setNetwork16(packet, 2, packet.size());
+            setNetwork16(packet, 10, 0);
+            setNetwork16(packet, 10, uint16_t(~checksum(std::span(packet).first(ipHeader))));
+        }
+        setNetwork16(tcp, 16, 0);
+        const auto addresses = std::span(packet).subspan(ipv6 ? 8 : 12, ipv6 ? 32 : 8);
+        setNetwork16(tcp, 16, uint16_t(~checksum(tcp, checksum(addresses, 6 + tcp.size()))));
+        return true;
+    }
+
+    static bool evaluate(Table& table, const Layout& layout, std::vector<uint8_t>& packet, Hook hook, uint32_t mtu) {
         std::array<uint32_t, 64> stack{};
         size_t depth = 0;
         size_t at = table.starts[hook];
@@ -307,7 +428,13 @@ private:
             const size_t counter = layout.entrySize - sizeof(Counters);
             const auto previous = load<Counters>(entry, counter);
             store(entry, counter, Counters{previous.packets + 1, previous.bytes + packet.size()});
-            if (entry[target + 2]) return false; // Chain label or end-of-table marker.
+            if (entry[target + 2]) {
+                const auto type = string(entry.subspan(target + 2, 29));
+                if (type != "TCPMSS" || !applyMss(packet, layout.ipv6,
+                                                 load<uint16_t>(entry, target + targetHeader), mtu)) return false;
+                at = next;
+                continue;
+            }
             const auto verdict = load<int32_t>(entry, target + targetHeader);
             if (verdict == accept || verdict == drop) return verdict == accept;
             if (verdict == returnToCaller) {
