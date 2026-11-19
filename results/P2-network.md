@@ -133,3 +133,5 @@
     -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0 -DDEPENDENCY_RESOLUTION=SYSTEM
   cmake --build /tmp/nestvane-gfxstream-ios --target gfxstream_backend
   ```
+
+- iPhone 11（iOS 26.0.1，第 7368 号进程）从开发签名包成功载入 gfxstream framework，并解析三个实际渲染入口。此项验证到动态加载为止。加入 [Goldfish 通道补丁](../tools/patches/gfxstream-guest-pipe.patch) 后，iPhoneOS 构建成功导出五个通道操作。Mac 使用同一补丁的构建通过 ARM64 客体版本查询，由原版 RenderChannel 异步响应。该补丁可在 (iphoneos) 补丁之后应用，也可单独用于 Mac 构建。

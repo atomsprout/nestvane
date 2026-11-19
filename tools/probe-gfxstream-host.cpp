@@ -1,10 +1,12 @@
 // macOS probe for the Android Emulator SDK renderer, using upstream Gfxstream's public C ABI.
 #include "gfxstream/virtio-gpu-gfxstream-renderer.h"
 #include "AArch64.hpp"
+#include "GfxstreamPipe.hpp"
 #include "ProbeLinux.hpp"
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstring>
 #include <cstdio>
 #include <dlfcn.h>
@@ -77,7 +79,36 @@ private:
     bool created = false, sent = false;
 };
 
-bool runGuestVersionProbe(void* module, const RendererTransfer& transfer, const char* elf) {
+bool runGuestVersionProbe(const char* elf, nestvane::GraphicsPipeFactory factory) {
+    auto guest = nestvane::Machine(nestvane::loadELF(nestvane::readFile(elf)));
+    nestvane::ProbeLinux linux(1, 0);
+    linux.setGraphicsPipeFactory(std::move(factory));
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    for (unsigned step = 0; step < 256 && guest.cpu.stop == nestvane::Stop::running; ++step) {
+        if (!linux.schedule(guest, deadline)) break;
+        uint32_t word = 0;
+        const auto* bytes = guest.read(guest.cpu.pc, sizeof(word), 1);
+        if (!bytes) break;
+        std::memcpy(&word, bytes, sizeof word);
+        const auto instruction = nestvane::decode(word);
+        if (instruction.op == nestvane::Op::svc && guest.cpu.x[8] != 93) {
+            if (!linux.syscall(guest)) break;
+            if (!linux.blocked()) guest.cpu.pc += 4;
+        } else if (instruction.op != nestvane::Op::unsupported) {
+            nestvane::executeDecoded(guest, instruction);
+        } else if (!nestvane::executeStartupInstruction(guest, word)) {
+            break;
+        }
+    }
+    const bool passed = guest.cpu.stop == nestvane::Stop::exit && guest.cpu.exitCode == 0;
+    if (!passed)
+        std::fprintf(stderr, "Guest stopped at PC %#llx, x8=%llu, exit=%d\n",
+                     static_cast<unsigned long long>(guest.cpu.pc),
+                     static_cast<unsigned long long>(guest.cpu.x[8]), guest.cpu.exitCode);
+    return passed;
+}
+
+bool runSdkVersionProbe(void* module, const RendererTransfer& transfer, const char* elf) {
     const auto create = load<decltype(&stream_renderer_context_create)>(module, "stream_renderer_context_create");
     const auto attach = load<decltype(&stream_renderer_ctx_attach_resource)>(module, "stream_renderer_ctx_attach_resource");
     const auto destroy = load<decltype(&stream_renderer_context_destroy)>(module, "stream_renderer_context_destroy");
@@ -85,38 +116,12 @@ bool runGuestVersionProbe(void* module, const RendererTransfer& transfer, const 
     constexpr char contextName[] = "nestvane";
     if (!create || !attach || !destroy || create(contextId, sizeof(contextName) - 1, contextName, glesCapset))
         return false;
-
-    bool passed = false;
-    {
-        auto guest = nestvane::Machine(nestvane::loadELF(nestvane::readFile(elf)));
-        nestvane::ProbeLinux linux(1, 0);
-        linux.setGraphicsPipeFactory([&](std::string_view service) -> std::unique_ptr<nestvane::GraphicsPipe> {
-            if (service != "opengles") return {};
-            auto pipe = std::make_unique<VersionProbePipe>(transfer);
-            if (!pipe->attach(attach)) return {};
-            return pipe;
-        });
-        for (unsigned step = 0; step < 256 && guest.cpu.stop == nestvane::Stop::running; ++step) {
-            uint32_t word = 0;
-            const auto* bytes = guest.read(guest.cpu.pc, sizeof(word), 1);
-            if (!bytes) break;
-            std::memcpy(&word, bytes, sizeof word);
-            const auto instruction = nestvane::decode(word);
-            if (instruction.op == nestvane::Op::svc && guest.cpu.x[8] != 93) {
-                if (!linux.syscall(guest) || linux.blocked()) break;
-                guest.cpu.pc += 4;
-            } else if (instruction.op != nestvane::Op::unsupported) {
-                nestvane::executeDecoded(guest, instruction);
-            } else if (!nestvane::executeStartupInstruction(guest, word)) {
-                break;
-            }
-        }
-        passed = guest.cpu.stop == nestvane::Stop::exit && guest.cpu.exitCode == 0;
-        if (!passed)
-            std::fprintf(stderr, "Guest stopped at PC %#llx, x8=%llu, exit=%d\n",
-                         static_cast<unsigned long long>(guest.cpu.pc),
-                         static_cast<unsigned long long>(guest.cpu.x[8]), guest.cpu.exitCode);
-    }
+    const bool passed = runGuestVersionProbe(elf, [&](std::string_view service) -> std::unique_ptr<nestvane::GraphicsPipe> {
+        if (service != "opengles") return {};
+        auto pipe = std::make_unique<VersionProbePipe>(transfer);
+        if (!pipe->attach(attach)) return {};
+        return pipe;
+    });
     destroy(contextId);
     return passed;
 }
@@ -164,7 +169,12 @@ int main(int argc, char** argv) {
     if (argc == 3) {
         bool passed = false;
         try {
-            passed = runGuestVersionProbe(module, {create, upload, readback, unref}, argv[2]);
+            if (auto factory = nestvane::loadGfxstreamPipeFactory(module)) {
+                std::puts("Using the nonblocking Gfxstream guest pipe");
+                passed = runGuestVersionProbe(argv[2], std::move(factory));
+            } else {
+                passed = runSdkVersionProbe(module, {create, upload, readback, unref}, argv[2]);
+            }
         } catch (const std::exception& error) {
             std::fprintf(stderr, "%s\n", error.what());
         }

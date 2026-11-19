@@ -3,7 +3,7 @@
 _start:
     mov x0, #-100
     adr x1, device
-    mov x2, #0x802                 // O_RDWR | O_NONBLOCK
+    mov x2, #2                     // O_RDWR
     mov x3, #0
     mov x8, #56                    // openat
     svc #0

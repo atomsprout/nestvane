@@ -1,0 +1,107 @@
+diff --git a/host/virtio_gpu_frontend.h b/host/virtio_gpu_frontend.h
+index bd99c3f930d41fadc1c272c2917350f1b8ff997b..dec984393044abc6f721bca1c6049e12224a4ec1 100644
+--- a/host/virtio_gpu_frontend.h
++++ b/host/virtio_gpu_frontend.h
+@@ -47,6 +47,10 @@ class VirtioGpuFrontend {
+ 
+     void teardown();
+ 
++    RenderChannelPtr openGuestRenderChannel() const {
++        return mRenderer ? mRenderer->createRenderChannel(nullptr, 0) : nullptr;
++    }
++
+     int createContext(VirtioGpuContextId ctx_id, uint32_t nlen, const char* name,
+                       uint32_t context_init);
+ 
+diff --git a/host/virtio_gpu_gfxstream_renderer.cpp b/host/virtio_gpu_gfxstream_renderer.cpp
+index d6315ea35ecc059fdb1c88bae959016de91d2ddc..76f77f914ad11ba6cc349516bb758bb6bfad9ca8 100644
+--- a/host/virtio_gpu_gfxstream_renderer.cpp
++++ b/host/virtio_gpu_gfxstream_renderer.cpp
+@@ -33,6 +33,9 @@ extern "C" {
+ #ifdef CONFIG_AEMU
+ #include "host-common/opengles.h"
+ #endif
++#include <algorithm>
++#include <cstring>
++
+ #include "render-utils/Renderer.h"
+ #include "render-utils/RenderLib.h"
+ #include "render_thread.h"
+@@ -334,10 +337,77 @@ RendererPtr GetRenderer(uint32_t displayWidth,
+     return renderer;
+ }
+ 
++struct GuestRenderPipe {
++    gfxstream::RenderChannelPtr channel;
++    gfxstream::RenderChannel::Buffer pending;
++    size_t offset = 0;
++};
++
+ }  // namespace
+ 
+ extern "C" {
+ 
++// One nonblocking byte stream for a Goldfish opengles connection.
++VG_EXPORT void* gfxstream_guest_pipe_open() {
++    auto channel = sFrontend()->openGuestRenderChannel();
++    return channel ? new GuestRenderPipe{std::move(channel), {}, 0} : nullptr;
++}
++
++VG_EXPORT void gfxstream_guest_pipe_close(void* handle) {
++    std::unique_ptr<GuestRenderPipe> pipe(static_cast<GuestRenderPipe*>(handle));
++    if (pipe) pipe->channel->stop();
++}
++
++VG_EXPORT int64_t gfxstream_guest_pipe_write(void* handle, const uint8_t* bytes, size_t size) {
++    if (!handle || (!bytes && size) || size > 64 * 1024) return -22;
++    if (!size) return 0;
++    auto& pipe = *static_cast<GuestRenderPipe*>(handle);
++    gfxstream::RenderChannel::Buffer buffer;
++    buffer.resize_noinit(size);
++    std::memcpy(buffer.data(), bytes, size);
++    using Result = gfxstream::RenderChannel::IoResult;
++    switch (pipe.channel->tryWrite(std::move(buffer))) {
++        case Result::Ok: return size;
++        case Result::TryAgain: return -11;
++        case Result::Error: return -32;
++        case Result::Timeout: return -11;
++    }
++    return -5;
++}
++
++VG_EXPORT int64_t gfxstream_guest_pipe_read(void* handle, uint8_t* bytes, size_t size) {
++    if (!handle || (!bytes && size)) return -22;
++    if (!size) return 0;
++    auto& pipe = *static_cast<GuestRenderPipe*>(handle);
++    if (pipe.pending.empty()) {
++        using Result = gfxstream::RenderChannel::IoResult;
++        switch (pipe.channel->tryRead(&pipe.pending)) {
++            case Result::Ok: break;
++            case Result::TryAgain: case Result::Timeout: return -11;
++            case Result::Error: return 0;
++        }
++    }
++    const auto count = std::min(size, pipe.pending.size() - pipe.offset);
++    std::memcpy(bytes, pipe.pending.data() + pipe.offset, count);
++    pipe.offset += count;
++    if (pipe.offset == pipe.pending.size()) {
++        pipe.pending.clear();
++        pipe.offset = 0;
++    }
++    return count;
++}
++
++VG_EXPORT uint16_t gfxstream_guest_pipe_poll(void* handle) {
++    if (!handle) return 16;
++    const auto& pipe = *static_cast<const GuestRenderPipe*>(handle);
++    using State = gfxstream::RenderChannel::State;
++    const auto flags = static_cast<unsigned>(pipe.channel->state());
++    const bool readable = !pipe.pending.empty() || (flags & static_cast<unsigned>(State::CanRead));
++    const bool writable = flags & static_cast<unsigned>(State::CanWrite);
++    const bool stopped = flags & static_cast<unsigned>(State::Stopped);
++    return (readable ? 1 : 0) | (writable ? 4 : 0) | (stopped ? 16 : 0);
++}
++
+ VG_EXPORT int stream_renderer_resource_create(struct stream_renderer_resource_create_args* args,
+                                               struct iovec* iov, uint32_t num_iovs) {
+     GFXSTREAM_TRACE_EVENT(GFXSTREAM_TRACE_STREAM_RENDERER_CATEGORY,
