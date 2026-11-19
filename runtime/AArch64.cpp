@@ -465,6 +465,17 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
             }
             setLane(result, i, size, match ? UINT64_MAX : 0);
         }
+    } else if ((word & 0xbfbffc00) == 0x0e219800) { // FRINTM (vector).
+        const bool wide = word & 0x400000;
+        if (wide && width == 8) return false;
+        size = wide ? 8 : 4;
+        for (unsigned i = 0; i < width / size; ++i) {
+            const auto bits = lane(source, i, size);
+            const uint64_t rounded = wide
+                ? std::bit_cast<uint64_t>(std::floor(std::bit_cast<double>(bits)))
+                : std::bit_cast<uint32_t>(std::floor(std::bit_cast<float>(uint32_t(bits))));
+            setLane(result, i, size, rounded);
+        }
     } else if ((word & 0xbf3ffc00) == 0x0e209800) { // CMEQ (zero).
         for (unsigned i = 0; i < width / size; ++i) {
             setLane(result, i, size, lane(source, i, size) == 0 ? UINT64_MAX : 0);

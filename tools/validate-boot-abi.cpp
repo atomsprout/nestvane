@@ -67,6 +67,14 @@ int main() {
         assert(std::memcmp(permute.cpu.v[0].data(), compareEqual.data(), sizeof(compareEqual)) == 0);
         assert(executeStartupInstruction(permute, 0x7ee08c20));
         assert(std::memcmp(permute.cpu.v[0].data(), compareUnequal.data(), sizeof(compareUnequal)) == 0);
+        const std::array<float, 4> floorSingles{-2.5f, -0.0f, 17, 42}, floorSinglesResult{-3, -0.0f, 0, 0};
+        std::memcpy(permute.cpu.v[1].data(), floorSingles.data(), sizeof(floorSingles));
+        assert(executeStartupInstruction(permute, 0x0e219821)); // frintm v1.2s, v1.2s
+        assert(std::memcmp(permute.cpu.v[1].data(), floorSinglesResult.data(), sizeof(floorSinglesResult)) == 0);
+        const std::array<double, 2> floorDoubles{3.9, -0.2}, floorDoublesResult{3, -1};
+        std::memcpy(permute.cpu.v[5].data(), floorDoubles.data(), sizeof(floorDoubles));
+        assert(executeStartupInstruction(permute, 0x4e6198a4)); // frintm v4.2d, v5.2d
+        assert(std::memcmp(permute.cpu.v[4].data(), floorDoublesResult.data(), sizeof(floorDoublesResult)) == 0);
         const double half = -2.5, beyondSignedMax = 0x1p63;
         std::memcpy(permute.cpu.v[5].data(), &half, sizeof(half));
         assert(executeStartupInstruction(permute, 0x9e6400a9)); // fcvtas x9, d5
