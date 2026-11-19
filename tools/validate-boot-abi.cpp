@@ -3025,6 +3025,51 @@ int main() {
         assert(call(57, {logSocket}) == 0);
         linux.captureAndroidLogs = false;
     }
+    {
+        constexpr uint64_t in = 1, hangup = 16, readHangup = 0x2000, edge = 0x80000000;
+        constexpr auto registration = base + 0x100, output = base + 0x140, data = base + 0x180, addr = base + 0x200;
+        constexpr char address[] = "\x01\0/dev/nestvane-epoll-unix";
+        assert(machine.write(addr, {reinterpret_cast<const uint8_t*>(address), sizeof address}));
+        const auto listener = call(198, {1, 0x801, 0});
+        const auto first = call(198, {1, 0x801, 0}), second = call(198, {1, 0x801, 0});
+        const auto poller = call(20, {0});
+        assert(listener < 256 && first < 256 && second < 256 && poller < 256);
+        assert(call(200, {listener, addr, sizeof address}) == 0 && call(201, {listener, 4}) == 0);
+        assert(machine.store64(registration, edge | in | readHangup));
+        const auto watch = [&](uint64_t fd, uint64_t tag) {
+            assert(machine.store64(registration + 8, tag) && call(21, {poller, 1, fd, registration}) == 0);
+        };
+        const auto wait = [&](uint64_t flags, uint64_t tag) {
+            assert(call(22, {poller, output, 1, 0}) == (flags ? 1 : 0));
+            if (flags) assert(load(output) == flags && load(output + 8) == tag);
+        };
+        watch(listener, 15);
+        wait(0, 0);
+        assert(call(203, {first, addr, sizeof address}) == 0);
+        wait(in, 15);
+        wait(0, 0); // The pending connection remains queued.
+        assert(call(203, {second, addr, sizeof address}) == 0);
+        wait(in, 15);
+        const auto accepted = call(242, {listener, 0, 0, 0x800});
+        const auto other = call(242, {listener, 0, 0, 0x800});
+        assert(accepted < 256 && other < 256);
+        watch(accepted, 19);
+        wait(0, 0);
+        assert(machine.store64(data, 'a') && call(64, {first, data, 1}) == 1);
+        wait(in, 19);
+        wait(0, 0); // The unread byte is insufficient to generate another notification.
+        assert(machine.store64(data, 'b') && call(64, {first, data, 1}) == 1);
+        wait(in, 19);
+        assert(machine.store64(data, 0) && call(63, {accepted, data, 2}) == 2 && load(data) == 0x6261);
+        assert(call(210, {first, 1}) == 0);
+        wait(in | readHangup, 19);
+        wait(0, 0);
+        assert(call(63, {accepted, data, 8}) == 0);
+        assert(call(57, {first}) == 0);
+        wait(in | hangup | readHangup, 19);
+        wait(0, 0);
+        for (const auto descriptor : {poller, listener, accepted, other, second}) assert(call(57, {descriptor}) == 0);
+    }
     const auto poll = call(20, {0x80000});
     const auto event = call(19, {0, 0x80800});
     assert(poll == 3 && event == 4);
@@ -3146,7 +3191,7 @@ int main() {
     assert(std::memcmp(machine.read(base + 808, 4, 4), "t pa", 4) == 0);
     assert(call(212, {second, base + 672, 0x40}) == uint64_t(-11));
     assert(call(57, {first}) == 0);
-    assert(call(22, {poll, base + 512, 1}) == 1 && load(base + 512) == 16);
+    assert(call(22, {poll, base + 512, 1}) == 1 && load(base + 512) == (1 | 16)); // EOF is readable.
     assert(call(63, {second, base + 512, 32}) == 0);
     linux.addDirectory("/dev/socket", 0755);
     const auto listener = call(198, {1, 1 | 0x800});

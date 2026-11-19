@@ -172,6 +172,11 @@ private:
         bool pinnedBpfObject() const { return pinnedMap || pinnedProgram; }
     };
     struct Directory;
+    struct PollNotifications {
+        uint64_t readable = 0;
+        uint64_t writable = 0;
+        uint64_t stateChange = 0;
+    };
     struct SocketState {
         uint32_t type;
         uint32_t family = 1, protocol = 0;
@@ -197,7 +202,13 @@ private:
         bool firewallSocket() const { return type == 3 && protocol == 255; }
         bool hasInput() const { return !inbox.empty() || !datagrams.empty(); }
         std::function<void(const SocketState&)> onClose;
-        ~SocketState() { if (onClose) onClose(*this); }
+        ~SocketState() {
+            if (family == 1 && type != 2) {
+                if (const auto remote = peer.lock()) ++remote->pollNotifications.stateChange;
+            }
+            if (onClose) onClose(*this);
+        }
+        PollNotifications pollNotifications;
         std::array<uint32_t, 3> peerCredentials{0, UINT32_MAX, UINT32_MAX};
         std::string context, peerContext;
         std::string localAddress, peerAddress;
@@ -326,10 +337,6 @@ private:
     uint64_t touchIoctl(Machine& machine, const Descriptor& fd);
     struct EventState;
     struct Pipe;
-    struct EventFdNotifications {
-        uint64_t readable = 0;
-        uint64_t writable = 0;
-    };
     struct Watch {
         uint32_t mask;
         uint64_t data;
@@ -344,7 +351,7 @@ private:
         std::weak_ptr<GuestTouch> touch{};
         std::weak_ptr<GuestTouch::Reader> touchReader{};
         std::weak_ptr<BpfMap> ring{};
-        std::optional<EventFdNotifications> deliveredEventFd{};
+        std::optional<PollNotifications> deliveredNotifications{};
     };
     struct EventState {
         struct Timer {
@@ -353,7 +360,7 @@ private:
             bool wakeAlarm = false;
         };
         std::optional<Timer> timer;
-        EventFdNotifications eventFdNotifications;
+        PollNotifications pollNotifications;
         uint64_t counter = 0;
         uint64_t signalMask = 0;
         std::shared_ptr<MountNamespace> mountNamespace{};

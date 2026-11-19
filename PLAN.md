@@ -42,6 +42,13 @@
 - **实体摄像头**。iOS 侧使用 AVFoundation 采集帧，由客体相机服务通过 AIDL Camera HAL 暴露给 Android 应用。先接通一颗后置摄像头。在使用标准 Camera2 API 的 APK 中验证实时预览、拍照和照片读回。分别验证 iOS 和客体应用的相机授权，退出相机或宿主进入后台时释放采集。前置摄像头和其他镜头可沿用同一接口逐步接入。
 - AOT 优先优化追踪确认的系统热点，显示或摄像头帧传输分别测量耗时与内存，按瓶颈优化。
 
+第三方验收使用两个固定的离线应用。以下两项已在 ARM64 Android 17 SDK 参考系统（CE2A.260420.051.A3）通过真实安装、启动和基本操作。iPhone 11 上还需走「文件」导入并复测，验收重启后的应用与数据恢复。APK 从项目发布页下载。
+
+| 应用 | 验收操作 | APK SHA-256 |
+| --- | --- | --- |
+| OpenCalc 3.2.0（53） | 输入 `7 × 8` 并确认界面显示 `56`，重启后检查计算历史。[F-Droid 发布页](https://f-droid.org/packages/com.darkempire78.opencalculator/) | `2642613868a8a80f0ce963a4863bc153e7281b97b3bbdf36ca92a99dded7134a` |
+| Editor 1.98（198） | 输入 `Nestvane17`，通过 Android 文件选择器存为 `nestvane-reference.txt`，重启后重新打开确认文本。[F-Droid 发布页](https://f-droid.org/packages/org.billthefarmer.editor/) | `343d17e11d0914e1a7708df2781580a0413e52501c0a41d91f7ef725d9615fe9` |
+
 ## 首个开发批次
 
 按依赖切成三个可独立验收的改动。
