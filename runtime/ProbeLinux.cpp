@@ -6081,7 +6081,8 @@ std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedPr
     for (const auto& [tid, thread] : threads) {
         const auto& process = *thread.process;
         if (thread.wait == Wait::exited) continue;
-        if (process.id != observedProcess && process.executable != "/system/bin/bootanimation" &&
+        if (thread.wait != Wait::suspended && process.id != observedProcess &&
+            process.executable != "/system/bin/bootanimation" &&
             process.executable != "/system/bin/surfaceflinger" &&
             !process.executable.starts_with("/vendor/bin/hw/android.hardware.graphics.") &&
             process.programName != "system_server" && process.context != "u:r:system_server:s0") continue;
@@ -6124,7 +6125,11 @@ std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedPr
             case Wait::futex: tasks << " futex=0x" << std::hex << thread.futexAddress << std::dec; break;
             case Wait::signal: tasks << " signal"; break;
             case Wait::sleep: tasks << " sleeping"; break;
-            case Wait::suspended: tasks << " suspended"; break;
+            case Wait::suspended:
+                tasks << " suspended syscall=" << cpu.x[8] << std::hex
+                      << " arg0=0x" << cpu.x[0] << " arg1=0x" << cpu.x[1]
+                      << " arg2=0x" << cpu.x[2] << " arg3=0x" << cpu.x[3] << std::dec;
+                break;
             case Wait::exited: break;
         }
         tasks << " PC=0x" << std::hex << cpu.pc << " LR=0x" << cpu.x[30] << std::dec << '\n';
