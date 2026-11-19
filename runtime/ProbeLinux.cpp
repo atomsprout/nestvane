@@ -1482,14 +1482,15 @@ bool ProbeLinux::eventCall(Machine& machine) {
             if (descriptor == descriptors().end() || target == descriptors().end()) { x[0] = uint64_t(-9); break; }
             if (descriptor->second.node != Node::poller) { x[0] = invalid; break; }
             if (!target->second.socket && !target->second.binder && !target->second.graphics &&
-                (!target->second.event || target->second.node == Node::poller)) {
+                !target->second.pipe && (!target->second.event || target->second.node == Node::poller)) {
                 x[0] = uint64_t(-1);
                 break;
             }
             auto& watches = descriptor->second.event->watches;
             const auto fd = uint32_t(x[2]);
             if (const auto stale = watches.find(fd); stale != watches.end() && stale->second.source.expired() &&
-                stale->second.socket.expired() && stale->second.binder.expired() && stale->second.graphics.expired()) {
+                stale->second.socket.expired() && stale->second.binder.expired() && stale->second.graphics.expired() &&
+                stale->second.pipeEnd.expired()) {
                 watches.erase(stale);
             }
             const bool registered = watches.contains(fd);
@@ -1504,7 +1505,8 @@ bool ProbeLinux::eventCall(Machine& machine) {
             const auto mask = uint32_t(event[0]);
             if (mask & ~0x1fU) return false;
             watches.insert_or_assign(fd, Watch{mask, event[1], target->second.event, target->second.socket,
-                                              target->second.node == Node::event, target->second.binder, target->second.graphics});
+                                              target->second.node == Node::event, target->second.binder, target->second.graphics,
+                                              target->second.pipe, target->second.pipeEnd, target->second.node == Node::pipeRead});
             x[0] = 0;
             break;
         }
@@ -1528,6 +1530,8 @@ bool ProbeLinux::eventCall(Machine& machine) {
                 const auto graphics = watch.graphics.lock();
                 watchesGraphics |= bool(graphics);
                 const auto graphicsEvents = graphics ? graphics->pollEvents() : 0;
+                const auto pipe = watch.pipeEnd.expired() ? nullptr : watch.pipe.lock();
+                const auto pipeEvents = pipe ? pipe->pollEvents(watch.pipeReader) : 0;
                 const bool receiveEnded = endpoint && (endpoint->receiveShutdown ||
                     (endpoint->connected && (!peer || peer->sendShutdown)));
                 const bool readable = (state && state->counter) || childReady || (binder && binderReadable(*binder)) ||
@@ -1538,7 +1542,7 @@ bool ProbeLinux::eventCall(Machine& machine) {
                 const bool hungUp = endpoint && endpoint->connected && (!peer || (receiveEnded && endpoint->sendShutdown));
                 const bool mountsChanged = state && state->mountNamespace &&
                     state->observedMountGeneration != state->mountNamespace->generation;
-                const uint64_t mask = (graphicsEvents & (watch.mask | 0x18U)) | (watch.mask & ((readable ? 1U : 0) | (mountsChanged ? 2U : 0) |
+                const uint64_t mask = ((graphicsEvents | pipeEvents) & (watch.mask | 0x18U)) | (watch.mask & ((readable ? 1U : 0) | (mountsChanged ? 2U : 0) |
                                                         (writable ? 4U : 0) | (receiveEnded ? 0x2000U : 0))) | (hungUp ? 16U : 0);
                 if (mask) {
                     ready.push_back({mask, watch.data});
@@ -2329,6 +2333,11 @@ uint64_t ProbeLinux::readDirectory(Machine& machine, const Descriptor& fd) const
     if (!machine.write(x[1], buffer)) return uint64_t(-14);
     *fd.offset = index;
     return buffer.size();
+}
+
+uint16_t ProbeLinux::Pipe::pollEvents(bool readEnd) const {
+    if (readEnd) return (data.empty() ? 0 : 1) | (writer.expired() ? 16 : 0);
+    return (data.size() < capacity ? 4 : 0) | (reader.expired() ? 8 : 0);
 }
 
 uint64_t ProbeLinux::makePipe(Machine& machine) {
@@ -3267,7 +3276,7 @@ uint64_t ProbeLinux::writeDescriptor(Machine& machine, const Descriptor& fd, uin
     if (fd.pipe) {
         if (!size) return 0;
         if (fd.pipe->reader.expired()) return uint64_t(-32);
-        const auto space = 65536 - fd.pipe->data.size();
+        const auto space = Pipe::capacity - fd.pipe->data.size();
         if (!space || (size <= pageSize && size > space)) return uint64_t(-11);
         const auto count = std::min<uint64_t>(size, space);
         const auto* data = machine.read(address, count, 4);
@@ -4352,13 +4361,7 @@ bool ProbeLinux::poll(Machine& machine) {
             const auto events = ptyPoll(descriptor->second);
             entry.returned = (events & entry.events) | (events & 16);
         } else if (const auto pipe = descriptor->second.pipe) {
-            if (descriptor->second.node == Node::pipeRead) {
-                entry.returned = (entry.events & (pipe->data.empty() ? 0 : 1)) |
-                                 (pipe->writer.expired() ? 16 : 0);
-            } else {
-                entry.returned = (entry.events & (pipe->data.size() < 65536 ? 4 : 0)) |
-                                 (pipe->reader.expired() ? 8 : 0);
-            }
+            entry.returned = pipe->pollEvents(descriptor->second.node == Node::pipeRead) & (entry.events | 0x18);
         } else if (descriptor->second.node == Node::timer) {
             refreshTimers(steady_clock::now());
             entry.returned = entry.events & (descriptor->second.event->counter ? 1 : 0);

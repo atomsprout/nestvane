@@ -1251,15 +1251,24 @@ int main() {
     assert(call(59, {base + 512, 0x80800}) == 0);
     const auto pipe = load(base + 512);
     const auto receiver = uint32_t(pipe), sender = uint32_t(pipe >> 32);
+    const auto pipePoller = call(20, {0x80000});
+    constexpr uint64_t pipeEvent = base + 0x740;
+    assert(machine.store64(pipeEvent, 1) && machine.store64(pipeEvent + 8, 0x54));
+    assert(pipePoller < 256 && call(21, {pipePoller, 1, receiver, pipeEvent}) == 0);
+    assert(call(22, {pipePoller, pipeEvent, 1, 0}) == 0);
     assert(call(63, {receiver, base + 512, 12}) == uint64_t(-11));
     assert(call(64, {sender, base + 296, 12}) == 12);
     const auto duplicate = call(23, {sender});
     assert(duplicate < 256 && call(57, {sender}) == 0);
+    assert(call(22, {pipePoller, pipeEvent, 1, 0}) == 1 && load(pipeEvent) == 1 && load(pipeEvent + 8) == 0x54);
     assert(call(63, {receiver, base + 512, 12}) == 12);
     assert(std::memcmp(machine.read(base + 512, 12, 4), "guest packet", 12) == 0);
     assert(call(63, {receiver, base + 512, 12}) == uint64_t(-11));
+    assert(call(22, {pipePoller, pipeEvent, 1, 0}) == 0);
     assert(call(57, {duplicate}) == 0);
+    assert(call(22, {pipePoller, pipeEvent, 1, 0}) == 1 && load(pipeEvent) == 16);
     assert(call(63, {receiver, base + 512, 12}) == 0);
+    assert(call(57, {receiver}) == 0 && call(57, {pipePoller}) == 0);
 
     put(base + 120, "/system/bin/absent");
     const auto beforeExec = machine.cpu.pc;

@@ -214,6 +214,7 @@ private:
     uint64_t graphicsAddressIoctl(Machine& machine, const Descriptor& fd);
     GraphicsPipeFactory graphicsPipeFactory;
     struct EventState;
+    struct Pipe;
     struct Watch {
         uint32_t mask;
         uint64_t data;
@@ -222,6 +223,9 @@ private:
         bool eventCounter;
         std::weak_ptr<BinderConnection> binder{};
         std::weak_ptr<GraphicsPipeState> graphics{};
+        std::weak_ptr<Pipe> pipe{};
+        std::weak_ptr<int> pipeEnd{};
+        bool pipeReader = false;
     };
     struct EventState {
         struct Timer {
@@ -257,6 +261,8 @@ private:
     struct Pipe {
         std::deque<uint8_t> data;
         std::weak_ptr<int> reader, writer;
+        static constexpr size_t capacity = 65536;
+        uint16_t pollEvents(bool readEnd) const;
     };
     struct Pty {
         uint32_t number, owner;
