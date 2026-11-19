@@ -1,0 +1,17 @@
+iPhone 11 / Android 17 API 37 / guest loop device coldboot
+iOS device 26.0.1 | thermal nominal → nominal
+  syscall 198 PC=0x1082e1c84 x0=0x10 x1=0x80002 x2=0xf x3=0x7ffff9e8 x4=0x18 x5=0x18 tid=5 result=0x4
+  syscall 212 PC=0x1082e1fc4 x0=0x4 x1=0x7fffd318 x2=0x0 x3=0x1 x4=0x7fffd410 x5=0x10 tid=5 result=0x95
+  syscall 212 PC=0x1082e1fc4 x0=0x4 x1=0x7fffd1a8 x2=0x0 x3=0x1 x4=0x7fffd2a0 x5=0x10 tid=5 result=0x95
+  syscall 212 PC=0x1082e1fc4 x0=0x4 x1=0x7fffd1a8 x2=0x0 x3=0x1 x4=0x7fffd2a0 x5=0x10 tid=5 result=0x95
+  syscall 33 PC=0x1082e0e44 x0=0xffffff9c x1=0x318e1d6d1 x2=0x6180 x3=0x700 x4=0x2f6465762f617368 x5=0x2f6b636f6c622f76 tid=9 path=/dev/block/loop0 result=0xffffffffffffffef
+  syscall 33 PC=0x1082e0e44 x0=0xffffff9c x1=0x318e1d6d1 x2=0x6180 x3=0x700 x4=0x2f6465762f617368 x5=0x2f6b636f6c622f76 tid=9 path=/dev/block/loop0 result=0xffffffffffffffef
+<6>ueventd: Coldboot took 0.111 seconds
+<6>init: start_waiting_for_property("ro.cold_boot_done", "true"): already set
+<6>init: processing action (SetMmapRndBits) from (<Builtin Action>:0)
+<3>init: Cannot open for reading: /proc/sys/vm/mmap_rnd_bits
+  guest execution wall time: 26224 ms
+  guest execution wall time: 30 ms
+  property reader verified: yes
+  Runtime APEX activation verified: yes
+  linkerconfig generation verified: yes

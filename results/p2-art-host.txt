@@ -1,0 +1,6 @@
+  syscall 56 PC=0x6005b804 x0=0xffffff9c x1=0x7fffe430 x2=0x80000 x3=0x0 x4=0xc0300c03 x5=0xaaaaaaaa path=/system/lib64/libui.so result=0x9
+  syscall 56 PC=0x6005b804 x0=0xffffff9c x1=0x7fffe430 x2=0x80000 x3=0x0 x4=0xc0300c03 x5=0xaaaaaaaa path=/system/lib64/libperfetto_c.so result=0x72
+  retired guest instructions: 350000000, guest syscalls observed: 11104, thread pointer: 0x104bbb5f40
+  guest instruction limit reached at PC=0x133014c414
+  guest execution wall time: 85944 ms
+  resident private guest mapping bytes: 367407104

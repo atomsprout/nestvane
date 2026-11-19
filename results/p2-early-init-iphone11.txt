@@ -1,0 +1,66 @@
+
+iphone-run-1.txt
+iOS device 26.0.1 | thermal nominal → nominal
+Correctness: PASS (5 cases).
+2x throughput gate on both fixtures: PASS
+  syscall 40 PC=0x106bbe2c4 x0=0x7ffff501 x1=0x7ffff4e9 x2=0x0 x3=0x5000 x4=0x0 x5=0x7ffff4f7 source=/mnt/user target=/mnt/installer type= result=0x0
+  syscall 40 PC=0x106bbe2c4 x0=0x7ffff501 x1=0x7ffff4e9 x2=0x0 x3=0x5000 x4=0x0 x5=0x7ffff4fd source=/mnt/user target=/mnt/androidwritable type= result=0x0
+  syscall 56 PC=0x106bbdc84 x0=0xffffff9c x1=0x40010ce3 x2=0x80000 x3=0x0 x4=0x0 x5=0x7ffff515 path=/proc/self/ns/mnt result=0xe
+  syscall 78 PC=0x106bbde84 x0=0xffffff9c x1=0x7ffff479 x2=0x7fffe438 x3=0x1000 x4=0xffffffffffffffff x5=0x7ffff515 path=/proc/self/ns/mnt result=0x7
+  syscall 56 PC=0x106bbdc84 x0=0xffffff9c x1=0x40010ce3 x2=0x80000 x3=0x0 x4=0x7fffe43f x5=0x7ffff498 path=/proc/self/ns/mnt result=0xf
+  syscall 78 PC=0x106bbde84 x0=0xffffff9c x1=0x7ffff479 x2=0x7fffe438 x3=0x1000 x4=0xffffffffffffffff x5=0x7ffff498 path=/proc/self/ns/mnt result=0x7
+  syscall 240 PC=0x106b5cca4 x0=0x4 x1=0x4 x2=0x6 x3=0x7ffff2e0 x4=0xa x5=0xa tid=4 [unimplemented in guest PID 4, suspended]
+  syscall 40 PC=0x106bbe2c4 x0=0x26892d050 x1=0x1d8928519 x2=0x1d89284e9 x3=0x5000 x4=0x0 x5=0x6b6e696c source=/linkerconfig/bootstrap target=/linkerconfig type=none result=0xffffffffffffffea
+  stopped at unimplemented guest syscall 59
+<6>init: SetupMountNamespaces done
+<6>init: Forked subcontext for 'u:r:vendor_init:s0' with pid 4
+<2>init: Could not set execcon for 'u:r:vendor_init:s0': No such file or directory
+<6>init: Parsing file /system/etc/init/hw/init.rc...
+<6>init: processing action (SetupCgroups) from (<Builtin Action>:0)
+<6>init: processing action (early-init) from (/system/etc/init/hw/init.rc:15)
+  property reader verified: yes
+Script parse log entries: 113
+
+iphone-run-2.txt
+iOS device 26.0.1 | thermal nominal → nominal
+Correctness: PASS (5 cases).
+2x throughput gate on both fixtures: PASS
+  syscall 40 PC=0x1057a42c4 x0=0x7ffff501 x1=0x7ffff4e9 x2=0x0 x3=0x5000 x4=0x0 x5=0x7ffff4f7 source=/mnt/user target=/mnt/installer type= result=0x0
+  syscall 40 PC=0x1057a42c4 x0=0x7ffff501 x1=0x7ffff4e9 x2=0x0 x3=0x5000 x4=0x0 x5=0x7ffff4fd source=/mnt/user target=/mnt/androidwritable type= result=0x0
+  syscall 56 PC=0x1057a3c84 x0=0xffffff9c x1=0x40010ce3 x2=0x80000 x3=0x0 x4=0x0 x5=0x7ffff515 path=/proc/self/ns/mnt result=0xe
+  syscall 78 PC=0x1057a3e84 x0=0xffffff9c x1=0x7ffff479 x2=0x7fffe438 x3=0x1000 x4=0xffffffffffffffff x5=0x7ffff515 path=/proc/self/ns/mnt result=0x7
+  syscall 56 PC=0x1057a3c84 x0=0xffffff9c x1=0x40010ce3 x2=0x80000 x3=0x0 x4=0x7fffe43f x5=0x7ffff498 path=/proc/self/ns/mnt result=0xf
+  syscall 78 PC=0x1057a3e84 x0=0xffffff9c x1=0x7ffff479 x2=0x7fffe438 x3=0x1000 x4=0xffffffffffffffff x5=0x7ffff498 path=/proc/self/ns/mnt result=0x7
+  syscall 240 PC=0x105742ca4 x0=0x4 x1=0x4 x2=0x6 x3=0x7ffff2e0 x4=0xa x5=0xa tid=4 [unimplemented in guest PID 4, suspended]
+  syscall 40 PC=0x1057a42c4 x0=0x2471306d0 x1=0x1e7130339 x2=0x1e7130309 x3=0x5000 x4=0x0 x5=0x6b6e696c source=/linkerconfig/bootstrap target=/linkerconfig type=none result=0xffffffffffffffea
+  stopped at unimplemented guest syscall 59
+<6>init: SetupMountNamespaces done
+<6>init: Forked subcontext for 'u:r:vendor_init:s0' with pid 4
+<2>init: Could not set execcon for 'u:r:vendor_init:s0': No such file or directory
+<6>init: Parsing file /system/etc/init/hw/init.rc...
+<6>init: processing action (SetupCgroups) from (<Builtin Action>:0)
+<6>init: processing action (early-init) from (/system/etc/init/hw/init.rc:15)
+  property reader verified: yes
+Script parse log entries: 113
+
+iphone-final.txt
+iOS device 26.0.1 | thermal nominal → nominal
+Correctness: PASS (5 cases).
+2x throughput gate on both fixtures: PASS
+  syscall 40 PC=0x105d222c4 x0=0x7ffff501 x1=0x7ffff4e9 x2=0x0 x3=0x5000 x4=0x0 x5=0x7ffff4f7 source=/mnt/user target=/mnt/installer type= result=0x0
+  syscall 40 PC=0x105d222c4 x0=0x7ffff501 x1=0x7ffff4e9 x2=0x0 x3=0x5000 x4=0x0 x5=0x7ffff4fd source=/mnt/user target=/mnt/androidwritable type= result=0x0
+  syscall 56 PC=0x105d21c84 x0=0xffffff9c x1=0x40010ce3 x2=0x80000 x3=0x0 x4=0x0 x5=0x7ffff515 path=/proc/self/ns/mnt result=0xe
+  syscall 78 PC=0x105d21e84 x0=0xffffff9c x1=0x7ffff479 x2=0x7fffe438 x3=0x1000 x4=0xffffffffffffffff x5=0x7ffff515 path=/proc/self/ns/mnt result=0x7
+  syscall 56 PC=0x105d21c84 x0=0xffffff9c x1=0x40010ce3 x2=0x80000 x3=0x0 x4=0x7fffe43f x5=0x7ffff498 path=/proc/self/ns/mnt result=0xf
+  syscall 78 PC=0x105d21e84 x0=0xffffff9c x1=0x7ffff479 x2=0x7fffe438 x3=0x1000 x4=0xffffffffffffffff x5=0x7ffff498 path=/proc/self/ns/mnt result=0x7
+  syscall 240 PC=0x105cc0ca4 x0=0x4 x1=0x4 x2=0x6 x3=0x7ffff2e0 x4=0xa x5=0xa tid=4 [unimplemented in guest PID 4, suspended]
+  syscall 40 PC=0x105d222c4 x0=0x305f31b90 x1=0x2c5f29ee9 x2=0x2c5f29eb9 x3=0x5000 x4=0x0 x5=0x6b6e696c source=/linkerconfig/bootstrap target=/linkerconfig type=none result=0x0
+  stopped at unimplemented guest syscall 59
+<6>init: SetupMountNamespaces done
+<6>init: Forked subcontext for 'u:r:vendor_init:s0' with pid 4
+<2>init: Could not set execcon for 'u:r:vendor_init:s0': No such file or directory
+<6>init: Parsing file /system/etc/init/hw/init.rc...
+<6>init: processing action (SetupCgroups) from (<Builtin Action>:0)
+<6>init: processing action (early-init) from (/system/etc/init/hw/init.rc:15)
+  property reader verified: yes
+Script parse log entries: 113

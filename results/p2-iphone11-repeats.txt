@@ -1,0 +1,20 @@
+iphone-validation.txt
+  retired guest instructions: 464960, guest syscalls observed: 217, thread pointer: 0x103fb1fe0
+  guest exit code: 0
+  guest output: nestvane bionic ready!
+  executable reached: yes
+device-runs/run-1.txt
+  retired guest instructions: 464944, guest syscalls observed: 217, thread pointer: 0x1043b1fe0
+  guest exit code: 0
+  guest output: nestvane bionic ready!
+  executable reached: yes
+device-runs/run-2.txt
+  retired guest instructions: 464767, guest syscalls observed: 214, thread pointer: 0x1013b2fe0
+  guest exit code: 0
+  guest output: nestvane bionic ready!
+  executable reached: yes
+device-runs/run-3.txt
+  retired guest instructions: 464970, guest syscalls observed: 217, thread pointer: 0x103bb1fe0
+  guest exit code: 0
+  guest output: nestvane bionic ready!
+  executable reached: yes

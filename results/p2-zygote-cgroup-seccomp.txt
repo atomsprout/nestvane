@@ -1,0 +1,61 @@
+Android 17 offline lazy-preload diagnostic on iPhone 11
+iOS device 26.0.1 | process 6796 | thermal nominal → fair
+  syscall 56 PC=0x979bbb984 x0=0xffffff9c x1=0xb400000b85fb95f0 x2=0x88241 x3=0x1b6 x4=0x7fff360f x5=0x7fff365c tid=163 path=/sys/fs/cgroup/system/uid_1000/pid_163/cgroup.procs result=0x4
+  syscall 167 PC=0x979bbad44 x0=0x16 x1=0x2 x2=0x7fff3768 x3=0x7fff3728 x4=0x400 x5=0x400 [unimplemented in guest PID 163, suspended]
+Zygote: Forked child process 163
+Zygote: System server process 163 has been created
+libprocessgroup: Created cgroup /sys/fs/cgroup/system/uid_1000/pid_163
+  generated Java classpaths match SDK reference: yes
+
+Mac with guest seccomp implementation and original reference root
+Zygote: System server process 164 has been created
+SELinux: seapp_context_lookup_internal:  No match for app with uid 1000, seinfo (null), name (null)
+SELinux: selinux_android_setcontext:  Error setting context for system server: Success
+zygote64: jni_internal.cc:865] JNI FatalError called: (system_server) frameworks/base/core/jni/com_android_internal_os_Zygote.cpp:2176: selinux_android_setcontext(1000, 1, "(null)", "(null)") failed
+
+Mac host ABI regression and AddressSanitizer/UndefinedBehaviorSanitizer
+Correctness: PASS (5 cases).
+2x throughput gate on both fixtures: PASS
+guest kernel ABI checks passed, including bind views, fork, SIGCHLD, pipe, boot policy, loop bounds, PTY, uevents, guest sysctls, securebits, I/O priority, Binder transactions and persisted guest data
+guest kernel ABI checks passed, including bind views, fork, SIGCHLD, pipe, boot policy, loop bounds, PTY, uevents, guest sysctls, securebits, I/O priority, Binder transactions and persisted guest data
+
+iPhone 11 with guest seccomp implementation and original reference root
+iOS device 26.0.1 | process 6802 | thermal nominal → fair
+Zygote: System server process 163 has been created
+SELinux: seapp_context_lookup_internal:  No match for app with uid 1000, seinfo (null), name (null)
+SELinux: selinux_android_setcontext:  Error setting context for system server: Success
+zygote64: jni_internal.cc:865] JNI FatalError called: (system_server) frameworks/base/core/jni/com_android_internal_os_Zygote.cpp:2176: selinux_android_setcontext(1000, 1, "(null)", "(null)") failed
+
+Mac with reference seapp contexts and CMTST
+  syscall 167 PC=0xed08e0d44 x0=0x16 x1=0x2 x2=0x7fff3768 x3=0x7fff3728 x4=0x400 x5=0x400 tid=164 result=0x0
+  syscall 56 PC=0xed08e1984 x0=0xffffff9c x1=0x7fff27b8 x2=0x80002 x3=0x0 x4=0x0 x5=0x7fff27cf tid=164 path=/sys/fs/selinux/context result=0xfffffffffffffffe
+SELinux: selinux_android_setcontext:  Error setting context for system server: No such file or directory
+
+Mac with reference-allowed SELinux context transitions
+  syscall 167 PC=0x2c275ed44 x0=0x16 x1=0x2 x2=0x7fff3768 x3=0x7fff3728 x4=0x400 x5=0x400 tid=164 result=0x0
+  syscall 56 PC=0x2c275f984 x0=0xffffff9c x1=0xb4000004b36d1ef0 x2=0x80000 x3=0x0 x4=0x7fff315f x5=0xb4000004b36d1f0f tid=164 path=/proc/thread-self/attr/current result=0x3
+  syscall 56 PC=0x2c275f984 x0=0xffffff9c x1=0x7fff27b8 x2=0x80002 x3=0x0 x4=0x0 x5=0x7fff27cf tid=164 path=/sys/fs/selinux/context result=0x3
+  syscall 56 PC=0x2c275f984 x0=0xffffff9c x1=0xb4000004b36d4f20 x2=0x80002 x3=0x0 x4=0x7fff316f x5=0xb4000004b36d4f3f tid=164 path=/proc/thread-self/attr/current result=0x3
+  syscall 56 PC=0x2c275f984 x0=0xffffff9c x1=0xb4000004b36c2890 x2=0x80002 x3=0x0 x4=0x7fff31bf x5=0xb4000004b36c28af tid=164 path=/proc/thread-self/attr/current result=0x3
+  guest memory fault at PC=0x5a52edca4 address=0x0 word=0xb9400022 SP=0x7fffccb0 LR=0x5a52f05a4 TID=164 x0=0x71ec2e98
+  generated Java classpaths match SDK reference: yes
+Faulting instruction mapped to libart.so at file offset 0x728ca4 (ldr w2, [x1]).
+
+iPhone 11 with reference-allowed SELinux context transitions
+iOS device 26.0.1 | process 6811 | thermal nominal → fair
+  syscall 167 PC=0x9a5931d44 x0=0x16 x1=0x2 x2=0x7fff3768 x3=0x7fff3728 x4=0x400 x5=0x400 tid=163 result=0x0
+  syscall 56 PC=0x9a5932984 x0=0xffffff9c x1=0xb400000c612fd3a0 x2=0x80000 x3=0x0 x4=0x7fff315f x5=0xb400000c612fd3bf tid=163 path=/proc/thread-self/attr/current result=0x3
+  syscall 56 PC=0x9a5932984 x0=0xffffff9c x1=0x7fff27b8 x2=0x80002 x3=0x0 x4=0x0 x5=0x7fff27cf tid=163 path=/sys/fs/selinux/context result=0x3
+  syscall 56 PC=0x9a5932984 x0=0xffffff9c x1=0xb400000c612feb40 x2=0x80002 x3=0x0 x4=0x7fff316f x5=0xb400000c612feb5f tid=163 path=/proc/thread-self/attr/current result=0x3
+  syscall 56 PC=0x9a5932984 x0=0xffffff9c x1=0xb400000c612fd280 x2=0x80002 x3=0x0 x4=0x7fff31bf x5=0xb400000c612fd29f tid=163 path=/proc/thread-self/attr/current result=0x3
+  guest memory fault at PC=0xc73165ca4 address=0x0 word=0xb9400022 SP=0x7fffccb0 LR=0xc731684b4 TID=163 x0=0x727dee98
+Zygote: System server process 163 has been created
+  generated Java classpaths match SDK reference: yes
+Faulting instruction mapped to libart.so at file offset 0x719ca4 (ldr w2, [x1]).
+
+Fresh reference root collection and host ABI regressions
+Collected 1009 Android files in generated/android17-context-reference
+Correctness: PASS (5 cases).
+2x throughput gate on both fixtures: PASS
+guest kernel ABI checks passed, including bind views, fork, SIGCHLD, pipe, boot policy, loop bounds, PTY, uevents, guest sysctls, securebits, I/O priority, Binder transactions and persisted guest data
+guest kernel ABI checks passed, including bind views, fork, SIGCHLD, pipe, boot policy, loop bounds, PTY, uevents, guest sysctls, securebits, I/O priority, Binder transactions and persisted guest data

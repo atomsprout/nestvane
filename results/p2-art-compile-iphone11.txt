@@ -1,0 +1,43 @@
+Selected lines from iphone-extended-final.txt with original line numbers.
+1: iOS device 26.0.1 | process 6573 | thermal nominal → fair
+13823:   guest output: nestvane ART computed 42
+13825:   guest execution wall time: 18730 ms
+95226:   guest PID 60 entered /apex/com.android.art/bin/dex2oat64 (guest context u:r:odrefresh:s0)
+96572:   syscall 222 PC=0xeaad40e04 x0=0x6000000 x1=0xc040000 x2=0x3 x3=0x100022 x4=0xffffffff x5=0x0 tid=60 result=0x6000000
+108044:   retired guest instructions: 2772049920, guest syscalls observed: 268441, thread pointer: 0xead1e2e40
+108045:   diagnostic wall-time deadline reached
+108425: <6>apexd-bootstrap: Activated 6 packages. duration=1975ms
+108896: <6>init: Service 'art_boot' (pid 56) exited with status 0 waiting took 0.197000 seconds
+109121: odsign: Verified public key signature.
+109122: odsign: Initialized Keystore key.
+109136: odrefresh: Low space for '/data/misc/apexdata/com.android.art' (33263616 bytes)
+109138: odrefresh: Compiling boot classpath (arm64, minimal): /apex/com.android.art/bin/dex2oat64 --android-root=out/empty --no-abort-on-hard-verifier-error --no-abort-on-soft-verifier-error --compilation-reason=boot --image-format=lz4 --force-determinism --resolve-startup-const-strings=true --avoid-storing-invocation --no-allow-profile-code --generate-mini-debug-info --strip --instruction-set=arm64 --instruction-set-features=default --instruction-set-variant=generic --cache-info-fd=9 --dex-file=/apex/c
+109146: dex2oat64: Using generational CollectorTypeCC GC.
+109148: dex2oat64: Explicit concurrent copying GC freed 2061KB AllocSpace bytes, 0(0B) LOS objects, 89% free, 2981KB/26MB, paused 500us,221us total 1.578s
+109149: dex2oat64: Compilation of long java.io.ObjectInputStream$BlockDataInputStream.readUTFSpan(java.lang.StringBuilder, long) took 100.333ms
+109150: dex2oat64: Compilation of java.io.ObjectStreamClass java.io.ObjectInputStream.readNonProxyDesc(boolean) took 104.191ms
+109151: dex2oat64: Compilation of java.lang.Object java.io.ObjectInputStream.readObject0(boolean) took 105.560ms
+109152: dex2oat64: Compilation of void java.util.concurrent.ConcurrentHashMap.fullAddCount(long, boolean) took 113.833ms
+109153: dex2oat64: Compilation of void java.util.concurrent.ConcurrentHashMap.transfer(java.util.concurrent.ConcurrentHashMap$Node[], java.util.concurrent.ConcurrentHashMap$Node[]) took 189.982ms
+109154: dex2oat64: Compilation of java.lang.Object java.util.concurrent.ConcurrentHashMap.computeIfAbsent(java.lang.Object, java.util.function.Function) took 136.503ms
+109155: dex2oat64: Compilation of java.lang.Object java.util.concurrent.ConcurrentHashMap.putVal(java.lang.Object, java.lang.Object, boolean) took 103.552ms
+109156: dex2oat64: Compilation of java.lang.Object java.util.concurrent.ConcurrentHashMap.replaceNode(java.lang.Object, java.lang.Object, java.lang.Object) took 133.180ms
+109157: dex2oat64: Compilation of long java.io.ObjectStreamClass.computeDefaultSUID(java.lang.Class) took 257.293ms
+109158: dex2oat64: Compilation of java.io.ObjectStreamClass$ClassDataSlot[] java.io.ObjectStreamClass.getClassDataLayout0() took 122.493ms
+109159: dex2oat64: Compilation of void java.io.ObjectStreamClass.initNonProxy(java.io.ObjectStreamClass, java.lang.Class, java.lang.ClassNotFoundException, java.io.ObjectStreamClass) took 117.913ms
+109160: dex2oat64: Compilation of java.lang.Process java.lang.ProcessImpl.start(java.lang.String[], java.util.Map, java.lang.String, java.lang.ProcessBuilder$Redirect[], boolean) took 208.220ms
+109161: dex2oat64: Compilation of void java.lang.Runtime.load0(java.lang.Class, java.lang.String) took 119.996ms
+109162: dex2oat64: Compilation of java.lang.invoke.MethodType java.lang.invoke.MethodType.makeImpl(java.lang.Class, java.lang.Class[], boolean) took 166.391ms
+109163: dex2oat64: Compilation of void java.lang.invoke.MethodTypeForm.<init>(java.lang.invoke.MethodType) took 105.313ms
+109164: dex2oat64: Compilation of void java.math.BigDecimal.<init>(char[], int, int, java.math.MathContext) took 311.318ms
+109165: dex2oat64: Compilation of java.lang.String java.math.BigDecimal.layoutChars(boolean) took 138.591ms
+109166: dex2oat64: Compilation of void java.math.BigInteger.<init>(java.lang.String, int) took 101.550ms
+109167: dex2oat64: Compilation of void java.math.BigInteger.smallToString(int, java.lang.StringBuilder, int) took 100.775ms
+109168: dex2oat64: Compilation of java.math.BigInteger java.math.BigInteger.modPow(java.math.BigInteger, java.math.BigInteger) took 128.028ms
+109169: dex2oat64: Compilation of java.math.MutableBigInteger java.math.MutableBigInteger.divideMagnitude(java.math.MutableBigInteger, java.math.MutableBigInteger, boolean) took 146.733ms
+109170: dex2oat64: Compilation of void java.net.CookieManager.put(java.net.URI, java.util.Map) took 163.773ms
+109172:   guest execution wall time: 120000 ms
+109175:   Android guest data committed: yes
+110297:   odsign.key.done=1 verified: no
+110665:   odsign.verification.done=1 verified: no
+111035:   odsign.verification.success=1 verified: no

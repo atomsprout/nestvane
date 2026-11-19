@@ -1,0 +1,7 @@
+Selected lines from zygote-framework-remap.log with original line numbers.
+94194:   guest PID 69 entered /system/bin/app_process64 (guest context u:r:zygote:s0)
+94222:   syscall 240 PC=0xc5fac693c x0=0x45 x1=0x45 x2=0x6 x3=0x7fffdd60 x4=0x6b6160687160751f x5=0x6b6160687160751f tid=69 [unimplemented in guest PID 69, suspended]
+94992: <6>init: Created socket '/dev/socket/zygote', mode 660, user 0, group 1000
+94993: <6>init: Created socket '/dev/socket/usap_pool_primary', mode 660, user 0, group 1000
+95064: <6>init: Service 'boringssl_self_test_apex64' (pid 70) exited with status 0 waiting took 0.367000 seconds
+95372: odsign: On-device signing done.

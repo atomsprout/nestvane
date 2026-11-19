@@ -1,0 +1,26 @@
+Selected lines from zygote-extended.log with original line numbers.
+81283:   guest PID 60 entered /apex/com.android.art/bin/dex2oat64 (guest context u:r:odrefresh:s0)
+82540:   syscall 222 PC=0x3e1331e04 x0=0x6000000 x1=0xc040000 x2=0x3 x3=0x100022 x4=0xffffffff x5=0x0 tid=60 result=0x6000000
+94211:   retired guest instructions: 5000000000, guest syscalls observed: 342835, thread pointer: 0x3eada4e40
+94212:   guest instruction limit reached at PC=0x3e885ae94
+94592: <6>apexd-bootstrap: Activated 6 packages. duration=863ms
+94915: <6>init: Service 'art_boot' (pid 56) exited with status 0 waiting took 0.075000 seconds
+95137: odsign: Verified public key signature.
+95138: odsign: Initialized Keystore key.
+95152: odrefresh: Low space for '/data/misc/apexdata/com.android.art' (33263616 bytes)
+95154: odrefresh: Compiling boot classpath (arm64, minimal): /apex/com.android.art/bin/dex2oat64 --android-root=out/empty --no-abort-on-hard-verifier-error --no-abort-on-soft-verifier-error --compilation-reason=boot --image-format=lz4 --force-determinism --resolve-startup-const-strings=true --avoid-storing-invocation --no-allow-profile-code --generate-mini-debug-info --strip --instruction-set=arm64 --instruction-set-features=default --instruction-set-variant=generic --cache-info-fd=9 --dex-file=/apex/c
+95162: dex2oat64: Using generational CollectorTypeCC GC.
+95164: dex2oat64: Explicit concurrent copying GC freed 2061KB AllocSpace bytes, 0(0B) LOS objects, 89% free, 2981KB/26MB, paused 203us,105us total 647.568ms
+95165: dex2oat64: Compilation of void java.math.BigDecimal.<init>(char[], int, int, java.math.MathContext) took 114.590ms
+95166: dex2oat64: Compilation of void java.net.SocksSocketImpl.connect(java.net.SocketAddress, int) took 146.749ms
+95167: dex2oat64: Compilation of void java.net.URLStreamHandler.parseURL(java.net.URL, java.lang.String, int, int) took 119.677ms
+95168: dex2oat64: Compilation of int java.text.SimpleDateFormat.subParse(java.lang.String, int, int, int, boolean, boolean[], java.text.ParsePosition, boolean, java.text.CalendarBuilder) took 129.189ms
+95169: dex2oat64: Compilation of int java.time.format.DateTimeFormatterBuilder$ZoneIdPrinterParser.parse(java.time.format.DateTimeParseContext, java.lang.CharSequence, int) took 105.975ms
+95170: dex2oat64: Compilation of void java.time.format.Parsed.resolveTimeFields() took 100.246ms
+95171: dex2oat64: Compilation of java.lang.Appendable java.util.Formatter$FormatSpecifier.print(java.lang.StringBuilder, java.util.Calendar, char, java.util.Locale) took 105.933ms
+95172: dex2oat64: Compilation of java.lang.String sun.security.util.ObjectIdentifier.toString() took 114.515ms
+95174:   guest execution wall time: 82730 ms
+95177:   Android guest data committed: yes
+96302:   odsign.key.done=1 verified: no
+96673:   odsign.verification.done=1 verified: no
+97043:   odsign.verification.success=1 verified: no

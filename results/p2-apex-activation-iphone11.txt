@@ -1,0 +1,47 @@
+iPhone 11 / ARM64 Android 17 API 37 / stock Runtime APEX
+iOS device 26.0.1 | thermal nominal → nominal
+  init entry reached after 19996105 guest instructions
+  guest PID 6 entered /system/bin/apexd (guest context u:r:apexd:s0)
+  syscall 29 PC=0x109f507c4 x0=0x6 x1=0x4c0a x2=0x39c9d3860 x3=0x857000 x4=0x0 x5=0x40010020000008 tid=8 result=0xfffffffffffffff7
+  syscall 29 PC=0x109f507c4 x0=0x6 x1=0x4c0a x2=0x39c9d3b90 x3=0x857000 x4=0x0 x5=0x40010020000008 tid=8 result=0x0
+  syscall 40 PC=0x109f512c4 x0=0x39c9d4459 x1=0x18b640790 x2=0x39c9d4421 x3=0x485 x4=0x39c9d4471 x5=0x40 tid=8 source=/dev/block/loop0 target=/apex/com.android.runtime@1 type=ext4 result=0x0
+  syscall 40 PC=0x109f512c4 x0=0x18b640790 x1=0x18b6405d0 x2=0x0 x3=0x1000 x4=0x0 x5=0x39c9d43ff tid=8 source=/apex/com.android.runtime@1 target=/apex/com.android.runtime type= result=0x0
+  no runnable guest threads
+<6>apexd-bootstrap: Found pre-installed APEX /system/apex/com.android.runtime.apex
+<6>apexd-bootstrap: Activated 1 packages. duration=2399ms
+<6>apexd-bootstrap: OnBootstrap done, duration=2583
+  guest execution wall time: 25822 ms
+  Runtime APEX mount visible to reader: yes
+  syscall 56 PC=0x40001464 x0=0xffffffffffffff9c x1=0x4000038c x2=0x0 x3=0x0 x4=0x2e x5=0x7ffffe2a path=/apex/com.android.runtime/bin/linker64 result=0x3
+  guest output: 37
+arm64-v8a
+Runtime APEX ELF verified
+  guest execution wall time: 29 ms
+  property reader verified: yes
+  Runtime APEX activation verified: yes
+
+Mac / stock Runtime APEX
+<6>apexd-bootstrap: Activated 1 packages. duration=599ms
+  Runtime APEX activation verified: yes
+
+Mac / AVB authentication block altered in a copy of the stock Runtime APEX
+<3>apexd-bootstrap: Failed to verify Apex Verity data for /system/apex/com.android.runtime.apex: Error verifying /system/apex/com.android.runtime.apex: HASH_MISMATCH
+<3>apexd-bootstrap: Failed to activate packages: Failed to verify Apex Verity data for /system/apex/com.android.runtime.apex: Error verifying /system/apex/com.android.runtime.apex: HASH_MISMATCH
+  property reader verified: yes
+  Runtime APEX activation verified: no
+
+iPhone 11 / follow-up build with guest SIGCHLD delivery and wait4
+iOS device 26.0.1 | thermal nominal → nominal
+  syscall 260 PC=0x1038dcc44 x0=0x6 x1=0x0 x2=0x1 x3=0x0 x4=0x30 x5=0x30 result=0x6
+  syscall 56 PC=0x1038dac84 x0=0xffffff9c x1=0x103821d2e x2=0x80002 x3=0x0 x4=0x2 x5=0x0 path=/dev/ptmx result=0xfffffffffffffffe
+  syscall 54 PC=0x1038dad44 x0=0xffffff9c x1=0x7ffff131 x2=0x3e8 x3=0x3e8 x4=0x100 x5=0x10431bf07 path=/dev/sys [unimplemented]
+  stopped at unimplemented guest syscall 54
+<6>apexd-bootstrap: Activated 1 packages. duration=2320ms
+<6>init: Service 'apexd-bootstrap' (pid 6) exited with status 0 waiting took 6.669000 seconds
+<3>init: failed to execute linkerconfig: No such file or directory
+  guest execution wall time: 22526 ms
+  Runtime APEX mount visible to reader: yes
+Runtime APEX ELF verified
+  guest execution wall time: 30 ms
+  property reader verified: yes
+  Runtime APEX activation verified: yes

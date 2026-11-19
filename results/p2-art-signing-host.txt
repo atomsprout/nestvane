@@ -1,0 +1,14 @@
+Selected lines from zygote-compiler.log with original line numbers.
+62090:   guest PID 57 entered /system/bin/odsign (guest context u:r:odsign:s0)
+64823:   guest PID 58 entered /apex/com.android.art/bin/odrefresh (guest context u:r:odrefresh:s0)
+73023:   guest PID 59 entered /apex/com.android.art/bin/odrefresh (guest context u:r:odrefresh:s0)
+81263:   guest PID 60 entered /apex/com.android.art/bin/dex2oat64 (guest context u:r:odrefresh:s0)
+94216:   retired guest instructions: 5975007214, guest syscalls observed: 385904, thread pointer: 0x1d831de80
+94217:   stopped at unimplemented guest syscall 129
+97804:   odsign.key.done=1 verified: yes
+98180:   odsign.verification.done=1 verified: yes
+98555:   odsign.verification.success=1 verified: yes
+Persisted guest database file lengths (bytes)
+1452208 /data/misc/apexdata/com.android.art/dalvik-cache/arm64/boot_minimal.art
+    276 /data/misc/odsign/odsign.info
+    256 /data/misc/odsign/odsign.info.signature

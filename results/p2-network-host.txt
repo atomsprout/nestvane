@@ -1,0 +1,11 @@
+Selected lines from zygote-bpfsetting.log with original line numbers.
+19943:   syscall 40 PC=0xe4e1342c4 x0=0xec40d4401 x1=0xec40d4419 x2=0xec40d43e9 x3=0xe x4=0x0 x5=0x8080808080808080 source=bpf target=/sys/fs/bpf type=bpf result=0x0
+86894:   guest PID 64 entered /apex/com.android.tethering/bin/netbpfload (guest context u:r:bpfloader:s0)
+88029: <6>apexd-bootstrap: Activated 7 packages. duration=1075ms
+88404: <6>NetBpfLoad: /apex/com.android.tethering/bin/netbpfload api:37/3700 kver:60c0000 (64-on-aarch64:4k) libbpf: v1.4 uid:0 rc:01 user:010
+88405: <6>NetBpfLoad: Tethering APEX version 370399999 (system: )
+88407: <6>NetBpfLoad: detected 5 of 5: 2026Q2 api:37.0.0=3700
+88409: <3>NetBpfLoad: open('/proc/sys/net/core/bpf_jit_enable', O_WRONLY | O_CLOEXEC) -> No such file or directory
+88414: <6>init: Got shutdown_command 'reboot,bpfloader-failed' Calling HandlePowerctlMessage()
+88418: <6>init: Reboot start, reason: reboot,bpfloader-failed, reboot_target: bpfloader-failed
+88676: odsign: On-device signing done.

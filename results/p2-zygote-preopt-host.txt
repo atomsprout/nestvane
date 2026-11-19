@@ -1,0 +1,24 @@
+Selected lines from zygote-framework-memfd.log with original line numbers.
+95407:   syscall 279 PC=0xb5396665c x0=0xd54f76110 x1=0x0 x2=0x7fffac60 x3=0x7fffacb0 x4=0x10 x5=0xff646d6075737264 tid=69 result=0x4
+95409:   syscall 279 PC=0xb5396665c x0=0xd54f75b90 x1=0x0 x2=0x7fffac60 x3=0x7fffacb0 x4=0x10 x5=0xff646d6075737264 tid=69 result=0x5
+95411:   syscall 279 PC=0xb5396665c x0=0xd54f76210 x1=0x0 x2=0x7fffac60 x3=0x7fffacb0 x4=0x10 x5=0xff646d6075737264 tid=69 result=0x6
+95414:   guest PID 71 entered /apex/com.android.art/bin/dex2oat64 (guest context u:r:zygote:s0)
+97721: dex2oat64: atomic_stack.h:300] Check failed: mem_map_.IsValid() couldn't allocate mark stack.
+97722: atomic_stack.h:300] Failed anonymous mmap(0x0, 2097152, 0x3, 0x22, -1, 0): Out of memory. See process maps in the log.
+Selected lines from zygote-framework-cc-low.log with original line numbers.
+94201:   guest PID 69 entered /system/bin/app_process64 (guest context u:r:zygote:s0)
+95332:   syscall 56 PC=0xa0a1b4984 x0=0xffffff9c x1=0xac7bdc990 x2=0x0 x3=0x0 x4=0x0 x5=0xac7bdc9b0 tid=69 path=/system/framework/arm64/boot.art result=0x4
+95337:   syscall 56 PC=0xa0a1b4984 x0=0xffffff9c x1=0xac7bddf50 x2=0x0 x3=0x0 x4=0x0 x5=0xac7bddf70 tid=69 path=/system/framework/arm64/boot.oat result=0x5
+95351:   syscall 56 PC=0xa0a1b4984 x0=0xffffff9c x1=0xac7bde150 x2=0x0 x3=0x0 x4=0x0 x5=0xac7bde171 tid=69 path=/system/framework/arm64/boot.vdex result=0x5
+95972:   syscall 56 PC=0xa0a1b4984 x0=0xffffff9c x1=0xac7bdd310 x2=0x0 x3=0x0 x4=0x0 x5=0xac7bdd330 tid=69 path=/system/framework/arm64/boot.art result=0x4
+95980:   syscall 222 PC=0xa0a1b4e04 x0=0x6f860000 x1=0x30d8000 x2=0x3 x3=0x12 x4=0x4 x5=0x0 tid=69 result=0x6f860000
+95988:   syscall 56 PC=0xa0a1b4984 x0=0xffffff9c x1=0xac7bdd350 x2=0x280000 x3=0x0 x4=0xac7bdd5f0 x5=0xac7bdd370 tid=69 path=/system/framework/arm64/boot.oat result=0x4
+96001:   syscall 56 PC=0x6005b804 x0=0xffffff9c x1=0xac7bdd350 x2=0x80000 x3=0x0 x4=0xc0300c03 x5=0xaaaa0a80 tid=69 path=/system/framework/arm64/boot.oat result=0x4
+96032:   syscall 56 PC=0xa0a1b4984 x0=0xffffff9c x1=0xac7bddcd0 x2=0x0 x3=0x0 x4=0x0 x5=0xac7bddcf1 tid=69 path=/system/framework/arm64/boot.vdex result=0x4
+96252:   diagnostic wall-time deadline reached
+97457: AndroidRuntime: >>>>>> START com.android.internal.os.ZygoteInit uid 0 <<<<<<
+Reference boot-image build
+Matched 10 boot inputs to CE2A.260420.051.A3
+/data/local/tmp/nestvane-preopt.P1dxhp/boot.art: 1 file pulled, 0 skipped. 337.3 MB/s (51572464 bytes in 0.146s)
+/data/local/tmp/nestvane-preopt.P1dxhp/boot.oat: 1 file pulled, 0 skipped. 195.6 MB/s (427064 bytes in 0.002s)
+/data/local/tmp/nestvane-preopt.P1dxhp/boot.vdex: 1 file pulled, 0 skipped. 258.0 MB/s (1021828 bytes in 0.004s)

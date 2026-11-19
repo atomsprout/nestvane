@@ -1,0 +1,37 @@
+First launch after install
+iOS device 26.0.1 | process 6426 | thermal nominal → nominal
+  syscall 38 PC=0x4000136c x0=0xffffffffffffff9c x1=0x4000028b x2=0xffffffffffffff9c x3=0x4000026d x4=0x697c42080 x5=0x697c42070 result=0x0
+  syscall 82 PC=0x4000137c x0=0x3 x1=0x4000028b x2=0xffffffffffffff9c x3=0x4000026d x4=0x697c42080 x5=0x697c42070 result=0x0
+  guest output: guest data synced
+  guest execution wall time: 25 ms
+  syscall 34 PC=0x97cf61e04 x0=0xffffff9c x1=0x7ffff131 x2=0x1fd x3=0x7fffede8 x4=0x1c x5=0x1c path=/data/anr result=0x0
+  syscall 79 PC=0x97cf61d84 x0=0xffffff9c x1=0x7ffff131 x2=0x7ffff010 x3=0x100 x4=0x30 x5=0x30 path=/data/anr result=0x0
+  syscall 54 PC=0x97cf61d44 x0=0xffffff9c x1=0x7ffff131 x2=0x3e8 x3=0x3e8 x4=0x100 x5=0x30 path=/data/anr result=0x0
+  guest execution wall time: 68326 ms
+  data visible in original Android boot: yes
+  stock vdc checkpoint commands verified: yes
+  guest execution wall time: 30 ms
+  servicemanager.ready=true verified: yes
+
+Terminate and relaunch
+iOS device 26.0.1 | process 6427 | thermal nominal → nominal
+  guest output: guest data loaded
+  guest execution wall time: 22 ms
+  syscall 79 PC=0xd2558cd84 x0=0xffffff9c x1=0x7ffff131 x2=0x7ffff010 x3=0x100 x4=0x30 x5=0x30 path=/data/anr result=0x0
+  guest execution wall time: 63469 ms
+  data visible in original Android boot: yes
+  stock vdc checkpoint commands verified: yes
+  guest execution wall time: 31 ms
+  servicemanager.ready=true verified: yes
+
+Install revised app over existing app and relaunch
+iOS device 26.0.1 | process 6428 | thermal nominal → nominal
+  guest output: guest data loaded
+  guest execution wall time: 21 ms
+  syscall 79 PC=0x45ef6ed84 x0=0xffffff9c x1=0x7ffff131 x2=0x7ffff010 x3=0x100 x4=0x30 x5=0x30 path=/data/anr result=0x0
+  guest execution wall time: 59093 ms
+  data visible in original Android boot: yes
+  Android guest data committed: yes
+  stock vdc checkpoint commands verified: yes
+  guest execution wall time: 30 ms
+  servicemanager.ready=true verified: yes

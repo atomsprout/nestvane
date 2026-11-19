@@ -1,0 +1,54 @@
+
+iphone-run-1.txt
+iOS device 26.0.1 | thermal nominal → nominal
+Correctness: PASS (5 cases).
+2x throughput gate on both fixtures: PASS
+  guest execution wall time: 22 ms
+  syscall 221 PC=0x10233bd44 x0=0x7ffff491 x1=0x7ffff4b0 x2=0x2533304f0 x3=0x1000 x4=0x7ffff42e x5=0x7ffff47b tid=4 path=/system/bin/init [loaded guest image]
+  guest PID 4 entered /system/bin/init (guest context u:r:vendor_init:s0)
+  syscall 59 PC=0x10233c944 x0=0x7fffee18 x1=0x0 x2=0x7 x3=0x656e746400000000 x4=0x656e746400000000 x5=0x64746e65 result=0x0
+  syscall 59 PC=0x10233c944 x0=0x7fffee10 x1=0x0 x2=0x7 x3=0x656e746400000000 x4=0x656e746400000000 x5=0x64746e65 result=0x0
+  syscall 221 PC=0x10233bd44 x0=0x163334461 x1=0x253330910 x2=0x2533304f0 x3=0x8 x4=0x8 x5=0x8 tid=5 path=/system/bin/ueventd [loaded guest image]
+  guest PID 5 entered /system/bin/ueventd (guest context u:r:ueventd:s0)
+  syscall 59 PC=0x10233c944 x0=0x7fffec28 x1=0x0 x2=0xf x3=0x765f636f6e666967 x4=0x765f636f6e666967 x5=0x6769666e6f635f76 result=0x0
+  syscall 59 PC=0x10233c944 x0=0x7fffec20 x1=0x0 x2=0xf x3=0x765f636f6e666967 x4=0x765f636f6e666967 x5=0x6769666e6f635f76 result=0x0
+  syscall 59 PC=0x10233c944 x0=0x7fffec28 x1=0x0 x2=0xf x3=0x6f6f747374726170 x4=0x6f6f747374726170 x5=0x7061727473746f6f result=0x0
+  syscall 59 PC=0x10233c944 x0=0x7fffec20 x1=0x0 x2=0xf x3=0x6f6f747374726170 x4=0x6f6f747374726170 x5=0x7061727473746f6f result=0x0
+  stopped at unimplemented guest syscall 142
+<6>init: starting service 'ueventd'...
+<6>ueventd: ueventd started!
+<6>init: ... started service 'ueventd' has pid 5
+<6>ueventd: Parsing file /system/etc/ueventd.rc...
+<6>init: Command 'exec_start apexd-bootstrap' action=early-init (/system/etc/init/hw/init.rc:91) took 5ms and failed: Could not start exec service: Could not get security context
+<6>init: Got shutdown_command 'reboot,bootloader,bootstrap-apexd-failed' Calling HandlePowerctlMessage()
+<6>init: Reboot start, reason: reboot,bootloader,bootstrap-apexd-failed, reboot_target: bootloader,bootstrap-apexd-failed
+  guest execution wall time: 22505 ms
+  guest execution wall time: 29 ms
+  property reader verified: yes
+
+iphone-run-2.txt
+iOS device 26.0.1 | thermal nominal → nominal
+Correctness: PASS (5 cases).
+2x throughput gate on both fixtures: PASS
+  guest execution wall time: 23 ms
+  syscall 221 PC=0x1068f7d44 x0=0x7ffff491 x1=0x7ffff4b0 x2=0x167f25230 x3=0x1000 x4=0x7ffff42e x5=0x7ffff47b tid=4 path=/system/bin/init [loaded guest image]
+  guest PID 4 entered /system/bin/init (guest context u:r:vendor_init:s0)
+  syscall 59 PC=0x1068f8944 x0=0x7fffee18 x1=0x0 x2=0x7 x3=0x656e746400000000 x4=0x656e746400000000 x5=0x64746e65 result=0x0
+  syscall 59 PC=0x1068f8944 x0=0x7fffee10 x1=0x0 x2=0x7 x3=0x656e746400000000 x4=0x656e746400000000 x5=0x64746e65 result=0x0
+  syscall 221 PC=0x1068f7d44 x0=0x127f301c1 x1=0x167f25bd0 x2=0x167f25230 x3=0x8 x4=0x8 x5=0x8 tid=5 path=/system/bin/ueventd [loaded guest image]
+  guest PID 5 entered /system/bin/ueventd (guest context u:r:ueventd:s0)
+  syscall 59 PC=0x1068f8944 x0=0x7fffec28 x1=0x0 x2=0xf x3=0x765f636f6e666967 x4=0x765f636f6e666967 x5=0x6769666e6f635f76 result=0x0
+  syscall 59 PC=0x1068f8944 x0=0x7fffec20 x1=0x0 x2=0xf x3=0x765f636f6e666967 x4=0x765f636f6e666967 x5=0x6769666e6f635f76 result=0x0
+  syscall 59 PC=0x1068f8944 x0=0x7fffec28 x1=0x0 x2=0xf x3=0x6f6f747374726170 x4=0x6f6f747374726170 x5=0x7061727473746f6f result=0x0
+  syscall 59 PC=0x1068f8944 x0=0x7fffec20 x1=0x0 x2=0xf x3=0x6f6f747374726170 x4=0x6f6f747374726170 x5=0x7061727473746f6f result=0x0
+  stopped at unimplemented guest syscall 142
+<6>init: starting service 'ueventd'...
+<6>ueventd: ueventd started!
+<6>init: ... started service 'ueventd' has pid 5
+<6>ueventd: Parsing file /system/etc/ueventd.rc...
+<6>init: Command 'exec_start apexd-bootstrap' action=early-init (/system/etc/init/hw/init.rc:91) took 5ms and failed: Could not start exec service: Could not get security context
+<6>init: Got shutdown_command 'reboot,bootloader,bootstrap-apexd-failed' Calling HandlePowerctlMessage()
+<6>init: Reboot start, reason: reboot,bootloader,bootstrap-apexd-failed, reboot_target: bootloader,bootstrap-apexd-failed
+  guest execution wall time: 21703 ms
+  guest execution wall time: 30 ms
+  property reader verified: yes

@@ -1,0 +1,36 @@
+iphone-validation.txt
+iOS device 26.0.1 | thermal nominal → nominal
+Correctness: PASS (5 cases).
+  retired guest instructions: 464788, guest syscalls observed: 214, thread pointer: 0x1013b2fe0
+  guest output: nestvane bionic ready!
+  guest execution wall time: 17 ms
+  init entry reached after 19995225 guest instructions
+  retired guest instructions: 20025778, guest syscalls observed: 1019, thread pointer: 0x108318e80
+  stopped at unimplemented guest syscall 39
+<6>init: init second stage started!
+  guest execution wall time: 2450 ms
+  second-stage startup log observed: yes
+iphone-repeat-1.txt
+iOS device 26.0.1 | thermal nominal → nominal
+Correctness: PASS (5 cases).
+  retired guest instructions: 464956, guest syscalls observed: 217, thread pointer: 0x104fb1fe0
+  guest output: nestvane bionic ready!
+  guest execution wall time: 16 ms
+  init entry reached after 19994807 guest instructions
+  retired guest instructions: 20025402, guest syscalls observed: 1016, thread pointer: 0x108b19e80
+  stopped at unimplemented guest syscall 39
+<6>init: init second stage started!
+  guest execution wall time: 3219 ms
+  second-stage startup log observed: yes
+iphone-repeat-2.txt
+iOS device 26.0.1 | thermal nominal → nominal
+Correctness: PASS (5 cases).
+  retired guest instructions: 464700, guest syscalls observed: 214, thread pointer: 0x1013b2fe0
+  guest output: nestvane bionic ready!
+  guest execution wall time: 16 ms
+  init entry reached after 19995417 guest instructions
+  retired guest instructions: 20025970, guest syscalls observed: 1019, thread pointer: 0x10c718e80
+  stopped at unimplemented guest syscall 39
+<6>init: init second stage started!
+  guest execution wall time: 1794 ms
+  second-stage startup log observed: yes

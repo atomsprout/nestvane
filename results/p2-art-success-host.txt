@@ -1,0 +1,39 @@
+Before address index, original ART at the FRINTP stop
+Android 17 original ART probe
+  retired guest instructions: 361014292, guest syscalls observed: 11138, thread pointer: 0xc25e68f40
+  unsupported instruction at PC=0xede65ac90 word=0x1e24c000
+  guest execution wall time: 96303 ms
+  resident private guest mapping bytes: 367546368
+
+After address index, original ART at the FRINTP stop
+Android 17 original ART probe
+  retired guest instructions: 361013733, guest syscalls observed: 11151, thread pointer: 0x64e779f40
+  unsupported instruction at PC=0x918246c90 word=0x1e24c000
+  guest execution wall time: 5292 ms
+  resident private guest mapping bytes: 367546368
+
+Complete ART execution, first run
+Android 17 original ART probe
+  retired guest instructions: 511016162, guest syscalls observed: 35988, thread pointer: 0x5a2707f40
+  guest exit code: 0
+dalvikvm64: u_setTimeZoneFilesDirectory("/apex/com.android.tzdata/etc/tz/versioned/10/icu") succeeded.
+nativeloader: Load libjavacore.so using APEX ns com_android_art for caller /apex/com.android.art/javalib/core-oj.jar: ok
+nativeloader: Load libopenjdk.so using APEX ns com_android_art for caller /apex/com.android.art/javalib/core-oj.jar: ok
+  guest output: nestvane ART computed 42
+  guest execution wall time: 7281 ms
+  resident private guest mapping bytes: 131452928
+
+Complete ART execution, repeat
+Android 17 original ART probe
+  retired guest instructions: 511029203, guest syscalls observed: 35991, thread pointer: 0xc5342af40
+  guest exit code: 0
+dalvikvm64: u_setTimeZoneFilesDirectory("/apex/com.android.tzdata/etc/tz/versioned/10/icu") succeeded.
+nativeloader: Load libjavacore.so using APEX ns com_android_art for caller /apex/com.android.art/javalib/core-oj.jar: ok
+nativeloader: Load libopenjdk.so using APEX ns com_android_art for caller /apex/com.android.art/javalib/core-oj.jar: ok
+  guest output: nestvane ART computed 42
+  guest execution wall time: 7199 ms
+  resident private guest mapping bytes: 131444736
+
+Correctness: PASS (5 cases).
+2x throughput gate on both fixtures: PASS
+guest kernel ABI checks passed, including bind views, fork, SIGCHLD, pipe, boot policy, loop bounds, PTY, uevents, guest sysctls, securebits, I/O priority, Binder transactions and persisted guest data

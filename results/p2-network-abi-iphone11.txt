@@ -1,0 +1,7 @@
+Selected lines from iphone-sched.txt with original line numbers.
+1: iOS device 26.0.1 | process 6695 | thermal nominal → nominal
+102046:   guest PID 69 entered /apex/com.android.tethering/bin/netbpfload (guest context u:r:bpfloader:s0)
+102330:   syscall 56 PC=0xbc4d24984 x0=0xffffff9c x1=0x400025a9 x2=0x80001 x3=0x0 x4=0xffffffffffffffff x5=0x0 tid=69 path=/proc/sys/net/core/bpf_jit_enable result=0xfffffffffffffffe
+103190: <6>apexd-bootstrap: Activated 8 packages. duration=2515ms
+103727: <3>NetBpfLoad: open('/proc/sys/net/core/bpf_jit_enable', O_WRONLY | O_CLOEXEC) -> No such file or directory
+105879:   odsign.verification.success=1 verified: yes

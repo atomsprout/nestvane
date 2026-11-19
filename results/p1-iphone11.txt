@@ -1,0 +1,26 @@
+iOS device 26.0.1 | thermal nominal → nominal
+nestvane P1 | AArch64 ELF | 20 timed runs per mode
+Timing includes binding, dispatch, and guest execution. ELF loading is outside the timer.
+
+arithmetic: exit, pc=0x40003c, fault=0x0, retired=200011
+  checksum=1250175000 stdout=arithmetic ready
+  step: median=2.327 ms, p95=4.737 ms, interpreted=200011, block dispatches=0, AOT entries=0, fallback=0
+  blocks: median=1.167 ms, p95=1.866 ms, interpreted=200011, block dispatches=50002, AOT entries=0, fallback=0
+  aot: median=0.041 ms, p95=0.097 ms, interpreted=11, block dispatches=3, AOT entries=1, fallback=3
+  AOT vs blocks: 28.328x
+cross-page reads/writes: exit, pc=0x40004c, fault=0x0, retired=350012
+  checksum=1250425000 stdout=memory ready
+  step: median=4.259 ms, p95=4.633 ms, interpreted=350012, block dispatches=0, AOT entries=0, fallback=0
+  blocks: median=1.830 ms, p95=2.202 ms, interpreted=350012, block dispatches=50002, AOT entries=0, fallback=0
+  aot: median=0.261 ms, p95=0.276 ms, interpreted=12, block dispatches=3, AOT entries=1, fallback=3
+  AOT vs blocks: 7.024x
+rebased ELF: exit, pc=0x60004c, fault=0x0, retired=350012
+  modes agree, AOT entries=1, fallback=3, rejected=0
+changed instruction: exit, pc=0x40003c, fault=0x0, retired=200011
+  modes agree, AOT entries=0, fallback=50002, rejected=1
+fault inside AOT block: fault, pc=0x400010, fault=0x401ffc, retired=4
+  modes agree, AOT entries=1, fallback=1, rejected=0
+
+Peak process RSS: 39878656 bytes on Darwin
+Correctness: PASS (5 cases).
+2x throughput gate on both fixtures: PASS

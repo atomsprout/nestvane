@@ -1,0 +1,8 @@
+Selected lines from iphone-tether.txt with original line numbers.
+1: iOS device 26.0.1 | process 6674 | thermal nominal → nominal
+101013:   guest PID 65 entered /apex/com.android.tethering/bin/netbpfload (guest context u:r:bpfloader:s0)
+101290:   syscall 56 PC=0x55f3ad984 x0=0xffffff9c x1=0x400026e7 x2=0x80001 x3=0x0 x4=0x3d0 x5=0x7fffe99f tid=65 path=/proc/sys/kernel/unprivileged_bpf_disabled result=0xfffffffffffffffe
+102172: <6>apexd-bootstrap: Activated 7 packages. duration=2366ms
+104022:   odsign.key.done=1 verified: yes
+104395:   odsign.verification.done=1 verified: yes
+104773:   odsign.verification.success=1 verified: yes

@@ -1,0 +1,23 @@
+Selected lines from iphone-zygote-full.txt with original line numbers.
+1: iOS device 26.0.1 | process 6513 | thermal nominal → nominal
+13823:   guest output: nestvane ART computed 42
+76040:   guest PID 57 entered /system/bin/odsign (guest context u:r:odsign:s0)
+78757:   guest PID 58 entered /apex/com.android.art/bin/odrefresh (guest context u:r:odrefresh:s0)
+85647:   guest PID 59 entered /apex/com.android.art/bin/odrefresh (guest context u:r:odrefresh:s0)
+93840:   guest PID 60 entered /apex/com.android.art/bin/dex2oat64 (guest context u:r:odrefresh:s0)
+94469:   diagnostic wall-time deadline reached
+94849: <6>apexd-bootstrap: Activated 6 packages. duration=2063ms
+95314: <6>init: Service 'art_boot' (pid 56) exited with status 0 waiting took 0.181000 seconds
+95537: odsign: Verified public key signature.
+95538: odsign: Initialized Keystore key.
+95540: odrefresh: ART APEX version 370399999
+95541: odrefresh: Userfaultfd GC check failed (build_enable_uffd_gc: true, is_at_most_u: false, kernel_supports_uffd: false).
+95544: odrefresh: odrefresh terminated by exit(79)
+95547: odrefresh: ART APEX version 370399999
+95548: odrefresh: Userfaultfd GC check failed (build_enable_uffd_gc: true, is_at_most_u: false, kernel_supports_uffd: false).
+95551: odrefresh: Low space for '/data/misc/apexdata/com.android.art' (33263616 bytes)
+95552: odrefresh: Compilation of primary BCP failed: Insufficient space
+95561:   Android guest data committed: yes
+96674:   odsign.key.done=1 verified: no
+97047:   odsign.verification.done=1 verified: no
+97419:   odsign.verification.success=1 verified: no

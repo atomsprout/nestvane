@@ -1,0 +1,1422 @@
+#include "AArch64.hpp"
+#include "ProbeLinux.hpp"
+#include <algorithm>
+#include <array>
+#include <cassert>
+#include <cstring>
+#include <cstdlib>
+#include <filesystem>
+#include <iostream>
+#include <sstream>
+#include <unistd.h>
+
+
+using namespace nestvane;
+
+int main() {
+    constexpr uint64_t base = 0x2000;
+    Machine machine(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
+    {
+        Machine permute(Image{base, {}, {}});
+        const std::array<uint32_t, 4> left{10, 20, 30, 40}, right{1, 2, 3, 4}, expected{20, 2, 40, 4};
+        std::memcpy(permute.cpu.v[2].data(), left.data(), sizeof(left));
+        std::memcpy(permute.cpu.v[1].data(), right.data(), sizeof(right));
+        assert(executeStartupInstruction(permute, 0x4e816841)); // trn2 v1.4s, v2.4s, v1.4s
+        assert(std::memcmp(permute.cpu.v[1].data(), expected.data(), sizeof(expected)) == 0);
+        const std::array<uint16_t, 4> lowerLeft{4, 5, 6, 7}, lowerRight{8, 9, 10, 11};
+        const std::array<uint16_t, 8> lowerExpected{4, 8, 6, 10, 0, 0, 0, 0};
+        std::memcpy(permute.cpu.v[4].data(), lowerLeft.data(), sizeof(lowerLeft));
+        std::memcpy(permute.cpu.v[5].data(), lowerRight.data(), sizeof(lowerRight));
+        permute.cpu.v[3].fill(0xff);
+        assert(executeStartupInstruction(permute, 0x0e452883)); // trn1 v3.4h, v4.4h, v5.4h
+        assert(std::memcmp(permute.cpu.v[3].data(), lowerExpected.data(), sizeof(lowerExpected)) == 0);
+        const std::array<uint32_t, 4> compare{0xbf800000, 0x80000000, 0x3f800000, 0x7fc00000};
+        const std::array<uint32_t, 4> compareExpected{0, UINT32_MAX, UINT32_MAX, 0};
+        std::memcpy(permute.cpu.v[3].data(), compare.data(), sizeof(compare));
+        assert(executeStartupInstruction(permute, 0x6ea0c863)); // fcmge v3.4s, v3.4s, #0.0
+        assert(std::memcmp(permute.cpu.v[3].data(), compareExpected.data(), sizeof(compareExpected)) == 0);
+        const std::array<uint32_t, 4> inverted{UINT32_MAX, 0, 0, UINT32_MAX};
+        assert(executeStartupInstruction(permute, 0x6e205863)); // mvn v3.16b, v3.16b
+        assert(std::memcmp(permute.cpu.v[3].data(), inverted.data(), sizeof(inverted)) == 0);
+        const float one = 1.0f, four = 4.0f;
+        std::memcpy(permute.cpu.v[1].data(), &one, sizeof(one));
+        std::memcpy(permute.cpu.v[3].data(), &four, sizeof(four));
+        permute.cpu.v[2].fill(0xff);
+        assert(executeStartupInstruction(permute, 0x7ea3d422)); // fabd s2, s1, s3
+        const std::array<float, 4> absoluteDifference{3.0f, 0, 0, 0};
+        assert(std::memcmp(permute.cpu.v[2].data(), absoluteDifference.data(), sizeof(absoluteDifference)) == 0);
+        const double half = -2.5, beyondSignedMax = 0x1p63;
+        std::memcpy(permute.cpu.v[5].data(), &half, sizeof(half));
+        assert(executeStartupInstruction(permute, 0x9e6400a9)); // fcvtas x9, d5
+        assert(permute.cpu.x[9] == uint64_t(-3));
+        std::memcpy(permute.cpu.v[5].data(), &beyondSignedMax, sizeof(beyondSignedMax));
+        assert(executeStartupInstruction(permute, 0x9e6400a9));
+        assert(permute.cpu.x[9] == INT64_MAX);
+        permute.cpu.v[1] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
+        const std::array<uint16_t, 8> wideLower{0x100, 0x200, 0x300, 0x400, 0x500, 0x600, 0x700, 0x800};
+        const std::array<uint16_t, 8> wideUpper{0x900, 0xa00, 0xb00, 0xc00, 0xd00, 0xe00, 0xf00, 0x1000};
+        assert(executeStartupInstruction(permute, 0x2e213820)); // shll v0.8h, v1.8b, #8
+        assert(std::memcmp(permute.cpu.v[0].data(), wideLower.data(), sizeof(wideLower)) == 0);
+        assert(executeStartupInstruction(permute, 0x6e213820)); // shll2 v0.8h, v1.16b, #8
+        assert(std::memcmp(permute.cpu.v[0].data(), wideUpper.data(), sizeof(wideUpper)) == 0);
+        const std::array<int16_t, 8> shiftInput{-1, 3, -32768, 32767, -5, 4, -300, 1024};
+        const std::array<int32_t, 4> shiftLower{-1, 3, -32768, 32767}, shiftUpper{-40, 32, -2400, 8192};
+        std::memcpy(permute.cpu.v[3].data(), shiftInput.data(), sizeof(shiftInput));
+        std::memcpy(permute.cpu.v[8].data(), shiftInput.data(), sizeof(shiftInput));
+        assert(executeStartupInstruction(permute, 0x0f10a462)); // sshll v2.4s, v3.4h, #0
+        assert(std::memcmp(permute.cpu.v[2].data(), shiftLower.data(), sizeof(shiftLower)) == 0);
+        assert(executeStartupInstruction(permute, 0x4f13a507)); // sshll2 v7.4s, v8.8h, #3
+        assert(std::memcmp(permute.cpu.v[7].data(), shiftUpper.data(), sizeof(shiftUpper)) == 0);
+        const auto minNumber = [&](uint32_t a, uint32_t b, uint32_t expectedBits) {
+            std::memcpy(permute.cpu.v[6].data(), &a, sizeof(a));
+            std::memcpy(permute.cpu.v[0].data(), &b, sizeof(b));
+            assert(executeStartupInstruction(permute, 0x1e2078c0)); // fminnm s0, s6, s0
+            assert(std::memcmp(permute.cpu.v[0].data(), &expectedBits, sizeof(expectedBits)) == 0);
+        };
+        minNumber(0, 0x80000000, 0x80000000);
+        minNumber(0x7fc00042, 0x3f800000, 0x3f800000);
+        minNumber(0x7f800042, 0x3f800000, 0x7fc00042);
+        const std::array<uint32_t, 4> vectorFloat{0xbff00000, 0x4f000000, UINT32_MAX, UINT32_MAX};
+        const std::array<uint32_t, 4> vectorInteger{UINT32_MAX, INT32_MAX, 0, 0};
+        std::memcpy(permute.cpu.v[0].data(), vectorFloat.data(), sizeof(vectorFloat));
+        assert(executeStartupInstruction(permute, 0x0ea1b800)); // fcvtzs v0.2s, v0.2s
+        assert(std::memcmp(permute.cpu.v[0].data(), vectorInteger.data(), sizeof(vectorInteger)) == 0);
+        const std::array<uint32_t, 4> unsignedLanes{0, 17, 0x80000000, UINT32_MAX};
+        const std::array<float, 4> convertedUnsigned{0, 17, 0x1p31f, 0x1p32f};
+        std::memcpy(permute.cpu.v[0].data(), unsignedLanes.data(), sizeof(unsignedLanes));
+        assert(executeStartupInstruction(permute, 0x6e21d800)); // ucvtf v0.4s, v0.4s
+        assert(std::memcmp(permute.cpu.v[0].data(), convertedUnsigned.data(), sizeof(convertedUnsigned)) == 0);
+        const std::array<int64_t, 2> signedLanes{-9, 100};
+        const std::array<double, 2> convertedSigned{-9, 100};
+        std::memcpy(permute.cpu.v[4].data(), signedLanes.data(), sizeof(signedLanes));
+        assert(executeStartupInstruction(permute, 0x4e61d883)); // scvtf v3.2d, v4.2d
+        assert(std::memcmp(permute.cpu.v[3].data(), convertedSigned.data(), sizeof(convertedSigned)) == 0);
+        const std::array<float, 4> twoSingles{1, 1, 0, 0}, fourSingles{-2, -2, -2, -2};
+        const std::array<double, 2> twoDoubles{0.75, 0.75};
+        assert(executeStartupInstruction(permute, 0x0f03f600)); // fmov v0.2s, #1.0
+        assert(std::memcmp(permute.cpu.v[0].data(), twoSingles.data(), sizeof(twoSingles)) == 0);
+        assert(executeStartupInstruction(permute, 0x4f04f401)); // fmov v1.4s, #-2.0
+        assert(std::memcmp(permute.cpu.v[1].data(), fourSingles.data(), sizeof(fourSingles)) == 0);
+        assert(executeStartupInstruction(permute, 0x6f03f502)); // fmov v2.2d, #0.75
+        assert(std::memcmp(permute.cpu.v[2].data(), twoDoubles.data(), sizeof(twoDoubles)) == 0);
+        const std::array<uint32_t, 4> mslByte{0xf2ff, 0xf2ff, 0xf2ff, 0xf2ff};
+        const std::array<uint32_t, 4> mslHalfword{0x12ffff, 0x12ffff, 0x12ffff, 0x12ffff};
+        const std::array<uint32_t, 4> mslInverted{0xfffffe00, 0xfffffe00, 0, 0};
+        assert(executeStartupInstruction(permute, 0x4f07c640)); // movi v0.4s, #242, msl #8
+        assert(std::memcmp(permute.cpu.v[0].data(), mslByte.data(), sizeof(mslByte)) == 0);
+        assert(executeStartupInstruction(permute, 0x4f00d642)); // movi v2.4s, #18, msl #16
+        assert(std::memcmp(permute.cpu.v[2].data(), mslHalfword.data(), sizeof(mslHalfword)) == 0);
+        assert(executeStartupInstruction(permute, 0x2f00c423)); // mvni v3.2s, #1, msl #8
+        assert(std::memcmp(permute.cpu.v[3].data(), mslInverted.data(), sizeof(mslInverted)) == 0);
+        const std::array<int16_t, 8> firstSigned{-5, 2, -11, 32767, -5, -7, 0, -32768};
+        const std::array<int16_t, 8> secondSigned{3, -2, -9, -32768, -6, 11, 0, -4};
+        const std::array<int16_t, 8> maxSigned{3, 2, -9, 32767, -5, 11, 0, -4};
+        const std::array<int16_t, 8> minSigned{-5, -2, -11, -32768};
+        std::memcpy(permute.cpu.v[7].data(), firstSigned.data(), sizeof(firstSigned));
+        std::memcpy(permute.cpu.v[1].data(), secondSigned.data(), sizeof(secondSigned));
+        assert(executeStartupInstruction(permute, 0x4e6164e7)); // smax v7.8h, v7.8h, v1.8h
+        assert(std::memcmp(permute.cpu.v[7].data(), maxSigned.data(), sizeof(maxSigned)) == 0);
+        std::memcpy(permute.cpu.v[2].data(), firstSigned.data(), sizeof(firstSigned));
+        std::memcpy(permute.cpu.v[3].data(), secondSigned.data(), sizeof(secondSigned));
+        assert(executeStartupInstruction(permute, 0x0e636c44)); // smin v4.4h, v2.4h, v3.4h
+        assert(std::memcmp(permute.cpu.v[4].data(), minSigned.data(), sizeof(minSigned)) == 0);
+        const std::array<float, 4> leftAdd{1, -2, 3, 4}, rightAdd{3, 1, 6, -4}, expectedSum{4, -1, 9, 0};
+        std::memcpy(permute.cpu.v[0].data(), leftAdd.data(), sizeof(leftAdd));
+        std::memcpy(permute.cpu.v[2].data(), rightAdd.data(), sizeof(rightAdd));
+        assert(executeStartupInstruction(permute, 0x4e22d400)); // fadd v0.4s, v0.4s, v2.4s
+        assert(std::memcmp(permute.cpu.v[0].data(), expectedSum.data(), sizeof(expectedSum)) == 0);
+        const std::array<float, 4> pairFloat{-2, 5.5f, 7, 8}, sumFloat{3.5f};
+        std::memcpy(permute.cpu.v[7].data(), pairFloat.data(), sizeof(pairFloat));
+        assert(executeStartupInstruction(permute, 0x7e30d8e7)); // faddp s7, v7.2s
+        assert(std::memcmp(permute.cpu.v[7].data(), sumFloat.data(), sizeof(sumFloat)) == 0);
+        const std::array<double, 2> pairDouble{-5.25, 4}, sumDouble{-1.25};
+        std::memcpy(permute.cpu.v[1].data(), pairDouble.data(), sizeof(pairDouble));
+        assert(executeStartupInstruction(permute, 0x7e70d822)); // faddp d2, v1.2d
+        assert(std::memcmp(permute.cpu.v[2].data(), sumDouble.data(), sizeof(sumDouble)) == 0);
+        const std::array<uint32_t, 4> comparison{UINT32_MAX, 0, 0, 0};
+        const std::array<uint32_t, 4> against{0x40400000, 0, 0x41100000, 0x7fc00000};
+        std::memcpy(permute.cpu.v[1].data(), against.data(), sizeof(against));
+        assert(executeStartupInstruction(permute, 0x6ea1e402)); // fcmgt v2.4s, v0.4s, v1.4s
+        assert(std::memcmp(permute.cpu.v[2].data(), comparison.data(), sizeof(comparison)) == 0);
+        permute.cpu.v[3] = {0, 1, 2, 0, 0, 8, 0, 16, 0, 0, 0, 0, 16, 0, 0, 2};
+        const std::array<uint8_t, 16> nonzeroBytes{0, 255, 255, 0, 0, 255, 0, 255, 0, 0, 0, 0, 255, 0, 0, 255};
+        assert(executeStartupInstruction(permute, 0x4e238c67)); // cmtst v7.16b, v3.16b, v3.16b
+        assert(permute.cpu.v[7] == nonzeroBytes);
+    }
+    {
+        constexpr uint64_t boundary = base + pageSize;
+        Machine adjacent(Image{base, {{base, std::vector<uint8_t>(pageSize), 6},
+                                     {boundary, std::vector<uint8_t>(pageSize), 6}}, {}});
+        constexpr uint64_t expected = 0x1122334455667788;
+        uint64_t loaded = 0;
+        assert(adjacent.store64(boundary - 1, expected));
+        assert(adjacent.load64(boundary - 1, loaded) && loaded == expected);
+        auto nextPage = std::find_if(adjacent.segments.begin(), adjacent.segments.end(),
+                                     [&](const auto& segment) { return segment.address == boundary; });
+        assert(nextPage != adjacent.segments.end());
+        nextPage->flags = 4;
+        assert(!adjacent.store64(boundary - 1, UINT64_MAX));
+        assert(adjacent.load64(boundary - 1, loaded) && loaded == expected);
+        nextPage->flags = 0;
+        assert(!adjacent.load64(boundary - 1, loaded) && loaded == expected);
+    }
+    ProbeLinux linux(1, 0);
+    linux.addDirectory("/test", 0755);
+    const auto call = [&](uint64_t number, std::array<uint64_t, 6> args = {}) {
+        std::copy(args.begin(), args.end(), machine.cpu.x.begin());
+        machine.cpu.x[8] = number;
+        assert(linux.syscall(machine));
+        return machine.cpu.x[0];
+    };
+    const auto put = [&](uint64_t address, const char* data) {
+        assert(machine.write(address, {reinterpret_cast<const uint8_t*>(data), std::strlen(data) + 1}));
+    };
+    const auto load = [&](uint64_t address) {
+        uint64_t value;
+        assert(machine.load64(address, value));
+        return value;
+    };
+    {
+        static constexpr std::array<uint8_t, 2> input{'o', 'k'};
+        linux.mount("/test/canonical/input", input);
+        linux.alias("/test/linked", "/test/canonical");
+        put(base, "/test/linked/input");
+        assert(call(48, {uint32_t(-100), base, 4}) == 0);
+        assert(call(79, {uint32_t(-100), base, base + 128, 0}) == 0);
+        assert(load(base + 128 + 48) == input.size());
+    }
+    {
+        constexpr auto attr = base + 96;
+        put(base, "/sys/fs/bpf/map_missing");
+        assert(machine.store64(attr, base) && machine.store64(attr + 8, 0));
+        assert(machine.store64(attr + 16, 0));
+        assert(call(280, {7, attr, 24}) == uint64_t(-2));
+        put(base, "/sys/fs/bpf");
+        assert(call(280, {7, attr, 24}) == uint64_t(-13));
+        assert(machine.store64(attr + 8, 1));
+        assert(call(280, {7, attr, 24}) == uint64_t(-22));
+        assert(call(280, {7, UINT64_MAX, 24}) == uint64_t(-14));
+    }
+    {
+        constexpr auto buffer = base + 96;
+        put(base, "/proc/sys/kernel/random/boot_id");
+        const auto bootId = call(56, {uint32_t(-100), base, 0});
+        assert(bootId < 256 && call(63, {bootId, buffer, 37}) == 37);
+        const auto* uuid = machine.read(buffer, 36, 4);
+        assert(uuid);
+        const auto path = "/dev/ashmem" + std::string(reinterpret_cast<const char*>(uuid), 36);
+        assert(call(57, {bootId}) == 0);
+        put(base, path.c_str());
+        assert(call(79, {uint32_t(-100), base, buffer, 0}) == 0 && load(buffer + 32) == 0x100a03);
+        const auto fd = call(56, {uint32_t(-100), base, 2});
+        assert(fd < 256);
+        assert(call(80, {fd, buffer}) == 0 && load(buffer + 32) == 0x100a03);
+        put(base, "shared-memory-regression");
+        assert(call(29, {fd, 0x41007701, base}) == 0);
+        assert(call(29, {fd, 0x81007702, buffer}) == 0);
+        assert(std::memcmp(machine.read(buffer, 25, 4), "shared-memory-regression", 25) == 0);
+        assert(call(29, {fd, 0x40087703, pageSize}) == 0);
+        assert(call(29, {fd, 0x7704}) == pageSize);
+        const auto writable = call(222, {0, pageSize, 3, 1, fd});
+        assert(writable < (1ULL << 37));
+        assert(call(29, {fd, 0x40087703, pageSize * 2}) == uint64_t(-22));
+        assert(call(29, {fd, 0x40087705, 1}) == 0);
+        assert(call(222, {0, pageSize, 3, 1, fd}) == uint64_t(-1));
+        const auto shared = call(222, {0, pageSize, 1, 1, fd});
+        assert(shared < (1ULL << 37));
+        assert(machine.store64(writable, 0x1234) && load(shared) == 0x1234);
+        assert(call(226, {shared, pageSize, 3}) == uint64_t(-13));
+        assert(call(233, {shared, pageSize, 8}) == uint64_t(-22));
+        assert(call(57, {fd}) == 0 && load(shared) == 0x1234);
+        assert(call(215, {writable, pageSize}) == 0 && call(215, {shared, pageSize}) == 0);
+    }
+    {
+        constexpr uint64_t size = 4 * 1024 * 1024, residency = base + 96;
+        const auto mapping = call(222, {0, size, 3, 0x22, UINT64_MAX});
+        assert(mapping < (1ULL << 37));
+        assert(call(232, {mapping, pageSize, residency}) == 0 && *machine.read(residency, 1, 4) == 0);
+        assert(machine.store64(mapping, 42));
+        assert(call(233, {mapping, pageSize, 8}) == 0);
+        assert(call(232, {mapping, pageSize, residency}) == 0 && *machine.read(residency, 1, 4) == 1);
+        assert(call(215, {mapping, size}) == 0);
+        assert(call(232, {mapping, pageSize, residency}) == uint64_t(-12));
+    }
+    {
+        ProbeLinux guest(1, 0);
+        guest.addBootCgroups();
+        Machine task(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
+        const auto invoke = [&](uint64_t number, std::array<uint64_t, 6> args = {}) {
+            std::copy(args.begin(), args.end(), task.cpu.x.begin());
+            task.cpu.x[8] = number;
+            assert(guest.syscall(task));
+            return task.cpu.x[0];
+        };
+        const auto path = [&](std::string_view text) {
+            const std::string value(text);
+            assert(task.write(base, {reinterpret_cast<const uint8_t*>(value.c_str()), value.size() + 1}));
+        };
+        constexpr uint64_t cwd = uint32_t(-100), output = base + 256;
+        path("/sys/fs/cgroup/system");
+        assert(invoke(43, {base, output}) == 0);
+        uint64_t magic = 0;
+        assert(task.load64(output, magic) && magic == 0x63677270);
+        path("/sys/fs/cgroup/system/uid_1000");
+        assert(invoke(34, {cwd, base, 0775}) == 0);
+        path("/sys/fs/cgroup/system/uid_1000/cgroup.procs");
+        const auto procs = invoke(56, {cwd, base, 2});
+        assert(procs < 256);
+        path("0\n");
+        assert(invoke(64, {procs, base, 2}) == 2);
+        path("/proc/self/cgroup");
+        const auto proc = invoke(56, {cwd, base, 0});
+        constexpr std::string_view expected = "0::/system/uid_1000\n";
+        assert(invoke(63, {proc, output, 128}) == expected.size());
+        assert(std::memcmp(task.read(output, expected.size(), 4), expected.data(), expected.size()) == 0);
+        assert(invoke(220, {0x1200011, 0, 0, 0, base + 128}) == 2);
+        assert(invoke(63, {procs, output, 128}) == 4);
+        assert(std::memcmp(task.read(output, 4, 4), "1\n2\n", 4) == 0);
+        path("/sys/fs/cgroup/system/uid_1000");
+        assert(invoke(35, {cwd, base, 0x200}) == uint64_t(-16));
+    }
+    {
+        ProbeLinux guest(1, 1000);
+        Machine task(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
+        const auto invoke = [&](uint64_t number, std::array<uint64_t, 6> args = {}) {
+            std::copy(args.begin(), args.end(), task.cpu.x.begin());
+            task.cpu.x[8] = number;
+            assert(guest.syscall(task));
+            return task.cpu.x[0];
+        };
+        // Deny getuid only on AArch64. Allow other calls, including fork.
+        const std::array<uint32_t, 12> filter{
+            0x20, 4, 0x03000015, 0xc00000b7, 0x20, 0,
+            0x01000015, 174, 0x06, 0x00050001, 0x06, 0x7fff0000,
+        };
+        constexpr auto instructions = base + 64;
+        assert(task.store64(base, filter.size() / 2));
+        assert(task.store64(base + 8, instructions));
+        assert(task.write(instructions, {reinterpret_cast<const uint8_t*>(filter.data()), sizeof(filter)}));
+        assert(invoke(167, {22, 2, base}) == uint64_t(-13));
+        assert(invoke(167, {38, 1}) == 0 && invoke(167, {39}) == 1);
+        assert(invoke(167, {22, 2, base + 4096}) == uint64_t(-14));
+        assert(task.store64(instructions, filter.size() * (uint64_t{1} << 32) + 0x05));
+        assert(invoke(167, {22, 2, base}) == uint64_t(-22));
+        assert(task.write(instructions, {reinterpret_cast<const uint8_t*>(filter.data()), sizeof(filter)}));
+        assert(invoke(167, {22, 2, base}) == 0 && invoke(167, {21}) == 2);
+        assert(task.store64(instructions + 32, 0x7fff000000000006)); // Installed code is a snapshot.
+        assert(invoke(174) == uint64_t(-1) && invoke(172) == 1);
+        assert(invoke(220, {0x1200011, 0, 0, 0, base + 128}) == 2);
+        assert(guest.schedule(task) && guest.threadId() == 2);
+        assert(invoke(167, {39}) == 1 && invoke(174) == uint64_t(-1));
+    }
+    {
+        ProbeLinux guest(1, 1000);
+        guest.setBootContext("u:r:zygote:s0");
+        assert(guest.loadCurrentContextPolicy("u:r:zygote:s0 u:r:system_server_startup:s0\n"));
+        Machine task(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
+        const auto invoke = [&](uint64_t number, std::array<uint64_t, 6> args = {}) {
+            std::copy(args.begin(), args.end(), task.cpu.x.begin());
+            task.cpu.x[8] = number;
+            assert(guest.syscall(task));
+            return task.cpu.x[0];
+        };
+        constexpr char current[] = "/proc/thread-self/attr/current";
+        constexpr char validator[] = "/sys/fs/selinux/context";
+        constexpr char denied[] = "u:r:init:s0";
+        constexpr char allowed[] = "u:r:system_server_startup:s0";
+        assert(task.write(base, {reinterpret_cast<const uint8_t*>(current), sizeof(current)}));
+        const auto attribute = invoke(56, {uint32_t(-100), base, 2});
+        assert(attribute < 256);
+        assert(task.write(base, {reinterpret_cast<const uint8_t*>(validator), sizeof(validator)}));
+        const auto validate = invoke(56, {uint32_t(-100), base, 2});
+        assert(validate < 256);
+        assert(task.write(base, {reinterpret_cast<const uint8_t*>(denied), sizeof(denied)}));
+        assert(invoke(64, {validate, base, sizeof(denied)}) == uint64_t(-22));
+        assert(invoke(64, {attribute, base, sizeof(denied)}) == uint64_t(-13));
+        assert(task.write(base, {reinterpret_cast<const uint8_t*>(allowed), sizeof(allowed)}));
+        assert(invoke(64, {validate, base, sizeof(allowed)}) == sizeof(allowed));
+        assert(invoke(64, {attribute, base, sizeof(allowed)}) == sizeof(allowed));
+        assert(invoke(63, {attribute, base, sizeof(allowed)}) == sizeof(allowed));
+        assert(std::memcmp(task.read(base, sizeof(allowed), 4), allowed, sizeof(allowed)) == 0);
+    }
+    {
+        constexpr auto alt = base + 2 * pageSize;
+        const std::array<uint32_t, 2> instructions{0xb9400022, 0xd65f03c0}; // ldr w2,[x1]; ret
+        std::vector<uint8_t> code(sizeof(instructions));
+        std::memcpy(code.data(), instructions.data(), code.size());
+        Machine task(Image{base, {{base, std::move(code), 5}, {base + pageSize, std::vector<uint8_t>(3 * pageSize), 6}}, {}});
+        ProbeLinux guest(1, 1000);
+        const auto invoke = [&](uint64_t number, std::array<uint64_t, 6> args = {}) {
+            std::copy(args.begin(), args.end(), task.cpu.x.begin());
+            task.cpu.x[8] = number;
+            assert(guest.syscall(task));
+            return task.cpu.x[0];
+        };
+        constexpr auto parameters = base + pageSize;
+        const std::array<uint64_t, 4> action{base + 4, 0x08000004, 0, 1ULL << (12 - 1)};
+        assert(task.write(parameters, {reinterpret_cast<const uint8_t*>(action.data()), sizeof(action)}));
+        assert(invoke(134, {11, parameters, 0, 8}) == 0);
+        const std::array<uint64_t, 3> stack{alt, 0, 2 * pageSize};
+        assert(task.write(parameters, {reinterpret_cast<const uint8_t*>(stack.data()), sizeof(stack)}));
+        assert(invoke(132, {parameters}) == 0);
+        task.cpu.sp = alt - 16;
+        task.cpu.nzcv = 9;
+        task.cpu.v[4][7] = 168;
+        task.cpu.x[17] = 0x1234;
+        task.cpu.x[2] = 0x5678;
+        task.cpu.x[1] = 0;
+        const auto before = task.cpu;
+        assert(executeStartupInstruction(task, instructions[0]));
+        assert(task.cpu.stop == Stop::fault && guest.deliverMemoryFault(task));
+        assert(task.cpu.pc == base + 4 && task.cpu.x[0] == 11);
+        assert(task.cpu.sp >= alt && task.cpu.sp < alt + stack[2] && !(task.cpu.sp & 15));
+        assert(task.cpu.x[1] == task.cpu.sp && task.cpu.x[2] == task.cpu.sp + 128);
+        uint64_t value = 0;
+        assert(task.load64(task.cpu.x[1] + 16, value) && value == 0); // si_addr
+        assert(task.load64(task.cpu.x[1] + 8, value) && value == 1); // SEGV_MAPERR
+        assert(task.load64(task.cpu.x[2] + 176 + 264, value) && value == base);
+        assert(task.store64(task.cpu.x[2] + 176 + 264, base + 4)); // Change resume PC in ucontext.
+        const auto trampoline = task.cpu.x[30];
+        assert(executeStartupInstruction(task, instructions[1]));
+        assert(task.cpu.pc == trampoline);
+        uint32_t mov;
+        const auto* entry = task.read(trampoline, sizeof(mov), 1);
+        assert(entry != nullptr);
+        std::memcpy(&mov, entry, sizeof(mov));
+        const auto decoded = decode(mov);
+        if (decoded.op == Op::unsupported) assert(executeStartupInstruction(task, mov));
+        else executeDecoded(task, decoded);
+        assert(task.cpu.x[8] == 139 && guest.syscall(task) && guest.restoredSignalContext());
+        assert(task.cpu.pc == base + 4 && task.cpu.sp == before.sp && task.cpu.nzcv == before.nzcv);
+        assert(task.cpu.x == before.x && task.cpu.v == before.v);
+        assert(invoke(135, {0, 0, parameters, 8}) == 0);
+        assert(task.load64(parameters, value) && value == 0);
+    }
+    assert(call(143, {0, 9999}) == 0 && call(176) == 0 && call(177) == 9999);
+    assert(call(145, {UINT32_MAX, 9999}) == 0 && call(174) == 0 && call(175) == 9999);
+    assert(call(145, {123, UINT32_MAX}) == uint64_t(-1));
+    assert(call(143, {UINT32_MAX, 123}) == uint64_t(-1));
+    assert(call(143, {UINT32_MAX, 0}) == 0 && call(177) == 0);
+    assert(call(145, {UINT32_MAX, 0}) == 0 && call(175) == 0);
+    assert(call(143, {0, 0}) == 0 && call(145, {0, 0}) == 0);
+    {
+        ProbeLinux guarded(1, 0);
+        Machine guardedMachine(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
+        const auto invoke = [&](uint64_t number, std::array<uint64_t, 6> args = {}) {
+            std::copy(args.begin(), args.end(), guardedMachine.cpu.x.begin());
+            guardedMachine.cpu.x[8] = number;
+            assert(guarded.syscall(guardedMachine));
+            return guardedMachine.cpu.x[0];
+        };
+        const auto area = invoke(222, {0, pageSize, 1, 0x22, uint64_t(-1), 0});
+        assert(area < (uint64_t{1} << 45));
+        assert(invoke(167, {56}) == 0 && invoke(167, {55, 2}) == uint64_t(-22));
+        assert(invoke(167, {55, 3}) == 0 && invoke(167, {56}) == 3);
+        assert(invoke(167, {55, 0}) == uint64_t(-1));
+        assert(invoke(226, {area, pageSize, 5}) == uint64_t(-13));
+        assert(invoke(222, {0, pageSize, 7, 0x22, uint64_t(-1), 0}) == uint64_t(-13));
+        assert(invoke(220, {0x1200011, 0, 0, 0, base}) == 2);
+        assert(guarded.schedule(guardedMachine) && guarded.processId() == 2);
+        assert(invoke(167, {56}) == 0 && invoke(226, {area, pageSize, 5}) == 0);
+    }
+    assert(machine.store64(base + 0x680, 0) && machine.store64(base + 0x688, 0));
+    assert(machine.store64(base + 0x690, 0));
+    assert(call(73, {base + 0x690, 1, base + 0x680}) == 0);
+    assert(machine.store64(base + 0x690, 1ULL << 32));
+    assert(call(73, {base + 0x690, 1, base + 0x680}) == 1);
+    assert(load(base + 0x690) >> 48 == 1);
+    assert(machine.store64(base + 512, 120));
+    assert(call(170, {0, base + 512}) == 0);
+    assert(call(169, {0, base + 520}) == 0 && load(base + 520) == 120);
+    assert(machine.store64(base + 512, 901));
+    assert(call(170, {0, base + 512}) == uint64_t(-22));
+    assert(call(169, {0, base + 520}) == 0 && load(base + 520) == 120);
+
+    assert(call(30, {1, 0, 0x4002}) == 0);
+    assert(call(31, {1, 1}) == 0x4002);
+    assert(call(30, {1, 1, 0x4008}) == uint64_t(-22));
+    assert(call(31, {1, 0}) == 0x4002);
+
+    put(base, "tmpfs");
+    put(base + 16, "/test");
+    put(base + 40, "mode=0750,uid=0,gid=0");
+    put(base + 72, "/test/sample");
+    assert(call(56, {uint32_t(-100), base + 72, 0x42, 0600}) == uint64_t(-30));
+    assert(call(40, {base, base + 16, base, 14, base + 40}) == 0);
+    assert(call(43, {base + 16, base + 512}) == 0);
+    assert(load(base + 512 + 80) == 0x2e);
+    auto file = call(56, {uint32_t(-100), base + 72, 0x42, 0600});
+    assert(file == 3);
+    put(base + 340, "disk");
+    assert(call(68, {file, base + 340, 4, 4}) == 4);
+    assert(call(62, {file, 0, 1}) == 0);
+    assert(call(67, {file, base + 512, 8, 0}) == 8 && (load(base + 512) & UINT32_MAX) == 0);
+    assert(std::memcmp(machine.read(base + 516, 4, 4), "disk", 4) == 0);
+    assert(call(68, {file, base + 340, 4, UINT64_MAX}) == uint64_t(-22));
+    assert(machine.store64(base + 520, 0x40000000));
+    assert(call(29, {file, 0x80086601, base + 520}) == 0 && load(base + 520) == 0);
+    assert(call(29, {file, 0x40086602, base + 520}) == uint64_t(-95));
+    assert(call(233, {base, pageSize, UINT32_MAX}) == uint64_t(-22));
+    assert(call(57, {file}) == 0);
+    assert(call(39, {base + 16}) == uint64_t(-16));
+
+    const auto poll = call(20, {0x80000});
+    const auto event = call(19, {0, 0x80800});
+    assert(poll == 3 && event == 4);
+    assert(machine.store64(base + 256, 1));
+    assert(machine.store64(base + 264, 0xdecafe));
+    assert(call(21, {poll, 1, event, base + 256}) == 0);
+    assert(call(22, {poll, base + 512, 1}) == 0);
+    assert(call(63, {event, base + 520, 8}) == uint64_t(-11));
+    assert(machine.store64(base + 280, 3));
+    assert(call(64, {event, base + 280, 8}) == 8);
+    assert(call(22, {poll, base + 512, 1}) == 1);
+    assert(load(base + 512) == 1 && load(base + 520) == 0xdecafe);
+    assert(call(63, {event, base + 512, 8}) == 8 && load(base + 512) == 3);
+    assert(call(22, {poll, base + 512, 1}) == 0);
+
+    const auto timer = call(85, {1, 0x80800});
+    assert(timer < 256 && call(21, {poll, 1, timer, base + 256}) == 0);
+    assert(call(63, {timer, base + 512, 8}) == uint64_t(-11));
+    const std::array<uint64_t, 4> expiredTimer{0, 0, 0, 1};
+    assert(machine.write(base + 280, {reinterpret_cast<const uint8_t*>(expiredTimer.data()), sizeof expiredTimer}));
+    assert(call(86, {timer, 1, base + 280, base + 0x380}) == 0);
+    assert(load(base + 0x390) == 0 && load(base + 0x398) == 0);
+    assert(call(22, {poll, base + 512, 1}) == 1);
+    assert(call(63, {timer, base + 512, 8}) == 8 && load(base + 512) == 1);
+    assert(call(22, {poll, base + 512, 1}) == 0);
+    assert(call(57, {timer}) == 0);
+
+    assert(call(199, {1, 5 | 0x800, 0, base + 512}) == 0);
+    auto sockets = load(base + 512);
+    auto first = uint32_t(sockets);
+    auto second = uint32_t(sockets >> 32);
+    assert(first == 5 && second == 6);
+    assert(call(21, {poll, 1, second, base + 256}) == 0);
+    put(base + 296, "guest packet");
+    assert(call(64, {first, base + 296, 12}) == 12);
+    assert(call(22, {poll, base + 512, 1}) == 1);
+    assert(load(base + 512) == 1);
+    assert(call(63, {second, base + 512, 32}) == 12);
+    assert(std::memcmp(machine.read(base + 512, 12, 4), "guest packet", 12) == 0);
+    assert(call(57, {first}) == 0);
+    assert(call(22, {poll, base + 512, 1}) == 1 && load(base + 512) == 16);
+    assert(call(63, {second, base + 512, 32}) == 0);
+    linux.addDirectory("/dev/socket", 0755);
+    const auto listener = call(198, {1, 1 | 0x800});
+    assert(machine.store64(base + 512, 4));
+    assert(call(209, {listener, 1, 39, base + 520, base + 512}) == 0);
+    assert((load(base + 520) & 0xffffffff) == 1);
+    assert(call(209, {listener, 1, 38, base + 520, base + 512}) == 0);
+    assert((load(base + 520) & 0xffffffff) == 0);
+
+    put(base + 770, "/dev/socket/test");
+    const std::array<uint8_t, 2> unixFamily{1, 0};
+    assert(machine.write(base + 768, unixFamily));
+    assert(call(200, {listener, base + 768, 19}) == 0);
+    assert(machine.store64(base + 512, 2));
+    assert(call(204, {listener, base + 800, base + 512}) == 0 && load(base + 512) == 19);
+    assert(std::memcmp(machine.read(base + 800, 2, 4), unixFamily.data(), 2) == 0);
+    assert(call(201, {listener, 8}) == 0);
+    assert(call(21, {poll, 1, listener, base + 256}) == 0);
+    const auto client = call(198, {1, 1});
+    assert(call(205, {client, base + 800, base + 512}) == uint64_t(-107));
+    assert(call(203, {client, base + 768, 19}) == 0);
+    assert(call(205, {client, base + 800, base + 512}) == 0 && load(base + 512) == 19);
+    assert(std::memcmp(machine.read(base + 800, 19, 4), machine.read(base + 768, 19, 4), 19) == 0);
+    assert(call(22, {poll, base + 512, 2}) == 2); // pending accept and the old socket hangup
+    const auto accepted = call(242, {listener, 0, 0, 0x80000});
+    assert(accepted < 256);
+    assert(call(204, {accepted, base + 800, base + 512}) == 0 && load(base + 512) == 19);
+    assert(call(205, {accepted, base + 800, base + 512}) == 0 && load(base + 512) == 2);
+    assert(call(206, {client, base + 296, 5}) == 5);
+    assert(call(206, {client, base + 301, 7}) == 7);
+    assert(call(207, {accepted, base + 512, 12, 0x100}) == 12);
+    assert(std::memcmp(machine.read(base + 512, 12, 4), "guest packet", 12) == 0);
+    assert(call(206, {accepted, base + 296, 3}) == 3);
+    assert(call(207, {client, base + 512, 3, 0x100}) == 3);
+    assert(call(206, {client, base + 296, 3}) == 3);
+    assert(call(210, {client, 1}) == 0);
+    assert(call(206, {client, base + 296, 1}) == uint64_t(-32));
+    assert(call(207, {accepted, base + 512, 6, 0x100}) == 3);
+    assert(call(63, {accepted, base + 512, 3}) == 0);
+    assert(call(206, {accepted, base + 296, 3}) == 3);
+    assert(call(63, {client, base + 512, 3}) == 3);
+
+
+    // Test the clone ABI with the same registers Bionic supplies to the kernel.
+    assert(call(140, {0, 0, 3}) == 0);
+    machine.cpu.pc = base;
+    const auto statScratch = call(222, {0, pageSize, 3, 0x22, uint64_t(-1), 0});
+    assert(statScratch < (uint64_t{1} << 45));
+    const auto childTid = call(220, {0x3d0f00, base + 0x900, base + 0x810, base + 0xa00, base + 0x810});
+    assert(childTid == 2 && load(base + 0x810) == childTid);
+    const auto statThreads = [&](const char* path, std::string_view prefix) {
+        put(statScratch, path);
+        const auto fd = call(56, {uint32_t(-100), statScratch, 0});
+        assert(fd < 256);
+        const auto size = call(63, {fd, statScratch + 64, 500});
+        assert(size && size <= 500 && call(57, {fd}) == 0);
+        const auto* content = reinterpret_cast<const char*>(machine.read(statScratch + 64, size, 4));
+        const std::string line(content, size);
+        assert(line.starts_with(prefix));
+        const auto commEnd = line.rfind(')');
+        assert(commEnd != std::string::npos);
+        std::istringstream fields(line.substr(commEnd + 2));
+        std::string field;
+        for (unsigned number = 3; number <= 20; ++number) assert(fields >> field);
+        return std::stoi(field);
+    };
+    assert(statThreads("/proc/1/task/1/stat", "1 (") == 2);
+    assert(statThreads("/proc/self/task/2/stat", "2 (") == 2);
+    put(statScratch, "/proc/self/fd");
+    const auto fdDirectory = call(56, {uint32_t(-100), statScratch, 0x4000});
+    assert(fdDirectory < 256);
+    const auto dirBytes = call(61, {fdDirectory, statScratch + 64, 512});
+    assert(dirBytes && dirBytes <= 512);
+    const auto* records = machine.read(statScratch + 64, dirBytes, 4);
+    assert(records);
+    bool sawDirectory = false;
+    for (uint64_t position = 0; position < dirBytes;) {
+        const auto* record = records + position;
+        uint16_t size = 0;
+        std::memcpy(&size, record + 16, sizeof(size));
+        assert(size >= 24 && size <= dirBytes - position);
+        if (std::string_view(reinterpret_cast<const char*>(record + 19)) == std::to_string(fdDirectory))
+            sawDirectory = record[18] == 10;
+        position += size;
+    }
+    assert(sawDirectory && call(57, {fdDirectory}) == 0);
+    machine.cpu.pc += 4;
+    assert(linux.schedule(machine));
+    assert(linux.threadId() == 2 && machine.cpu.x[0] == 0 && machine.cpu.pc == base + 4);
+    assert(machine.cpu.sp == base + 0x900 && machine.cpu.threadPointer == base + 0xa00);
+    assert(call(172) == 1 && call(178) == 2);
+    assert(call(141, {0, childTid}) == 17); // Inherits nice 3.
+    assert(call(140, {0, childTid, 5}) == 0);
+    assert(call(141, {0, 0}) == 15 && call(141, {0, 1}) == 17);
+    assert(machine.store64(base + 0x800, 5));
+    assert(call(98, {base + 0x800, 128, 4}) == uint64_t(-11) && !linux.blocked());
+    call(98, {base + 0x800, 128, 5});
+    assert(linux.blocked() && linux.schedule(machine) && linux.threadId() == 1);
+    assert(call(98, {base + 0x800, 132, 0, 1, base + 0x804, 4}) == uint64_t(-11));
+    assert(call(98, {base + 0x800, 132, 0, 1, base + 0x804, 5}) == 1);
+    assert(call(98, {base + 0x800, 129, 1}) == 0);
+    assert(call(98, {base + 0x804, 129, 1}) == 1);
+    machine.cpu.retired += 4096;
+    assert(linux.schedule(machine) && linux.threadId() == 2 && machine.cpu.x[0] == 0);
+    assert(machine.cpu.pc == base + 8);
+
+    constexpr uint64_t userSignal = 10, signalMask = 1ULL << (userSignal - 1);
+    assert(machine.store64(base + 0x820, signalMask));
+    assert(machine.store64(base + 0x8c0, 0) && machine.store64(base + 0x8c8, 0));
+    assert(call(137, {base + 0x820, 0, base + 0x8c0, 8}) == uint64_t(-11));
+    call(137, {base + 0x820, base + 0xe00, 0, 8});
+    assert(linux.blocked() && linux.schedule(machine) && linux.threadId() == 1);
+    assert(call(131, {2, childTid, userSignal}) == uint64_t(-3));
+    assert(call(131, {1, childTid, userSignal}) == 0);
+    machine.cpu.retired += 4096;
+    assert(linux.schedule(machine) && linux.threadId() == childTid);
+    assert(call(137, {base + 0x820, base + 0xe00, 0, 8}) == userSignal);
+    assert(load(base + 0xe00) == userSignal && uint32_t(load(base + 0xe08)) == uint32_t(-6));
+    call(93);
+    assert(linux.blocked() && linux.schedule(machine) && linux.threadId() == 1);
+    assert(load(base + 0x810) == 0);
+    assert(call(141, {0, childTid}) == uint64_t(-3));
+    assert(statThreads("/proc/1/task/1/stat", "1 (") == 1);
+    put(statScratch, "/proc/1/task/2/stat");
+    assert(call(56, {uint32_t(-100), statScratch, 0}) == uint64_t(-2));
+    assert(call(215, {statScratch, pageSize}) == 0);
+
+    linux.addDirectory("/view", 0755);
+    linux.addDirectory("/other", 0755);
+    put(base + 100, "/view");
+    put(base + 120, "/view/sample");
+    put(base + 144, "/other");
+    put(base + 160, "/other/example");
+    put(base + 184, "/proc/self/ns/mnt");
+    assert(call(40, {base + 16, base + 100, 0, 0x5000}) == 0);
+    const auto viaBind = call(56, {uint32_t(-100), base + 120, 2});
+    assert(viaBind < 256 && call(64, {viaBind, base + 296, 12}) == 12);
+    const auto original = call(56, {uint32_t(-100), base + 72, 0});
+    assert(original < 256 && call(63, {original, base + 512, 12}) == 12);
+    assert(std::memcmp(machine.read(base + 512, 12, 4), "guest packet", 12) == 0);
+    const auto firstNamespace = call(56, {uint32_t(-100), base + 184, 0});
+    assert(firstNamespace < 256);
+    assert(call(97, {0x20000}) == 0);
+    const auto secondNamespace = call(56, {uint32_t(-100), base + 184, 0});
+    assert(secondNamespace < 256 && secondNamespace != firstNamespace);
+    assert(call(80, {firstNamespace, base + 512}) == 0 && load(base + 520) == 1);
+    assert(call(80, {secondNamespace, base + 512}) == 0 && load(base + 520) == 2);
+    assert(call(40, {base, base + 144, base, 14, base + 40}) == 0);
+    assert(call(56, {uint32_t(-100), base + 160, 0x42, 0600}) < 256);
+    assert(call(268, {firstNamespace, 0x20000}) == 0);
+    assert(call(56, {uint32_t(-100), base + 160, 0}) == uint64_t(-2));
+    assert(call(268, {secondNamespace, 0x20000}) == 0);
+    assert(call(56, {uint32_t(-100), base + 160, 0}) < 256);
+
+    assert(machine.store64(base + 0x840, 17));
+    assert(machine.store64(base + 0x850, 1ULL << 16));
+    assert(call(135, {0, base + 0x850, 0, 8}) == 0);
+    const auto signal = call(74, {UINT32_MAX, base + 0x850, 8, 0x800});
+    assert(signal < 256);
+    const auto childPoll = call(20);
+    assert(machine.store64(base + 256, 1));
+    assert(call(21, {childPoll, 1, signal, base + 256}) == 0);
+    assert(call(63, {signal, base + 0x900, 128}) == uint64_t(-11));
+    const auto sharedFutex = call(222, {0, pageSize, 3, 1, viaBind, 0});
+    assert(sharedFutex > 0x100000000 && sharedFutex < 0x2000000000);
+    assert(machine.store64(sharedFutex, 55));
+    constexpr uint64_t lockAddress = base + 0xa40;
+    const auto prepareLock = [&](uint16_t type, int64_t start, int64_t length) {
+        assert(machine.store64(lockAddress, type));
+        assert(machine.store64(lockAddress + 8, uint64_t(start)));
+        assert(machine.store64(lockAddress + 16, uint64_t(length)));
+        assert(machine.store64(lockAddress + 24, 0));
+    };
+    prepareLock(1, 10, 20);
+    assert(call(25, {viaBind, 6, lockAddress}) == 0);
+    prepareLock(2, 15, 5);
+    assert(call(25, {viaBind, 6, lockAddress}) == 0);
+    constexpr uint64_t heapSize = 96 * 1024 * 1024;
+    const auto heap = call(222, {0, heapSize, 3, 0x22, uint64_t(-1), 0});
+    const auto heapTail = heap + heapSize - pageSize;
+    assert(heap < (uint64_t{1} << 45) && load(heap) == 0 && load(heapTail) == 0);
+    assert(machine.store64(heap, 31) && machine.store64(heapTail, 79));
+    assert(machine.store64(heap + pageSize, 44) && machine.store64(heap + 2 * pageSize, 55));
+    assert(call(233, {heap + pageSize, pageSize, 10}) == 0);
+    assert(call(233, {heap + 2 * pageSize, pageSize, 18}) == 0);
+    assert(call(226, {heapTail, pageSize, 0}) == 0);
+    assert(!machine.read(heapTail, 8, 4));
+    const auto child = call(220, {0x1200011, 0, 0, 0, base + 0x848});
+    assert(child == 3 && load(base + 0x848) == 0);
+    machine.cpu.pc += 4;
+    assert(linux.schedule(machine) && linux.processId() == child);
+    assert(load(base + 0x848) == child && call(173) == 1);
+    assert(load(heap) == 31 && machine.store64(heap, 55));
+    assert(!machine.read(heap + pageSize, 8, 4) && load(heap + 2 * pageSize) == 0);
+    assert(call(226, {heapTail, pageSize, 3}) == 0 && load(heapTail) == 79);
+    assert(call(233, {heapTail, pageSize, 4}) == 0 && load(heapTail) == 0);
+    prepareLock(1, 8, 4);
+    assert(call(25, {viaBind, 6, lockAddress}) == uint64_t(-11));
+    assert(call(25, {viaBind, 5, lockAddress}) == 0);
+    assert(load(lockAddress) == 1 && load(lockAddress + 8) == 10);
+    assert(load(lockAddress + 16) == 5 && load(lockAddress + 24) == 1);
+    prepareLock(1, 20, -5);
+    assert(call(25, {viaBind, 6, lockAddress}) == 0);
+    const auto childFutex = call(222, {0, pageSize, 3, 1, viaBind, 0});
+    assert(childFutex != sharedFutex && load(childFutex) == 55);
+    call(98, {childFutex, 0, 55});
+    assert(linux.blocked() && linux.schedule(machine) && linux.processId() == 1);
+    const auto aliasForLock = call(23, {viaBind});
+    assert(aliasForLock < 256 && call(57, {aliasForLock}) == 0);
+    assert(call(98, {sharedFutex, 0x81, 1}) == 0);
+    assert(call(98, {sharedFutex, 1, 1}) == 1);
+    machine.cpu.retired += 4096;
+    assert(linux.schedule(machine) && linux.processId() == child && machine.cpu.x[0] == 0);
+    prepareLock(1, 8, 4);
+    assert(call(25, {viaBind, 6, lockAddress}) == 0);
+
+    assert(machine.store64(base + 0x840, 99));
+    assert(call(57, {original}) == 0);
+    call(94, {23});
+    assert(linux.blocked() && linux.schedule(machine) && linux.processId() == 1);
+    assert(load(base + 0x840) == 17 && load(base + 0x848) == 0);
+    assert(load(heap) == 31 && !machine.read(heapTail, 8, 4));
+    assert(load(heap + pageSize) == 44 && load(heap + 2 * pageSize) == 55);
+    assert(call(233, {heap + pageSize, pageSize, 11}) == 0);
+    assert(call(233, {heap + 2 * pageSize, pageSize, 19}) == 0);
+    assert(call(226, {heapTail, pageSize, 3}) == 0 && load(heapTail) == 79);
+    const auto heapMoved = call(216, {heap, heapSize, heapSize + pageSize, 1});
+    assert(heapMoved < (uint64_t{1} << 45) && load(heapMoved) == 31);
+    assert(load(heapMoved + heapSize - pageSize) == 79 && load(heapMoved + heapSize) == 0);
+    assert(call(215, {heapMoved, heapSize + pageSize}) == 0 && !machine.read(heapMoved, 8, 4));
+    assert(call(80, {original, base + 512}) == 0);
+    assert(call(22, {childPoll, base + 512, 1, 0}) == 1 && load(base + 512) == 1);
+    assert(call(63, {signal, base + 0x900, 128}) == 128);
+    assert(load(base + 0x900) == 17);
+    assert(load(base + 0x908) == (child << 32 | 1));
+    assert(load(base + 0x928) == 23);
+    assert(call(63, {signal, base + 0x900, 128}) == uint64_t(-11));
+    assert(call(95, {1, child, base + 512, 0x1000005}) == 0);
+    assert(load(base + 528) == child && load(base + 536) == 23);
+    assert(call(260, {child, 0xdead, 1}) == uint64_t(-14));
+    assert(call(260, {child, base + 512, 1}) == child && load(base + 512) == 23 * 256);
+    assert(call(95, {1, child, base + 512, 5}) == uint64_t(-10));
+    assert(call(129, {child, 9}) == uint64_t(-3));
+    assert(call(129, {1, 0}) == 0);
+
+    // An early-init action mounts a subdirectory over its parent mount.
+    put(base + 100, "/test/sub");
+    put(base + 120, "/test/sub/marker");
+    put(base + 144, "/test/marker");
+    assert(call(34, {uint32_t(-100), base + 100, 0755}) == 0);
+    assert(call(56, {uint32_t(-100), base + 120, 0x42, 0600}) < 256);
+    assert(call(40, {base + 100, base + 16, 0, 0x5000}) == 0);
+    assert(call(56, {uint32_t(-100), base + 144, 0}) < 256);
+    assert(call(56, {uint32_t(-100), base + 72, 0}) == uint64_t(-2));
+
+    assert(call(59, {0xdead, 0}) == uint64_t(-14));
+    assert(call(59, {base + 512, 0x80800}) == 0);
+    const auto pipe = load(base + 512);
+    const auto receiver = uint32_t(pipe), sender = uint32_t(pipe >> 32);
+    assert(call(63, {receiver, base + 512, 12}) == uint64_t(-11));
+    assert(call(64, {sender, base + 296, 12}) == 12);
+    const auto duplicate = call(23, {sender});
+    assert(duplicate < 256 && call(57, {sender}) == 0);
+    assert(call(63, {receiver, base + 512, 12}) == 12);
+    assert(std::memcmp(machine.read(base + 512, 12, 4), "guest packet", 12) == 0);
+    assert(call(63, {receiver, base + 512, 12}) == uint64_t(-11));
+    assert(call(57, {duplicate}) == 0);
+    assert(call(63, {receiver, base + 512, 12}) == 0);
+
+    put(base + 120, "/system/bin/absent");
+    const auto beforeExec = machine.cpu.pc;
+    assert(call(221, {base + 120, 0, 0}) == uint64_t(-2));
+    assert(!linux.replacedImage() && machine.cpu.pc == beforeExec);
+    assert(call(166, {0077}) == 0022 && call(166, {0022}) == 0077);
+    assert(machine.store64(base + 512, 1001));
+    assert(call(159, {1, base + 512}) == 0 && call(158, {0}) == 1);
+    assert(call(158, {1, base + 512}) == 1 && load(base + 512) == 1001);
+    assert(call(159, {0, 0}) == 0 && call(158, {0}) == 0);
+
+    put(base + 180, "/test/empty");
+    assert(call(35, {uint32_t(-100), base + 180, 0x200}) == uint64_t(-2));
+    assert(call(34, {uint32_t(-100), base + 180, 0755}) == 0);
+    assert(call(35, {uint32_t(-100), base + 180, 0x200}) == 0);
+    assert(call(35, {uint32_t(-100), base + 16, 0x200}) == uint64_t(-16));
+    assert(call(35, {uint32_t(-100), base + 144, 0x200}) == uint64_t(-20));
+
+    const auto moveSource = call(222, {0, pageSize, 3, 0x22, uint64_t(-1), 0});
+    const auto moveTarget = call(222, {0, pageSize, 3, 0x22, uint64_t(-1), 0});
+    assert(machine.store64(moveSource, 0xdecaf));
+    assert(call(216, {moveSource, pageSize, pageSize, 3, moveSource}) == uint64_t(-22));
+    assert(call(216, {moveSource, pageSize, pageSize, 3, moveTarget}) == moveTarget);
+    assert(load(moveTarget) == 0xdecaf && !machine.read(moveSource, 8, 4));
+
+    constexpr uint64_t low = 0x2000000;
+    assert(call(222, {low, pageSize, 3, 0x100022, uint64_t(-1), 0}) == low);
+    assert(call(222, {low, pageSize, 0, 0x100022, uint64_t(-1), 0}) == uint64_t(-17));
+    assert(machine.store64(low, 42));
+    const auto grown = call(216, {low, pageSize, pageSize * 2, 1});
+    assert(grown == low && load(grown) == 42 && load(grown + pageSize) == 0);
+    assert(call(215, {low, pageSize * 2}) == 0 && !machine.read(low, 8, 4));
+    assert(call(96, {0}) == 1);
+    assert(call(283, {8, 0}) == uint64_t(-1));
+    assert(call(283, {16, 0}) == 0 && call(283, {8, 0}) == 0);
+
+    constexpr auto caps = base + 600;
+    assert(machine.store64(base + 512, 0x20080522));
+    assert(call(90, {base + 512, caps}) == 0 && load(caps) == UINT64_MAX);
+    assert(machine.store64(caps, 0x100'0000'0100ULL));
+    assert(machine.store64(caps + 8, 0x100));
+    assert(machine.store64(caps + 16, 0));
+    assert(call(91, {base + 512, caps}) == 0);
+    assert(call(167, {47, 2, 8}) == 0 && call(167, {47, 1, 8}) == 1);
+    assert(machine.store64(caps, 0x300'0000'0100ULL));
+    assert(call(91, {base + 512, caps}) == uint64_t(-1));
+    assert(call(90, {base + 512, caps}) == 0 && load(caps) == 0x100'0000'0100ULL);
+
+    const std::array<uint8_t, 1> apexExecutable{0};
+    linux.mount("/system/bin/apexd", apexExecutable);
+    linux.setBootContext("u:r:init:s0");
+    const auto attr = "/proc/" + std::to_string(call(172, {})) + "/attr/current";
+    put(base, attr.c_str());
+    const auto labelFd = call(56, {uint32_t(-100), base, 0});
+    assert(call(63, {labelFd, base + 512, 128}) == sizeof("u:r:init:s0"));
+    assert(std::memcmp(machine.read(base + 512, sizeof("u:r:init:s0"), 4),
+                       "u:r:init:s0", sizeof("u:r:init:s0")) == 0);
+    assert(call(57, {labelFd}) == 0);
+    put(base, "/proc/4294967295/attr/current");
+    assert(call(56, {uint32_t(-100), base, 0}) == uint64_t(-2));
+    put(base, "servicemanager-worker");
+    assert(call(167, {15, base}) == 0 && call(167, {16, base + 512}) == 0);
+    assert(std::memcmp(machine.read(base + 512, 16, 4), "servicemanager-", 16) == 0);
+    assert(linux.loadBootTransition("/system/bin/apexd u:r:init:s0 u:object_r:apexd_exec:s0 2 u:r:apexd:s0"));
+    assert(linux.loadPropertyPolicy(
+        "100 1\nu:r:init:s0 u:object_r:build_prop:s0 1 ffffffff 0 ffffffff 1 0\n"
+        "u:r:apexd:s0 u:object_r:build_prop:s0 0 ffffffff 0 ffffffff 1 0\n"));
+    put(base, "/sys/fs/selinux/create");
+    const auto create = call(56, {uint32_t(-100), base, 2});
+    const char transition[] = "u:r:init:s0 u:object_r:apexd_exec:s0 2";
+    put(base + 300, transition);
+    assert(call(64, {create, base + 300, sizeof(transition)}) == sizeof(transition));
+    assert(call(63, {create, base + 512, 128}) == sizeof("u:r:apexd:s0"));
+    assert(std::memcmp(machine.read(base + 512, sizeof("u:r:apexd:s0"), 4),
+                       "u:r:apexd:s0", sizeof("u:r:apexd:s0")) == 0);
+    assert(call(57, {create}) == 0);
+    put(base, "/sys/fs/selinux/access");
+    const auto access = call(56, {uint32_t(-100), base, 2});
+    const char denial[] = "u:r:apexd:s0 u:object_r:build_prop:s0 100 1";
+    put(base + 300, denial);
+    assert(call(64, {access, base + 300, sizeof(denial) - 1}) == sizeof(denial) - 1);
+    assert(call(63, {access, base + 512, 128}) == 25);
+    assert(std::memcmp(machine.read(base + 512, 25, 4), "0 ffffffff 0 ffffffff 1 0", 25) == 0);
+    const char unknown[] = "u:r:unknown:s0 u:object_r:build_prop:s0 100 1";
+    put(base + 300, unknown);
+    assert(call(64, {access, base + 300, sizeof(unknown) - 1}) == uint64_t(-95));
+
+    assert(linux.loadServicePolicy("101 1 2 3\nu:r:servicemanager:s0 "
+                                   "u:object_r:service_manager_service:s0 3 ffffffff 0 ffffffff 1 0\n", false));
+    const char permitted[] = "u:r:servicemanager:s0 u:object_r:service_manager_service:s0 101 1";
+    put(base + 300, permitted);
+    assert(call(64, {access, base + 300, sizeof(permitted) - 1}) == sizeof(permitted) - 1);
+    assert(call(63, {access, base + 512, 128}) == 25);
+    assert(std::memcmp(machine.read(base + 512, 25, 4), "3 ffffffff 0 ffffffff 1 0", 25) == 0);
+
+    assert(linux.loadKeystorePolicy(
+        "104 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17\nu:r:vold:s0 u:r:keystore:s0 60 ffffffff 0 ffffffff 1 0\n"
+        "u:r:shell:s0 u:r:keystore:s0 0 ffffffff 0 ffffffff 1 0\n"));
+    put(base, "/sys/fs/selinux/class/keystore2/index");
+    const auto keyClass = call(56, {uint32_t(-100), base, 0});
+    assert(keyClass < 256 && call(63, {keyClass, base + 512, 8}) == 3);
+    assert(std::memcmp(machine.read(base + 512, 3, 4), "104", 3) == 0);
+    assert(call(57, {keyClass}) == 0);
+    const char maintenance[] = "u:r:vold:s0 u:r:keystore:s0 104 40";
+    put(base + 300, maintenance);
+    assert(call(64, {access, base + 300, sizeof(maintenance) - 1}) == sizeof(maintenance) - 1);
+    assert(call(63, {access, base + 512, 128}) == 26);
+    assert(std::memcmp(machine.read(base + 512, 26, 4), "60 ffffffff 0 ffffffff 1 0", 26) == 0);
+    const char shellMaintenance[] = "u:r:shell:s0 u:r:keystore:s0 104 40";
+    put(base + 300, shellMaintenance);
+    assert(call(64, {access, base + 300, sizeof(shellMaintenance) - 1}) == sizeof(shellMaintenance) - 1);
+    assert(call(63, {access, base + 512, 128}) == 25);
+    assert(std::memcmp(machine.read(base + 512, 25, 4), "0 ffffffff 0 ffffffff 1 0", 25) == 0);
+    const char unrelated[] = "u:r:vold:s0 u:r:keystore:s0 104 20000";
+    put(base + 300, unrelated);
+    assert(call(64, {access, base + 300, sizeof(unrelated) - 1}) == uint64_t(-95));
+
+    assert(linux.loadKeystorePolicy(
+        "105 1 2 3 4 5 6 7 8 9 10 11\nu:r:odsign:s0 u:object_r:odsign_key:s0 24a ffffffff 0 ffffffff 1 0\n"
+        "u:r:shell:s0 u:object_r:odsign_key:s0 0 ffffffff 0 ffffffff 1 0\n", true));
+    const char signingKey[] = "u:r:odsign:s0 u:object_r:odsign_key:s0 105 40";
+    put(base + 300, signingKey);
+    assert(call(64, {access, base + 300, sizeof(signingKey) - 1}) == sizeof(signingKey) - 1);
+    assert(call(63, {access, base + 512, 128}) == 27);
+    assert(std::memcmp(machine.read(base + 512, 27, 4), "24a ffffffff 0 ffffffff 1 0", 27) == 0);
+    const char otherKey[] = "u:r:shell:s0 u:object_r:odsign_key:s0 105 40";
+    put(base + 300, otherKey);
+    assert(call(64, {access, base + 300, sizeof(otherKey) - 1}) == sizeof(otherKey) - 1);
+    assert(call(63, {access, base + 512, 128}) == 25);
+    assert(std::memcmp(machine.read(base + 512, 25, 4), "0 ffffffff 0 ffffffff 1 0", 25) == 0);
+
+    constexpr uint64_t loopConfig = base + 0xb00;
+    std::array<uint8_t, 8192> package{};
+    package[4096] = 0x53;
+    package[4097] = 0xef;
+    linux.mount("/system/apex/test.apex", package);
+    put(base + 200, "/dev/loop-control");
+    put(base + 240, "/dev/block/loop0");
+    put(base + 280, "/system/apex/test.apex");
+    const auto control = call(56, {uint32_t(-100), base + 200, 2});
+    assert(call(29, {control, 0x4c82}) == 0);
+    const auto block = call(56, {uint32_t(-100), base + 240, 2});
+    const auto backing = call(56, {uint32_t(-100), base + 280, 0x10000});
+    assert(control < 256 && block < 256 && backing < 256);
+    assert(machine.store64(loopConfig, (uint64_t{4096} << 32) | backing));
+    assert(machine.store64(loopConfig + 32, 4096)); // lo_offset
+    assert(machine.store64(loopConfig + 40, 8192)); // size would exceed backing file
+    assert(call(29, {block, 0x4c0a, loopConfig}) == uint64_t(-22));
+    assert(machine.store64(loopConfig + 40, 4096));
+    assert(call(29, {block, 0x4c0a, loopConfig}) == 0);
+    put(base + 400, "/sys/block/loop0/loop/backing_file");
+    const auto backingName = call(56, {uint32_t(-100), base + 400, 0});
+    assert(backingName < 256);
+
+    assert(call(57, {backing}) == 0);
+    assert(call(29, {block, 0x80081272, base + 512}) == 0 && load(base + 512) == 4096);
+    assert(call(29, {block, 0x1262, 256}) == 0);
+    assert(call(67, {block, base + 512, 2, 0}) == 2 && (load(base + 512) & 0xffff) == 0xef53);
+    assert(call(67, {block, base + 512, 2, 4096}) == 0);
+    put(base + 340, "/test/invalid-apex");
+    put(base + 370, "ext4");
+    assert(call(34, {uint32_t(-100), base + 340, 0755}) == 0);
+    assert(call(40, {base + 240, base + 340, base + 370, 1, 0}) == uint64_t(-22));
+    assert(call(29, {block, 0x4c01}) == 0);
+    assert(call(56, {uint32_t(-100), base + 400, 0}) == uint64_t(-2));
+    constexpr std::string_view expectedBacking = "/system/apex/test.apex\n";
+    assert(call(63, {backingName, base + 512, 128}) == expectedBacking.size());
+    assert(std::memcmp(machine.read(base + 512, expectedBacking.size(), 4),
+                       expectedBacking.data(), expectedBacking.size()) == 0);
+    assert(call(57, {backingName}) == 0);
+
+    assert(call(67, {block, base + 512, 2, 0}) == uint64_t(-6));
+
+    put(base + 200, "/dev/ptmx");
+    put(base + 230, "/dev/pts/0");
+    const auto master = call(56, {uint32_t(-100), base + 200, 0x80802});
+    assert(master < 256);
+    assert(call(29, {master, 0x80045430, base + 512}) == 0);
+    assert(call(56, {uint32_t(-100), base + 230, 2}) == uint64_t(-5));
+    assert(machine.store64(base + 512, 0));
+    assert(call(29, {master, 0x40045431, base + 512}) == 0);
+    const auto slave = call(56, {uint32_t(-100), base + 230, 2});
+    assert(slave < 256 && call(63, {master, base + 512, 20}) == uint64_t(-11));
+    put(base + 260, "line\n");
+    assert(call(64, {slave, base + 260, 5}) == 5);
+    assert(machine.store64(base + 512, (uint64_t{1} << 32) | master));
+    assert(machine.store64(base + 600, 0) && machine.store64(base + 608, 0));
+    assert(call(73, {base + 512, 1, base + 600}) == 1 && load(base + 512) >> 48 == 1);
+    assert(machine.store64(base + 600, 2'147'483));
+    assert(call(73, {base + 512, 1, base + 600}) == 1 && load(base + 512) >> 48 == 1);
+    assert(machine.store64(base + 600, 0));
+    assert(call(63, {master, base + 512, 20}) == 6);
+    assert(std::memcmp(machine.read(base + 512, 6, 4), "line\r\n", 6) == 0);
+    assert(call(57, {slave}) == 0);
+    assert(machine.store64(base + 512, (uint64_t{1} << 32) | master));
+    assert(call(73, {base + 512, 1, base + 600}) == 1 && load(base + 512) >> 48 == 16);
+    assert(call(63, {master, base + 512, 20}) == uint64_t(-5));
+
+    put(base + 200, "/test/owner");
+    assert(call(34, {uint32_t(-100), base + 200, 0755}) == 0);
+    assert(call(54, {uint32_t(-100), base + 200, 1000, 1001, 0x100}) == 0);
+    assert(call(53, {uint32_t(-100), base + 200, 0710}) == 0);
+    assert(call(79, {uint32_t(-100), base + 200, base + 512, 0}) == 0);
+    assert(load(base + 528) == (uint64_t{1} << 32 | 0040710));
+    assert(load(base + 536) == (uint64_t{1001} << 32 | 1000));
+
+    const auto uevent = call(198, {16, 2 | 0x80800, 15});
+    assert(uevent < 256);
+    assert(machine.store64(base + 512, 4));
+    assert(call(209, {uevent, 1, 39, base + 520, base + 512}) == 0);
+    assert((load(base + 520) & 0xffffffff) == 16);
+    assert(call(209, {uevent, 1, 38, base + 520, base + 512}) == 0);
+    assert((load(base + 520) & 0xffffffff) == 15);
+
+    assert(machine.store64(base + 0xc00, 16));
+    assert(machine.store64(base + 0xc08, 1));
+    assert(call(200, {uevent, base + 0xc00, 12}) == 0);
+    assert(call(208, {uevent, 1, 16, base + 0xc08, 4}) == 0);
+    assert(call(212, {uevent, base + 0xc80, 0}) == uint64_t(-11));
+    assert(call(29, {control, 0x4c80, 1}) == 1);
+    assert(machine.store64(base + 0xc60, base + 0xd00));
+    assert(machine.store64(base + 0xc68, 256));
+    const std::array<uint64_t, 7> message{base + 0xc10, 12, base + 0xc60, 1, base + 0xc30, 32, 0};
+    assert(machine.write(base + 0xc80, {reinterpret_cast<const uint8_t*>(message.data()), sizeof(message)}));
+    const auto received = call(212, {uevent, base + 0xc80, 0});
+    assert(received > 100 && received < 256);
+    assert(load(base + 0xc10) == 16 && (load(base + 0xc18) & 0xffffffff) == 1);
+    assert(load(base + 0xc30) == 28 && load(base + 0xc38) == (uint64_t{2} << 32 | 1));
+    assert(load(base + 0xc40) == 0 && load(base + 0xc48) == 0);
+    const std::string_view packet(reinterpret_cast<const char*>(machine.read(base + 0xd00, received, 4)), received);
+    assert(packet.starts_with("add@/devices/virtual/block/loop1"));
+    assert(packet.find("DEVNAME=loop1") != std::string_view::npos);
+    assert(call(212, {uevent, base + 0xc80, 0}) == uint64_t(-11));
+
+    put(base + 200, "/proc/sys/vm/mmap_rnd_bits");
+    const auto bits = call(56, {uint32_t(-100), base + 200, 2});
+    assert(bits < 256);
+    put(base + 260, "33\n");
+    assert(call(64, {bits, base + 260, 3}) == uint64_t(-22));
+    put(base + 260, "24\n");
+    assert(call(64, {bits, base + 260, 3}) == 3);
+    assert(call(62, {bits, 0, 0}) == 0);
+    assert(call(63, {bits, base + 512, 16}) == 3);
+    assert(std::memcmp(machine.read(base + 512, 3, 4), "24\n", 3) == 0);
+
+    assert(call(167, {27}) == 0);
+    assert(call(167, {28, 48}) == 0);
+    assert(call(167, {27}) == 48 && call(167, {7}) == 1);
+    assert(call(167, {8, 0}) == uint64_t(-1));
+    assert(call(167, {28, 0}) == uint64_t(-1));
+    assert(call(167, {27}) == 48);
+
+    put(base + 200, "/dev/binder-abi");
+    put(base + 230, "binder");
+    put(base + 260, "/dev/binder-abi/binder");
+    assert(call(34, {uint32_t(-100), base + 200, 0755}) == 0);
+    assert(call(40, {base + 230, base + 200, base + 230, 0, 0}) == 0);
+    assert(call(43, {base + 260, base + 512}) == 0 && load(base + 512) == 0x6c6f6f70);
+    const auto manager = call(56, {uint32_t(-100), base + 260, 2});
+    assert(manager < 256);
+    assert(call(29, {manager, 0xc0046209, base + 512}) == 0 && uint32_t(load(base + 512)) == 8);
+    assert(call(29, {manager, 0x40046207}) == uint64_t(-1));
+    linux.setBootContext("u:r:servicemanager:s0");
+    assert(call(29, {manager, 0x40046207}) == 0);
+    assert(call(29, {manager, 0x40046207}) == uint64_t(-16));
+    const auto managerMap = call(222, {0, pageSize, 1, 0x4002, manager, 0});
+    assert(managerMap >= 0x100000000 && managerMap < 0x2000000000);
+    assert(!machine.store64(managerMap, 0));
+    assert(call(226, {managerMap, pageSize, 3}) == uint64_t(-13));
+
+    const auto bindRequest = [&](uint64_t channel, uint32_t operation, uint64_t tag,
+                                 std::string_view message, bool receive,
+                                 std::span<const uint64_t> offsets = {}, uint64_t handle = 0) {
+        constexpr auto command = base + 0x600, arguments = base + 0x690, output = base + 0x720;
+        constexpr auto payload = base + 0x800, offsetList = base + 0x850;
+        const std::array<uint64_t, 8> callData{handle, 0, tag, UINT64_MAX,
+                                               message.size(), offsets.size_bytes(), payload, offsetList};
+        assert(machine.write(command, {reinterpret_cast<const uint8_t*>(&operation), 4}));
+        const auto size = (operation >> 16) & 0x3fff;
+        if (size) assert(machine.write(command + 4, {reinterpret_cast<const uint8_t*>(callData.data()), size}));
+        if (!message.empty())
+            assert(machine.write(payload, {reinterpret_cast<const uint8_t*>(message.data()), message.size()}));
+        if (!offsets.empty())
+            assert(machine.write(offsetList, {reinterpret_cast<const uint8_t*>(offsets.data()), offsets.size_bytes()}));
+        const std::array<uint64_t, 6> request{operation ? size + 4 : 0, 0, command,
+                                              receive ? 128U : 0U, 0, output};
+        assert(machine.write(arguments, {reinterpret_cast<const uint8_t*>(request.data()), sizeof request}));
+        return call(29, {channel, 0xc0306201, arguments});
+    };
+    machine.cpu.pc = base;
+    const auto binderChild = call(220, {0x1200011, 0, 0, 0, base + 0x848});
+    machine.cpu.pc += 4;
+    assert(linux.schedule(machine) && linux.processId() == binderChild);
+    linux.setBootContext("u:r:vold:s0");
+    assert(call(29, {manager, 0xc0046209, base + 512}) == uint64_t(-1));
+    const auto channel = call(56, {uint32_t(-100), base + 260, 2});
+    const auto clientMap = call(222, {0, pageSize, 1, 0x4002, channel, 0});
+    assert(channel < 256 && clientMap != managerMap);
+    assert(bindRequest(channel, 0x40406300, 42, "request", true) == 0);
+    assert(uint32_t(load(base + 0x720)) == 0x7206);
+    assert(bindRequest(channel, 0, 0, "", true) == channel && linux.blocked());
+    assert(linux.schedule(machine) && linux.processId() == 1);
+    assert(bindRequest(manager, 0x630c, 0, "", true) == 0);
+    assert(uint32_t(load(base + 0x720)) == 0x80407202);
+    const auto transaction = machine.read(base + 0x724, 64, 4);
+    assert(transaction);
+    std::array<uint64_t, 8> fields{};
+    std::memcpy(fields.data(), transaction, sizeof fields);
+    assert(fields[2] == 42 && fields[3] == binderChild && fields[4] == 7 && fields[6] == managerMap);
+    assert(std::memcmp(machine.read(managerMap, 7, 4), "request", 7) == 0);
+    assert(bindRequest(manager, 0x40406301, 0, "reply", true) == 0);
+    assert(uint32_t(load(base + 0x720)) == 0x7206);
+    machine.cpu.retired += 4096;
+    assert(linux.schedule(machine) && linux.processId() == binderChild);
+    assert(bindRequest(channel, 0, 0, "", true) == 0);
+    assert(uint32_t(load(base + 0x720)) == 0x80407203);
+    assert(std::memcmp(machine.read(clientMap, 5, 4), "reply", 5) == 0);
+    constexpr uint32_t flatBinder = 0x73622a85, flatHandle = 0x73682a85;
+    constexpr uint64_t objectPtr = base + 0x990, objectCookie = base + 0x9b0;
+    constexpr std::array<uint64_t, 3> object{flatBinder, objectPtr, objectCookie};
+    constexpr std::array<uint64_t, 1> objectOffset{0}, invalidOffset{4};
+    const std::string_view objectBytes(reinterpret_cast<const char*>(object.data()), sizeof object);
+    assert(bindRequest(channel, 0x40406300, 43, objectBytes, true, invalidOffset) == 0);
+    assert(uint32_t(load(base + 0x720)) == 0x7211);
+    assert(bindRequest(channel, 0x40406300, 44, objectBytes, true, objectOffset) == 0);
+    assert(uint32_t(load(base + 0x720)) == 0x80107207 && load(base + 0x724) == objectPtr);
+    assert(bindRequest(channel, 0, 0, "", true) == 0 && uint32_t(load(base + 0x720)) == 0x80107208);
+    assert(bindRequest(channel, 0, 0, "", true) == 0 && uint32_t(load(base + 0x720)) == 0x7206);
+    assert(bindRequest(channel, 0, 0, "", true) == channel && linux.blocked());
+    assert(linux.schedule(machine) && linux.processId() == 1);
+    assert(bindRequest(manager, 0, 0, "", true) == 0 && uint32_t(load(base + 0x720)) == 0x80407202);
+    const auto receivedBinderBuffer = load(base + 0x724 + 6 * 8);
+    const auto handle = load(receivedBinderBuffer + 8);
+    assert(uint32_t(load(receivedBinderBuffer)) == flatHandle && handle && load(receivedBinderBuffer + 16) == 0);
+    assert(load(load(base + 0x724 + 7 * 8)) == 0);
+    assert(bindRequest(manager, 0x40046305, 0, "", false, {}, handle) == 0);
+    // binder_handle_cookie is packed: the cookie follows a 32-bit handle.
+    assert(bindRequest(manager, 0x400c630e, 0, "", false, {}, handle) == 0);
+    const std::array<uint64_t, 3> proxy{flatHandle, handle, 0};
+    const std::string_view proxyBytes(reinterpret_cast<const char*>(proxy.data()), sizeof proxy);
+    assert(bindRequest(manager, 0x40406301, 0, proxyBytes, true, objectOffset) == 0);
+    assert(uint32_t(load(base + 0x720)) == 0x7206);
+    assert(bindRequest(manager, 0x40086303, 0, "", false, {}, receivedBinderBuffer) == 0);
+    assert(bindRequest(manager, 0x40046306, 0, "", false, {}, handle) == 0);
+    machine.cpu.retired += 4096;
+    assert(linux.schedule(machine) && linux.processId() == binderChild);
+    assert(bindRequest(channel, 0, 0, "", true) == 0 && uint32_t(load(base + 0x720)) == 0x80407203);
+    const auto roundTrip = load(base + 0x724 + 6 * 8);
+    assert(std::memcmp(machine.read(roundTrip, sizeof object, 4), object.data(), sizeof object) == 0);
+    call(94, {0});
+    assert(linux.schedule(machine) && linux.processId() == 1);
+
+    assert(bindRequest(manager, 0, 0, "", true) == 0);
+    assert(uint32_t(load(base + 0x720)) == 0x8008720f && load(base + 0x724) == 0);
+    assert(bindRequest(manager, 0x40086310, 0, "", false) == 0);
+
+    Startup commandLine{};
+    commandLine.filename = "/system/bin/app_process64";
+    commandLine.argv0 = "app_process";
+    commandLine.arguments = {"--zygote"};
+    linux.setCommandLine(commandLine);
+    put(base + 0x280, "/proc/self/cmdline");
+    const auto commandLineFd = call(56, {uint32_t(-100), base + 0x280, 0});
+    constexpr char expectedCommandLine[] = "app_process\0--zygote";
+    assert(call(63, {commandLineFd, base + 0x300, 64}) == sizeof expectedCommandLine);
+    assert(std::memcmp(machine.read(base + 0x300, sizeof expectedCommandLine, 4),
+                       expectedCommandLine, sizeof expectedCommandLine) == 0);
+    assert(call(62, {commandLineFd, 0, 0}) == 0);
+    assert(call(57, {commandLineFd}) == 0);
+
+    const auto killedChild = call(220, {0x1200011, 0, 0, 0, base + 0x848});
+    assert(killedChild > binderChild);
+    const auto processHandle = call(434, {killedChild, 0});
+    assert(processHandle < 256 && call(25, {processHandle, 1}) == 1);
+    const auto duplicateHandle = call(25, {processHandle, 1030, 100});
+    assert(duplicateHandle == 100 && call(25, {duplicateHandle, 1}) == 1);
+    constexpr auto processPoll = base + 0x910;
+    constexpr auto noWaitTimeout = base + 0x930;
+    assert(machine.store64(processPoll, duplicateHandle | uint64_t(1) << 32));
+    assert(machine.store64(noWaitTimeout, 0) && machine.store64(noWaitTimeout + 8, 0));
+    assert(call(73, {processPoll, 1, noWaitTimeout}) == 0);
+    assert(call(129, {killedChild, 9}) == 0);
+    assert(call(129, {killedChild, 0}) == uint64_t(-3));
+    assert(call(73, {processPoll, 1, noWaitTimeout}) == 1 && load(processPoll) >> 48 == 1);
+    assert(call(95, {3, processHandle, base + 512, 0x1000005}) == 0);
+    assert((load(base + 520) & 0xffffffff) == 2);
+    assert(load(base + 528) == killedChild && load(base + 536) == 9);
+    assert(call(260, {killedChild, base + 512, 1}) == killedChild && load(base + 512) == 9);
+    assert(call(73, {processPoll, 1, noWaitTimeout}) == 1 && load(processPoll) >> 48 == 17);
+    assert(call(57, {processHandle}) == 0 && call(57, {duplicateHandle}) == 0);
+    const auto groupLeader = call(220, {0x1200011, 0, 0, 0, base + 0x848});
+    const auto groupMember = call(220, {0x1200011, 0, 0, 0, base + 0x848});
+    assert(groupLeader > killedChild && groupMember > groupLeader);
+    assert(call(154, {groupLeader, groupLeader}) == 0);
+    assert(call(154, {groupMember, groupLeader}) == 0);
+    assert(call(129, {0 - groupLeader, 15}) == 0);
+    assert(call(260, {groupLeader, base + 512, 1}) == groupLeader && load(base + 512) == 15);
+    assert(call(260, {groupMember, base + 512, 1}) == groupMember && load(base + 512) == 15);
+
+
+
+    {
+        namespace fs = std::filesystem;
+        auto temporary = (fs::temp_directory_path() / "nestvane-data-XXXXXX").string();
+        assert(mkdtemp(temporary.data()));
+        const struct Cleanup {
+            const fs::path directory;
+            ~Cleanup() { std::error_code ignored; fs::remove_all(directory, ignored); }
+        } cleanup{temporary};
+        const auto database = (cleanup.directory / "guest.sqlite3").string();
+        ProbeLinux writer(1, 0), stale(1, 0);
+        writer.mountData(database);
+        stale.mountData(database);
+        const auto invoke = [&](ProbeLinux& guest, uint64_t number, std::array<uint64_t, 6> args) {
+            std::copy(args.begin(), args.end(), machine.cpu.x.begin());
+            machine.cpu.x[8] = number;
+            assert(guest.syscall(machine));
+            return machine.cpu.x[0];
+        };
+        constexpr auto atCwd = uint32_t(-100);
+        constexpr auto firstPath = base + 0x280, secondPath = base + 0x300, payload = base + 0x380;
+        assert(writer.loadFsCreatePolicy(
+            "2 19\nu:r:init:s0 u:r:init:s0 40000 ffffffff 0 ffffffff 1 0\n"
+            "u:r:shell:s0 u:r:shell:s0 0 ffffffff 0 ffffffff 1 0\n"));
+        put(firstPath, "/data");
+        assert(invoke(writer, 43, {firstPath, base + 0x450}) == 0);
+        const auto quotaBlocks = load(base + 0x460);
+        assert(quotaBlocks == (128 * 1024 * 1024) / pageSize);
+        assert(load(base + 0x468) == quotaBlocks && load(base + 0x470) == quotaBlocks);
+        put(firstPath, "/proc/thread-self/attr/fscreate");
+        const auto labelFd = invoke(writer, 56, {atCwd, firstPath, 2});
+        assert(labelFd < 256);
+        constexpr char context[] = "u:object_r:system_data_file:s0:c512,c768";
+        put(payload, context);
+        writer.setBootContext("u:r:shell:s0");
+        assert(invoke(writer, 64, {labelFd, payload, sizeof(context)}) == uint64_t(-13));
+        writer.setBootContext("u:r:init:s0");
+        assert(invoke(writer, 64, {labelFd, payload, sizeof(context)}) == sizeof(context));
+        assert(invoke(writer, 57, {labelFd}) == 0);
+        put(firstPath, "/data/private");
+        assert(invoke(writer, 34, {atCwd, firstPath, 0700}) == 0);
+        constexpr auto labelName = base + 0x450;
+        put(labelName, "security.selinux");
+        put(payload, context);
+        assert(invoke(writer, 6, {firstPath, labelName, payload, sizeof(context), 1}) == uint64_t(-17));
+        assert(invoke(writer, 6, {firstPath, labelName, payload, sizeof(context), 2}) == 0);
+        put(payload, "/proc/thread-self/attr/fscreate");
+        const auto clearLabel = invoke(writer, 56, {atCwd, payload, 2});
+        assert(clearLabel < 256 && invoke(writer, 64, {clearLabel, 0, 0}) == 0);
+        assert(invoke(writer, 57, {clearLabel}) == 0);
+        assert(invoke(writer, 54, {atCwd, firstPath, 1000, 1000}) == 0);
+        assert(invoke(writer, 146, {1000}) == 0);
+        put(firstPath, "/data/private/draft");
+        put(secondPath, "/data/private/current");
+        const auto saved = invoke(writer, 56, {atCwd, firstPath, 0xc2, 0600});
+        assert(saved < 256 && machine.store64(payload, 0xdecafbad12345678ULL));
+        assert(invoke(writer, 64, {saved, payload, 8}) == 8);
+        assert(invoke(writer, 38, {atCwd, firstPath, atCwd, secondPath}) == 0);
+        put(firstPath, "/data/private");
+        const auto activeDirectory = invoke(writer, 56, {atCwd, firstPath, 0x4000});
+        assert(activeDirectory < 256);
+        put(secondPath, "/data/moved");
+        assert(invoke(writer, 38, {atCwd, firstPath, atCwd, secondPath}) == 0);
+        put(payload, "current");
+        const auto moved = invoke(writer, 56, {activeDirectory, payload, 0});
+        assert(moved < 256 && invoke(writer, 57, {moved}) == 0);
+        assert(invoke(writer, 57, {activeDirectory}) == 0);
+        assert(invoke(writer, 82, {saved}) == 0);
+        assert(!stale.syncData());
+        ProbeLinux reopened(1, 1000), other(1, 2000);
+        reopened.mountData(database);
+        other.mountData(database);
+        put(payload, "security.selinux");
+        assert(invoke(reopened, 8, {secondPath, payload, base + 0x480, 128}) == sizeof(context));
+        assert(std::memcmp(machine.read(base + 0x480, sizeof(context), 4), context, sizeof(context)) == 0);
+        put(secondPath, "/data/moved/current");
+        assert(invoke(other, 56, {atCwd, secondPath, 0}) == uint64_t(-13));
+        assert(invoke(reopened, 56, {atCwd, firstPath, 0}) == uint64_t(-2));
+        const auto restored = invoke(reopened, 56, {atCwd, secondPath, 0});
+        assert(restored < 256 && invoke(reopened, 63, {restored, payload, 8}) == 8);
+        assert(load(payload) == 0xdecafbad12345678ULL);
+        assert(invoke(reopened, 35, {atCwd, secondPath, 0}) == 0);
+        assert(invoke(reopened, 82, {restored}) == 0);
+        ProbeLinux deleted(1, 1000);
+        deleted.mountData(database);
+        assert(invoke(deleted, 56, {atCwd, secondPath, 0}) == uint64_t(-2));
+    }
+
+    put(base + 0x220, "bpf");
+    put(base + 0x240, "/sys/fs/bpf");
+    put(base + 0x260, "/sys/fs/bpf/netd");
+    put(base + 0x280, "/sys/fs/bpf/netd/regular-file");
+    assert(call(40, {base + 0x220, base + 0x240, base + 0x220, 14}) == 0);
+    assert(call(43, {base + 0x240, base + 0x2a0}) == 0);
+    assert(load(base + 0x2a0) == 0xcafe4a11);
+    assert(call(34, {uint32_t(-100), base + 0x260, 0700}) == 0);
+    assert(call(56, {uint32_t(-100), base + 0x280, 0x42, 0600}) == uint64_t(-13));
+    put(base + 0x320, "/proc/sys/kernel/unprivileged_bpf_disabled");
+    const auto bpfSetting = call(56, {uint32_t(-100), base + 0x320, 2});
+    assert(bpfSetting < 256);
+    assert(call(63, {bpfSetting, base + 0x360, 2}) == 2);
+    assert(std::memcmp(machine.read(base + 0x360, 2, 4), "2\n", 2) == 0);
+    assert(call(62, {bpfSetting, 0, 0}) == 0);
+    put(base + 0x360, "0\n");
+    assert(call(64, {bpfSetting, base + 0x360, 2}) == 2);
+    assert(call(62, {bpfSetting, 0, 0}) == 0);
+    put(base + 0x360, "1\n");
+    assert(call(64, {bpfSetting, base + 0x360, 2}) == 2);
+    assert(call(62, {bpfSetting, 0, 0}) == 0);
+    put(base + 0x360, "0\n");
+    assert(call(64, {bpfSetting, base + 0x360, 2}) == uint64_t(-1));
+    assert(call(57, {bpfSetting}) == 0);
+
+
+    assert(linux.loadFsCreatePolicy(
+        "2 19 30\n"
+        "u:r:init:s0 u:r:init:s0 20040000 ffffffff 0 ffffffff 1 0\n"
+        "u:r:shell:s0 u:r:shell:s0 0 ffffffff 0 ffffffff 1 0\n"));
+    put(base + 0x320, "/proc/thread-self/attr/sockcreate");
+    constexpr char zygoteContext[] = "u:r:zygote:s0";
+    put(base + 0x360, zygoteContext);
+    linux.setBootContext("u:r:shell:s0");
+    const auto deniedSocketLabel = call(56, {uint32_t(-100), base + 0x320, 1});
+    assert(call(64, {deniedSocketLabel, base + 0x360, sizeof zygoteContext}) == uint64_t(-13));
+    assert(call(57, {deniedSocketLabel}) == 0);
+    linux.setBootContext("u:r:init:s0");
+    const auto socketLabel = call(56, {uint32_t(-100), base + 0x320, 1});
+    assert(call(64, {socketLabel, base + 0x360, sizeof zygoteContext}) == sizeof zygoteContext);
+    assert(call(57, {socketLabel}) == 0);
+    assert(call(199, {1, 1, 0, base + 0x3a0}) == 0);
+    const auto labeledPair = load(base + 0x3a0);
+    assert(machine.store64(base + 0x390, 32));
+    assert(call(209, {uint32_t(labeledPair), 1, 31, base + 0x3c0, base + 0x390}) == 0);
+    assert(load(base + 0x390) == sizeof zygoteContext);
+    assert(std::memcmp(machine.read(base + 0x3c0, sizeof zygoteContext, 4), zygoteContext, sizeof zygoteContext) == 0);
+    const auto socketSender = uint32_t(labeledPair), socketReceiver = uint32_t(labeledPair >> 32);
+    assert(machine.store64(base + 0x390, 4) && machine.store64(base + 0x3c0, 4096));
+    assert(call(208, {socketSender, 1, 7, base + 0x3c0, 4}) == 0);
+    assert(call(209, {socketSender, 1, 7, base + 0x3c0, base + 0x390}) == 0);
+    assert((load(base + 0x3c0) & UINT32_MAX) == 8192);
+    assert(call(208, {socketReceiver, 1, 8, base + 0x3c0, 4}) == 0);
+    assert(call(209, {socketReceiver, 1, 8, base + 0x3c0, base + 0x390}) == 0);
+    assert((load(base + 0x3c0) & UINT32_MAX) == 16384);
+    for (unsigned i = 0; i < 8; ++i) assert(call(64, {socketSender, base, 1024}) == 1024);
+    assert(call(64, {socketSender, base, 1}) == uint64_t(-11));
+    assert(call(63, {socketReceiver, base, 512}) == 512);
+    assert(call(64, {socketSender, base, 1024}) == 512);
+    assert(call(57, {socketSender}) == 0 && call(57, {socketReceiver}) == 0);
+
+    put(base + 0x320, "/dev/urandom");
+    const auto entropyFd = call(56, {uint32_t(-100), base + 0x320, 0});
+    assert(entropyFd < 256);
+    assert(call(63, {entropyFd, base + 0x350, 32}) == 32);
+    assert(call(63, {entropyFd, 0xdead, 32}) == uint64_t(-14));
+    assert(call(63, {entropyFd, 0, 0}) == 0);
+    assert(call(57, {entropyFd}) == 0);
+    assert(call(278, {base + 0x350, 16, 4}) == 16); // GRND_INSECURE is valid after initialization too.
+    assert(call(278, {base + 0x350, 16, 6}) == uint64_t(-22));
+
+    assert(call(126, {1}) == 1 && call(125, {2}) == 99);
+    assert(call(126, {0}) == 0 && call(125, {4}) == uint64_t(-22));
+    assert(machine.store64(base + 0x390, 2));
+    assert(call(119, {0, 1, base + 0x390}) == uint64_t(-95));
+    assert(call(120, {0}) == 0);
+
+    assert(call(163, {7, base + 0x400}) == 0);
+    const auto softDescriptorLimit = load(base + 0x400);
+    assert(softDescriptorLimit > 256);
+    const auto highDescriptor = call(25, {0, 1030, 256});
+    assert(highDescriptor == 256 && call(25, {highDescriptor, 1}) == 1);
+    assert(call(24, {highDescriptor, softDescriptorLimit, 0}) == uint64_t(-9));
+    assert(call(57, {highDescriptor}) == 0);
+
+    const auto split = call(222, {0, pageSize * 2, 3, 0x22, uint64_t(-1), 0});
+    assert(split > base && split < (uint64_t{1} << 45));
+    assert(machine.store64(split + pageSize, 42));
+    assert(call(226, {split + pageSize, pageSize, 1}) == 0);
+    assert(call(216, {split, pageSize * 2, pageSize * 3, 1}) == uint64_t(-14));
+    assert(call(226, {split, pageSize * 2, 3}) == 0);
+    const auto resized = call(216, {split, pageSize * 2, pageSize * 3, 1});
+    assert(resized > base && resized < (uint64_t{1} << 45));
+    assert(load(resized + pageSize) == 42 && load(resized + pageSize * 2) == 0);
+    assert(call(215, {resized, pageSize * 3}) == 0);
+
+    assert(call(163, {3, base + 0x400}) == 0);
+    assert(load(base + 0x400) == guestStackSize && load(base + 0x408) == maxGuestStackSize);
+    Startup startup{};
+    startup.filename = "/system/bin/app_process64";
+    startup.arguments = {"--zygote", "--start-system-server"};
+    startup.environment = {"ANDROID_ROOT=/system", "ANDROID_DATA=/data"};
+    auto initialStack = linux.createMachine(Image{base, {}, startup});
+    constexpr uint64_t stackBottom = 0x8000'0000 - guestStackSize;
+    assert(!initialStack.read(stackBottom - 1, 1, 4));
+    assert(initialStack.store64(stackBottom, 42));
+    const auto stackWord = [&](size_t index) {
+        uint64_t value = 0;
+        assert(initialStack.load64(initialStack.cpu.sp + index * sizeof(value), value));
+        return value;
+    };
+    assert(stackWord(0) == 3 && stackWord(4) == 0 && stackWord(7) == 0);
+    assert(stackWord(1) + startup.filename.size() + 1 == stackWord(2));
+    assert(stackWord(2) + startup.arguments[0].size() + 1 == stackWord(3));
+    assert(stackWord(3) + startup.arguments[1].size() + 1 == stackWord(5));
+    assert(stackWord(5) + startup.environment[0].size() + 1 == stackWord(6));
+
+    put(base + 0x320, "art-heap-test");
+    assert(call(279, {base + 0x320, 4}) == uint64_t(-22));
+    const auto memoryFile = call(279, {base + 0x320, 1});
+    assert(memoryFile < 256 && call(25, {memoryFile, 1}) == 1);
+    assert(call(25, {memoryFile, 1034}) == 1);
+    assert(call(46, {memoryFile, 3 * 1024 * 1024}) == 0);
+    assert(machine.store64(base + 0x400, 0));
+    assert(call(62, {memoryFile, pageSize, 0}) == pageSize);
+    assert(call(29, {memoryFile, 0x541b, base + 0x400}) == 0 && load(base + 0x400) == 3 * 1024 * 1024 - pageSize);
+    assert(call(29, {memoryFile, 0x541b, 0xdead}) == uint64_t(-14));
+    const auto mappedMemoryFile = call(222, {0, pageSize, 3, 1, memoryFile, 0});
+    assert(mappedMemoryFile > base && mappedMemoryFile < (uint64_t{1} << 45));
+    assert(load(mappedMemoryFile) == 0 && machine.store64(mappedMemoryFile, 42));
+    assert(call(67, {memoryFile, base + 0x400, 8, 0}) == 8 && load(base + 0x400) == 42);
+    constexpr uint64_t lowFileMap = 0x4100'0000;
+    assert(call(222, {lowFileMap, pageSize, 0, 0x100022, uint64_t(-1), 0}) == lowFileMap);
+    assert(call(222, {lowFileMap, pageSize, 1, 0x12, memoryFile, 0}) == lowFileMap);
+    assert(load(lowFileMap) == 42);
+    assert(call(226, {lowFileMap, pageSize, 3}) == 0);
+    assert(machine.store64(lowFileMap, 19) && load(mappedMemoryFile) == 42);
+    assert(call(215, {lowFileMap, pageSize}) == 0);
+    assert(call(57, {memoryFile}) == 0 && load(mappedMemoryFile) == 42);
+    assert(call(215, {mappedMemoryFile, pageSize}) == 0);
+
+    const auto sealable = call(279, {base + 0x320, 3});
+    assert(sealable < 256 && call(25, {sealable, 1034}) == 0);
+    assert(call(46, {sealable, pageSize * 2}) == 0);
+    const auto writer = call(222, {0, pageSize, 3, 1, sealable, 0});
+    assert(writer < (uint64_t{1} << 45));
+    assert(call(25, {sealable, 1033, 8}) == uint64_t(-16));
+    assert(call(25, {sealable, 1033, 2 | 4 | 16}) == 0);
+    assert(call(46, {sealable, pageSize}) == uint64_t(-1));
+    assert(call(46, {sealable, pageSize * 3}) == uint64_t(-1));
+    assert(call(68, {sealable, base, 8, 0}) == uint64_t(-1));
+    assert(call(222, {0, pageSize, 3, 1, sealable, 0}) == uint64_t(-1));
+    const auto reader = call(222, {0, pageSize, 1, 1, sealable, 0});
+    assert(reader < (uint64_t{1} << 45) && machine.store64(writer, 123) && load(reader) == 123);
+    assert(call(226, {reader, pageSize, 3}) == uint64_t(-13));
+    assert(call(215, {writer, pageSize}) == 0);
+    assert(call(25, {sealable, 1033, 8 | 1}) == 0);
+    assert(call(25, {sealable, 1034}) == 31);
+    assert(call(25, {sealable, 1033, 0}) == uint64_t(-1));
+    assert(call(57, {sealable}) == 0 && call(215, {reader, pageSize}) == 0);
+
+    std::cout << "guest kernel ABI checks passed, including bind views, fork, SIGCHLD, pipe, boot policy, loop bounds, PTY, uevents, guest sysctls, securebits, I/O priority, Binder transactions and persisted guest data\n";
+}

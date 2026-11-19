@@ -1,0 +1,33 @@
+iPhone 11 with stock fonts and DRM JNI (selected original line numbers)
+1: iOS device 26.0.1 | process 6769 | thermal nominal → serious
+98091:   syscall 29 PC=0x2b21374c4 x0=0x3c x1=0x541b x2=0x7fffaf04 x3=0x0 x4=0x58c2734ed x5=0x2 [unimplemented in guest PID 142, suspended]
+99654: nativeloader: Load libdrmframework_jni.so using system ns (caller=/system/framework/framework.jar): ok
+99655: Typeface: Preloading /system/fonts/Roboto-Regular.ttf
+99656: Typeface: Preloading /system/fonts/RobotoStatic-Regular.ttf
+99657: SystemFonts: Loading font config from /system/etc/fonts.xml
+Mac with regular-file FIONREAD (selected original line numbers)
+98603:   unsupported instruction at PC=0x8f3778cc0 word=0xea1b800
+100164: SystemFonts: Loading font config from /system/etc/fonts.xml
+Mac delayed preload before per-thread proc stat (selected original line numbers)
+100063: zygote64: runtime.cc:832] Check failed: bytes_read != 0u (bytes_read=0, 0u=0)
+100076: runtime.cc:761]   at com.android.internal.os.Zygote.forkSystemServer(Zygote.java:512)
+Mac delayed preload after per-thread proc stat (selected original line numbers)
+100173: zygote64: jni_internal.cc:865] JNI FatalError called: (system_server) Unable to open directory /proc/self/fd: No such file or directory
+100185: runtime.cc:761]   at com.android.internal.os.Zygote.nativeForkSystemServer(Native method)
+100198: runtime.cc:761]   at com.android.internal.os.Zygote.nativeForkSystemServer(Native method)
+Mac delayed preload after descriptor enumeration (selected original line numbers)
+98569:   syscall 240 PC=0xff38c693c x0=0x9f x1=0x9f x2=0x6 x3=0x7fff3540 x4=0x666d6873716e6160 x5=0x666d6873716e6160 [unimplemented in guest PID 159, suspended]
+100196: zygote64: jni_internal.cc:865] JNI FatalError called: (system_server) frameworks/base/core/jni/com_android_internal_os_Zygote.cpp:837: Failed to mount /mnt/user/0 to /storage: No such file or directory
+iPhone 11 after FIONREAD and vector arithmetic support (selected original line numbers)
+1: iOS device 26.0.1 | process 6789 | thermal nominal → fair
+98052:   unsupported instruction at PC=0x1ac26d610 word=0x6ea1e402
+99709: SystemFonts: Loading font config from /system/etc/fonts.xml
+99714:   generated Java classpaths match SDK reference: yes
+Mac delayed preload with system_server child syscall tracing (selected original line numbers)
+98417:   syscall 40 PC=0x34c57efc4 x0=0x7fff9b01 x1=0x7fff8b01 x2=0x0 x3=0x5000 x4=0x0 x5=0x30 tid=164 source=/mnt/user/0 target=/storage type= result=0x0
+98421:   syscall 79 PC=0x34c57ea84 x0=0xffffff9c x1=0x7fff37a1 x2=0x7fff36a0 x3=0x0 x4=0x7fff3226 x5=0xb4000005f91150ee tid=164 path=/sys/fs/cgroup result=0xfffffffffffffffe
+98426:   syscall 34 PC=0x34c57eb04 x0=0xffffff9c x1=0xb4000005f91150d0 x2=0x1e8 x3=0x3e8 x4=0x128 x5=0x128 tid=164 path=/sys/fs/cgroup/system/uid_1000 result=0xfffffffffffffffe
+99770: <6>init: Service 'early_system_aconfigd_platform_init' (pid 74) exited with status 5 waiting took 0.502000 seconds
+99913: <6>init: Service 'system_aconfigd_platform_init' (pid 83) exited with status 6 waiting took 0.517000 seconds
+100134: <6>init: Service 'mainline_aconfigd_init' (pid 134) exited with status 1 waiting took 0.286000 seconds
+100941: zygote64: jni_internal.cc:865] JNI FatalError called: (system_server) frameworks/base/core/jni/com_android_internal_os_Zygote.cpp:1991: createProcessGroup(1000, 0) failed: No such file or directory

@@ -1,0 +1,21 @@
+iOS device 26.0.1 | process 6493 | thermal nominal → nominal
+
+  guest output: nestvane ART computed 42
+  guest execution wall time: 18348 ms
+  guest execution wall time: 17 ms
+  guest PID 44 entered /apex/com.android.sdkext/bin/derive_sdk (guest context u:r:derive_sdk:s0)
+  guest PID 46 entered /system/bin/vold_prepare_subdirs (guest context u:r:vold_prepare_subdirs:s0)
+  guest PID 47 entered /apex/com.android.sdkext/bin/derive_classpath (guest context u:r:derive_classpath:s0)
+  syscall 56 PC=0xa2a782984 x0=0xffffff9c x1=0xa9bbc3b10 x2=0x80241 x3=0x1b6 x4=0xbdbbba80e x5=0xa9bbc3b2e tid=47 path=/data/system/environ/classpath.tmp result=0x4
+  syscall 276 PC=0xa2a782bc4 x0=0xffffff9c x1=0xa9bbc3b10 x2=0xffffff9c x3=0xbdbbba7f0 x4=0x0 x5=0xa9bbc3b2e tid=47 result=0x0
+  syscall 94 PC=0xa2a7845c4 x0=0x0 x1=0xa2a7bd1dc x2=0xa2a79f3d8 x3=0xa2a79f1e0 x4=0x7ffffba8 x5=0x20 tid=47 [blocked]
+  syscall 56 PC=0x9dcbbbc84 x0=0xffffff9c x1=0xa0d01efd0 x2=0x88000 x3=0x0 x4=0xb5d0050ae x5=0xa0d01efee path=/data/system/environ/classpath result=0x11
+  syscall 79 PC=0x9dcbbbd84 x0=0xffffff9c x1=0xb5d001e51 x2=0x7fffed50 x3=0x0 x4=0xb5d001e63 x5=0x7fffeb03 path=/system/bin/odsign result=0xfffffffffffffffe
+<6>init: Service 'exec 7 (/system/bin/vdc --wait cryptfs init_user0)' (pid 45) exited with status 0 waiting took 1.463000 seconds
+<6>init: Sending SIGKILL to service 'exec 7 (/system/bin/vdc --wait cryptfs init_user0)' (pid 45) process group...
+  guest execution wall time: 22721 ms
+  Android guest data committed: yes
+  stock vdc checkpoint commands verified: yes
+  guest execution wall time: 45 ms
+  guest execution wall time: 25 ms
+  keystore.module_hash.sent=true verified: yes

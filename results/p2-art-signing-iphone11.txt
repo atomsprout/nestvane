@@ -1,0 +1,12 @@
+Selected lines from iphone-art-sign.txt with original line numbers.
+1: iOS device 26.0.1 | process 6662 | thermal nominal → fair
+77208:   guest PID 57 entered /system/bin/odsign (guest context u:r:odsign:s0)
+79983:   guest PID 58 entered /apex/com.android.art/bin/odrefresh (guest context u:r:odrefresh:s0)
+88463:   guest PID 59 entered /apex/com.android.art/bin/odrefresh (guest context u:r:odrefresh:s0)
+96959:   guest PID 60 entered /apex/com.android.art/bin/dex2oat64 (guest context u:r:odrefresh:s0)
+108045:   stopped at unimplemented guest syscall 129
+109239:   guest execution wall time: 150615 ms
+109242:   Android guest data committed: yes
+110357:   odsign.key.done=1 verified: yes
+110727:   odsign.verification.done=1 verified: yes
+111105:   odsign.verification.success=1 verified: yes

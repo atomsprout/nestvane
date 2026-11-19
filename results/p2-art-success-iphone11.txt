@@ -1,0 +1,45 @@
+iOS device 26.0.1 | process 6469 | thermal nominal → nominal
+
+Android 17 original ART probe
+  retired guest instructions: 510957685, guest syscalls observed: 36015, thread pointer: 0xb6e1f2f40
+  guest exit code: 0
+dalvikvm64: u_setTimeZoneFilesDirectory("/apex/com.android.tzdata/etc/tz/versioned/10/icu") succeeded.
+nativeloader: Load libjavacore.so using APEX ns com_android_art for caller /apex/com.android.art/javalib/core-oj.jar: ok
+nativeloader: Load libopenjdk.so using APEX ns com_android_art for caller /apex/com.android.art/javalib/core-oj.jar: ok
+  guest output: nestvane ART computed 42
+  guest execution wall time: 19002 ms
+  resident private guest mapping bytes: 131448832
+  retired guest instructions: 462210, guest syscalls observed: 230, thread pointer: 0x45a451fe0
+  guest exit code: 0
+  guest output: guest data loaded
+  guest execution wall time: 16 ms
+  retired guest instructions: 350000000, guest syscalls observed: 32269, thread pointer: 0x39b290e80
+  guest execution wall time: 13031 ms
+  data visible in original Android boot: yes
+  Android guest data committed: yes
+  stock vdc checkpoint commands verified: yes
+  retired guest instructions: 551077, guest syscalls observed: 293, thread pointer: 0x1019c1ffe0
+  guest exit code: 0
+  guest output: 37
+  guest execution wall time: 20 ms
+
+Second launch of the same signed build
+iOS device 26.0.1 | process 6470 | thermal nominal → nominal
+Android 17 original ART probe
+  retired guest instructions: 511018315, guest syscalls observed: 36001, thread pointer: 0x104255df40
+  guest exit code: 0
+  guest output: nestvane ART computed 42
+  guest execution wall time: 18403 ms
+  retired guest instructions: 462488, guest syscalls observed: 233, thread pointer: 0x4ad96afe0
+  guest exit code: 0
+  guest output: guest data loaded
+  guest execution wall time: 16 ms
+  retired guest instructions: 350000000, guest syscalls observed: 32274, thread pointer: 0x12ef380e80
+  guest execution wall time: 13035 ms
+  data visible in original Android boot: yes
+  Android guest data committed: yes
+  stock vdc checkpoint commands verified: yes
+  retired guest instructions: 551044, guest syscalls observed: 293, thread pointer: 0x162d68fe0
+  guest exit code: 0
+  guest output: 37
+  guest execution wall time: 20 ms

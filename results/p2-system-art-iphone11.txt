@@ -1,0 +1,14 @@
+Selected lines from iphone-odsign.txt with original line numbers.
+1: iOS device 26.0.1 | process 6502 | thermal nominal → nominal
+13820:   guest output: nestvane ART computed 42
+74434:   guest PID 58 entered /system/bin/odsign (guest context u:r:odsign:s0)
+79426:   stopped at unimplemented guest syscall 129
+79808: <6>apexd-bootstrap: Activated 6 packages. duration=2035ms
+80287: <6>init: Service 'art_boot' (pid 57) exited with status 0 waiting took 0.170000 seconds
+80567: odsign: Initialized Keystore key.
+80569: odrefresh: CANNOT LINK EXECUTABLE "/apex/com.android.art/bin/odrefresh": library "heapprofd_client_api.so" not found: needed by /apex/com.android.art/lib64/libart.so in namespace com_android_art
+80570: odrefresh: odrefresh terminated by exit(1)
+80579:   Android guest data committed: yes
+81361:   odsign.key.done=1 verified: yes
+81620:   odsign.verification.done=1 verified: yes
+81884:   odsign.verification.success=1 verified: no

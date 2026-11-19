@@ -1,0 +1,6 @@
+arithmetic ready
+/arithmetic.elf X19=1250175000
+memory ready
+/memory.elf X19=1250425000
+NESTVANE_LINUX_ORACLE PASS
+[    0.325832] reboot: Power down

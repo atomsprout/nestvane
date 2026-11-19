@@ -1,0 +1,16 @@
+Selected lines from iphone-low-art.txt with original line numbers.
+1: iOS device 26.0.1 | process 6567 | thermal nominal → nominal
+94068:   guest PID 60 entered /apex/com.android.art/bin/dex2oat64 (guest context u:r:odrefresh:s0)
+95426:   syscall 222 PC=0xcd617ae04 x0=0x6000000 x1=0xc040000 x2=0x3 x3=0x100022 x4=0xffffffff x5=0x0 tid=60 result=0x6000000
+108042:   diagnostic wall-time deadline reached
+108422: <6>apexd-bootstrap: Activated 6 packages. duration=1935ms
+108893: <6>init: Service 'art_boot' (pid 56) exited with status 0 waiting took 0.177000 seconds
+109119: odsign: Initialized Keystore key.
+109133: odrefresh: Low space for '/data/misc/apexdata/com.android.art' (33263616 bytes)
+109134: odrefresh: Compilation of primary BCP failed: Insufficient space
+109135: odrefresh: Compiling boot classpath (arm64, minimal): /apex/com.android.art/bin/dex2oat64 --android-root=out/empty --no-abort-on-hard-verifier-error --no-abort-on-soft-verifier-error --compilation-reason=boot --image-format=lz4 --force-determinism --resolve-startup-const-strings=true --avoid-storing-invocation --no-allow-profile-code --generate-mini-debug-info --strip --instruction-set=arm64 --instruction-set-features=default --instruction-set-variant=generic --cache-info-fd=9 --dex-file=/apex/c
+109141: dex2oat64: setting boot class path to /apex/com.android.art/javalib/core-oj.jar:/apex/com.android.art/javalib/core-libart.jar:/apex/com.android.art/javalib/okhttp.jar:/apex/com.android.art/javalib/bouncycastle.jar:/apex/com.android.art/javalib/apache-xml.jar
+109143: dex2oat64: Using generational CollectorTypeCC GC.
+110270:   odsign.key.done=1 verified: no
+110641:   odsign.verification.done=1 verified: no
+111011:   odsign.verification.success=1 verified: no

@@ -1,0 +1,65 @@
+name: nestvane
+options:
+  deploymentTarget:
+    iOS: "17.0"
+settings:
+  base:
+    CLANG_CXX_LANGUAGE_STANDARD: c++20
+    CLANG_ENABLE_OBJC_ARC: YES
+    GCC_WARN_INHIBIT_ALL_WARNINGS: NO
+targets:
+  nestvane:
+    type: application
+    platform: iOS
+    sources:
+      - path: ios
+      - path: runtime
+      - path: generated/AOT.cpp
+      - path: generated/guests
+        buildPhase: resources
+      - path: generated/android17-init-root
+        type: folder
+        optional: true
+        buildPhase: resources
+      - path: generated/android17-art-root
+        type: folder
+        optional: true
+        buildPhase: resources
+    dependencies:
+      - sdk: UIKit.framework
+      - sdk: libsqlite3.tbd
+    info:
+      path: generated/Info.plist
+      properties:
+        CFBundleDisplayName: nestvane
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        "UISupportedInterfaceOrientations~ipad":
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+          UISceneConfigurations:
+            UIWindowSceneSessionRoleApplication:
+              - UISceneConfigurationName: Validation
+                UISceneDelegateClassName: SceneDelegate
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.everettjf.nestvane.validation
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CURRENT_PROJECT_VERSION: "1"
+        MARKETING_VERSION: "0.1.0"
+        HEADER_SEARCH_PATHS: "$(SRCROOT)/runtime"
+        CODE_SIGN_STYLE: Automatic
+schemes:
+  nestvane:
+    build:
+      targets:
+        nestvane: all
+    run:
+      config: Release

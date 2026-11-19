@@ -1,0 +1,17 @@
+iPhone 11 / Android 17 API 37 / stock vold
+iOS device 26.0.1 | thermal nominal → nominal
+  syscall 30 PC=0x834b68b1c x0=0x1 x1=0xd x2=0x4002 x3=0x128 x4=0x128 x5=0xa tid=13 result=0x0
+  syscall 221 PC=0x834ba0d44 x0=0x8a4df3d91 x1=0x9e4df9810 x2=0xa24e04a90 x3=0x8 x4=0x30 x5=0x30 tid=13 path=/system/bin/vold [loaded guest image]
+  guest PID 13 entered /system/bin/vold (guest context u:r:vold:s0)
+  syscall 34 PC=0xd98da9b04 x0=0xffffff9c x1=0x40014ae1 x2=0x1ed x3=0x0 x4=0x0 x5=0x0 tid=13 path=/dev/block/vold result=0x0
+  syscall 56 PC=0xd98da9984 x0=0xffffff9c x1=0xd988f22ce x2=0x80002 x3=0x0 x4=0x200000e69c2cb00 x5=0x200000e69c2caf0 tid=13 path=/dev/hwbinder result=0xfffffffffffffffe
+  retired guest instructions: 350000000, guest syscalls observed: 27515, thread pointer: 0x834de0e80
+<6>init: processing action (early-fs) from (/system/etc/init/hw/init.rc:551)
+<4>hw-ProcessState: Opening '/dev/hwbinder' failed: No such file or directory
+<6>init: processing action (post-fs-data) from (/system/etc/init/hw/init.rc:663)
+  guest execution wall time: 80731 ms
+  retired guest instructions: 547887, guest syscalls observed: 285, thread pointer: 0xa59c3dfe0
+  guest execution wall time: 31 ms
+  property reader verified: yes
+  Runtime APEX activation verified: yes
+  linkerconfig generation verified: yes

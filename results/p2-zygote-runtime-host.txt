@@ -1,0 +1,12 @@
+Mac framework diagnostic with networking action omitted. Selected lines from zygote-framework-fp.log with original line numbers.
+94191:   guest PID 69 entered /system/bin/app_process64 (guest context u:r:zygote:s0)
+95411:   syscall 279 PC=0x54035f65c x0=0x75ff9b0d0 x1=0x0 x2=0x7fffac60 x3=0x7fffacb0 x4=0x10 x5=0xff646d6075737264 tid=69 [unimplemented in guest PID 69, suspended]
+96180: <6>init: Created socket '/dev/socket/zygote', mode 660, user 0, group 1000
+96181: <6>init: Created socket '/dev/socket/usap_pool_primary', mode 660, user 0, group 1000
+96252: <6>init: Service 'boringssl_self_test_apex64' (pid 70) exited with status 0 waiting took 0.266000 seconds
+96555: AndroidRuntime: >>>>>> START com.android.internal.os.ZygoteInit uid 0 <<<<<<
+96558: AndroidRuntime: Using default boot image
+96559: AndroidRuntime: Leaving lock profiling enabled
+96612: zygote64: Using generational CollectorTypeCC GC.
+96613: zygote64: Error reading named image component header for /system/framework/boot.art, error: ValidateOatFile found read barrier state mismatch (oat file: false, runtime: true)
+98485:   odsign.verification.success=1 verified: yes

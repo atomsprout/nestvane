@@ -1,0 +1,8 @@
+iPhone 11, Release developer-signed isolated framework diagnostic. Demand-backed private guest heap with the original 1 MiB dynamic stack. Selected lines from validation.txt with original line numbers.
+1: iOS device 26.0.1 | process 6727 | thermal nominal → nominal
+94354:   guest PID 69 entered /system/bin/app_process64 (guest context u:r:zygote:s0)
+96420:   syscall 222 PC=0x1dd168e04 x0=0x2000000 x1=0xc040000 x2=0x3 x3=0x100022 x4=0xffffffff x5=0x0 tid=69 result=0x2000000
+96423:   syscall 222 PC=0x1dd168e04 x0=0xe000000 x1=0x6000000 x2=0x3 x3=0x100022 x4=0xffffffff x5=0x0 tid=69 result=0xe000000
+96661:   guest memory fault at PC=0x48977af14 address=0x7feff1a0 word=0xf90003ff SP=0x7feff1a0 LR=0x48977af50 TID=69 x0=0x7f800000
+97938: zygote64: Using generational CollectorTypeCC GC.
+97941:   guest execution wall time: 71708 ms

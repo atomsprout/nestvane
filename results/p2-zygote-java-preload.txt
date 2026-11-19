@@ -1,0 +1,20 @@
+iPhone 11 using the regenerated guest (selected original line numbers)
+1: iOS device 26.0.1 | process 6752 | thermal nominal → nominal
+96585:   syscall 208 PC=0xf344fdc44 x0=0x4 x1=0x1 x2=0x7 x3=0x7fffd2d4 x4=0x4 x5=0x200001075984fd0 [unimplemented in guest PID 72, suspended]
+97825: zygote64: Background verification of 587 classes from boot classpath took 5.312s
+97827:   guest execution wall time: 56932 ms
+Mac after the socket buffer fix (selected original line numbers)
+96674:   unsupported instruction at PC=0x6df2d555c word=0x2e213820
+97941: Zygote: begin preload
+97942: Zygote: Calling ZygoteHooks.beginPreload()
+97949:   guest execution wall time: 50832 ms
+iPhone 11 after the socket buffer fix (selected original line numbers)
+1: iOS device 26.0.1 | process 6756 | thermal nominal → fair
+96548:   unsupported instruction at PC=0x45bef755c word=0x2e213820
+97853: Zygote: begin preload
+97854: Zygote: Calling ZygoteHooks.beginPreload()
+97866:   guest execution wall time: 93856 ms
+Mac after implementing SHLL/SHLL2 (selected original line numbers)
+96668:   syscall 143 PC=0x5cf703cc4 x0=0x0 x1=0x270f x2=0x0 x3=0x270f x4=0x86775bb48 x5=0x7fffc4c0 [unimplemented in guest PID 72, suspended]
+96671:   diagnostic wall-time deadline reached
+98067: Zygote: Preloading classes...

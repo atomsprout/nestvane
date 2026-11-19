@@ -1,0 +1,8 @@
+17
+37
+CE2A.260420.051.A3
+aarch64
+4096
+66fd076f883a5770b132500867fe22543f5a69b59500bb3f0049fb25375d7e1f  /data/local/tmp/nestvane-p2
+nestvane bionic ready!
+guest exit=0

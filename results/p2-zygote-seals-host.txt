@@ -1,0 +1,14 @@
+Selected lines from zygote-seals.log with original line numbers.
+96641:   syscall 279 PC=0x8a0f4665c x0=0xb3a2273af x1=0x2 x2=0x7fffb350 x3=0x7fffb3a0 x4=0x10 x5=0xff646d6075737264 tid=72 path=test_android_memfd result=0x4
+96642:   syscall 25 PC=0x8a0f80584 x0=0x4 x1=0x409 x2=0x10 x3=0x7fffb3a0 x4=0x10 x5=0xff646d6075737264 tid=72 result=0x0
+96643:   syscall 279 PC=0x8a0f4665c x0=0xb3b3fd6d1 x1=0x2 x2=0x7fffb3c0 x3=0x7fffb410 x4=0x10 x5=0xff646d6075737264 tid=72 path=jit-zygote-cache result=0x4
+96644:   syscall 233 PC=0x8a0f80284 x0=0xb59a54000 x1=0x2000000 x2=0xa x3=0x7fffba48 x4=0x20 x5=0x20 [unimplemented in guest PID 72, suspended]
+97891: zygote64: Using memfd for future sealing
+Selected lines from zygote-fork-advice.log with original line numbers.
+96659:   syscall 279 PC=0xbfdb2265c x0=0xeaf9203af x1=0x2 x2=0x7fffb350 x3=0x7fffb3a0 x4=0x10 x5=0xff646d6075737264 tid=72 path=test_android_memfd result=0x4
+96660:   syscall 25 PC=0xbfdb5c584 x0=0x4 x1=0x409 x2=0x10 x3=0x7fffb3a0 x4=0x10 x5=0xff646d6075737264 tid=72 result=0x0
+96661:   syscall 279 PC=0xbfdb2265c x0=0xeb0b166d1 x1=0x2 x2=0x7fffb3c0 x3=0x7fffb410 x4=0x10 x5=0xff646d6075737264 tid=72 path=jit-zygote-cache result=0x4
+96662:   syscall 25 PC=0xbfdb5c584 x0=0x4 x1=0x409 x2=0x17 x3=0x7fffba48 x4=0x20 x5=0x20 tid=72 result=0x0
+96664:   retired guest instructions: 2486005246, guest syscalls observed: 131664, thread pointer: 0xc1e4f4300
+96665:   unsupported instruction at PC=0xbe7c9a008 word=0x7ea3d422
+97923: zygote64: Using memfd for future sealing

@@ -1,0 +1,17 @@
+Selected lines from zygote-framework-adbd.log with original line numbers.
+97035: <6>apexd-bootstrap: Activated 9 packages. duration=1182ms
+97834: linker: CANNOT LINK EXECUTABLE "/apex/com.android.adbd/bin/adbd": library "libadbd_fs.so" not found: needed by main executable
+97893: zygote64: Initializing ART runtime metrics
+97895: nativeloader: Error preloading public library libandroid.so: dlopen failed: library "libandroid.so" not found
+97919: linker: CANNOT LINK EXECUTABLE "/apex/com.android.adbd/bin/adbd": library "libadbd_fs.so" not found: needed by main executable
+Selected lines from zygote-public-trial.log with original line numbers.
+96643:   unsupported instruction at PC=0xb9a630d58 word=0x4e816841
+97034: <6>apexd-bootstrap: Activated 9 packages. duration=1214ms
+97892: zygote64: Initializing ART runtime metrics
+97893: nativeloader: InitDefaultPublicLibraries for_preload=1: libandroid.so:libaaudio.so:libamidi.so:libbinder_ndk.so:libc.so:libcamera2ndk.so:libdl.so:libEGL.so:libGLESv1_CM.so:libGLESv2.so:libGLESv3.so:libicu.so:libicui18n.so:libicuuc.so:libjnigraphics.so:liblog.so:libmediandk.so:libm.so:libnativehelper.so:libnativewindow.so:libOpenMAXAL.so:libOpenSLES.so:libRS.so:libstdc++.so:libsync.so:libvulkan.so:libwebviewchromium_plat_support.so:libz.so
+97894: nativeloader: Load libicu_jni.so using APEX ns com_android_art for caller /apex/com.android.art/javalib/core-oj.jar: ok
+97897: nativeloader: Load libjavacore.so using APEX ns com_android_art for caller /apex/com.android.art/javalib/core-oj.jar: ok
+97898: nativeloader: Load libopenjdk.so using APEX ns com_android_art for caller /apex/com.android.art/javalib/core-oj.jar: ok
+97907:   dirty anonymous guest backing bytes (all guest processes): 573440
+Selected lines from collect-full-public.log with original line numbers.
+661: Collected 658 Android files in generated/android17-root-public-check

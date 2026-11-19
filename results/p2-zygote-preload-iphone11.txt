@@ -1,0 +1,18 @@
+Selected original lines from iPhone 11 isolated framework diagnostics.
+1: iOS device 26.0.1 | process 6740 | thermal nominal → nominal
+96771:   unsupported instruction at PC=0x77170bd58 word=0x4e816841
+97162: <6>apexd-bootstrap: Activated 9 packages. duration=2920ms
+97977: AndroidRuntime: >>>>>> START com.android.internal.os.ZygoteInit uid 0 <<<<<<
+98036: zygote64: Initializing ART runtime metrics
+98038: nativeloader: Load libicu_jni.so using APEX ns com_android_art for caller /apex/com.android.art/javalib/core-oj.jar: ok
+98041: nativeloader: Load libjavacore.so using APEX ns com_android_art for caller /apex/com.android.art/javalib/core-oj.jar: ok
+98042: nativeloader: Load libopenjdk.so using APEX ns com_android_art for caller /apex/com.android.art/javalib/core-oj.jar: ok
+98049:   guest execution wall time: 74322 ms
+Selected original lines from iPhone 11 isolated framework diagnostics.
+1: iOS device 26.0.1 | process 6748 | thermal nominal → fair
+96738:   unsupported instruction at PC=0x86c55df6c word=0x6e205863
+97129: <6>apexd-bootstrap: Activated 9 packages. duration=3054ms
+97954: AndroidRuntime: >>>>>> START com.android.internal.os.ZygoteInit uid 0 <<<<<<
+97974: zygote64: option[14]=-Xusejit:false
+98021: zygote64: memfd_create failed: Invalid argument, no memfd support.
+98026:   guest execution wall time: 78727 ms

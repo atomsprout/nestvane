@@ -1,0 +1,10 @@
+iPhone 11, Release developer-signed isolated framework diagnostic. Stock init, temporary omission of network startup. Selected lines from validation.txt with original line numbers.
+1: iOS device 26.0.1 | process 6715 | thermal nominal → fair
+94367:   guest PID 69 entered /system/bin/app_process64 (guest context u:r:zygote:s0)
+96143:   syscall 222 PC=0xa22da4e04 x0=0x6f198000 x1=0x30d8000 x2=0x3 x3=0x12 x4=0x4 x5=0x0 tid=69 result=0x6f198000
+96151:   syscall 56 PC=0xa22da4984 x0=0xffffff9c x1=0xc354c4fd0 x2=0x280000 x3=0x0 x4=0xc354c4cf0 x5=0xc354c4ff0 tid=69 path=/system/framework/arm64/boot.oat result=0x4
+96164:   syscall 56 PC=0x6005b804 x0=0xffffff9c x1=0xc354c4fd0 x2=0x80000 x3=0x0 x4=0xc0300c03 x5=0xaaaa0a80 tid=69 path=/system/framework/arm64/boot.oat result=0x4
+96195:   syscall 56 PC=0xa22da4984 x0=0xffffff9c x1=0xc354c5f10 x2=0x0 x3=0x0 x4=0x0 x5=0xc354c5f31 tid=69 path=/system/framework/arm64/boot.vdex result=0x4
+96418:   diagnostic wall-time deadline reached
+98127: AndroidRuntime: >>>>>> START com.android.internal.os.ZygoteInit uid 0 <<<<<<
+98263:   guest execution wall time: 360000 ms

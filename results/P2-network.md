@@ -1,0 +1,66 @@
+# P2 原版网络模块启动
+
+- 前一轮签名完成后，原版 `init` 因 `bpfloader` 的 Tethering APEX 服务缺失，请求重启。收集同版原版 APEX 后，iPhone 11 激活 7 个原版模块并进入 `netbpfload`，随后因客体缺少 `unprivileged_bpf_disabled` sysctl 退出。[真机](p2-network-iphone11.txt)
+- 实现客体 bpffs 挂载和 `unprivileged_bpf_disabled` 后，Mac 上原版 `netbpfload` 继续检查 `bpf_jit_enable`，这是标准启动链当前的失败点。启动配置保留原版网络和自检门槛。[Mac](p2-network-host.txt)
+- 自有 API 37 APK 夹具可用 `tools/build-smoke-apk.sh` 构建。在 ARM64 Android 17 参考模拟器中已安装并启动，点击增量，强制停止后重新启动读回 `Count: 1`。Nestvane 真机客体中的 APK 安装待验收。
+
+- iPhone 11 再次验证了原版 `odsign` 成功，并激活 8 个原版 APEX。原版 `netbpfload` 越过了首项 sysctl 检查，最终也停在 `bpf_jit_enable`。[真机复测](p2-network-abi-iphone11.txt)
+- Mac 隔离诊断采用一份临时启动脚本，暂不执行网络启动链，未写入 `bpf.progs_loaded`。原版 `init` 创建两个 Zygote 套接字，Bionic 链接器越过旧描述符限制后进入原版 `app_process64`，原版 Conscrypt 自检退出 0。这次记录只覆盖 Zygote 原生入口，进程仍在早期初始化异常退出。[Mac 框架诊断](p2-zygote-entry-host.txt)
+
+- 补入原版 `/init.environ.rc`，修正 ARM64 参数栈中 `argv` 与环境字符串的顺序，以及 Bionic 使用的匿名内存扩展和默认 FPCR 读取。Mac 上的 AndroidRuntime 已开始引导 `com.android.internal.os.ZygoteInit` 并进入 ART 的堆初始化。虚拟运行时与参考开机镜像的读屏障配置不同，ART 拒绝该镜像，随后在 `memfd_create` 处受阻。标准真机启动仍受网络 ABI 限制。[Mac ART 初始化](p2-zygote-runtime-host.txt)
+
+- 实现了客体 `memfd_create` 的启动路径。原版 ART 创建三个描述符后进入真实的回退编译，随后编译进程遇到当前客体内存预算。新增 `tools/prepare-boot-image.py`，从校验通过的同版参考环境离线生成与客体读屏障匹配的 `boot.art`、`boot.oat`、`boot.vdex`。修复低地址文件映射后，Mac 隔离诊断中的 Zygote 打开并映射这组产物，越过先前的现场重编译点。[Mac 预编译验证](p2-zygote-preopt-host.txt)
+
+- 同一组预编译产物在 iPhone 11 的独立框架诊断版上也成功映射。原版 `app_process64` 进入 Zygote 原生引导，随后达到 360 秒诊断限时。该诊断暂不执行网络启动脚本，标准启动仍停在网络 ABI。[真机预编译验证](p2-zygote-preopt-iphone11.txt)
+
+- 原有匿名堆预算在 Mac 反复拒绝低地址 96 MiB 映射。按需提供匿名页后，iPhone 11 和 Mac 均成功映射约 192 MiB 和 96 MiB 两段堆。两者随后复现同一个主线程栈访问错误。统一实际栈和 `RLIMIT_STACK` 后，Mac 上原版 ART 已完成这段栈初始化并开始初始化运行时指标。[真机堆验证](p2-zygote-heap-iphone11.txt) · [Mac 堆与栈诊断](p2-zygote-heap-host.txt)
+
+- 采集同版 ADB APEX 和系统公共库后，Mac 隔离诊断激活 9 个 APEX，原版 Zygote 完成公共库预加载，并加载 `libicu_jni.so`、`libjavacore.so` 和 `libopenjdk.so`。运行随后遇到 ARM64 的 `TRN2`，已补齐 `TRN1/2` 并加入回归验证。完整参考镜像采集命令已成功收集 658 个 Android 文件。[Mac 原生库预加载](p2-zygote-preload-host.txt)
+
+- iPhone 11 复现了相同的库预加载和后续指令缺口。使用 `-Xusejit:false` 后，原版 ART 仍初始化 Zygote 共享缓存。Mac 复测确认 `MFD_ALLOW_SEALING`、`F_SEAL_FUTURE_WRITE` 和 `MADV_DONTFORK` 让原版 ART 完成缓存封印，随后推进到 `FABD` 指令。这批指令和文件封印、映射继承均已加入宿主回归。可通过 `prepare-boot-image.py --framework-diagnostic` 从干净采集目录生成该离线诊断客体。[真机预加载](p2-zygote-preload-iphone11.txt) · [Mac 缓存封印](p2-zygote-seals-host.txt)
+
+- iPhone 11 在关闭客体 JIT 的诊断中同样成功执行了 ART 的两次封印操作，并到达原版框架的 `FABD`。使用工具重新生成的同版客体在 Mac 验证了 `FABD` 之后的路径，并定位到 `FCVTAS`。两条指令均已有实现和回归测试。[真机缓存封印](p2-zygote-seals-iphone11.txt)
+
+- 使用重新采集并生成的独立客体，iPhone 11 上原版 ART 后台验证了 587 个启动类，接着在 `SO_SNDBUF` 停下。补齐 Unix socket 缓冲区选项后，iPhone 11 和 Mac 均进入 Java 层的 `Zygote: begin preload` 和 `ZygoteHooks.beginPreload()`，随后遇到 `SHLL`。已实现并回归测试 `SHLL/SHLL2`。[Java 预加载证据](p2-zygote-java-preload.txt)
+
+- Mac 在 `SHLL/SHLL2` 修复后推进到 `Zygote: Preloading classes...`，随后在临时变更客体 GID 时请求 `setregid`。已补齐客体 `setregid` 和 `setreuid`，并验证临时切换、恢复与无权限请求被拒绝。[类预加载证据](p2-zygote-java-preload.txt)
+
+- 缩减版在 Mac 和 iPhone 11 上均因缺少类而无法初始化 `SystemServiceRegistry`。采集工具改用同版参考环境的四条 Java 类路径选择原版平台 JAR 和 APEX，并收集 `installd` 与 `libandroid_servers.so`。将只读 APEX 目录从可写目录配额中分开后，Mac 和 iPhone 11 均激活 32 个 APEX，原版 `derive_classpath` 输出与 SDK 参考逐字节一致。两端通过原先的缺类位置并执行到 `FMINNM`。已补齐该指令以及原版字体、DRM JNI 和 Aconfig 资源。[完整类路径证据](p2-zygote-full-classpath.txt)
+
+- Ext4 直接引用连续文件范围，将分散区段推迟到首次读取时合并。独立检查解析了全部 32 个真实 APEX 载荷，完成目录索引时约 88 MiB 文件内容使用底层视图，分散的文件尚无合并副本。另通过了合成 ext4 的连续区段、稀疏区段和内联软链接验证。[Ext4 记录](p2-zygote-full-classpath.txt)
+
+- iPhone 11 已加载原版 DRM JNI、Roboto 和字体配置，随后请求 `FIONREAD`。补齐该接口后 Mac 继续执行到向量 `FCVTZS`，之后又到达向量 `FADD`。已补齐两条指令及对应边界回归。[字体预加载与 fork 记录](p2-zygote-system-server-fork.txt)
+
+- Mac 在原版延迟预加载选项下验证 `system_server` 启动路径。补齐 Unix socket 地址查询、客体 MDWE、逐线程 proc stat 和实际描述符枚举后，原版 Zygote 已 fork 出客体子进程。补入 `/storage` 根挂载点后，子进程成功 bind mount `/mnt/user/0` 到 `/storage`。下一处实际失败是创建 `/sys/fs/cgroup/system/uid_1000`。可用 `prepare-boot-image.py --framework-diagnostic --defer-zygote-preload` 生成该诊断镜像。[fork 记录](p2-zygote-system-server-fork.txt)
+
+- 最新的 iPhone 11 真机日志已越过 `FIONREAD` 和前两条向量指令，在字体预加载中推进至寄存器版 `FCMGT`。相关向量比较已实现并通过宿主回归。Aconfig 原版服务已进入执行，默认标志存储初始化仍未成功。[真机与 Aconfig 日志](p2-zygote-system-server-fork.txt)
+
+- iPhone 11 的延迟预加载诊断依次创建了 `uid_1000` 和进程组，把 Zygote 派生的 `system_server` 子进程写入客体 `cgroup.procs`。当前 cgroup2 实现覆盖进程分组和继承，尚未提供内存控制器。真机随后在 `PR_SET_SECCOMP` 停下。[运行记录](p2-zygote-cgroup-seccomp.txt)
+
+- 实现了 Android 引导策略使用的 classic BPF 指令、系统调用过滤和子任务继承。宿主回归验证了权限检查、无效跳转、过滤器快照和 fork 继承。Mac 上原版子进程跨过 seccomp，继续执行到 SELinux 应用域选取。采集器现在保留参考镜像的 `seapp_contexts`。[运行记录](p2-zygote-cgroup-seccomp.txt)
+
+- 第二轮 iPhone 11 真机诊断越过 seccomp，进入原版 SELinux 上下文初始化。随后补入参考镜像的上下文文件、按参考策略校验域名和允许的进程域切换，并补齐实际遇到的 `CMTST`。Mac 已越过原版 libselinux 上下文初始化失败点，下一处停在 `libart.so` 的零地址读取。当前诊断只覆盖采集到的启动域转换。[运行记录](p2-zygote-cgroup-seccomp.txt)
+
+- iPhone 11 同样通过了 SELinux 上下文初始化，并在 `libart.so` 的相同指令和相邻指令序列读到零地址。采集器从干净目录重新采集了 1009 个参考文件，所得两条进程域转换和设备诊断所用的转换一致。宿主回归和 ASan/UBSan 均通过。尚未观察到 Java `SystemServer` 服务就绪。[运行记录](p2-zygote-cgroup-seccomp.txt)
+
+- 已实现客体 ARM64 的同步访存信号、备用信号栈和 `rt_sigreturn`。同一个 Bionic ELF 在 SDK 参考系统和 Nestvane 上均能从零地址和 `PROT_NONE` 访存恢复，信号码和地址一致。Mac 原版 ART 接收信号后改写返回 PC，继续执行到 Java `SystemServer`。初次运行所用旧策略快照没有该域的属性权限记录。[信号及框架日志](p2-zygote-signal.txt)
+
+- iPhone 11 也观察到 ART 处理访存信号并恢复。Mac 换用新采集的策略后，原版 Java `SystemServer` 成功写入启动属性，输出 `Entered the Android system server!`，并完成对当前镜像所含权限配置的读取。下一处实际请求是查找客体 eBPF 对象，已开始在同一诊断镜像上验证。[运行日志](p2-zygote-signal.txt)
+
+- iPhone 11 上原版 Java `SystemServer` 已成功进入并完成当前权限配置读取。在离线配置中，客体 eBPF 查找按文件系统状态返回 `ENOENT`，原版内存事件监听器继续走缺对象路径。程序随后在 `ApplicationSharedMemory` 停下。实现了 `/dev/ashmem` 共享映射和权限收窄，同一测试 ELF 在 SDK Android 和 Nestvane 上验证两条映射共享状态，关闭描述符后仍能访问。采集器也已保留参考分区中的 `permissions` 和 `sysconfig` XML。[运行及对照日志](p2-zygote-signal.txt)
+
+- iPhone 11 读取了同版 `platform.xml`，原版 `libcutils` 成功打开动态生成的 `/dev/ashmem<boot-id>`。Mac 将匿名共享对象预算按启动配置放宽后，完成 `ApplicationSharedMemory` 并进入 `SystemServer.createSystemContext()`。延迟预加载诊断在 Perfetto JNI 注册处停下，已切回常规 Zygote 预加载复测。[运行日志](p2-zygote-signal.txt)
+
+- iPhone 11 验证了新的共享内存预算，原版 `SystemServer` 推进到 `createSystemContext()` 内的 Perfetto JNI 注册调用。常规预加载在 Mac 暴露的 `SSHLL` 和标量 `FADDP` 已补齐并通过回归。本项目自有 APK 已在 API 37 参考模拟器安装并冷启动，Nestvane 客体尚未启动到包管理可用。[运行日志](p2-zygote-signal.txt)
+
+- 常规 Zygote 预加载经过 `FADDP` 后开始加载媒体类，采集器补入原版媒体、音频和 RTP JNI 库及其 ELF 依赖。Mac 补齐后成功加载 RTP JNI，随后暴露 VINTF 和 RenderScript JNI 缺件，采集器也已纳入这两个库。另已采集原版 `cmd`，用于后续连接实际包管理服务。iPhone 11 的首轮常规预加载在诊断时间上限内进入 Java 类预加载，未完成该阶段。[运行日志](p2-zygote-eager.txt)
+
+- 对 Mac 启动探针采样后，增加了按客体页索引的映射查找缓存。缓存命中仍检查当前映射和权限。还将 ELF 入口观察限制在实际命中待观察地址时。同一镜像两次各执行 90 亿条指令，单次耗时从 163.7 秒降到 141.0 秒。宿主 ABI 回归和 ASan/UBSan 通过，iPhone 11 已开始运行包含这项改动的诊断版。[测量记录](p2-zygote-eager.txt)
+
+- iPhone 11 常规 Zygote 预加载记录了 18,596 个 Java 类和原版 RTP、VINTF、RenderScript JNI 加载成功。Mac 完成 Java 类预加载后进入资源初始化，已补齐向量 `UCVTF`、`SCVTF` 和立即数 `FMOV`，并采集 Zygote 缓存的参考 Java 库。原版 `cmd -l` 已在 Mac 上通过客体 Binder 读取 servicemanager 的服务列表并退出 0。诊断时间和指令上限现可通过宿主环境配置，默认上限保留。[运行记录](p2-zygote-eager.txt)
+
+- Mac 常规 Zygote 已完成资源预加载，并从原版路径成功加载 `libperfetto_framework_jni.so`。下一步实际缺件为 `libcompiler_rt.so`，已从同版参考系统采集并加入可重建的镜像输入。当前镜像的原版 Java 和 JNI 输入通过了干净采集对照，向量指令通过宿主回归和 ASan/UBSan。[运行记录](p2-zygote-eager.txt)
+
+- Mac 确认原版 `libcompiler_rt.so` 和 `libhttpengine.so` 均加载成功。下一处不支持的 `MOVI` 填一移位已补齐，并补采了参考分区的 `compatconfig`。采集测试验证了 `libcompiler_rt.so` 与本次诊断镜像逐字节一致。[运行记录](p2-zygote-eager.txt)
+
+- iPhone 11 的常规 Zygote 已完成资源预加载，实测从原版路径加载了 Perfetto JNI。该构建停在缺少 `libcompiler_rt.so`，随后被 Zygote 重启流程带到诊断时限。Mac 确认补齐该库后可加载 HTTP 引擎并读取 333 条兼容规则。下一条 `SMAX` 已补齐，共享目录别名下的 `stat` 和 `access` 查找也有回归覆盖。[运行记录](p2-zygote-eager.txt)

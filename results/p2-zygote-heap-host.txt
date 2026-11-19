@@ -1,0 +1,15 @@
+Selected lines from zygote-framework-cc-mmap.log with original line numbers.
+96316:   syscall 222 PC=0xbac76fe04 x0=0xe000000 x1=0x6000000 x2=0x3 x3=0x100022 x4=0xffffffff x5=0x0 tid=69 result=0xfffffffffffffff4
+Selected lines from zygote-lazy-2.log with original line numbers.
+96412:   syscall 222 PC=0x106336ee04 x0=0x2000000 x1=0xc040000 x2=0x3 x3=0x100022 x4=0xffffffff x5=0x0 tid=69 result=0x2000000
+96415:   syscall 222 PC=0x106336ee04 x0=0xe000000 x1=0x6000000 x2=0x3 x3=0x100022 x4=0xffffffff x5=0x0 tid=69 result=0xe000000
+96653:   guest memory fault at PC=0x12fae67f14 address=0x7feff1a0 word=0xf90003ff SP=0x7feff1a0 LR=0x12fae67f50 TID=69 x0=0x7f800000
+97892: zygote64: Using generational CollectorTypeCC GC.
+Selected lines from zygote-lazy-stack.log with original line numbers.
+96390:   syscall 222 PC=0x926f93e04 x0=0x2000000 x1=0xc040000 x2=0x3 x3=0x100022 x4=0xffffffff x5=0x0 tid=69 result=0x2000000
+96393:   syscall 222 PC=0x926f93e04 x0=0xe000000 x1=0x6000000 x2=0x3 x3=0x100022 x4=0xffffffff x5=0x0 tid=69 result=0xe000000
+96629:   syscall 240 PC=0x926f2f93c x0=0x45 x1=0x45 x2=0x6 x3=0x7fffbb10 x4=0x666d6873716e6160 x5=0x666d6873716e6160 [unimplemented in guest PID 69, suspended]
+97860: zygote64: Initializing ART runtime metrics
+97861: zygote64: runtime.cc:2252] Plugin { library="libadbconnection.so", handle=0 } failed to load: dlopen failed: dlopen failed: library "libadbconnection_client.so" not found: needed by /apex/com.android.art/lib64/libadbconnection.so in namespace com_android_art
+97871: runtime.cc:761]   | stack=0x7f801000-0x7f803000 stackSize=8188KB
+97881: runtime.cc:761]   | stack=0x7f801000-0x7f803000 stackSize=8188KB

@@ -1,0 +1,62 @@
+iPhone 11 / Android 17 API 37 / without bundled Runtime APEX
+iOS device 26.0.1 | thermal nominal → nominal
+  guest execution wall time: 22 ms
+  init entry reached after 19995950 guest instructions
+  syscall 221 PC=0x1048dad44 x0=0x7ffff491 x1=0x7ffff4b0 x2=0x2c672e250 x3=0x1000 x4=0x7ffff42e x5=0x7ffff47b tid=4 path=/system/bin/init [loaded guest image]
+  guest PID 4 entered /system/bin/init (guest context u:r:vendor_init:s0)
+  syscall 221 PC=0x1048dad44 x0=0x276730061 x1=0x2c672e6d0 x2=0x2c672e250 x3=0x8 x4=0x8 x5=0x8 tid=5 path=/system/bin/ueventd [loaded guest image]
+  guest PID 5 entered /system/bin/ueventd (guest context u:r:ueventd:s0)
+  syscall 221 PC=0x1048dad44 x0=0x2a6735291 x1=0x276738100 x2=0x2c672e250 x3=0x8 x4=0x10 x5=0x10 tid=6 path=/system/bin/apexd [loaded guest image]
+  guest PID 6 entered /system/bin/apexd (guest context u:r:apexd:s0)
+<6>apexd: Started. subcommand = --bootstrap
+<6>apexd-bootstrap: Successfully scanned 0 preinstalled APEXes duration=49ms
+<6>apexd-bootstrap: Activated 0 packages. duration=3ms
+<6>apexd-bootstrap: OnBootstrap done, duration=92
+  guest execution wall time: 25033 ms
+  guest output: 37
+arm64-v8a
+  guest execution wall time: 30 ms
+  property reader verified: yes
+
+iPhone 11 / Android 17 API 37 / with stock Runtime APEX
+iOS device 26.0.1 | thermal nominal → nominal
+  guest execution wall time: 22 ms
+  init entry reached after 19996008 guest instructions
+  syscall 221 PC=0x1033a0d44 x0=0x7ffff491 x1=0x7ffff4b0 x2=0x1f3f31270 x3=0x1000 x4=0x7ffff42e x5=0x7ffff47b tid=4 path=/system/bin/init [loaded guest image]
+  guest PID 4 entered /system/bin/init (guest context u:r:vendor_init:s0)
+  syscall 221 PC=0x1033a0d44 x0=0x143f2be51 x1=0x1f3f31750 x2=0x1f3f31270 x3=0x8 x4=0x8 x5=0x8 tid=5 path=/system/bin/ueventd [loaded guest image]
+  guest PID 5 entered /system/bin/ueventd (guest context u:r:ueventd:s0)
+  syscall 221 PC=0x1033a0d44 x0=0x173f39b91 x1=0x143f33f50 x2=0x1f3f31270 x3=0x8 x4=0x10 x5=0x10 tid=6 path=/system/bin/apexd [loaded guest image]
+  guest PID 6 entered /system/bin/apexd (guest context u:r:apexd:s0)
+<6>apexd: Started. subcommand = --bootstrap
+<6>apexd-bootstrap: Found pre-installed APEX /system/apex/com.android.runtime.apex
+<6>apexd-bootstrap: Successfully scanned 1 preinstalled APEXes duration=131ms
+<3>apexd-bootstrap: Failed to open device-mapper: No such file or directory
+<3>apexd-bootstrap: Could not create loop device for /system/apex/com.android.runtime.apex: Failed to open loop-control: No such file or directory
+<6>apexd-bootstrap: Activated 0 packages. duration=3032ms
+<6>apexd-bootstrap: Activated 0 packages. duration=1ms
+<6>apexd-bootstrap: OnBootstrap done, duration=3205
+  guest execution wall time: 25001 ms
+  guest output: 37
+arm64-v8a
+  guest execution wall time: 29 ms
+  property reader verified: yes
+
+Reference Android 17 ARM64 SDK emulator CE2A.260420.051.A3
+/dev/block/loop40 /apex/com.android.runtime@1 ext4 ro,dirsync,seclabel,nodev,noatime 0 0
+/dev/block/loop40 /apex/com.android.runtime ext4 ro,dirsync,seclabel,nodev,noatime 0 0
+backing_file /system/apex/com.android.runtime.apex
+offset 4096
+sizelimit 8744960
+autoclear 1
+dio 1
+ro 1
+size 17080
+queue/logical_block_size 4096
+queue/physical_block_size 4096
+block device 7:140 600
+crash_dump64
+linker64
+linker_asan64
+linker_hwasan64
+linkerconfig

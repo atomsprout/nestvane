@@ -1,0 +1,15 @@
+Selected lines from zygote-low-mov.log with original line numbers.
+81337:   guest PID 60 entered /apex/com.android.art/bin/dex2oat64 (guest context u:r:odrefresh:s0)
+82590:   syscall 222 PC=0x40ff6ee04 x0=0x6000000 x1=0xc040000 x2=0x3 x3=0x100022 x4=0xffffffff x5=0x0 tid=60 result=0x6000000
+94214:   diagnostic wall-time deadline reached
+94594: <6>apexd-bootstrap: Activated 6 packages. duration=875ms
+94917: <6>init: Service 'art_boot' (pid 56) exited with status 0 waiting took 0.074000 seconds
+95142: odsign: Initialized Keystore key.
+95156: odrefresh: Low space for '/data/misc/apexdata/com.android.art' (33263616 bytes)
+95157: odrefresh: Compilation of primary BCP failed: Insufficient space
+95158: odrefresh: Compiling boot classpath (arm64, minimal): /apex/com.android.art/bin/dex2oat64 --android-root=out/empty --no-abort-on-hard-verifier-error --no-abort-on-soft-verifier-error --compilation-reason=boot --image-format=lz4 --force-determinism --resolve-startup-const-strings=true --avoid-storing-invocation --no-allow-profile-code --generate-mini-debug-info --strip --instruction-set=arm64 --instruction-set-features=default --instruction-set-variant=generic --cache-info-fd=9 --dex-file=/apex/c
+95164: dex2oat64: setting boot class path to /apex/com.android.art/javalib/core-oj.jar:/apex/com.android.art/javalib/core-libart.jar:/apex/com.android.art/javalib/okhttp.jar:/apex/com.android.art/javalib/bouncycastle.jar:/apex/com.android.art/javalib/apache-xml.jar
+95166: dex2oat64: Using generational CollectorTypeCC GC.
+96298:   odsign.key.done=1 verified: no
+96666:   odsign.verification.done=1 verified: no
+97036:   odsign.verification.success=1 verified: no

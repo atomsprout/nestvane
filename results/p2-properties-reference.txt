@@ -1,0 +1,7 @@
+Android SDK emulator: ARM64 API 37, build CE2A.260420.051.A3
+adb shell getprop ro.build.version.sdk: 37
+adb shell getprop ro.product.cpu.abilist: arm64-v8a
+Same nestvane Bionic reader:
+37
+arm64-v8a
+Exit: 0

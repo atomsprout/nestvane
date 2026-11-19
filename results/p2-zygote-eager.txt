@@ -1,0 +1,102 @@
+iPhone 11 standard Zygote preload before extending the guest image
+iOS device 26.0.1 | process 6889 | thermal serious → serious
+  diagnostic wall-time deadline reached
+Zygote: Preloading classes...
+  guest execution wall time: 360000 ms
+
+Mac standard preload before collecting runtime-loaded JNI libraries
+Zygote: Error preloading android.net.rtp.RtpStream.
+library "libaudioeffect_jni.so" not found
+library "libmedia_jni.so" not found
+library "librtp_jni.so" not found
+library "libsoundpool.so" not found
+
+Mac after collecting the media JNI closure
+nativeloader: Load librtp_jni.so using system ns (caller=/system/framework/voip-common.jar): ok
+nativeloader: Load libvintf_jni.so using system ns (caller=/system/framework/framework.jar!classes3.dex): dlopen failed: library "libvintf_jni.so" not found
+nativeloader: Load libvintf_jni.so using system ns (caller=/system/framework/framework.jar!classes3.dex): dlopen failed: library "libvintf_jni.so" not found
+nativeloader: Load librs_jni.so using system ns (caller=/system/framework/framework.jar!classes3.dex): dlopen failed: library "librs_jni.so" not found
+Zygote: Error preloading android.renderscript.Element$DataType.
+
+Reference image collection
+Collected 1109 Android files in generated/android17-eager-media-reference
+Added /system/bin/cmd 68648
+Added /system/lib64/libmedia_jni.so 558000
+Added /system/lib64/libsoundpool.so 119992
+Added /system/lib64/libaudioeffect_jni.so 86088
+Added /system/lib64/librtp_jni.so 233400
+Added /system/lib64/android.hardware.tv.tuner-V3-ndk.so 407424
+Added /system/lib64/libmediadrmmetrics_consumer.so 37168
+Added /system/lib64/libsonivox.so 613000
+Added /system/lib64/libstagefright_amrnb_common.so 102464
+Added /system/lib64/libmediadrmmetrics_full.so 105280
+Root file bytes: 782921089
+Added /system/lib64/libvintf_jni.so 69256
+Added /system/lib64/librs_jni.so 102536
+Root file bytes: 783092881
+
+Mac same Android image, 9 billion guest instructions before and after address lookup and entry observation changes
+  retired guest instructions: 9000000000, guest syscalls observed: 231960, thread pointer: 0x2918bc300
+  guest execution wall time: 163692 ms
+  retired guest instructions: 9000000000, guest syscalls observed: 231457, thread pointer: 0x597506300
+  guest execution wall time: 141035 ms
+2x throughput gate on both fixtures: PASS
+guest kernel ABI checks passed, including bind views, fork, SIGCHLD, pipe, boot policy, loop bounds, PTY, uevents, guest sysctls, securebits, I/O priority, Binder transactions and persisted guest data
+guest kernel ABI checks passed, including bind views, fork, SIGCHLD, pipe, boot policy, loop bounds, PTY, uevents, guest sysctls, securebits, I/O priority, Binder transactions and persisted guest data
+
+iPhone 11 with RTP, VINTF and RenderScript JNI libraries
+iOS device 26.0.1 | process 6892 | thermal serious → serious
+  unsupported instruction at PC=0x820a8a0c4 word=0x6e21d800
+nativeloader: Load librtp_jni.so using system ns (caller=/system/framework/voip-common.jar): ok
+nativeloader: Load libvintf_jni.so using system ns (caller=/system/framework/framework.jar!classes3.dex): ok
+nativeloader: Load librs_jni.so using system ns (caller=/system/framework/framework.jar!classes3.dex): ok
+Zygote: ...preloaded 18596 classes in 220867ms.
+
+Mac after implementing vector UCVTF/SCVTF
+  unsupported instruction at PC=0x794c2a370 word=0xf03f600
+Zygote: ...preloaded 18596 classes in 76356ms.
+Resources: Preloading resources...
+
+Original cmd client against guest Android servicemanager
+Currently running services:
+  android.system.vold.IVold/default
+  manager
+<6>init: Service 'nestvane-check-cmd' (pid 86) exited with status 0 oneshot service took 0.482000 seconds in background
+
+Configured diagnostic deadline smoke test
+  diagnostic limits: 9000000000 guest instructions, 1 seconds
+  diagnostic wall-time deadline reached
+2x throughput gate on both fixtures: PASS
+guest kernel ABI checks passed, including bind views, fork, SIGCHLD, pipe, boot policy, loop bounds, PTY, uevents, guest sysctls, securebits, I/O priority, Binder transactions and persisted guest data
+
+Mac standard Zygote after vector FMOV and six original class-loader JARs
+Zygote64Timing: PreloadResources took to complete: 1157ms
+nativeloader: Load libperfetto_framework_jni.so using system ns (caller=/system/framework/framework.jar!classes5.dex): ok
+nativeloader: Load libcompiler_rt.so using system ns (caller=/system/framework/framework.jar!classes5.dex): dlopen failed: library "libcompiler_rt.so" not found
+Collected 1117 Android files in generated/android17-eager-fmov-reference
+Added /system/lib64/libcompiler_rt.so 68512
+guest kernel ABI checks passed, including bind views, fork, SIGCHLD, pipe, boot policy, loop bounds, PTY, uevents, guest sysctls, securebits, I/O priority, Binder transactions and persisted guest data
+
+Mac after collecting libcompiler_rt and regular framework preload
+nativeloader: Load libcompiler_rt.so using system ns (caller=/system/framework/framework.jar!classes5.dex): ok
+nativeloader: Load libhttpengine.so using APEX ns com_android_tethering for caller /apex/com.android.tethering/javalib/framework-connectivity.jar: ok
+  unsupported instruction at PC=0x4bb6962a0 word=0x4f07c640
+llvm-mc: movi v0.4s, #242, msl #8
+Collected 1118 Android files in generated/android17-eager-compiler-rt-reference
+2x throughput gate on both fixtures: PASS
+guest kernel ABI checks passed, including bind views, fork, SIGCHLD, pipe, boot policy, loop bounds, PTY, uevents, guest sysctls, securebits, I/O priority, Binder transactions and persisted guest data
+guest kernel ABI checks passed, including bind views, fork, SIGCHLD, pipe, boot policy, loop bounds, PTY, uevents, guest sysctls, securebits, I/O priority, Binder transactions and persisted guest data
+
+iPhone 11 after completing normal class and resource preload
+iOS device 26.0.1 | process 6922 | thermal serious → serious
+  diagnostic limits: 18000000000 guest instructions, 720 seconds
+Zygote64Timing: PreloadResources took to complete: 3662ms
+nativeloader: Load libperfetto_framework_jni.so using system ns (caller=/system/framework/framework.jar!classes5.dex): ok
+nativeloader: Load libcompiler_rt.so using system ns (caller=/system/framework/framework.jar!classes5.dex): dlopen failed: library "libcompiler_rt.so" not found
+
+Mac after adding compatibility configuration and MOVI/MVNI shifting ones
+CompatibilityRules: Compatibility rules initialized with 333 rules.
+  unsupported instruction at PC=0x12387653c0 word=0x4e6164e7
+llvm-mc: smax v7.8h, v7.8h, v1.8h
+2x throughput gate on both fixtures: PASS
+guest kernel ABI checks passed, including bind views, fork, SIGCHLD, pipe, boot policy, loop bounds, PTY, uevents, guest sysctls, securebits, I/O priority, Binder transactions and persisted guest data

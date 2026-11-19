@@ -1,0 +1,34 @@
+iPhone 11 / Android 17 API 37 / stock system BoringSSL self test
+iOS device 26.0.1 | thermal nominal → nominal
+  syscall 56 PC=0xb5ed19c84 x0=0xffffff9c x1=0xc884962d0 x2=0x80000 x3=0x0 x4=0x200000c7849c070 x5=0x10 path=/proc/sys/vm/mmap_rnd_bits result=0x11
+  syscall 56 PC=0xb5ed19c84 x0=0xffffff9c x1=0xc884962d0 x2=0x80241 x3=0x1b6 x4=0x200000c7849a050 x5=0x10 path=/proc/sys/vm/mmap_rnd_bits result=0x12
+  syscall 56 PC=0xb5ed19c84 x0=0xffffff9c x1=0xc884962d0 x2=0x80241 x3=0x1b6 x4=0x200000c7849b060 x5=0x10 path=/proc/sys/vm/mmap_rnd_bits result=0x12
+  syscall 56 PC=0xb5ed19c84 x0=0xffffff9c x1=0xc884962d0 x2=0x80241 x3=0x1b6 x4=0x200000c7849b060 x5=0x10 path=/proc/sys/vm/mmap_rnd_bits result=0x12
+  syscall 56 PC=0xb5ed19c84 x0=0xffffff9c x1=0xc884962d0 x2=0x80241 x3=0x1b6 x4=0x200000c7849b060 x5=0x10 path=/proc/sys/vm/mmap_rnd_bits result=0x12
+  syscall 56 PC=0xb5ed19c84 x0=0xffffff9c x1=0xc884962d0 x2=0x80241 x3=0x1b6 x4=0x200000c7849b060 x5=0x10 path=/proc/sys/vm/mmap_rnd_bits result=0x12
+  syscall 56 PC=0xb5ed19c84 x0=0xffffff9c x1=0xc884962d0 x2=0x80241 x3=0x1b6 x4=0x200000c7849b060 x5=0x10 path=/proc/sys/vm/mmap_rnd_bits result=0x12
+  syscall 56 PC=0xb5ed19c84 x0=0xffffff9c x1=0xc884962d0 x2=0x80241 x3=0x1b6 x4=0x200000c7849b060 x5=0x10 path=/proc/sys/vm/mmap_rnd_bits result=0x12
+  syscall 56 PC=0xb5ed19c84 x0=0xffffff9c x1=0xc884962d0 x2=0x80241 x3=0x1b6 x4=0x200000c7849b060 x5=0x10 path=/proc/sys/vm/mmap_rnd_bits result=0x12
+  syscall 56 PC=0xb5ed19c84 x0=0xffffff9c x1=0xc884962d0 x2=0x80241 x3=0x1b6 x4=0x200000c7849b060 x5=0x10 path=/proc/sys/vm/mmap_rnd_bits result=0x12
+  syscall 56 PC=0xb5ed19c84 x0=0xffffff9c x1=0xc884962d0 x2=0x80241 x3=0x1b6 x4=0x200000c7849b060 x5=0x10 path=/proc/sys/vm/mmap_rnd_bits result=0x12
+  syscall 170 PC=0xb5ed1a684 x0=0x0 x1=0x7fffeff0 x2=0xa x3=0x0 x4=0xc884962ea x5=0x7fffeff2 result=0x0
+  guest PID 12 entered /system/bin/boringssl_self_test64 (guest context u:r:boringssl_self_test:s0)
+  syscall 79 PC=0xb5ed19d84 x0=0xffffff9c x1=0xd08498f81 x2=0x7fffed50 x3=0x0 x4=0xd08498f91 x5=0x7fffeb01 path=/system/bin/vold result=0xfffffffffffffffe
+<3>init: /vendor/etc/boringssl_self_test.zygote64.rc: 1: ParseTriggers() failed: unexported property trigger found: ro.product.cpu.abilist64
+<6>ueventd: Coldboot took 0.11 seconds
+<6>init: start_waiting_for_property("ro.cold_boot_done", "true"): already set
+<6>init: processing action (SetMmapRndBits) from (<Builtin Action>:0)
+<6>init: processing action (init) from (/system/etc/init/hw/init.rc:116)
+<6>init: Service 'boringssl_self_test64' (pid 12) exited with status 0 waiting took 1.449000 seconds
+<6>init: processing action (init) from (/system/etc/init/audioserver.rc:66)
+<6>init: processing action (init) from (/system/etc/init/perfetto.rc:163)
+<6>init: processing action (late-init) from (/system/etc/init/hw/init.rc:518)
+<6>init: processing action (late-init) from (/system/etc/init/atrace.rc:3)
+<6>init: processing action (early-fs) from (/system/etc/init/hw/init.rc:551)
+<6>init: Got shutdown_command 'reboot,vold-failed' Calling HandlePowerctlMessage()
+<6>init: Reboot start, reason: reboot,vold-failed, reboot_target: vold-failed
+  guest execution wall time: 27651 ms
+  guest execution wall time: 31 ms
+  property reader verified: yes
+  Runtime APEX activation verified: yes
+  linkerconfig generation verified: yes

@@ -1,0 +1,26 @@
+iPhone 11 with the earlier reduced APEX set (selected original line numbers)
+1: iOS device 26.0.1 | process 6763 | thermal nominal → serious
+98237: Zygote: Preloading classes...
+98240: zygote64: Landroid/app/SystemServiceRegistry; failed initialization: java.lang.NoClassDefFoundError: Class not found using the boot class loader; no stack trace available
+98342: Zygote: Preloading classes...
+98345: zygote64: Landroid/app/SystemServiceRegistry; failed initialization: java.lang.NoClassDefFoundError: Class not found using the boot class loader; no stack trace available
+98448: Zygote: Preloading classes...
+98451: zygote64: Landroid/app/SystemServiceRegistry; failed initialization: java.lang.NoClassDefFoundError: Class not found using the boot class loader; no stack trace available
+First Mac boot with 32 APEX packages (selected original line numbers)
+58420: <6>apexd-bootstrap: Activated 32 packages. duration=3593ms
+58656: <6>init: Command 'mkdir /data/misc 01771 system misc encryption=Require' action=post-fs-data (/system/etc/init/hw/init.rc:700) took 21ms and failed: mkdir() failed on /data/misc: No space left on device
+Mac with isolated directory quotas and demand-loaded ext4 contents (selected original line numbers)
+98500:   unsupported instruction at PC=0x36401b60c word=0x1e2078c0
+98960: <6>apexd-bootstrap: Activated 32 packages. duration=3101ms
+100048: zygote64: Background verification of 687 classes from boot classpath took 3.760s
+100050: Zygote: Preloading classes...
+100101:   generated Java classpaths match SDK reference: yes
+iPhone 11 with full APEX set and corrected directory quotas (selected original line numbers)
+1: iOS device 26.0.1 | process 6766 | thermal serious → serious
+98496:   unsupported instruction at PC=0x736c5560c word=0x1e2078c0
+98956: <6>apexd-bootstrap: Activated 32 packages. duration=8449ms
+100055: zygote64: Background verification of 687 classes from boot classpath took 10.462s
+100057: Zygote: Preloading classes...
+100108:   generated Java classpaths match SDK reference: yes
+Ext4 payload validation (mounted-file bytes) (selected original line numbers)
+1: packages=32 mapped file bytes=91826373 copied file bytes=0

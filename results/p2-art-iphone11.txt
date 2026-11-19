@@ -1,0 +1,34 @@
+iOS device 26.0.1 | process 6440 | thermal nominal → nominal
+Android 17 original ART probe
+  linker PC=0x60090800 base=0x60000000 executable entry=0x40004000 phdr=0x40000040 initial SP=0x7ffffbc0
+  syscall 79 PC=0x1092dada84 x0=0xffffff9c x1=0x10a2fd74d0 x2=0x7ffff250 x3=0x0 x4=0x0 x5=0x0 path=/apex/com.android.art/javalib/core-oj.jar result=0x0
+  syscall 56 PC=0x1092dad984 x0=0xffffff9c x1=0x10a2fdfb90 x2=0x0 x3=0x0 x4=0x0 x5=0x38 path=/apex/com.android.art/javalib/core-oj.jar result=0x4
+  syscall 79 PC=0x1092dada84 x0=0xffffff9c x1=0x10a2fd7690 x2=0x7ffff250 x3=0x0 x4=0x38 x5=0x38 path=/apex/com.android.art/javalib/core-libart.jar result=0x0
+  syscall 56 PC=0x1092dad984 x0=0xffffff9c x1=0x10a2fdff10 x2=0x0 x3=0x0 x4=0x0 x5=0x40 path=/apex/com.android.art/javalib/core-libart.jar result=0x4
+  syscall 79 PC=0x1092dada84 x0=0xffffff9c x1=0x10a2fd80d0 x2=0x7ffff250 x3=0x0 x4=0x38 x5=0x38 path=/apex/com.android.i18n/javalib/core-icu4j.jar result=0x0
+  syscall 56 PC=0x1092dad984 x0=0xffffff9c x1=0x10a2fdff10 x2=0x0 x3=0x0 x4=0x0 x5=0x40 path=/apex/com.android.i18n/javalib/core-icu4j.jar result=0x4
+  syscall 270 PC=0x1092daf784 x0=0x1 x1=0x7fffe538 x2=0x1 x3=0x7fffe548 x4=0x1 x5=0x0 [unimplemented]
+  retired guest instructions: 213796180, guest syscalls observed: 4187, thread pointer: 0x1092efbf40
+  stopped at unimplemented guest syscall 270
+  executable reached: yes
+  guest execution wall time: 95469 ms
+  data visible in original Android boot: yes
+  Android guest data committed: yes
+  stock vdc checkpoint commands verified: yes
+
+Public native library preload run
+iOS device 26.0.1 | process 6445 | thermal nominal → nominal
+Android 17 original ART probe
+  syscall 56 PC=0x6005b804 x0=0xffffff9c x1=0x7fffe430 x2=0x80000 x3=0x0 x4=0xc0300c03 x5=0xaaaaaaaa path=/system/lib64/libandroid.so result=0x4
+  syscall 270 PC=0x5e2539784 x0=0x1 x1=0x7fffe538 x2=0x1 x3=0x7fffe548 x4=0x1 x5=0x0 result=0x1000
+  syscall 270 PC=0x5e2539784 x0=0x1 x1=0x7fffe728 x2=0x1 x3=0x7fffe738 x4=0x1 x5=0x0 result=0x1000
+  retired guest instructions: 218098050, guest syscalls observed: 5070, thread pointer: 0x5e57fef40
+  stopped at unimplemented guest syscall 240
+  guest stderr: Error preloading public library libandroid.so: dlopen failed: library "android.hardware.graphics.allocator@2.0.so" not found: needed by /system/lib64/libui.so in namespace system
+  executable reached: yes
+  guest execution wall time: 99743 ms
+
+Regression after ART probe in the same iOS process
+  Android guest data committed: yes
+  stock vdc checkpoint commands verified: yes
+  servicemanager.ready=true verified: yes

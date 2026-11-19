@@ -1,0 +1,30 @@
+Fresh guest data
+  guest output: guest data synced
+  guest PID 43 entered /apex/com.android.sdkext/bin/derive_sdk (guest context u:r:derive_sdk:s0)
+  guest PID 45 entered /system/bin/vold_prepare_subdirs (guest context u:r:vold_prepare_subdirs:s0)
+  guest PID 46 entered /apex/com.android.sdkext/bin/derive_classpath (guest context u:r:derive_classpath:s0)
+<6>init: Service 'derive_sdk' (pid 43) exited with status 0 waiting took 0.072000 seconds
+<6>init: Service 'exec 7 (/system/bin/vdc --wait cryptfs init_user0)' (pid 44) exited with status 0 waiting took 0.621000 seconds
+derive_classpath: WriteClasspathExports /data/system/environ/classpath
+<6>init: Service 'derive_classpath' (pid 46) exited with status 0 waiting took 0.061000 seconds
+<6>init: Command 'exec_start art_boot' action=post-fs-data (/system/etc/init/hw/init.rc:1055) took 0ms and failed: Service not found
+  Android guest data committed: yes
+  stock vdc checkpoint commands verified: yes
+  keystore.module_hash.sent=true verified: yes
+
+Restart on persisted guest data
+  guest output: guest data loaded
+  guest PID 44 entered /apex/com.android.sdkext/bin/derive_sdk (guest context u:r:derive_sdk:s0)
+  guest PID 46 entered /system/bin/vold_prepare_subdirs (guest context u:r:vold_prepare_subdirs:s0)
+  guest PID 47 entered /apex/com.android.sdkext/bin/derive_classpath (guest context u:r:derive_classpath:s0)
+<6>init: Service 'derive_sdk' (pid 44) exited with status 0 waiting took 0.067000 seconds
+<6>init: Service 'exec 7 (/system/bin/vdc --wait cryptfs init_user0)' (pid 45) exited with status 0 waiting took 0.614000 seconds
+derive_classpath: WriteClasspathExports /data/system/environ/classpath
+<6>init: Service 'derive_classpath' (pid 47) exited with status 0 waiting took 0.062000 seconds
+<6>init: Command 'exec_start art_boot' action=post-fs-data (/system/etc/init/hw/init.rc:1055) took 0ms and failed: Service not found
+  Android guest data committed: yes
+  stock vdc checkpoint commands verified: yes
+  keystore.module_hash.sent=true verified: yes
+
+Persisted snapshot includes /data/data, /data/user/0, /data/media/obb and /data/system/environ/classpath.
+Exports contain 10 boot classpath entries, 9 dex2oat boot classpath entries and 2 system server classpath entries.

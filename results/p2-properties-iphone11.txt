@@ -1,0 +1,51 @@
+
+iphone-validation.txt
+iOS device 26.0.1 | thermal nominal → nominal
+Correctness: PASS (5 cases).
+2x throughput gate on both fixtures: PASS
+  guest output: nestvane bionic ready!
+  guest execution wall time: 22 ms
+  init entry reached after 19996203 guest instructions
+  syscall 40 PC=0x106f812c4 x0=0x4001c684 x1=0x4000f19b x2=0x4001c684 x3=0xe x4=0x40014a46 x5=0x128 source=tmpfs target=/apex type=tmpfs [unimplemented]
+  stopped at unimplemented guest syscall 40
+<6>init: init second stage started!
+  guest execution wall time: 9743 ms
+  init property files visible to reader: 768
+  guest output: 37
+arm64-v8a
+  guest execution wall time: 28 ms
+  property reader verified: yes
+
+iphone-repeat-1.txt
+iOS device 26.0.1 | thermal nominal → nominal
+Correctness: PASS (5 cases).
+2x throughput gate on both fixtures: PASS
+  guest output: nestvane bionic ready!
+  guest execution wall time: 22 ms
+  init entry reached after 19996402 guest instructions
+  syscall 40 PC=0x1014dd2c4 x0=0x4001c684 x1=0x4000f19b x2=0x4001c684 x3=0xe x4=0x40014a46 x5=0x128 source=tmpfs target=/apex type=tmpfs [unimplemented]
+  stopped at unimplemented guest syscall 40
+<6>init: init second stage started!
+  guest execution wall time: 8744 ms
+  init property files visible to reader: 768
+  guest output: 37
+arm64-v8a
+  guest execution wall time: 28 ms
+  property reader verified: yes
+
+iphone-repeat-2.txt
+iOS device 26.0.1 | thermal nominal → nominal
+Correctness: PASS (5 cases).
+2x throughput gate on both fixtures: PASS
+  guest output: nestvane bionic ready!
+  guest execution wall time: 22 ms
+  init entry reached after 19996095 guest instructions
+  syscall 40 PC=0x10693f2c4 x0=0x4001c684 x1=0x4000f19b x2=0x4001c684 x3=0xe x4=0x40014a46 x5=0x128 source=tmpfs target=/apex type=tmpfs [unimplemented]
+  stopped at unimplemented guest syscall 40
+<6>init: init second stage started!
+  guest execution wall time: 10699 ms
+  init property files visible to reader: 768
+  guest output: 37
+arm64-v8a
+  guest execution wall time: 30 ms
+  property reader verified: yes
