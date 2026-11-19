@@ -31,6 +31,8 @@ FRAMEWORK_APPS = (
 )
 
 FRAMEWORK_APP_APEXES = ("com.android.extservices", "com.android.mediaprovider", "com.android.permission")
+TETHERING_APEX = "/system/apex/com.android.tethering.apex"
+TETHERING_LOADER = "nestvane-metadata/tethering-netbpfload.elf"
 
 
 def copy_framework_apps(adb, remote, active_modules, guest):
@@ -69,7 +71,8 @@ def replace_line(path, pattern, value):
     path.write_text(updated)
 
 
-def make_framework_root(base, image, guest, defer_zygote_preload, hardware_timeout_multiplier=None):
+def make_framework_root(base, image, guest, defer_zygote_preload, hardware_timeout_multiplier=None,
+                        tethering_loader=None):
     shutil.copytree(base, guest)
     target = guest / "system/framework/arm64"
     for path in target.iterdir():
@@ -79,8 +82,15 @@ def make_framework_root(base, image, guest, defer_zygote_preload, hardware_timeo
         shutil.copyfile(path, target / path.name)
 
     init_rc = guest / "system/etc/init/hw/init.rc"
-    replace_line(init_rc, r"^([ \t]+)trigger load-bpf-programs$",
-                 r"\1# Omitted in the offline framework diagnostic")
+    target = guest / TETHERING_LOADER
+    if tethering_loader is None:
+        target.unlink(missing_ok=True)
+        replace_line(init_rc, r"^([ \t]+)trigger load-bpf-programs$",
+                     r"\1# Omitted in the offline framework diagnostic")
+    else:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(tethering_loader)
+        print(f"Staged Tethering loader SHA-256 {hashlib.sha256(tethering_loader).hexdigest()}", flush=True)
     # The host supplies /data for this profile, so fs_mgr does not queue its normal event.
     replace_line(init_rc, r"^([ \t]+)trigger boot$", r"\1trigger boot\n\1trigger nonencrypted")
     replace_line(guest / "product/etc/build.prop", r"^ro\.dalvik\.vm\.enable_uffd_gc=[^\r\n]*$",
@@ -123,6 +133,8 @@ def main():
                         help="Include launcher, SystemUI and package-management apps from the matching reference")
     parser.add_argument("--smoke-apk", type=Path,
                         help="Stage the APK from tools/build-smoke-apk.sh for an install and launch check")
+    parser.add_argument("--tethering-loader", type=Path,
+                        help="Use the output of tools/build-netbpfload.py and run the standard BPF init actions")
     parser.add_argument("--defer-zygote-preload", action="store_true",
                         help="Use Android's lazy-preload option in the offline framework diagnostic")
     parser.add_argument("--hardware-timeout-multiplier", type=int,
@@ -143,6 +155,19 @@ def main():
                     parser.error("--smoke-apk must contain an Android manifest and DEX")
         except (OSError, ValueError, BadZipFile) as error:
             parser.error(f"Invalid --smoke-apk: {error}")
+    tethering_loader = None
+    if args.tethering_loader is not None:
+        if not args.framework_diagnostic:
+            parser.error("--tethering-loader requires --framework-diagnostic")
+        try:
+            with args.tethering_loader.open("rb") as elf:
+                tethering_loader = elf.read(1024 * 1024 + 1)
+        except OSError as error:
+            parser.error(f"Cannot read --tethering-loader: {error}")
+        if (not 64 <= len(tethering_loader) <= 1024 * 1024 or
+                tethering_loader[:7] != b"\x7fELF\x02\x01\x01" or
+                tethering_loader[16:20] != b"\x03\x00\xb7\x00"):
+            parser.error("--tethering-loader must be an AArch64 position-independent ELF executable")
     if args.hardware_timeout_multiplier is not None:
         if not args.framework_diagnostic or not 1 <= args.hardware_timeout_multiplier <= 0x7fffffff:
             parser.error("--hardware-timeout-multiplier requires --framework-diagnostic and a positive Android int")
@@ -175,6 +200,10 @@ def main():
         if module.get("isActive") == "true" and module.get("isFactory") == "true"
     }
     reference_files = set()
+    if tethering_loader is not None:
+        if active_modules.get("com.android.tethering") != TETHERING_APEX:
+            raise SystemExit("Expected the factory Tethering APEX at " + TETHERING_APEX)
+        reference_files.add(TETHERING_APEX)
     for jar in jars:
         if jar.startswith("/system/"):
             reference_files.add(jar)
@@ -228,7 +257,7 @@ def main():
             if args.framework_diagnostic:
                 guest = Path(temporary) / "guest"
                 make_framework_root(args.root, root, guest, args.defer_zygote_preload,
-                                    args.hardware_timeout_multiplier)
+                                    args.hardware_timeout_multiplier, tethering_loader)
                 if args.framework_apps:
                     copy_framework_apps(adb, remote, active_modules, guest)
                 if args.smoke_apk is not None:

@@ -41,6 +41,7 @@ struct ProbeLinux {
     void mountData(const std::string& databasePath);
     void setCamera(std::shared_ptr<GuestCameraSource> source) { camera = std::move(source); }
     void setGraphicsPipeFactory(GraphicsPipeFactory factory) { graphicsPipeFactory = std::move(factory); }
+    void setTetheringLoader(std::span<const uint8_t> executable) { tetheringLoader = executable; }
     void setApkInbox(std::shared_ptr<GuestApkInbox> inbox) { apkInbox = std::move(inbox); }
     void setGuestTouch(std::shared_ptr<GuestTouch> touch);
     bool syncData();
@@ -335,6 +336,7 @@ private:
     GraphicsPipeFactory graphicsPipeFactory;
     std::shared_ptr<GuestCameraSource> camera;
     std::shared_ptr<GuestApkInbox> apkInbox;
+    std::span<const uint8_t> tetheringLoader;
     bool writeCameraFrame(uint64_t offset, GuestCameraSource::Format format);
     std::shared_ptr<GuestTouch> guestTouch;
     std::weak_ptr<GuestTouch::Reader> guestTouchReader;

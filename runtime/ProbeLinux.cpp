@@ -660,6 +660,17 @@ uint64_t ProbeLinux::mountExt4(const std::string& device, const std::string& pat
         if (imageBytes > 448 * 1024 * 1024 || mountedExt4.size() >= 48) return noMemory;
         try {
             auto parsed = readExt4(loop.bytes);
+            if (!tetheringLoader.empty() && loop.file == "/system/apex/com.android.tethering.apex") {
+                // Use the explicitly staged executable with the system APEX's own linker namespace and metadata.
+                const auto program = parsed.nodes.find("/bin/netbpfload");
+                if (program == parsed.nodes.end() || (program->second.mode & 0170000) != 0100000 ||
+                    !(program->second.mode & 0111)) return invalid;
+                auto& node = program->second;
+                node.size = tetheringLoader.size();
+                node.view = tetheringLoader;
+                node.owned.clear();
+                node.extents.clear();
+            }
             std::string backing("/\0", 2);
             backing += std::to_string(nextMountBacking++);
             cached = mountedExt4.emplace(key, MountedExt4{std::move(backing), std::move(parsed)}).first;

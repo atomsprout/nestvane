@@ -466,6 +466,12 @@ DynamicReport probeInit(const std::string& directory, const std::string& databas
         linux.setGraphicsPipeFactory(std::move(graphics));
         linux.setCamera(std::move(camera));
         linux.setGuestTouch(std::move(touch));
+        if (const auto loader = files.find("/nestvane-metadata/tethering-netbpfload.elf"); loader != files.end()) {
+            const auto bytes = loader->second.bytes();
+            if (bytes.size() > 1024 * 1024 || elfInterpreter(bytes) != "/system/bin/linker64")
+                throw std::runtime_error("invalid staged Tethering loader");
+            linux.setTetheringLoader(bytes);
+        }
         linux.captureAndroidLogs = true;
         if (apkInbox) {
             if (!files.contains(GuestApkInbox::installer) || !files.contains("/system/bin/cmd"))
