@@ -153,6 +153,22 @@ struct Machine {
         return topByteIgnore ? address & 0x00ff'ffff'ffff'ffffULL : address;
     }
     const uint8_t* read(uint64_t address, size_t size, unsigned flags) const;
+
+    const uint8_t* readInstruction(uint64_t address) const {
+        if (address % sizeof(uint32_t)) return nullptr;
+        if (codeHint < segments.size()) {
+            const auto& segment = segments[codeHint];
+            // Most guest instructions are fetched from borrowed, immutable ELF bytes.
+            // Check the current mapping even when the cached index survives a remap.
+            if (segment.imageView && (segment.flags & 1) && address >= segment.address) {
+                const auto offset = address - segment.address;
+                const auto length = segment.mappedSize();
+                if (offset < length && sizeof(uint32_t) <= length - offset)
+                    return segment.imageView + offset;
+            }
+        }
+        return read(address, sizeof(uint32_t), 1);
+    }
     bool readInto(uint64_t address, std::span<uint8_t> output) const;
     bool write(uint64_t address, std::span<const uint8_t> bytes);
     bool load64(uint64_t address, uint64_t& value) const;

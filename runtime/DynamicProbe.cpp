@@ -194,8 +194,8 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
             reachedExecutable = true;
             if (init) report << "  init entry reached after " << cpu.retired << " guest instructions\n";
         }
-        const auto* bytes = machine.read(cpu.pc, sizeof(word), 1);
-        if (cpu.pc % 4 || !bytes) {
+        const auto* bytes = machine.readInstruction(cpu.pc);
+        if (!bytes) {
             machine.fault(cpu.pc, cpu.pc);
             continue;
         }

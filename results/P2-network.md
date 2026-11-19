@@ -391,3 +391,4 @@
 - 原版 `gatekeeperd` 需要进入 `/data/misc/gatekeeper`。客体实现 `chdir`、`fchdir` 和进程工作目录，并让相对路径操作使用该目录。宿主 ABI 回归检查了目录切换、相对打开、`getcwd` 缓冲区长度、`/proc/self/cwd` 和普通文件的错误码。
 - 框架诊断镜像采集同版 Android 17 的原版 `gatekeeperd`、链接依赖和工厂 Gatekeeper HAL APEX。Mac 客体上原版 HAL 按 VINTF 注册，原版守护进程启动。独立 Bionic 进程在 `gatekeeperd` 域查到守护进程和 HAL 服务，在 `system_server` 域查到框架 Gatekeeper 服务。宿主回归和 iPhoneOS Release 构建通过，完整启动仍待真机验证。
 - 保留原客体数据的 iPhone 11 覆盖安装验证中，新进程 8755 使用带 Gatekeeper 和工作目录修复的集成镜像。原版 SurfaceFlinger 在 71.244 秒启动，宿主在 108.614 秒呈现 640×960 的 Android 开机动画。225 秒时客体仍在运行并已进入 Zygote 类预加载。此轮未记录可交互的 Launcher。
+- Mac 在原版 PackageManager 启动期间采样，取指路径占主执行线程的 78/671 个样本。对内存映射的只读 ELF 代码，取指直接使用已核对执行权限和范围的映射索引。相同 Android 17 镜像从空数据库各执行 24 亿条客体指令，修改前两轮为 36.45、35.52 秒，修改后为 33.63、34.39 秒。宿主回归覆盖映射边界、执行权限变更及可写代码更新。此数据来自 Mac，完整 iPhone 启动收益待测。

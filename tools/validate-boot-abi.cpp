@@ -679,6 +679,25 @@ int main() {
         nextPage->flags = 0;
         assert(!adjacent.load64(boundary - 1, loaded) && loaded == expected);
     }
+    {
+        const std::array<uint8_t, 8> instructions{4, 3, 2, 1, 8, 7, 6, 5};
+        Machine mapped(Image{base, {}, {}});
+        Segment view{base, {}, 5, instructions.size()};
+        view.imageView = instructions.data();
+        mapped.insertSegment(std::move(view));
+        assert(mapped.readInstruction(base) == instructions.data());
+        assert(mapped.readInstruction(base + 4) == instructions.data() + 4);
+        assert(!mapped.readInstruction(base + 1) && !mapped.readInstruction(base + 8));
+        mapped.segments.front().flags = 4;
+        assert(!mapped.readInstruction(base));
+        mapped.segments.clear();
+        mapped.insertSegment(Segment{base, {9, 8, 7, 6}, 7});
+        const auto* writableCode = mapped.readInstruction(base);
+        assert(writableCode && writableCode[0] == 9);
+        const std::array<uint8_t, 1> changed{10};
+        assert(mapped.write(base, changed));
+        assert(mapped.readInstruction(base)[0] == 10);
+    }
     ProbeLinux linux(1, 0);
     linux.addDirectory("/test", 0755);
     linux.mount("/system/etc/xtables.lock", {});
