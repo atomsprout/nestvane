@@ -743,6 +743,27 @@ int main() {
         assert(invoke(2, readOnly, key, data) == uint64_t(-1));
         assert(call(57, {readOnly}) == 0);
         assert(create(0) == uint64_t(-22) && create(UINT32_MAX) == uint64_t(-12));
+        const std::array<uint32_t, 5> hashArgs{1, 16, 8, 2, 1}; // BPF_F_NO_PREALLOC
+        assert(machine.write(attr, {reinterpret_cast<const uint8_t*>(hashArgs.data()), sizeof(hashArgs)}));
+        const auto hash = call(280, {0, attr, sizeof(hashArgs)});
+        assert(hash < 256);
+        constexpr auto hashKey = base + 512, hashOut = base + 544;
+        assert(machine.store64(hashKey, 1) && machine.store64(hashKey + 8, 7));
+        assert(invoke(1, hash, hashKey, output) == uint64_t(-2));
+        assert(invoke(2, hash, hashKey, data, 2) == uint64_t(-2));
+        assert(invoke(2, hash, hashKey, data, 1) == 0);
+        assert(invoke(2, hash, hashKey, data, 1) == uint64_t(-17));
+        assert(machine.store64(hashKey + 8, 8) && invoke(2, hash, hashKey, data, 1) == 0);
+        assert(machine.store64(hashKey + 8, 9) && invoke(2, hash, hashKey, data, 1) == uint64_t(-7));
+        assert(invoke(4, hash, 0, hashOut) == 0 && load(hashOut) == 1 && load(hashOut + 8) == 7);
+        assert(invoke(4, hash, hashOut, hashOut) == 0 && load(hashOut + 8) == 8);
+        assert(invoke(4, hash, hashOut, hashOut) == uint64_t(-2));
+        assert(invoke(2, hash, hashOut, UINT64_MAX, 2) == uint64_t(-14));
+        assert(invoke(1, hash, hashOut, output) == 0 && load(output) == expected);
+        assert(invoke(3, hash, hashOut, 0) == 0);
+        assert(invoke(1, hash, hashOut, output) == uint64_t(-2));
+        assert(invoke(3, hash, hashOut, 0) == uint64_t(-2));
+        assert(call(57, {hash}) == 0);
     }
     {
         constexpr auto attr = base + 96;

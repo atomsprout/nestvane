@@ -6,6 +6,8 @@
 #include <chrono>
 #include <cstring>
 #include <ctime>
+#include <iterator>
+#include <new>
 #include <random>
 #include <sstream>
 #include <thread>
@@ -5102,10 +5104,10 @@ bool ProbeLinux::enforceSeccomp(Machine& machine) {
     return true;
 }
 
-uint64_t ProbeLinux::bpfArrayCall(Machine& machine) {
+uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
     constexpr uint64_t fault = uint64_t(-14), tooBig = uint64_t(-7);
     constexpr uint64_t create = 0, lookup = 1, update = 2, erase = 3, nextKey = 4;
-    constexpr uint32_t arrayType = 2, readOnly = 1 << 3, writeOnly = 1 << 4;
+    constexpr uint32_t hashType = 1, arrayType = 2, noPrealloc = 1, readOnly = 1 << 3, writeOnly = 1 << 4;
     constexpr uint64_t capBpf = 1ULL << 39, capSysAdmin = 1ULL << 21;
     constexpr size_t mapBudget = 32 * 1024 * 1024;
     const auto& x = machine.cpu.x;
@@ -5127,29 +5129,35 @@ uint64_t ProbeLinux::bpfArrayCall(Machine& machine) {
         std::array<uint32_t, 5> createFields{};
         std::memcpy(createFields.data(), input.data(), sizeof(createFields));
         const auto [type, keySize, valueSize, entries, flags] = createFields;
-        if (type != arrayType) return uint64_t(-95);
-        if (keySize != sizeof(uint32_t) || !valueSize || !entries ||
-            (flags & ~(readOnly | writeOnly)) || flags == (readOnly | writeOnly))
+        const bool array = type == arrayType;
+        if (!array && type != hashType) return uint64_t(-95);
+        const uint32_t supportedFlags = readOnly | writeOnly | (array ? 0 : noPrealloc);
+        if ((array && keySize != sizeof(uint32_t)) || !keySize || !valueSize || !entries ||
+            (flags & ~supportedFlags) || (flags & (readOnly | writeOnly)) == (readOnly | writeOnly))
             return invalid;
         if (nonzero(20, 28) || nonzero(44, input.size())) return uint64_t(-95);
-        const uint64_t bytes = uint64_t(valueSize) * entries;
-        if (bytes > mapBudget) return uint64_t(-12);
+        const uint64_t entryBytes = uint64_t(valueSize) + (array ? 0 : uint64_t(keySize) + 128);
+        if (entryBytes > mapBudget / entries) return noMemory;
+        const size_t bytes = entryBytes * entries;
         const auto newFd = freeDescriptor();
         if (newFd == descriptorCapacity) return uint64_t(-24);
-        std::erase_if(bpfArrays, [](const auto& entry) { return entry.expired(); });
+        std::erase_if(bpfMaps, [](const auto& entry) { return entry.expired(); });
         size_t allocated = 0;
-        for (const auto& entry : bpfArrays)
-            if (const auto map = entry.lock()) allocated += map->values.size();
-        if (allocated > mapBudget - bytes || bpfArrays.size() >= 256) return uint64_t(-12);
+        for (const auto& entry : bpfMaps)
+            if (const auto map = entry.lock()) allocated += map->budgetBytes;
+        if (allocated > mapBudget - bytes || bpfMaps.size() >= 256) return uint64_t(-12);
         try {
-            auto map = std::make_shared<BpfArray>();
+            auto map = std::make_shared<BpfMap>();
             map->entryCount = entries;
+            map->keySize = keySize;
             map->valueSize = valueSize;
-            map->values.resize(bytes);
+            map->budgetBytes = bytes;
+            map->array = array;
+            if (array) map->values.resize(bytes);
             const uint32_t access = flags & readOnly ? 0 : flags & writeOnly ? 1 : 2;
             Descriptor result{"anon_inode:bpf-map", {}, 0x80000 | access, Node::bpfMap};
-            result.bpfArray = map;
-            bpfArrays.emplace_back(map);
+            result.bpfMap = map;
+            bpfMaps.emplace_back(map);
             descriptors().emplace(newFd, std::move(result));
             return newFd;
         } catch (const std::bad_alloc&) {
@@ -5167,12 +5175,41 @@ uint64_t ProbeLinux::bpfArrayCall(Machine& machine) {
     std::memcpy(&flags, input.data() + 24, sizeof(flags));
     const auto fd = descriptors().find(mapFd);
     if (fd == descriptors().end()) return uint64_t(-9);
-    if (!fd->second.bpfArray) return invalid;
-    const auto& map = *fd->second.bpfArray;
+    if (!fd->second.bpfMap) return invalid;
+    auto& map = *fd->second.bpfMap;
     const auto access = fd->second.flags & 3;
     if ((command == update || command == erase) ? access == 0 : access == 1) return uint64_t(-1);
     if (command == lookup && flags) return invalid;
     if (command == update && flags > 2) return invalid;
+
+    if (!map.array) {
+        try {
+            const bool hasKey = key || command != nextKey;
+            std::vector<uint8_t> bytes(hasKey ? map.keySize : 0);
+            if (hasKey && !machine.readInto(key, bytes)) return fault;
+            const auto entry = hasKey ? map.hash.find(bytes) : map.hash.end();
+            if (command == nextKey) {
+                const auto next = entry == map.hash.end() ? map.hash.begin() : std::next(entry);
+                if (next == map.hash.end()) return uint64_t(-2);
+                return machine.write(value, next->first) ? 0 : fault;
+            }
+            if (command == lookup || command == erase) {
+                if (entry == map.hash.end()) return uint64_t(-2);
+                if (command == lookup) return machine.write(value, entry->second) ? 0 : fault;
+                map.hash.erase(entry);
+                return 0;
+            }
+            if (entry == map.hash.end() && flags == 2) return uint64_t(-2); // BPF_EXIST
+            if (entry != map.hash.end() && flags == 1) return uint64_t(-17); // BPF_NOEXIST
+            if (entry == map.hash.end() && map.hash.size() == map.entryCount) return tooBig;
+            std::vector<uint8_t> replacement(map.valueSize);
+            if (!machine.readInto(value, replacement)) return fault;
+            map.hash.insert_or_assign(std::move(bytes), std::move(replacement));
+            return 0;
+        } catch (const std::bad_alloc&) {
+            return noMemory;
+        }
+    }
 
     uint32_t index = UINT32_MAX;
     if (key || command != nextKey) {
@@ -5185,7 +5222,7 @@ uint64_t ProbeLinux::bpfArrayCall(Machine& machine) {
     }
     if (command == erase) return invalid; // Array entries are allocated at creation.
     if (index >= map.entryCount) return command == update ? tooBig : uint64_t(-2);
-    auto bytes = std::span(fd->second.bpfArray->values).subspan(uint64_t(index) * map.valueSize, map.valueSize);
+    auto bytes = std::span(map.values).subspan(uint64_t(index) * map.valueSize, map.valueSize);
     if (command == lookup) return machine.write(value, bytes) ? 0 : fault;
     if (flags == 1) return uint64_t(-17); // BPF_NOEXIST on a preallocated slot.
     // Read into a temporary buffer so a fault on a later guest page leaves the map unchanged.
@@ -5209,7 +5246,7 @@ bool ProbeLinux::syscall(Machine& machine) {
     const auto descriptor = descriptors().find(uint32_t(x[0]));
     switch (number) {
         case 280: { // bpf
-            if (x[0] <= 4) { x[0] = bpfArrayCall(machine); break; }
+            if (x[0] <= 4) { x[0] = bpfMapCall(machine); break; }
             if (x[0] != 7) return false; // BPF_OBJ_GET
             if (x[2] > pageSize) { x[0] = uint64_t(-7); break; }
             std::array<uint8_t, pageSize> input{};

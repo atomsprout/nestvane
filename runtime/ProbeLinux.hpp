@@ -192,12 +192,15 @@ private:
 
         uint16_t pollEvents() const;
     };
-    struct BpfArray {
-        uint32_t entryCount = 0, valueSize = 0;
+    struct BpfMap {
+        uint32_t entryCount = 0, keySize = 0, valueSize = 0;
+        size_t budgetBytes = 0;
+        bool array = false;
         std::vector<uint8_t> values;
+        std::map<std::vector<uint8_t>, std::vector<uint8_t>> hash;
     };
-    std::vector<std::weak_ptr<BpfArray>> bpfArrays;
-    uint64_t bpfArrayCall(Machine& machine);
+    std::vector<std::weak_ptr<BpfMap>> bpfMaps;
+    uint64_t bpfMapCall(Machine& machine);
     struct Descriptor;
     struct GraphicsRegion {
         uint64_t offset = 0;
@@ -382,7 +385,7 @@ private:
         std::shared_ptr<GraphicsAddressSpace> graphicsAddress{};
         std::shared_ptr<GuestTouch> touch{};
         std::shared_ptr<GuestTouch::Reader> touchReader{};
-        std::shared_ptr<BpfArray> bpfArray{};
+        std::shared_ptr<BpfMap> bpfMap{};
         std::span<const uint8_t> contents() const { return ext4File ? ext4File->bytes() : bytes; }
         uint64_t contentSize() const { return ext4File ? ext4File->size : bytes.size(); }
         static constexpr uint32_t mutableStatus = 0xc00; // O_APPEND and O_NONBLOCK
