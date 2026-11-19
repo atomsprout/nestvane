@@ -79,6 +79,15 @@ int main() {
         std::memcpy(permute.cpu.v[0].data(), roundSingles.data(), sizeof(roundSingles));
         assert(executeStartupInstruction(permute, 0x2e218800)); // frinta v0.2s, v0.2s
         assert(std::memcmp(permute.cpu.v[0].data(), roundSinglesResult.data(), sizeof(roundSinglesResult)) == 0);
+        const std::array<uint64_t, 2> negateDoubles{0, 0xfff0000000000000ULL};
+        const std::array<uint64_t, 2> negateDoublesResult{0x8000000000000000ULL, 0x7ff0000000000000ULL};
+        std::memcpy(permute.cpu.v[0].data(), negateDoubles.data(), sizeof(negateDoubles));
+        assert(executeStartupInstruction(permute, 0x6ee0f800)); // fneg v0.2d, v0.2d
+        assert(std::memcmp(permute.cpu.v[0].data(), negateDoublesResult.data(), sizeof(negateDoublesResult)) == 0);
+        const std::array<float, 4> negateSingles{-0.0f, 2.5f, 17, 42}, negateSinglesResult{0.0f, -2.5f, 0, 0};
+        std::memcpy(permute.cpu.v[4].data(), negateSingles.data(), sizeof(negateSingles));
+        assert(executeStartupInstruction(permute, 0x2ea0f883)); // fneg v3.2s, v4.2s
+        assert(std::memcmp(permute.cpu.v[3].data(), negateSinglesResult.data(), sizeof(negateSinglesResult)) == 0);
         const double half = -2.5, beyondSignedMax = 0x1p63;
         std::memcpy(permute.cpu.v[5].data(), &half, sizeof(half));
         assert(executeStartupInstruction(permute, 0x9e6400a9)); // fcvtas x9, d5

@@ -480,6 +480,13 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
                 : std::bit_cast<uint32_t>(roundToIntegral(std::bit_cast<float>(uint32_t(bits))));
             setLane(result, i, size, rounded);
         }
+    } else if ((word & 0xbfbffc00) == 0x2ea0f800) { // FNEG (vector).
+        const bool wide = word & 0x400000;
+        if (wide && width == 8) return false;
+        size = wide ? 8 : 4;
+        const auto sign = uint64_t{1} << (size * 8 - 1);
+        for (unsigned i = 0; i < width / size; ++i)
+            setLane(result, i, size, lane(source, i, size) ^ sign);
     } else if ((word & 0xbf3ffc00) == 0x0e209800) { // CMEQ (zero).
         for (unsigned i = 0; i < width / size; ++i) {
             setLane(result, i, size, lane(source, i, size) == 0 ? UINT64_MAX : 0);
