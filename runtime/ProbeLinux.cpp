@@ -4398,12 +4398,41 @@ bool ProbeLinux::poll(Machine& machine) {
     return complete(!length || machine.write(x[0], bytes) ? ready : uint64_t(-14));
 }
 
-std::string ProbeLinux::workerReport() const {
+std::string ProbeLinux::workerReport(const Machine& machine) const {
     std::string report;
     for (const auto& [path, tid] : propertyPollers) {
         report += "  guest worker " + std::to_string(tid) + " waited in epoll for " + path + "\n";
     }
-    return report + binderTrace;
+    std::ostringstream tasks;
+    for (const auto& [tid, thread] : threads) {
+        const auto& process = *thread.process;
+        if (thread.wait == Wait::exited) continue;
+        if (process.executable != "/system/bin/bootanimation" &&
+            process.executable != "/system/bin/surfaceflinger" &&
+            !process.executable.starts_with("/vendor/bin/hw/android.hardware.graphics.") &&
+            process.programName != "system_server") continue;
+        const auto& cpu = tid == currentTid ? machine.cpu : thread.saved;
+        const auto end = std::find(thread.name.begin(), thread.name.end(), uint8_t{0});
+        const std::string_view name(reinterpret_cast<const char*>(thread.name.data()), end - thread.name.begin());
+        tasks << "  guest task " << process.id << '/' << tid << ' ' << process.executable << ' ' << name;
+        switch (thread.wait) {
+            case Wait::none: tasks << " runnable"; break;
+            case Wait::poll:
+                tasks << " poll syscall=" << cpu.x[8] << " arg0=" << cpu.x[0];
+                if (cpu.x[8] == 29 || cpu.x[8] == 63 || cpu.x[8] == 64) {
+                    auto fd = process.descriptors.find(uint32_t(cpu.x[0]));
+                    if (fd != process.descriptors.end()) tasks << " fd=" << fd->second.path;
+                }
+                break;
+            case Wait::futex: tasks << " futex=0x" << std::hex << thread.futexAddress << std::dec; break;
+            case Wait::signal: tasks << " signal"; break;
+            case Wait::sleep: tasks << " sleeping"; break;
+            case Wait::suspended: tasks << " suspended"; break;
+            case Wait::exited: break;
+        }
+        tasks << " PC=0x" << std::hex << cpu.pc << " LR=0x" << cpu.x[30] << std::dec << '\n';
+    }
+    return report + tasks.str() + binderTrace;
 }
 
 uint64_t ProbeLinux::openPty(Descriptor& fd) {

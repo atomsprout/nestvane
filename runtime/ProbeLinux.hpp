@@ -46,7 +46,7 @@ struct ProbeLinux {
                   std::chrono::steady_clock::time_point::max()) {
         return machine.cpu.retired < sliceEnd || switchThread(machine, deadline);
     }
-    std::string workerReport() const;
+    std::string workerReport(const Machine& machine) const;
     void setBootContext(std::string context);
     void setCommandLine(const Startup& startup);
     bool loadBootTransition(std::string_view manifest);

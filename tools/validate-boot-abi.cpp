@@ -181,6 +181,11 @@ int main() {
         assert(executeStartupInstruction(permute, 0x6e254082)); // raddhn2 v2.16b, v4.8h, v5.8h
         const std::array<uint8_t, 16> duplicatedSum{0, 0, 1, 1, 1, 2, 2, 1, 0, 0, 1, 1, 1, 2, 2, 1};
         assert(permute.cpu.v[2] == duplicatedSum);
+        const std::array<float, 4> squareInput{2.25f, -0.0f, 6.0f, 8.0f};
+        const std::array<float, 4> squareRoot{1.5f, -0.0f, 0.0f, 0.0f};
+        std::memcpy(permute.cpu.v[0].data(), squareInput.data(), sizeof(squareInput));
+        assert(executeStartupInstruction(permute, 0x2ea1f800)); // fsqrt v0.2s, v0.2s
+        assert(std::memcmp(permute.cpu.v[0].data(), squareRoot.data(), sizeof(squareRoot)) == 0);
         const double half = -2.5, beyondSignedMax = 0x1p63;
         std::memcpy(permute.cpu.v[5].data(), &half, sizeof(half));
         assert(executeStartupInstruction(permute, 0x9e6400a9)); // fcvtas x9, d5

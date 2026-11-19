@@ -231,6 +231,7 @@ int main(int argc, char** argv) {
             }, std::move(factory));
         }();
         std::fputs(report.report.c_str(), stdout);
+        std::fflush(stdout);
         destroy();
         return report.passed ? 0 : 1;
     }

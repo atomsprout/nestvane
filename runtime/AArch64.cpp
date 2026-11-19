@@ -546,6 +546,17 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
         const auto sign = uint64_t{1} << (size * 8 - 1);
         for (unsigned i = 0; i < width / size; ++i)
             setLane(result, i, size, lane(source, i, size) ^ sign);
+    } else if ((word & 0xbfbffc00) == 0x2ea1f800) { // FSQRT (vector).
+        const bool wide = word & 0x400000;
+        if (wide && width == 8) return false;
+        size = wide ? 8 : 4;
+        for (unsigned i = 0; i < width / size; ++i) {
+            const auto bits = lane(source, i, size);
+            const uint64_t root = wide
+                ? std::bit_cast<uint64_t>(std::sqrt(std::bit_cast<double>(bits)))
+                : std::bit_cast<uint32_t>(std::sqrt(std::bit_cast<float>(uint32_t(bits))));
+            setLane(result, i, size, root);
+        }
     } else if ((word & 0xbffffc00) == 0x0e617800) { // FCVTL / FCVTL2 from S to D.
         const unsigned first = width == 16 ? 2 : 0;
         for (unsigned i = 0; i < 2; ++i) {

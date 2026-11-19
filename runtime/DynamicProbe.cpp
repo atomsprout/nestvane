@@ -289,7 +289,7 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
     } else {
         report << "  guest instruction limit reached at PC=0x" << std::hex << cpu.pc << std::dec << '\n';
     }
-    report << linux.workerReport();
+    report << linux.workerReport(machine);
     if (!linux.stderrOutput.empty()) report << "  guest stderr: " << linux.stderrOutput;
     if (!linux.kernelOutput.empty()) report << "  guest kernel log:\n" << linux.kernelOutput;
     if (!linux.recentKernelOutput.empty())
