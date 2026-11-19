@@ -70,7 +70,8 @@ struct ProbeLinux {
     bool loadServicePolicy(std::string_view manifest, bool hardware);
     bool loadKeystorePolicy(std::string_view manifest, bool key = false);
     bool loadFsCreatePolicy(std::string_view manifest);
-    bool loadAppDataLabelTypes(std::string_view rules);
+    bool loadSeappContexts(std::string_view rules);
+    bool loadAppTransitionDomains(std::string_view domains);
     bool hasChildEntryAt(uint64_t pc) const {
         const auto& process = *current->process;
         return process.pendingEntry == pc && process.id != pid;
@@ -533,6 +534,8 @@ private:
     bool dataPath(std::string_view path) const;
     std::string newFileContext(std::string_view path) const;
     bool validAppDataContext(std::string_view label) const;
+    bool validAppProcessContext(std::string_view label) const;
+    bool canSpecializeApp(std::string_view label) const;
     bool canAccessParent(std::string_view path, bool modify) const;
     uint64_t renameFile(Machine& machine);
     uint64_t renameDirectory(const std::string& source, const std::string& destination, bool noReplace);
@@ -691,11 +694,17 @@ private:
     };
     std::map<std::string, BootTransition, std::less<>> bootTransitions;
     std::map<std::string, std::set<std::string, std::less<>>, std::less<>> currentContextTransitions;
-    std::set<std::string, std::less<>> appDataLabelTypes;
+    std::set<std::string, std::less<>> appDataLabelTypes, appTransitionDomains;
+    struct AppLabelRule {
+        std::string user;
+        bool appCategories, userCategories;
+    };
+    std::map<std::string, std::vector<AppLabelRule>, std::less<>> appLabelRules;
     std::map<std::string, std::string, std::less<>> kernelFiles;
     std::string ashmemBootPath;
     struct AccessClass {
         uint32_t mask = 0;
+        bool applicationService = false;
         std::map<std::pair<std::string, std::string>, std::string> decisions;
     };
     std::map<uint32_t, AccessClass> accessClasses;

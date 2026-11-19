@@ -11,6 +11,8 @@ import tempfile
 from xml.etree import ElementTree
 from zipfile import BadZipFile, ZipFile
 
+from android_policy import capture_framework_app_policy
+
 
 FRAMEWORK_APPS = (
     # PackageManager resolves this required shared library from its factory APK.
@@ -266,6 +268,7 @@ def main():
                                     args.hardware_timeout_multiplier, tethering_loader)
                 if args.framework_apps:
                     copy_framework_apps(adb, remote, active_modules, guest)
+                    capture_framework_app_policy(adb, remote, guest)
                 if args.smoke_apk is not None:
                     target = guest / "system/etc/nestvane/smoke.apk"
                     target.parent.mkdir(parents=True, exist_ok=True)

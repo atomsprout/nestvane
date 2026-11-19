@@ -17,6 +17,70 @@ using namespace nestvane;
 
 int main() {
     {
+        ProbeLinux guest(1, 0);
+        constexpr uint64_t base = 0x2000, path = base + 0x20, payload = base + 0x140, reply = base + 0x220;
+        Machine task(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
+        guest.setBootContext("u:r:zygote:s0");
+        assert(guest.loadSeappContexts(
+            "user=_app domain=untrusted_app_34 type=app_data_file levelFrom=all\n"
+            "user=_app domain=platform_app type=app_data_file levelFrom=user\n"
+            "user=system domain=system_app type=system_app_data_file\n"));
+        assert(!guest.loadAppTransitionDomains("untrusted_app_34\nunknown_app\n"));
+        assert(guest.loadAppTransitionDomains("untrusted_app_34\nplatform_app\nsystem_app\n"));
+        assert(guest.loadServicePolicy(
+            "7 1 2 3\n"
+            "u:r:untrusted_app_34:s0 u:object_r:activity_service:s0 2 ffffffff 0 ffffffff 1 0\n"
+            "u:r:untrusted_app_34:s0 u:object_r:vold_service:s0 0 ffffffff 0 ffffffff 1 0\n", false));
+        const auto call = [&](uint64_t number, std::array<uint64_t, 6> args) {
+            std::copy(args.begin(), args.end(), task.cpu.x.begin());
+            task.cpu.x[8] = number;
+            assert(guest.syscall(task));
+            return task.cpu.x[0];
+        };
+        const auto copy = [&](uint64_t destination, std::string_view value) {
+            const auto* bytes = reinterpret_cast<const uint8_t*>(value.data());
+            assert(task.write(destination, {bytes, value.size()}));
+            const uint8_t nul = 0;
+            assert(task.write(destination + value.size(), {&nul, 1}));
+        };
+        const auto open = [&](std::string_view file) {
+            copy(path, file);
+            const auto fd = call(56, {uint32_t(-100), path, 2});
+            assert(fd < 256);
+            return fd;
+        };
+        const auto write = [&](uint64_t fd, std::string_view value) {
+            copy(payload, value);
+            return call(64, {fd, payload, value.size() + 1});
+        };
+        constexpr std::string_view target = "u:r:untrusted_app_34:s0:c159,c256,c512,c768";
+        auto current = open("/proc/self/attr/current");
+        assert(write(current, target) == uint64_t(-13)); // The zygote must remain unchanged.
+        const auto child = call(220, {0x1200011, 0, 0, 0, base + 0x310});
+        assert(child > 1 && guest.schedule(task) && guest.processId() == child);
+        assert(call(147, {10159, 10159, 10159}) == 0);
+        assert(write(current, target) == uint64_t(-1)); // The inherited FD names the parent's task.
+        current = open("/proc/self/attr/current");
+        const auto context = open("/sys/fs/selinux/context");
+        assert(write(context, target) == target.size() + 1);
+        assert(write(context, "u:r:missing_app:s0") == uint64_t(-22));
+        assert(write(current, "u:r:untrusted_app_34:s0:c160,c256,c512,c768") == uint64_t(-13));
+        assert(write(current, "u:r:system_app:s0") == uint64_t(-13));
+        assert(write(current, target) == target.size() + 1);
+        assert(write(current, "u:r:platform_app:s0:c512,c768") == uint64_t(-13));
+        assert(call(63, {current, reply, 128}) == target.size() + 1);
+        assert(std::memcmp(task.read(reply, target.size(), 4), target.data(), target.size()) == 0);
+        const auto access = open("/sys/fs/selinux/access");
+        const auto decision = [&](std::string_view service, uint8_t allow) {
+            const auto query = std::string(target) + " u:object_r:" + std::string(service) + ":s0 7 2";
+            assert(write(access, query) == query.size() + 1);
+            assert(call(63, {access, reply, 128}) > 6);
+            assert(*task.read(reply, 1, 4) == allow);
+        };
+        decision("activity_service", '2');
+        decision("vold_service", '0');
+    }
+    {
         using Result = GuestApkInbox::Result;
         GuestApkInbox inbox;
         std::vector<Result> outcomes;
@@ -4073,7 +4137,7 @@ int main() {
         assert(writer.loadFsCreatePolicy(
             "2 19\nu:r:init:s0 u:r:init:s0 40000 ffffffff 0 ffffffff 1 0\n"
             "u:r:shell:s0 u:r:shell:s0 0 ffffffff 0 ffffffff 1 0\n"));
-        assert(writer.loadAppDataLabelTypes(
+        assert(writer.loadSeappContexts(
             "# reference seapp policy\nuser=_app domain=untrusted_app type=app_data_file levelFrom=all\n"));
         put(firstPath, "/sys/fs/selinux/context");
         const auto validate = invoke(writer, 56, {atCwd, firstPath, 2});

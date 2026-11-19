@@ -567,9 +567,14 @@ service nestvane-apk-install /system/bin/nestvane-apk-install
                                 "/odm/etc/selinux/odm_seapp_contexts"}) {
             if (const auto policy = files.find(path); policy != files.end()) {
                 const auto bytes = policy->second.bytes();
-                if (!linux.loadAppDataLabelTypes({reinterpret_cast<const char*>(bytes.data()), bytes.size()}))
+                if (!linux.loadSeappContexts({reinterpret_cast<const char*>(bytes.data()), bytes.size()}))
                     throw std::runtime_error("invalid seapp file label types");
             }
+        }
+        if (const auto policy = files.find("/nestvane-metadata/selinux-app-transition.txt"); policy != files.end()) {
+            const auto bytes = policy->second.bytes();
+            if (!linux.loadAppTransitionDomains({reinterpret_cast<const char*>(bytes.data()), bytes.size()}))
+                throw std::runtime_error("invalid app process transition policy");
         }
         for (const auto hardware : {false, true}) {
             const auto path = hardware ? "/nestvane-metadata/selinux-hwservice-access.txt" :

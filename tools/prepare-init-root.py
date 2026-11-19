@@ -8,6 +8,8 @@ import subprocess
 import tempfile
 from xml.etree import ElementTree
 
+from android_policy import query_access
+
 
 BOOT_APEX_MODULES = ("runtime", "i18n", "sdkext", "art", "tzdata", "os.statsd", "tethering", "conscrypt", "adbd")
 
@@ -463,27 +465,8 @@ def collect(serial, readelf, destination, small_art_heap):
                 queries = sorted((source, source) for source in sources)
             else:
                 queries = sorted((source, target) for source in sources for target in contexts)
-            input_rows = "\n".join(f"{source} {target}" for source, target in queries)
-            query_script = f"""while read -r source target; do
-  if exec 3<>/sys/fs/selinux/access; then
-    if printf '%s %s {index} {requested:x}' "$source" "$target" >&3; then
-      decision=
-      read -r decision <&3 || true
-      printf '%s %s %s\n' "$source" "$target" "$decision"
-    fi
-    exec 3>&-
-  fi
-done <<'NESTVANE_LABELS'
-{input_rows}
-NESTVANE_LABELS
-"""
-            queried = subprocess.run(adb + ["shell", "sh"], input=query_script,
-                                     text=True, capture_output=True, check=True)
-            rows = [line for line in queried.stdout.splitlines() if re.fullmatch(
-                r"u:r:[a-z0-9_]+:s0 u:(?:object_r|r):[a-z0-9_]+:s0(?: [0-9a-f]+){4} [0-9]+ [0-9a-f]+",
-                line)]
-            if [tuple(row.split()[:2]) for row in rows] != queries:
-                raise SystemExit(f"Incomplete reference SELinux decisions for {name}")
+            decisions = query_access(adb, index, requested, queries)
+            rows = [f"{source} {target} {decision}" for (source, target), decision in decisions.items()]
             header = " ".join(map(str, (index, *positions)))
             (manifest.parent / f"selinux-{output}-access.txt").write_text(
                 header + "\n" + "\n".join(rows) + "\n")

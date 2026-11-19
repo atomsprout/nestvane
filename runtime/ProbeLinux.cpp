@@ -1009,7 +1009,7 @@ std::optional<ProbeLinux::Descriptor> ProbeLinux::find(std::string_view path, ui
         entry.securityReply = std::make_shared<std::string>();
         return entry;
     }
-    if (path == "/sys/fs/selinux/context" && (!currentContextTransitions.empty() || !appDataLabelTypes.empty()))
+    if (path == "/sys/fs/selinux/context" && (!currentContextTransitions.empty() || !appDataLabelTypes.empty() || !appTransitionDomains.empty()))
         return Descriptor{std::string(path), {}, flags, Node::securityValidate};
     if (path == "/proc/self/cmdline") {
         Descriptor entry{std::string(path), {}, flags, Node::regular};
@@ -4113,12 +4113,13 @@ uint64_t ProbeLinux::writeDescriptor(Machine& machine, const Descriptor& fd, uin
             const bool known = currentContextTransitions.contains(label) ||
                 std::any_of(currentContextTransitions.begin(), currentContextTransitions.end(),
                             [&](const auto& transition) { return transition.second.contains(label); });
-            return known || validAppDataContext(label) ? size : invalid;
+            return known || validAppDataContext(label) || validAppProcessContext(label) ? size : invalid;
         }
         if (fd.targetProcess != processId() || *fd.offset) return uint64_t(-1);
         auto& process = *current->process;
         const auto known = currentContextTransitions.find(process.context);
-        if (known == currentContextTransitions.end() || !known->second.contains(label)) return uint64_t(-13);
+        if ((known == currentContextTransitions.end() || !known->second.contains(label)) && !canSpecializeApp(label))
+            return uint64_t(-13);
         if (std::any_of(threads.begin(), threads.end(), [&](const auto& task) {
                 return task.first != currentTid && task.second.process == current->process && task.second.wait != Wait::exited;
             })) return uint64_t(-13);
@@ -4154,7 +4155,12 @@ uint64_t ProbeLinux::writeDescriptor(Machine& machine, const Descriptor& fd, uin
             if (!(query >> std::hex >> mask) || (query >> trailing)) return invalid;
             const auto access = accessClasses.find(type);
             if (access == accessClasses.end() || !mask || (mask & ~access->second.mask)) return uint64_t(-95);
-            const auto decision = access->second.decisions.find({source, object});
+            auto decision = access->second.decisions.find({source, object});
+            if (decision == access->second.decisions.end() && access->second.applicationService &&
+                validAppProcessContext(source)) {
+                const auto end = source.find(':', 4);
+                decision = access->second.decisions.find({source.substr(0, end) + ":s0", object});
+            }
             if (decision == access->second.decisions.end()) return uint64_t(-95);
             *fd.securityReply = decision->second;
         }
@@ -4596,31 +4602,13 @@ bool ProbeLinux::loadKeystorePolicy(std::string_view manifest, bool key) {
     return loadAccessClass(manifest, "keystore2", permissions);
 }
 
-bool ProbeLinux::loadAppDataLabelTypes(std::string_view rules) {
-    if (rules.size() > 1024 * 1024) return false;
-    std::istringstream lines{std::string(rules)};
-    for (std::string line; std::getline(lines, line);) {
-        if (const auto comment = line.find('#'); comment != std::string::npos) line.resize(comment);
-        std::istringstream fields(line);
-        for (std::string field; fields >> field;) {
-            if (field == "neverallow") break;
-            if (!field.starts_with("type=")) continue;
-            const auto type = std::string_view(field).substr(5);
-            if (type.empty() || type.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789_") != std::string_view::npos)
-                return false;
-            appDataLabelTypes.emplace(type);
-        }
-    }
-    return true;
+namespace {
+
+bool validPolicyName(std::string_view name) {
+    return !name.empty() && name.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789_") == std::string_view::npos;
 }
 
-bool ProbeLinux::validAppDataContext(std::string_view label) const {
-    constexpr std::string_view prefix = "u:object_r:";
-    if (!label.starts_with(prefix)) return false;
-    label.remove_prefix(prefix.size());
-    const auto typeEnd = label.find(':');
-    if (typeEnd == std::string_view::npos || !appDataLabelTypes.contains(label.substr(0, typeEnd))) return false;
-    label.remove_prefix(typeEnd + 1);
+bool validAppMlsRange(std::string_view label) {
     if (label == "s0") return true;
     if (!label.starts_with("s0:")) return false;
     label.remove_prefix(3);
@@ -4646,6 +4634,123 @@ bool ProbeLinux::validAppDataContext(std::string_view label) const {
         label.remove_prefix(comma + 1);
     }
     return false;
+}
+
+} // namespace
+
+bool ProbeLinux::loadSeappContexts(std::string_view rules) {
+    if (rules.size() > 1024 * 1024) return false;
+    std::istringstream lines{std::string(rules)};
+    for (std::string line; std::getline(lines, line);) {
+        if (const auto comment = line.find('#'); comment != std::string::npos) line.resize(comment);
+        std::istringstream fields(line);
+        bool separateLauncher = false;
+        std::string typeName, domainName, userName, levelName = "none";
+        std::string explicitLevel;
+        for (std::string field; fields >> field;) {
+            if (field == "neverallow") { separateLauncher = true; break; }
+            if (field.starts_with("type=")) typeName = field.substr(5);
+            else if (field.starts_with("domain=")) domainName = field.substr(7);
+            else if (field.starts_with("user=")) userName = field.substr(5);
+            else if (field.starts_with("levelFrom=")) levelName = field.substr(10);
+            else if (field.starts_with("level=")) explicitLevel = field.substr(6);
+            else if (field == "isSystemServer=true" || field == "fromRunAs=true") separateLauncher = true;
+        }
+        if (!typeName.empty()) {
+            if (!validPolicyName(typeName)) return false;
+            appDataLabelTypes.insert(std::move(typeName));
+        }
+        if (separateLauncher || domainName.empty() || userName.empty()) continue;
+        if (!validPolicyName(domainName) || !validPolicyName(userName)) return false;
+        if (!explicitLevel.empty() && explicitLevel != "s0") continue;
+        if (levelName != "none" && levelName != "app" && levelName != "user" && levelName != "all") return false;
+        appLabelRules[domainName].push_back({std::move(userName), levelName == "app" || levelName == "all",
+                                            levelName == "user" || levelName == "all"});
+    }
+    return true;
+}
+
+bool ProbeLinux::loadAppTransitionDomains(std::string_view domains) {
+    if (domains.size() > 8192 || !appTransitionDomains.empty()) return false;
+    decltype(appTransitionDomains) allowed;
+    std::istringstream lines{std::string(domains)};
+    for (std::string domain; std::getline(lines, domain);) {
+        if (!validPolicyName(domain) || !appLabelRules.contains(domain) || !allowed.insert(domain).second)
+            return false;
+    }
+    if (allowed.empty()) return false;
+    appTransitionDomains = std::move(allowed);
+    return true;
+}
+
+bool ProbeLinux::validAppDataContext(std::string_view label) const {
+    constexpr std::string_view prefix = "u:object_r:";
+    if (!label.starts_with(prefix)) return false;
+    label.remove_prefix(prefix.size());
+    const auto end = label.find(':');
+    return end != std::string_view::npos && appDataLabelTypes.contains(label.substr(0, end)) &&
+        validAppMlsRange(label.substr(end + 1));
+}
+
+bool ProbeLinux::validAppProcessContext(std::string_view label) const {
+    constexpr std::string_view prefix = "u:r:";
+    if (!label.starts_with(prefix)) return false;
+    label.remove_prefix(prefix.size());
+    const auto end = label.find(':');
+    return end != std::string_view::npos && appTransitionDomains.contains(label.substr(0, end)) &&
+        validAppMlsRange(label.substr(end + 1));
+}
+
+bool ProbeLinux::canSpecializeApp(std::string_view label) const {
+    constexpr std::string_view zygote = "u:r:zygote:s0";
+    const auto& process = *current->process;
+    if (process.context != zygote || !validAppProcessContext(label)) return false;
+    const auto parent = threads.find(process.parent);
+    if (parent == threads.end() || parent->second.process->context != zygote || parent->second.process->userIds[0] != 0)
+        return false;
+    const auto uid = userId();
+    if (!uid || !std::ranges::all_of(process.userIds, [uid](auto id) { return id == uid; })) return false;
+
+    constexpr unsigned userOffset = 100000, appStart = 10000, sdkStart = 20000, pccStart = 30000,
+                       pccEnd = 39999, isolatedStart = 90000;
+    const auto user = uid / userOffset;
+    auto app = uid % userOffset;
+    std::string_view androidUser;
+    if (app >= isolatedStart) {
+        androidUser = "_isolated";
+        app -= isolatedStart;
+    } else if (app >= pccStart && app <= pccEnd) {
+        androidUser = "_pcc_component";
+    } else if (app >= sdkStart && app < pccStart) {
+        androidUser = "_sdksandbox";
+        app -= sdkStart;
+    } else if (app >= appStart && app < sdkStart) {
+        androidUser = "_app";
+        app -= appStart;
+    } else {
+        constexpr std::pair<unsigned, std::string_view> users[] = {
+            {1000, "system"}, {1001, "radio"}, {1002, "bluetooth"}, {1027, "nfc"}, {1037, "shared_relro"},
+            {1053, "webview_zygote"}, {1068, "secure_element"}, {1073, "network_stack"}, {2000, "shell"},
+        };
+        for (const auto& [id, name] : users) {
+            if (app == id) { androidUser = name; break; }
+        }
+        if (androidUser.empty()) return false;
+    }
+    label.remove_prefix(4);
+    const auto typeEnd = label.find(':');
+    const auto rules = appLabelRules.find(label.substr(0, typeEnd));
+    return std::ranges::any_of(rules->second, [&](const auto& rule) {
+        if (rule.user != androidUser) return false;
+        std::string expected = "s0";
+        const auto append = [&](unsigned low, unsigned high, unsigned value) {
+            expected += expected.size() == 2 ? ":c" : ",c";
+            expected += std::to_string(low + (value & 255)) + ",c" + std::to_string(high + ((value >> 8) & 255));
+        };
+        if (rule.appCategories) append(0, 256, app);
+        if (rule.userCategories) append(512, 768, user);
+        return label.substr(typeEnd + 1) == expected;
+    });
 }
 
 std::string ProbeLinux::newFileContext(std::string_view path) const {
@@ -4683,6 +4788,7 @@ bool ProbeLinux::loadAccessClass(std::string_view manifest, std::string_view nam
         declared != kernelFiles.end() && declared->second != std::to_string(type)) return false;
     std::vector<uint32_t> positions;
     AccessClass access;
+    access.applicationService = name == "service_manager" || name == "hwservice_manager";
     for (size_t i = 0; i < permissions.size(); ++i) {
         uint32_t position = 0;
         if (!(stream >> position) || !position || position > 32) return false;
