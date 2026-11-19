@@ -111,7 +111,13 @@ def make_framework_root(base, image, guest, defer_zygote_preload, hardware_timeo
         drivers = {"ro.hardware.egl": "emulation", "ro.hardware.gralloc": "ranchu",
                    "ro.boot.qemu.gltransport.name": "pipe"}
         if (guest / "vendor/bin/hw/android.hardware.camera.provider.ranchu").is_file():
-            drivers["ro.boot.qemu.camera_protocol_ver"] = "1"
+            # Android derives ro.boot.* in init from the kernel bootconfig.
+            (guest / "nestvane-metadata").mkdir(parents=True, exist_ok=True)
+            (guest / "nestvane-metadata/bootconfig").write_text('androidboot.qemu.camera_protocol_ver = "1"\n')
+            (guest / "system/etc/init/nestvane-camera.rc").write_text(
+                "on property:ro.hardware.gralloc=ranchu\n"
+                "    start vendor.camera-provider-ranchu\n"
+            )
         for key, value in drivers.items():
             if not re.search(rf"^{re.escape(key)}=", values, flags=re.MULTILINE):
                 values += f"\n{key}={value}"

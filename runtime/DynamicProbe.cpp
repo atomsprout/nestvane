@@ -507,6 +507,7 @@ service nestvane-apk-install /system/bin/nestvane-apk-install
                 "mmap APK: ", "PackageManager: Failed to parse", "PackageManager: Time to scan packages",
                 "PackageManager: Failed to create app data", "PackageManager: reconcileAppsData",
                 "installd: Failed to restorecon", "ActivityTaskManager: Displayed com.android.launcher3/",
+                "CameraProviderManager: Adding new camera device:", "CameraService: addStates",
                 "NestvaneSmoke: ", "ActivityTaskManager: Displayed dev.nestvane.smoke/",
                 "SurfaceFlinger: SurfaceFlinger is starting", "SurfaceFlinger: Using HWComposer service",
                 "SurfaceFlinger: OpenGL ES informations", "mapper.ranchu: GoldfishAddressSpace",
@@ -544,6 +545,8 @@ service nestvane-apk-install /system/bin/nestvane-apk-install
         }
         if (!databasePath.empty()) linux.mountData(databasePath);
         for (const auto& [path, file] : files) linux.mount(path, file.bytes());
+        if (const auto bootconfig = files.find("/nestvane-metadata/bootconfig"); bootconfig != files.end())
+            linux.mount("/proc/bootconfig", bootconfig->second.bytes());
         if (auto profile = files.find("/nestvane-metadata/selinux-process-transition.txt"); profile != files.end()) {
             const auto bytes = profile->second.bytes();
             if (!linux.loadBootTransition({reinterpret_cast<const char*>(bytes.data()), bytes.size()}))
