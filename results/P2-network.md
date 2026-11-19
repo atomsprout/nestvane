@@ -64,3 +64,5 @@
 - Mac 确认原版 `libcompiler_rt.so` 和 `libhttpengine.so` 均加载成功。下一处不支持的 `MOVI` 填一移位已补齐，并补采了参考分区的 `compatconfig`。采集测试验证了 `libcompiler_rt.so` 与本次诊断镜像逐字节一致。[运行记录](p2-zygote-eager.txt)
 
 - iPhone 11 的常规 Zygote 已完成资源预加载，实测从原版路径加载了 Perfetto JNI。该构建停在缺少 `libcompiler_rt.so`，随后被 Zygote 重启流程带到诊断时限。Mac 确认补齐该库后可加载 HTTP 引擎并读取 333 条兼容规则。下一条 `SMAX` 已补齐，共享目录别名下的 `stat` 和 `access` 查找也有回归覆盖。[运行记录](p2-zygote-eager.txt)
+
+- iPhone 11 复测确认常规预加载成功加载 `libcompiler_rt.so` 和 HTTP 引擎，读取 334 条兼容规则。真机运行约 372 秒后停在 `USUBL`。宿主回归和 Mac 启动测试已越过该指令，随后停在向量按元素乘法。新增 CLI 实时启动日志和 iOS `boot-progress.txt`，可以在完整报告写出前查看启动位置。iOS Release 签名构建已通过，真机复测待进行。[运行记录](p2-zygote-eager.txt)

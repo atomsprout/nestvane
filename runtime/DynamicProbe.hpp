@@ -1,6 +1,8 @@
 #pragma once
 
+#include <functional>
 #include <string>
+#include <string_view>
 
 namespace nestvane {
 
@@ -11,6 +13,7 @@ struct DynamicReport {
 
 DynamicReport probeArt(const std::string& directory);
 DynamicReport probeDynamic(const std::string& directory);
-DynamicReport probeInit(const std::string& directory, const std::string& databasePath = {});
+using BootProgress = std::function<void(std::string_view)>;
+DynamicReport probeInit(const std::string& directory, const std::string& databasePath = {}, const BootProgress& progress = {});
 
 } // namespace nestvane

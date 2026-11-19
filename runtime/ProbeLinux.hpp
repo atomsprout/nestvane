@@ -3,6 +3,7 @@
 #include "Ext4.hpp"
 
 #include <chrono>
+#include <functional>
 #include <map>
 #include <set>
 #include <tuple>
@@ -62,6 +63,7 @@ struct ProbeLinux {
     std::string androidOutput;
     std::string recentAndroidOutput;
     bool captureAndroidLogs = false;
+    std::function<void(std::string_view)> androidLogObserver;
     size_t exportFiles(ProbeLinux& reader, std::string_view prefix) const;
     bool exportExt4Mount(ProbeLinux& reader, std::string_view path) const;
     std::span<const uint8_t> bootGuestFile(std::string_view path) const;

@@ -120,6 +120,14 @@ int main() {
         std::memcpy(permute.cpu.v[3].data(), secondSigned.data(), sizeof(secondSigned));
         assert(executeStartupInstruction(permute, 0x0e636c44)); // smin v4.4h, v2.4h, v3.4h
         assert(std::memcmp(permute.cpu.v[4].data(), minSigned.data(), sizeof(minSigned)) == 0);
+        const std::array<uint16_t, 8> unsignedLeft{0, 256, 128, 65535}, unsignedRight{1, 2, 512, 65535};
+        const std::array<int32_t, 4> unsignedDifference{-1, 254, -384, 0}, highDifference{1, -18, 0, -32764};
+        std::memcpy(permute.cpu.v[7].data(), unsignedLeft.data(), sizeof(unsignedLeft));
+        std::memcpy(permute.cpu.v[6].data(), unsignedRight.data(), sizeof(unsignedRight));
+        assert(executeStartupInstruction(permute, 0x2e6620f0)); // usubl v16.4s, v7.4h, v6.4h
+        assert(std::memcmp(permute.cpu.v[16].data(), unsignedDifference.data(), sizeof(unsignedDifference)) == 0);
+        assert(executeStartupInstruction(permute, 0x4e632041)); // ssubl2 v1.4s, v2.8h, v3.8h
+        assert(std::memcmp(permute.cpu.v[1].data(), highDifference.data(), sizeof(highDifference)) == 0);
         const std::array<float, 4> leftAdd{1, -2, 3, 4}, rightAdd{3, 1, 6, -4}, expectedSum{4, -1, 9, 0};
         std::memcpy(permute.cpu.v[0].data(), leftAdd.data(), sizeof(leftAdd));
         std::memcpy(permute.cpu.v[2].data(), rightAdd.data(), sizeof(rightAdd));

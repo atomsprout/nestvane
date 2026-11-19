@@ -649,14 +649,19 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
             if (size == 8) std::memcpy(result.data(), &product, sizeof(product));
             else setLane(result, i, size * 2, static_cast<uint64_t>(product));
         }
-    } else if (op == 0x2e201000 || op == 0x2e200000) { // UADDW / UADDL and their high-half forms.
+    } else if ((word & 0x9f20cc00) == 0x0e200000) { // Signed/unsigned widening add and subtract.
         if (size > 4) return false;
         const unsigned count = 8 / size;
         const unsigned start = width == 16 ? count : 0;
-        const bool wideSource = op == 0x2e201000;
+        const bool wideSource = word & 0x1000, subtract = word & 0x2000;
+        const auto narrow = [&](const auto& vector, unsigned i) {
+            const auto value = lane(vector, start + i, size);
+            return (word & 0x20000000) ? value : sx(value, size * 8);
+        };
         for (unsigned i = 0; i < count; ++i) {
-            const auto left = wideSource ? lane(source, i, size * 2) : lane(source, start + i, size);
-            setLane(result, i, size * 2, left + lane(other, start + i, size));
+            const auto left = wideSource ? lane(source, i, size * 2) : narrow(source, i);
+            const auto right = narrow(other, i);
+            setLane(result, i, size * 2, subtract ? left - right : left + right);
         }
     } else if (op == 0x2e20c000 || op == 0x2e208000) { // UMULL / UMLAL.
         if (size > 4) return false;

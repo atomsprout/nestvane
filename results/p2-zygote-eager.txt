@@ -100,3 +100,21 @@ CompatibilityRules: Compatibility rules initialized with 333 rules.
 llvm-mc: smax v7.8h, v7.8h, v1.8h
 2x throughput gate on both fixtures: PASS
 guest kernel ABI checks passed, including bind views, fork, SIGCHLD, pipe, boot policy, loop bounds, PTY, uevents, guest sysctls, securebits, I/O priority, Binder transactions and persisted guest data
+
+iPhone 11 after adding libcompiler_rt and compatibility configuration
+iOS device 26.0.1 | process 6923 | thermal serious → serious
+Zygote: ...preloaded 18596 classes in 221300ms.
+Zygote64Timing: PreloadResources took to complete: 3655ms
+nativeloader: Load libcompiler_rt.so using system ns (caller=/system/framework/framework.jar!classes5.dex): ok
+CompatibilityRules: Compatibility rules initialized with 334 rules.
+nativeloader: Load libhttpengine.so using APEX ns com_android_tethering for caller /apex/com.android.tethering/javalib/framework-connectivity.jar: ok
+  unsupported instruction at PC=0x6fc57dae8 word=0x2e6620f0
+  guest execution wall time: 371995 ms
+
+Mac with widening integer add/subtract fixed
+  unsupported instruction at PC=0xadb376afc word=0x4f858210
+llvm-mc: mul v16.4s, v16.4s, v5.s[0]
+
+CLI milestone observer smoke test
+[Android boot] Starting Android 17 init
+iOS Release build with boot-progress.txt export: BUILD SUCCEEDED

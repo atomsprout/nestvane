@@ -386,8 +386,9 @@ DynamicReport probeArt(const std::string& directory) {
     }
 }
 
-DynamicReport probeInit(const std::string& directory, const std::string& databasePath) {
+DynamicReport probeInit(const std::string& directory, const std::string& databasePath, const BootProgress& progress) {
     try {
+        if (progress) progress("Starting Android 17 init");
         namespace fs = std::filesystem;
         const fs::path root(directory);
         constexpr auto filename = "/system/bin/init";
@@ -421,6 +422,17 @@ DynamicReport probeInit(const std::string& directory, const std::string& databas
                                           interpreter, {"second_stage"}, 0);
         ProbeLinux linux(1, 0, 512 * 1024 * 1024);
         linux.captureAndroidLogs = true;
+        if (progress) linux.androidLogObserver = [&progress](std::string_view message) {
+            constexpr std::string_view milestones[] = {
+                "Zygote: Preloading classes", "Zygote: ...preloaded", "Zygote: end preload",
+                "Zygote: System zygote died", "Resources: Preloading resources",
+                "nativeloader: Load libperfetto_framework_jni.so", "nativeloader: Load libcompiler_rt.so",
+                "SystemServer: Entered the Android system server", "SystemServerTiming: StartPackageManagerService"
+            };
+            if (std::any_of(std::begin(milestones), std::end(milestones),
+                            [message](auto prefix) { return message.starts_with(prefix); }))
+                progress(message.substr(0, message.find('\n')));
+        };
         linux.setBootContext("u:r:init:s0");
         for (const auto path : {"/apex", "/bootstrap-apex", "/linkerconfig", "/dev/socket",
                                 "/mnt/vendor", "/mnt/product", "/storage"}) linux.addDirectory(path, 0755);

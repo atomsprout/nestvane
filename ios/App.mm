@@ -86,23 +86,23 @@ static NSString* ThermalState() {
         NSURL* documents = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory
                                                                inDomains:NSUserDomainMask].firstObject;
         NSURL* outputURL = [documents URLByAppendingPathComponent:@"validation.txt"];
-        const auto exportReport = [&](const std::string& output) {
+        const auto exportReport = [&](NSURL* destination, const std::string& output) {
             NSString* report = [NSString stringWithFormat:@"%@ %@ | process %d | thermal %@ → %@\n%@",
                 platform, UIDevice.currentDevice.systemVersion, NSProcessInfo.processInfo.processIdentifier,
                 before, ThermalState(), [NSString stringWithUTF8String:output.c_str()]];
             NSError* error = nil;
-            if (![report writeToURL:outputURL atomically:YES encoding:NSUTF8StringEncoding error:&error])
+            if (![report writeToURL:destination atomically:YES encoding:NSUTF8StringEncoding error:&error])
                 NSLog(@"Unable to export report: %@", error);
             return report;
         };
         NSString* artStatus = nil;
         NSString* artRoot = [resources stringByAppendingPathComponent:@"android17-art-root"];
         if (previousChecksPassed && [NSFileManager.defaultManager fileExistsAtPath:artRoot]) {
-            exportReport(result.report + "\nAndroid 17 ART probe starting\n");
+            exportReport(outputURL, result.report + "\nAndroid 17 ART probe starting\n");
             auto probe = nestvane::probeArt(artRoot.fileSystemRepresentation);
             result.report += "\n" + probe.report;
             artStatus = probe.passed ? @"Android 17 ART executed DEX" : @"Android 17 ART probe stopped";
-            exportReport(result.report);
+            exportReport(outputURL, result.report);
         }
         NSString* initRoot = [resources stringByAppendingPathComponent:@"android17-init-root"];
         if (previousChecksPassed && [NSFileManager.defaultManager fileExistsAtPath:initRoot]) {
@@ -114,7 +114,11 @@ static NSString* ThermalState() {
             const BOOL ready = [manager createDirectoryAtURL:guest withIntermediateDirectories:YES
                                                   attributes:nil error:&directoryError];
             NSURL* database = [guest URLByAppendingPathComponent:@"guest-data.sqlite3"];
-            auto probe = ready ? nestvane::probeInit(initRoot.fileSystemRepresentation, database.fileSystemRepresentation) :
+            NSURL* progressURL = [documents URLByAppendingPathComponent:@"boot-progress.txt"];
+            const auto progress = [&](std::string_view event) {
+                exportReport(progressURL, std::string(event) + "\n");
+            };
+            auto probe = ready ? nestvane::probeInit(initRoot.fileSystemRepresentation, database.fileSystemRepresentation, progress) :
                 nestvane::DynamicReport{false, "Cannot create guest data directory\n"};
             if (!ready) NSLog(@"Unable to create guest data directory: %@", directoryError);
             result.report += "\n" + probe.report;
@@ -126,7 +130,7 @@ static NSString* ThermalState() {
             else status = @"Android 17 init and properties verified";
         }
         if (artStatus) status = artStatus;
-        NSString* report = exportReport(result.report);
+        NSString* report = exportReport(outputURL, result.report);
 
         dispatch_async(dispatch_get_main_queue(), ^{
             self.status.text = status;

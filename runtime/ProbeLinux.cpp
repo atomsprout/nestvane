@@ -4809,6 +4809,7 @@ bool ProbeLinux::syscall(Machine& machine) {
                         if (character >= 32 || character == '\n' || character == '\t') message.push_back(character);
                 }
                 if (readable && !message.empty()) {
+                    if (androidLogObserver) androidLogObserver(message);
                     message.push_back('\n');
                     captureLog(androidOutput, recentAndroidOutput, 128 * 1024, message);
                 }
