@@ -154,6 +154,29 @@ int main() {
         assert(std::memcmp(permute.cpu.v[1].data(), halfwordProduct.data(), sizeof(halfwordProduct)) == 0);
         assert(executeStartupInstruction(permute, 0x6f754041)); // mls v1.8h, v2.8h, v5.h[3]
         assert(std::memcmp(permute.cpu.v[1].data(), indexedDifference.data(), sizeof(indexedDifference)) == 0);
+        const std::array<int16_t, 8> signedProductsLeft{-2, 32767, -32768, 5, 2, -7, 5, -1};
+        const std::array<int16_t, 8> signedProductsRight{3, -2, -32768, -5, -2, -3, 4, -32768};
+        const std::array<int32_t, 4> signedAccumulators{-1, 2, -1, 0};
+        const std::array<int32_t, 4> signedProductSum{-7, -65532, 1073741823, -25};
+        const std::array<int32_t, 4> signedHighProduct{-4, 21, 20, 32768};
+        std::memcpy(permute.cpu.v[17].data(), signedProductsLeft.data(), sizeof(signedProductsLeft));
+        std::memcpy(permute.cpu.v[2].data(), signedProductsRight.data(), sizeof(signedProductsRight));
+        std::memcpy(permute.cpu.v[5].data(), signedAccumulators.data(), sizeof(signedAccumulators));
+        assert(executeStartupInstruction(permute, 0x0e628225)); // smlal v5.4s, v17.4h, v2.4h
+        assert(std::memcmp(permute.cpu.v[5].data(), signedProductSum.data(), sizeof(signedProductSum)) == 0);
+        assert(executeStartupInstruction(permute, 0x4e62c225)); // smull2 v5.4s, v17.8h, v2.8h
+        assert(std::memcmp(permute.cpu.v[5].data(), signedHighProduct.data(), sizeof(signedHighProduct)) == 0);
+        const std::array<uint32_t, 4> highProductsLeft{10, 20, UINT32_MAX, 0x80000000};
+        const std::array<uint32_t, 4> highProductsRight{30, 40, UINT32_MAX, 0x80000001};
+        const std::array<uint64_t, 2> unsignedAccumulators{10, 0x100000000};
+        const std::array<uint64_t, 2> unsignedProductSum{0xfffffffe0000000b, 0x4000000180000000};
+        std::memcpy(permute.cpu.v[3].data(), highProductsLeft.data(), sizeof(highProductsLeft));
+        std::memcpy(permute.cpu.v[4].data(), highProductsRight.data(), sizeof(highProductsRight));
+        std::memcpy(permute.cpu.v[8].data(), unsignedAccumulators.data(), sizeof(unsignedAccumulators));
+        assert(executeStartupInstruction(permute, 0x6ea48068)); // umlal2 v8.2d, v3.4s, v4.4s
+        assert(std::memcmp(permute.cpu.v[8].data(), unsignedProductSum.data(), sizeof(unsignedProductSum)) == 0);
+        assert(executeStartupInstruction(permute, 0x6ea4a068)); // umlsl2 v8.2d, v3.4s, v4.4s
+        assert(std::memcmp(permute.cpu.v[8].data(), unsignedAccumulators.data(), sizeof(unsignedAccumulators)) == 0);
         const std::array<float, 4> leftAdd{1, -2, 3, 4}, rightAdd{3, 1, 6, -4}, expectedSum{4, -1, 9, 0};
         std::memcpy(permute.cpu.v[0].data(), leftAdd.data(), sizeof(leftAdd));
         std::memcpy(permute.cpu.v[2].data(), rightAdd.data(), sizeof(rightAdd));

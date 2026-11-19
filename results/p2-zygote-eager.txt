@@ -118,3 +118,15 @@ llvm-mc: mul v16.4s, v16.4s, v5.s[0]
 CLI milestone observer smoke test
 [Android boot] Starting Android 17 init
 iOS Release build with boot-progress.txt export: BUILD SUCCEEDED
+
+Mac after implementing indexed integer multiplication
+[Android boot] Zygote: ...preloaded 18596 classes in 74037ms.
+[Android boot] nativeloader: Load libcompiler_rt.so using system ns (caller=/system/framework/framework.jar!classes5.dex): ok
+  unsupported instruction at PC=0xf60f7f0e0 word=0xe628225
+llvm-mc: smlal v5.4s, v17.4h, v2.4h
+  guest execution wall time: 146432 ms
+Indexed and widening integer multiply unit coverage: host suite and ASan/UBSan passed
+
+iPhone 11 live boot-progress.txt with widening add/subtract support
+iOS device 26.0.1 | process 6947 | thermal nominal → serious
+Zygote: Preloading classes...

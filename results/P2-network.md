@@ -66,3 +66,5 @@
 - iPhone 11 的常规 Zygote 已完成资源预加载，实测从原版路径加载了 Perfetto JNI。该构建停在缺少 `libcompiler_rt.so`，随后被 Zygote 重启流程带到诊断时限。Mac 确认补齐该库后可加载 HTTP 引擎并读取 333 条兼容规则。下一条 `SMAX` 已补齐，共享目录别名下的 `stat` 和 `access` 查找也有回归覆盖。[运行记录](p2-zygote-eager.txt)
 
 - iPhone 11 复测确认常规预加载成功加载 `libcompiler_rt.so` 和 HTTP 引擎，读取 334 条兼容规则。真机运行约 372 秒后停在 `USUBL`。宿主回归和 Mac 启动测试已越过该指令，随后停在向量按元素乘法。新增 CLI 实时启动日志和 iOS `boot-progress.txt`，可以在完整报告写出前查看启动位置。iOS Release 签名构建已通过，真机复测待进行。[运行记录](p2-zygote-eager.txt)
+
+- Mac 的常规预加载已越过按元素向量乘法，推进到 `SMLAL`。已实现有符号和无符号向量扩宽乘法及累加、累减，宿主回归和 ASan/UBSan 通过。iPhone 11 已从 `boot-progress.txt` 实时读到原版 Zygote 类预加载日志。[运行记录](p2-zygote-eager.txt)

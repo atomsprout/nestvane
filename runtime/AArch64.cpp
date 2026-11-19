@@ -679,13 +679,23 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
             const auto right = narrow(other, i);
             setLane(result, i, size * 2, subtract ? left - right : left + right);
         }
-    } else if (op == 0x2e20c000 || op == 0x2e208000) { // UMULL / UMLAL.
+    } else if (const auto wideningProduct = word & 0x9f20fc00;
+               wideningProduct == 0x0e20c000 || wideningProduct == 0x0e208000 || wideningProduct == 0x0e20a000) {
+        // Signed and unsigned widening multiply, multiply-add and multiply-subtract.
         if (size > 4) return false;
-        unsigned start = width == 16 ? 8 / size : 0;
-        for (unsigned i = 0; i < 8 / size; ++i) {
-            uint64_t value = lane(source, start + i, size) * lane(other, start + i, size);
-            if (op == 0x2e208000) value += lane(cpu.v[rd], i, size * 2);
-            setLane(result, i, size * 2, value);
+        const unsigned count = 8 / size;
+        const unsigned start = width == 16 ? count : 0;
+        const unsigned wideSize = 2 * size;
+        const auto operand = [&](const auto& vector, unsigned i) {
+            const auto value = lane(vector, start + i, size);
+            return (word & 0x20000000) ? value : sx(value, size * 8);
+        };
+        for (unsigned i = 0; i < count; ++i) {
+            const auto product = operand(source, i) * operand(other, i);
+            auto value = product;
+            if (wideningProduct == 0x0e208000) value = lane(cpu.v[rd], i, wideSize) + product;
+            if (wideningProduct == 0x0e20a000) value = lane(cpu.v[rd], i, wideSize) - product;
+            setLane(result, i, wideSize, value);
         }
     } else if (op == 0x2e204400) { // USHL with signed lane shift counts.
         const unsigned bits = size * 8;
