@@ -264,8 +264,8 @@ private:
         std::unique_ptr<GraphicsPipe> backend;
         std::vector<uint8_t> readBuffer;
         size_t readOffset = 0, readSize = 0;
-        bool failed = false, cameraChannel = false;
-        bool cameraVsock = false, connected = false;
+        std::string_view serviceContext;
+        bool failed = false, vsock = false, connected = false;
 
         uint16_t pollEvents() const;
     };

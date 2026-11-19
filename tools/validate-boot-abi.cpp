@@ -1426,6 +1426,32 @@ int main() {
         guest.setBootContext("u:r:hal_camera_default:s0");
         assert(command(catalog, "list").starts_with("ok:name=nestvane-rear "));
         assert(syscall(57, {catalog}) == 0);
+
+        guest.setBootContext("u:r:hal_sensors_default:s0");
+        const auto sensors = syscall(198, {40, 0x801, 0});
+        assert(sensors < 256 && syscall(63, {sensors, wire, 4}) == uint64_t(-107));
+        assert(device.store64(wire, uint64_t(5000) << 32 | 40) && device.store64(wire + 8, 2));
+        assert(syscall(203, {sensors, wire, 16}) == 0);
+        assert(send(sensors, "pipe:qemud:sensors") == 19);
+        const auto sendFrame = [&](std::string_view bytes) {
+            assert(device.write(wire, {reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size()}));
+            assert(syscall(64, {sensors, wire, bytes.size()}) == bytes.size());
+        };
+        sendFrame("0006time:0");
+        sendFrame("00");
+        assert(syscall(63, {sensors, wire, 5}) == uint64_t(-11));
+        sendFrame("0clist-sensors0004wake");
+        guest.setBootContext("u:r:hal_camera_default:s0");
+        assert(syscall(63, {sensors, wire, 5}) == uint64_t(-13));
+        guest.setBootContext("u:r:hal_sensors_default:s0");
+        assert(syscall(63, {sensors, wire, 4}) == 4);
+        assert(std::memcmp(device.read(wire, 4, 4), "0001", 4) == 0);
+        assert(syscall(63, {sensors, wire, 9}) == 9);
+        assert(std::memcmp(device.read(wire, 9, 4), "00004wake", 9) == 0);
+        assert(syscall(63, {sensors, wire, 1}) == uint64_t(-11));
+        assert(syscall(57, {sensors}) == 0);
+
+        guest.setBootContext("u:r:hal_camera_default:s0");
         const auto rear = open("/dev/goldfish_pipe_dprctd");
         const std::string rearService = "pipe:qemud:camera:name=nestvane-rear";
         assert(rear < 256 && send(rear, rearService) == rearService.size() + 1);
