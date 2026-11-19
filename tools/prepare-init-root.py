@@ -325,7 +325,8 @@ def collect(serial, readelf, destination, small_art_heap):
             raise SystemExit("Reference Android classpaths are incomplete")
         framework.update(("/system/framework/framework-res.apk", "/system/etc/preloaded-classes",
                           "/system/etc/dirty-image-objects", "/system/etc/boot-image.prof",
-                          "/system/etc/cgroups.json", "/system/etc/task_profiles.json"))
+                          "/system/etc/cgroups.json", "/system/etc/task_profiles.json",
+                          "/system/etc/advanced-protection-config/advanced-protection-config.xml"))
         # Zygote caches these class loaders ahead of launching apps.
         for jar in ("/system/framework/android.hidl.base-V1.0-java.jar",
                     "/system/framework/android.hidl.manager-V1.0-java.jar",
