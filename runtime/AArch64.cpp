@@ -853,7 +853,8 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
             setLane(result, start + i, size, lane(source, i, size * 2) >> (2 * bits - immediate));
         }
     } else if (const auto rightShift = word & 0x9f80fc00;
-               rightShift == 0x0f000400 || rightShift == 0x0f001400) { // SSHR/USHR, SSRA/USRA (immediate).
+               rightShift == 0x0f000400 || rightShift == 0x0f001400 ||
+               rightShift == 0x0f002400) { // SSHR/USHR, SSRA/USRA, SRSHR/URSHR.
         const bool signedShift = !(word & 0x20000000);
         const unsigned immediate = (word >> 16) & 127;
         if (immediate < 8) return false;
@@ -865,7 +866,8 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
             const auto shifted = amount == bits ? (signedShift && (value >> (bits - 1)) ? UINT64_MAX : 0)
                                                 : shift(value, signedShift ? 2 : 1, amount, bits);
             const auto accumulator = rightShift == 0x0f001400 ? lane(cpu.v[rd], i, size) : 0;
-            setLane(result, i, size, accumulator + shifted);
+            const auto rounding = rightShift == 0x0f002400 ? (value >> (amount - 1)) & 1 : 0;
+            setLane(result, i, size, accumulator + shifted + rounding);
         }
     } else if (const bool widen = (word & 0x9f80fc00) == 0x0f00a400;
                widen || (word & 0xbf80fc00) == 0x0f005400) { // SSHLL/USHLL, SHL (immediate).
