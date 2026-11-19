@@ -19,6 +19,7 @@ struct sqlite3;
 namespace nestvane {
 
 class BpfSocketFilter;
+class BpfTypes;
 
 struct ProbeLinux {
     explicit ProbeLinux(uint64_t pid = 1000, uint64_t uid = 1000, uint64_t memoryLimit = 64 * 1024 * 1024);
@@ -146,7 +147,7 @@ private:
     uint64_t installSeccomp(Machine& machine, uint64_t address);
     bool enforceSeccomp(Machine& machine);
 
-    enum class Node { regular, temporary, directory, input, output, error, null, entropy, kernelLog, poller, event, inotify, signal, socket, mountNamespace, pipeRead, pipeWrite, execLabel, fsCreateLabel, socketCreateLabel, securityInfo, securityCreate, securityAccess, securityValidate, loopControl, loopDevice, timer, ptyMaster, ptySlave, ueventTrigger, kernelSetting, binder, processHandle, cgroupProcs, ashmem, graphicsPipe, graphicsAddressSpace, touchDevice, bpfMap, bpfProgram };
+    enum class Node { regular, temporary, directory, input, output, error, null, entropy, kernelLog, poller, event, inotify, signal, socket, mountNamespace, pipeRead, pipeWrite, execLabel, fsCreateLabel, socketCreateLabel, securityInfo, securityCreate, securityAccess, securityValidate, loopControl, loopDevice, timer, ptyMaster, ptySlave, ueventTrigger, kernelSetting, binder, processHandle, cgroupProcs, ashmem, graphicsPipe, graphicsAddressSpace, touchDevice, bpfMap, bpfProgram, bpfBtf };
     struct RecordLock {
         uint64_t owner, start, end;
         int16_t type;
@@ -203,6 +204,7 @@ private:
         uint32_t entryCount = 0, keySize = 0, valueStride = 0;
         size_t budgetBytes = 0;
         bool array = false;
+        std::shared_ptr<const BpfTypes> types;
         std::vector<uint8_t> values;
         std::map<std::vector<uint8_t>, std::vector<uint8_t>> hash;
     };
@@ -212,6 +214,8 @@ private:
     uint64_t bpfMapCall(Machine& machine);
     uint64_t loadBpfSocketFilter(Machine& machine);
     uint64_t bpfObjectIdCall(Machine& machine);
+    uint64_t loadBpfTypes(Machine& machine);
+    std::vector<std::weak_ptr<const BpfTypes>> bpfTypes;
     struct Descriptor;
     struct GraphicsRegion {
         uint64_t offset = 0;
@@ -397,6 +401,7 @@ private:
         std::shared_ptr<GuestTouch> touch{};
         std::shared_ptr<GuestTouch::Reader> touchReader{};
         std::shared_ptr<BpfMap> bpfMap{};
+        std::shared_ptr<const BpfTypes> btf{};
         std::shared_ptr<const BpfSocketFilter> bpfFilter{};
         std::span<const uint8_t> contents() const { return ext4File ? ext4File->bytes() : bytes; }
         uint64_t contentSize() const { return ext4File ? ext4File->size : bytes.size(); }

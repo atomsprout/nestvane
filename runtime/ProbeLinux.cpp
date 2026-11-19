@@ -1,6 +1,7 @@
 #include "ProbeLinux.hpp"
 
 #include "BpfSocket.hpp"
+#include "BpfTypes.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -5166,7 +5167,18 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
         if ((array && keySize != sizeof(uint32_t)) || !keySize || !valueSize || !entries ||
             (flags & ~supportedFlags) || (flags & (readOnly | writeOnly)) == (readOnly | writeOnly))
             return invalid;
-        if (nonzero(20, 28) || nonzero(44, input.size())) return uint64_t(-95);
+        if (nonzero(20, 28) || nonzero(44, 48) || nonzero(60, input.size())) return uint64_t(-95);
+        std::array<uint32_t, 3> btf{};
+        std::memcpy(btf.data(), input.data() + 48, sizeof(btf));
+        const auto [btfFd, keyType, valueType] = btf;
+        std::shared_ptr<const BpfTypes> types;
+        if (btfFd || keyType || valueType) {
+            const auto found = descriptors().find(btfFd);
+            if (found == descriptors().end()) return uint64_t(-9);
+            types = found->second.btf;
+            if (!types || types->typeSize(keyType) != keySize || types->typeSize(valueType) != valueSize)
+                return invalid;
+        }
         // BPF userspace copies one 8-byte-aligned value per possible guest CPU.
         // The guest topology exposed above and through sched_getaffinity has one CPU.
         const uint64_t valueStride = perCpu ? (uint64_t(valueSize) + 7) & ~uint64_t{7} : valueSize;
@@ -5188,6 +5200,7 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
             map->valueStride = valueStride;
             map->budgetBytes = bytes;
             map->array = array;
+            map->types = std::move(types);
             if (array) map->values.resize(bytes);
             const uint32_t access = flags & readOnly ? 0 : flags & writeOnly ? 1 : 2;
             Descriptor result{"anon_inode:bpf-map", {}, 0x80000 | access, Node::bpfMap};
@@ -5362,6 +5375,55 @@ uint64_t ProbeLinux::bpfObjectIdCall(Machine& machine) {
     return fd;
 }
 
+uint64_t ProbeLinux::loadBpfTypes(Machine& machine) {
+    constexpr size_t budget = 8 * 1024 * 1024, maxObject = 1024 * 1024;
+    constexpr uint64_t capBpf = 1ULL << 39, capSysAdmin = 1ULL << 21;
+    const auto& x = machine.cpu.x;
+    if (x[2] > pageSize) return uint64_t(-7);
+    std::array<uint8_t, pageSize> input{};
+    if (!machine.readInto(x[1], std::span(input).first(x[2]))) return uint64_t(-14);
+    if (std::any_of(input.begin() + 32, input.end(), [](auto byte) { return byte != 0; })) return invalid;
+    if (!(current->process->effectiveCaps & (capBpf | capSysAdmin))) return uint64_t(-1);
+
+    struct Attributes {
+        uint64_t address, logAddress;
+        uint32_t size, logSize, logLevel, logTrueSize;
+    };
+    Attributes attr{};
+    std::memcpy(&attr, input.data(), sizeof(attr));
+    if (attr.size > maxObject) return uint64_t(-7);
+    if (!attr.size || (attr.logLevel & ~7U) || (attr.logLevel && (!attr.logAddress || !attr.logSize)))
+        return invalid;
+    std::erase_if(bpfTypes, [](const auto& entry) { return entry.expired(); });
+    size_t used = 0;
+    for (const auto& entry : bpfTypes)
+        if (const auto types = entry.lock()) used += types->byteSize();
+    if (used > budget - attr.size || bpfTypes.size() >= 64) return noMemory;
+    const auto fd = freeDescriptor();
+    if (fd == descriptorCapacity) return uint64_t(-24);
+    try {
+        std::vector<uint8_t> bytes(attr.size);
+        if (!machine.readInto(attr.address, bytes)) return uint64_t(-14);
+        auto types = std::make_shared<BpfTypes>();
+        const bool valid = types->load(bytes);
+        if (attr.logLevel) {
+            const std::string_view message = valid ? "" : "invalid BPF type metadata";
+            const auto count = uint32_t(message.size() + 1);
+            const auto data = std::span(reinterpret_cast<const uint8_t*>(message.data()), count);
+            if (!machine.write(attr.logAddress, data.first(std::min(count, attr.logSize)))) return uint64_t(-14);
+            if (x[2] >= sizeof(attr) && !writeGuest(machine, x[1] + 28, count)) return uint64_t(-14);
+        }
+        if (!valid) return invalid;
+        Descriptor entry{"anon_inode:bpf-btf", {}, 0x80000, Node::bpfBtf};
+        entry.btf = types;
+        bpfTypes.emplace_back(types);
+        descriptors().emplace(fd, std::move(entry));
+        return fd;
+    } catch (const std::bad_alloc&) {
+        return noMemory;
+    }
+}
+
 bool ProbeLinux::syscall(Machine& machine) {
     auto& x = machine.cpu.x;
     const uint64_t number = x[8];
@@ -5375,6 +5437,7 @@ bool ProbeLinux::syscall(Machine& machine) {
             if (x[0] <= 4) { x[0] = bpfMapCall(machine); break; }
             if (x[0] == 5) { x[0] = loadBpfSocketFilter(machine); break; }
             if (x[0] >= 11 && x[0] <= 14) { x[0] = bpfObjectIdCall(machine); break; }
+            if (x[0] == 18) { x[0] = loadBpfTypes(machine); break; }
             const bool pin = x[0] == 6; // BPF_OBJ_PIN
             if (!pin && x[0] != 7) return false; // BPF_OBJ_GET
             if (x[2] > pageSize) { x[0] = uint64_t(-7); break; }

@@ -242,3 +242,5 @@
 - iPhone 11 第 8210 号进程的最终报告确认，独立 Bionic 夹具在原版 Android init 下装载 SDK Health 过滤器、重新打开并附着，成功丢弃实际的 block uevent；init 记录退出 0。已归档该真机报告，完整系统启动仍待验收。
 - 客体支持按 ID 枚举和重新打开 BPF map 与程序，只有仍有 FD、固定名称或附着引用的对象会出现。相同 ARM64 Bionic 夹具在 Android 17 参考内核和 Nestvane 中通过，覆盖 CLOEXEC 及新 FD 的只读限制。包含 ID 和 per-CPU map 探针的 iPhoneOS 签名包已验证。
 - 两份隔离 Mac 诊断仅用临时 JIT sysctl 值观测原版加载器下一步。首轮定位到 `BPF_PROG_GET_NEXT_ID`，补齐 ID 后原版开始处理 Tethering APEX 的 `offload.o`，下一项请求为 `BPF_BTF_LOAD`。原版的完成判定保持有效。[Android BPF 内核接口](https://android.googlesource.com/kernel/common/+/16c71c51132847fb260e6b7e741bf6d241a8b9df/kernel/bpf/syscall.c)
+- 客体可以加载有界的 BTF 标准类型记录，并让已支持的 BPF map 引用类型信息、检查 key/value 宽度。相同 Bionic 夹具在 SDK 原版内核和 Nestvane 中验证了有效类型、截断类型、尺寸错误及关闭 BTF FD 后保留 map 引用。iPhoneOS 签名构建通过。独立 Mac 对照中，原版加载器加载 `offload.o` 的 BTF 后开始创建 `tether_error_map`，随后请求 `BPF_OBJ_GET_INFO_BY_FD`。[Android BTF UAPI](https://android.googlesource.com/kernel/common/+/9c39d5ab450f7181775957000f4aff33bfef9f7b/include/uapi/linux/bpf.h)
+- iPhone 11 第 8240 号进程的三个独立探针均由原版 init 回收，退出状态为 0。按 ID 重新打开对象和只读限制通过；per-CPU 哈希、数组各报告一个 CPU、8 字节步幅并保留填充值 `0x7a`；原版 Health 过滤器客体 uevent 复验通过。完整启动仍待验收。

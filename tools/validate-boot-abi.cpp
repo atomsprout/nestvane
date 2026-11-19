@@ -888,6 +888,38 @@ int main() {
         assert(call(39, {mountpoint, 0}) == 0);
     }
     {
+        constexpr auto source = base + 256, attr = base + 400, key = base + 512, value = base + 520;
+        constexpr char names[] = "\0u32\0u64";
+        const std::array<uint32_t, 14> input{0x0001eb9f, 24, 0, 32, 32, sizeof(names),
+            1, 1U << 24, 4, 32, 5, 1U << 24, 8, 64};
+        assert(machine.write(source, {reinterpret_cast<const uint8_t*>(input.data()), sizeof(input)}));
+        assert(machine.write(source + sizeof(input), {reinterpret_cast<const uint8_t*>(names), sizeof(names)}));
+        assert(machine.store64(attr, source) && machine.store64(attr + 8, 0));
+        const uint32_t bytes = sizeof(input) + sizeof(names);
+        assert(machine.store64(attr + 16, bytes - 1) && machine.store64(attr + 24, 0));
+        assert(call(280, {18, attr, 32}) == uint64_t(-22));
+        assert(machine.store64(attr + 16, bytes));
+        const auto btf = call(280, {18, attr, 32});
+        assert(btf < 256 && call(25, {btf, 1}) == 1);
+        std::array<uint32_t, 15> map{2, 4, 8, 2};
+        map[12] = btf;
+        map[13] = 2;
+        map[14] = 1;
+        assert(machine.write(attr, {reinterpret_cast<const uint8_t*>(map.data()), sizeof(map)}));
+        assert(call(280, {0, attr, sizeof(map)}) == uint64_t(-22));
+        map[13] = 1;
+        map[14] = 2;
+        assert(machine.write(attr, {reinterpret_cast<const uint8_t*>(map.data()), sizeof(map)}));
+        const auto fd = call(280, {0, attr, sizeof(map)});
+        assert(fd < 256 && call(57, {btf}) == 0);
+        assert(machine.store64(key, 0) && machine.store64(value, 99));
+        assert(machine.store64(attr, fd) && machine.store64(attr + 8, key));
+        assert(machine.store64(attr + 16, value) && machine.store64(attr + 24, 0));
+        assert(call(280, {2, attr, 32}) == 0 && machine.store64(value, 0));
+        assert(call(280, {1, attr, 32}) == 0 && load(value) == 99);
+        assert(call(57, {fd}) == 0);
+    }
+    {
         constexpr auto attr = base + 96;
         put(base, "/sys/fs/bpf/map_missing");
         assert(machine.store64(attr, base) && machine.store64(attr + 8, 0));
