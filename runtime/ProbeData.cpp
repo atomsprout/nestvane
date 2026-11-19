@@ -80,7 +80,7 @@ void ProbeLinux::mountData(const std::string& databasePath) {
     if (generation < 0 || generation == INT64_MAX) throw std::runtime_error("invalid guest data generation");
     version.reset();
 
-    decltype(directories) loadedDirectories{{"/data", {0771, 1000, 1000}}};
+    decltype(directories) loadedDirectories{{"/data", {0771, 1000, 1000, "u:object_r:system_data_root_file:s0"}}};
     decltype(writableFiles) loadedFiles;
     decltype(links) loadedLinks;
     std::set<uint64_t> inodes;
@@ -101,8 +101,10 @@ void ProbeLinux::mountData(const std::string& databasePath) {
             (path != root && !loadedDirectories.contains(path.substr(0, path.rfind('/')))))
             throw std::runtime_error("invalid guest data entry");
         if (kind == 0 && bytes.empty() && label.find('\0') == std::string_view::npos) {
+            auto context = label;
+            if (context.empty() && path == root) context = loadedDirectories.at("/data").securityContext;
             loadedDirectories.insert_or_assign(std::string(path),
-                Directory{uint32_t(mode), uint32_t(uid), uint32_t(gid), std::string(label)});
+                Directory{uint32_t(mode), uint32_t(uid), uint32_t(gid), std::string(context)});
         } else if (kind == 1 && inode >= 65536 && inode < INT64_MAX - 4096 && bytes.size() <= maxDataFileBytes &&
                    inodes.insert(inode).second) {
             const auto allocation = (bytes.size() + pageMask) & ~pageMask;

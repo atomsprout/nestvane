@@ -10,6 +10,7 @@
 
 #include <chrono>
 #include <thread>
+#include <sys/resource.h>
 #include <vector>
 
 namespace {
@@ -436,6 +437,9 @@ static NSString* ThermalState() {
             };
             auto probe = runAndroid();
             result.report += "\n" + probe.report;
+            rusage usage{};
+            if (getrusage(RUSAGE_SELF, &usage) == 0)
+                result.report += "  peak iOS process RSS bytes: " + std::to_string(usage.ru_maxrss) + "\n";
             if (!probe.passed) status = @"Android 17 startup probe stopped";
             else if (probe.report.find("linkerconfig generation verified: yes") != std::string::npos)
                 status = @"Android 17 linker configuration generated";

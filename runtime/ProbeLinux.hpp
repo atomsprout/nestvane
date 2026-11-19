@@ -70,6 +70,7 @@ struct ProbeLinux {
     bool loadServicePolicy(std::string_view manifest, bool hardware);
     bool loadKeystorePolicy(std::string_view manifest, bool key = false);
     bool loadFsCreatePolicy(std::string_view manifest);
+    bool loadAppDataLabelTypes(std::string_view rules);
     bool hasChildEntryAt(uint64_t pc) const {
         const auto& process = *current->process;
         return process.pendingEntry == pc && process.id != pid;
@@ -530,6 +531,8 @@ private:
     uint64_t writeGraphics(const Machine& machine, GraphicsPipeState& pipe, uint64_t address, uint64_t size);
     uint64_t ashmemIoctl(Machine& machine, const Descriptor& fd);
     bool dataPath(std::string_view path) const;
+    std::string newFileContext(std::string_view path) const;
+    bool validAppDataContext(std::string_view label) const;
     bool canAccessParent(std::string_view path, bool modify) const;
     uint64_t renameFile(Machine& machine);
     uint64_t renameDirectory(const std::string& source, const std::string& destination, bool noReplace);
@@ -688,6 +691,7 @@ private:
     };
     std::map<std::string, BootTransition, std::less<>> bootTransitions;
     std::map<std::string, std::set<std::string, std::less<>>, std::less<>> currentContextTransitions;
+    std::set<std::string, std::less<>> appDataLabelTypes;
     std::map<std::string, std::string, std::less<>> kernelFiles;
     std::string ashmemBootPath;
     struct AccessClass {

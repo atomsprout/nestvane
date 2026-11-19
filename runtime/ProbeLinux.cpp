@@ -38,6 +38,7 @@ constexpr std::string_view cgroupRoot = "/sys/fs/cgroup";
 constexpr std::string_view cgroupProcs = "/cgroup.procs";
 constexpr uint64_t lazyAnonymousThreshold = 4 * 1024 * 1024;
 constexpr uint64_t noMemory = uint64_t(-12);
+constexpr char unlabeledFile[] = "u:object_r:unlabeled:s0";
 constexpr uint8_t mdweRefuseExecGain = 1, mdweNoInherit = 2;
 constexpr uint32_t sealSeal = 1, sealShrink = 2, sealGrow = 4, sealWrite = 8, sealFutureWrite = 16;
 constexpr unsigned sigChild = 17;
@@ -1008,7 +1009,7 @@ std::optional<ProbeLinux::Descriptor> ProbeLinux::find(std::string_view path, ui
         entry.securityReply = std::make_shared<std::string>();
         return entry;
     }
-    if (!currentContextTransitions.empty() && path == "/sys/fs/selinux/context")
+    if (path == "/sys/fs/selinux/context" && (!currentContextTransitions.empty() || !appDataLabelTypes.empty()))
         return Descriptor{std::string(path), {}, flags, Node::securityValidate};
     if (path == "/proc/self/cmdline") {
         Descriptor entry{std::string(path), {}, flags, Node::regular};
@@ -1426,7 +1427,7 @@ uint64_t ProbeLinux::open(const Machine& machine, const std::string& path, uint3
         file->uid = userId();
         file->gid = groupId();
         file->persistent = persistent;
-        if (const auto& context = current->fsCreateContext; !context.empty())
+        if (const auto context = newFileContext(pathname); !context.empty())
             file->attributes["security.selinux"].assign(context.c_str(), context.c_str() + context.size() + 1);
         writableFiles.emplace(pathname, std::move(file));
         fileEvent(pathname, fileCreated);
@@ -3481,7 +3482,7 @@ bool ProbeLinux::fileCall(Machine& machine) {
                 else if (directories.size() - ext4DirectoryCount >= maxGuestDirectories) x[0] = uint64_t(-28);
                 else {
                     directories.emplace(backing, Directory{uint32_t(x[2] & 0777 & ~current->process->umask),
-                                                           userId(), groupId(), current->fsCreateContext});
+                                                           userId(), groupId(), newFileContext(backing)});
                     if (const auto* view = mountFor(path); view && view->device == "cgroup2") {
                         cgroupFiles.emplace(backing + std::string(cgroupProcs),
                                             std::make_shared<Directory>(Directory{0644, userId(), groupId()}));
@@ -4112,7 +4113,7 @@ uint64_t ProbeLinux::writeDescriptor(Machine& machine, const Descriptor& fd, uin
             const bool known = currentContextTransitions.contains(label) ||
                 std::any_of(currentContextTransitions.begin(), currentContextTransitions.end(),
                             [&](const auto& transition) { return transition.second.contains(label); });
-            return known ? size : invalid;
+            return known || validAppDataContext(label) ? size : invalid;
         }
         if (fd.targetProcess != processId() || *fd.offset) return uint64_t(-1);
         auto& process = *current->process;
@@ -4595,6 +4596,66 @@ bool ProbeLinux::loadKeystorePolicy(std::string_view manifest, bool key) {
     return loadAccessClass(manifest, "keystore2", permissions);
 }
 
+bool ProbeLinux::loadAppDataLabelTypes(std::string_view rules) {
+    if (rules.size() > 1024 * 1024) return false;
+    std::istringstream lines{std::string(rules)};
+    for (std::string line; std::getline(lines, line);) {
+        if (const auto comment = line.find('#'); comment != std::string::npos) line.resize(comment);
+        std::istringstream fields(line);
+        for (std::string field; fields >> field;) {
+            if (field == "neverallow") break;
+            if (!field.starts_with("type=")) continue;
+            const auto type = std::string_view(field).substr(5);
+            if (type.empty() || type.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789_") != std::string_view::npos)
+                return false;
+            appDataLabelTypes.emplace(type);
+        }
+    }
+    return true;
+}
+
+bool ProbeLinux::validAppDataContext(std::string_view label) const {
+    constexpr std::string_view prefix = "u:object_r:";
+    if (!label.starts_with(prefix)) return false;
+    label.remove_prefix(prefix.size());
+    const auto typeEnd = label.find(':');
+    if (typeEnd == std::string_view::npos || !appDataLabelTypes.contains(label.substr(0, typeEnd))) return false;
+    label.remove_prefix(typeEnd + 1);
+    if (label == "s0") return true;
+    if (!label.starts_with("s0:")) return false;
+    label.remove_prefix(3);
+
+    // Android seapp_contexts computes MLS categories from the package app ID and user ID.
+    const auto category = [](std::string_view text) {
+        if (!text.starts_with('c') || text.size() == 1) return -1;
+        text.remove_prefix(1);
+        unsigned value;
+        const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value);
+        return error == std::errc{} && end == text.data() + text.size() && value < 1024 ? int(value) : -1;
+    };
+    int previous = -1;
+    while (!label.empty()) {
+        const auto comma = label.find(',');
+        const auto field = label.substr(0, comma);
+        const auto dot = field.find('.');
+        const auto first = category(field.substr(0, dot));
+        const auto last = dot == std::string_view::npos ? first : category(field.substr(dot + 1));
+        if (first <= previous || last < first) return false;
+        if (comma == std::string_view::npos) return true;
+        previous = last;
+        label.remove_prefix(comma + 1);
+    }
+    return false;
+}
+
+std::string ProbeLinux::newFileContext(std::string_view path) const {
+    if (!current->fsCreateContext.empty()) return current->fsCreateContext;
+    if (!dataPath(path)) return {};
+    const auto parent = directories.find(path.substr(0, path.rfind('/')));
+    if (parent != directories.end() && !parent->second.securityContext.empty()) return parent->second.securityContext;
+    return unlabeledFile;
+}
+
 bool ProbeLinux::loadFsCreatePolicy(std::string_view manifest) {
     constexpr std::string_view permissions[] = {"setfscreate", "setsockcreate"};
     std::istringstream header{std::string(manifest.substr(0, manifest.find('\n')))};
@@ -4679,11 +4740,12 @@ bool ProbeLinux::securityCall(Machine& machine) {
     } else {
         const auto path = readPath(machine, x[0]);
         if (!path) { x[0] = uint64_t(-14); return true; }
-        logical = normalizePath(*path);
-        if (x[8] == 8) {
-            if (const auto link = resolve(logical)) logical = *link;
-        }
-        fd = find(backingPath(logical), 0);
+        const auto target = followLinks(normalizePath(*path), x[8] == 8);
+        if (!target) { x[0] = uint64_t(-40); return true; }
+        logical = *target;
+        const auto backing = backingPath(logical);
+        if (dataPath(backing) && !canAccessParent(backing, false)) { x[0] = uint64_t(-13); return true; }
+        fd = find(backing, 0);
         if (!fd) { x[0] = uint64_t(-2); return true; }
     }
     std::span<const uint8_t> value;
@@ -4697,6 +4759,10 @@ bool ProbeLinux::securityCall(Machine& machine) {
             const auto& context = directory->second.securityContext;
             value = {reinterpret_cast<const uint8_t*>(context.c_str()), context.size() + 1};
         }
+        // Older guest data predates initial inode labels. Expose the filesystem's unlabeled
+        // context so libselinux can compute and apply the real restorecon label.
+        if (value.empty() && dataPath(fd->path) && (fd->temporary || directories.contains(fd->path)))
+            value = {reinterpret_cast<const uint8_t*>(unlabeledFile), sizeof unlabeledFile};
         if (const auto transition = bootTransitions.find(logical); transition != bootTransitions.end()) {
             const auto& label = transition->second.file;
             value = {reinterpret_cast<const uint8_t*>(label.c_str()), label.size() + 1};

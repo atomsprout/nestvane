@@ -4073,11 +4073,36 @@ int main() {
         assert(writer.loadFsCreatePolicy(
             "2 19\nu:r:init:s0 u:r:init:s0 40000 ffffffff 0 ffffffff 1 0\n"
             "u:r:shell:s0 u:r:shell:s0 0 ffffffff 0 ffffffff 1 0\n"));
+        assert(writer.loadAppDataLabelTypes(
+            "# reference seapp policy\nuser=_app domain=untrusted_app type=app_data_file levelFrom=all\n"));
+        put(firstPath, "/sys/fs/selinux/context");
+        const auto validate = invoke(writer, 56, {atCwd, firstPath, 2});
+        assert(validate < 256);
+        const auto contextCheck = [&](const char* value, bool allowed) {
+            put(payload, value);
+            const auto length = std::strlen(value) + 1;
+            assert(invoke(writer, 64, {validate, payload, length}) == (allowed ? length : uint64_t(-22)));
+        };
+        contextCheck("u:object_r:app_data_file:s0:c123,c256,c512,c768", true);
+        contextCheck("u:object_r:app_data_file:s0:c0.c3,c768", true);
+        contextCheck("u:object_r:app_data_file:s0:c4,c4", false);
+        contextCheck("u:object_r:app_data_file:s0:c1024", false);
+        contextCheck("u:object_r:unknown_data_file:s0:c512", false);
+        assert(invoke(writer, 57, {validate}) == 0);
+
         put(firstPath, "/data");
+        put(payload, "security.selinux");
+        constexpr char rootLabel[] = "u:object_r:system_data_root_file:s0";
+        assert(invoke(writer, 9, {firstPath, payload, base + 0x480, 128}) == sizeof(rootLabel));
+        assert(std::memcmp(machine.read(base + 0x480, sizeof(rootLabel), 4), rootLabel, sizeof(rootLabel)) == 0);
         assert(invoke(writer, 43, {firstPath, base + 0x450}) == 0);
         const auto quotaBlocks = load(base + 0x460);
         assert(quotaBlocks == (128 * 1024 * 1024) / pageSize);
         assert(load(base + 0x468) == quotaBlocks && load(base + 0x470) == quotaBlocks);
+        constexpr auto legacyPath = base + 0x510;
+        put(legacyPath, "/data/legacy");
+        assert(invoke(writer, 34, {atCwd, legacyPath, 0755}) == 0);
+        assert(invoke(writer, 6, {legacyPath, payload, 0, 0, 0}) == 0);
         put(firstPath, "/proc/thread-self/attr/fscreate");
         const auto labelFd = invoke(writer, 56, {atCwd, firstPath, 2});
         assert(labelFd < 256);
@@ -4122,9 +4147,15 @@ int main() {
         reopened.mountData(database);
         other.mountData(database);
         put(payload, "security.selinux");
+        constexpr char legacyLabel[] = "u:object_r:unlabeled:s0";
+        assert(invoke(reopened, 9, {legacyPath, payload, base + 0x480, 128}) == sizeof(legacyLabel));
+        assert(std::memcmp(machine.read(base + 0x480, sizeof(legacyLabel), 4), legacyLabel, sizeof(legacyLabel)) == 0);
         assert(invoke(reopened, 8, {secondPath, payload, base + 0x480, 128}) == sizeof(context));
         assert(std::memcmp(machine.read(base + 0x480, sizeof(context), 4), context, sizeof(context)) == 0);
         put(secondPath, "/data/moved/current");
+        assert(invoke(reopened, 9, {secondPath, payload, base + 0x480, 128}) == sizeof(context));
+        assert(std::memcmp(machine.read(base + 0x480, sizeof(context), 4), context, sizeof(context)) == 0);
+        assert(invoke(other, 9, {secondPath, payload, base + 0x480, 128}) == uint64_t(-13));
         assert(invoke(other, 56, {atCwd, secondPath, 0}) == uint64_t(-13));
         assert(invoke(reopened, 56, {atCwd, firstPath, 0}) == uint64_t(-2));
         const auto restored = invoke(reopened, 56, {atCwd, secondPath, 0});

@@ -505,6 +505,8 @@ service nestvane-apk-install /system/bin/nestvane-apk-install
                 "SystemServer: Entered the Android system server", "SystemServerTiming: ",
                 "PackageManagerTiming: ", "EventHub: New device:", "HealthLoop: ",
                 "mmap APK: ", "PackageManager: Failed to parse", "PackageManager: Time to scan packages",
+                "PackageManager: Failed to create app data", "PackageManager: reconcileAppsData",
+                "installd: Failed to restorecon", "ActivityTaskManager: Displayed com.android.launcher3/",
                 "NestvaneSmoke: ", "ActivityTaskManager: Displayed dev.nestvane.smoke/",
                 "SurfaceFlinger: SurfaceFlinger is starting", "SurfaceFlinger: Using HWComposer service",
                 "SurfaceFlinger: OpenGL ES informations", "mapper.ranchu: GoldfishAddressSpace",
@@ -556,6 +558,15 @@ service nestvane-apk-install /system/bin/nestvane-apk-install
             const auto bytes = profile->second.bytes();
             if (!linux.loadPropertyPolicy({reinterpret_cast<const char*>(bytes.data()), bytes.size()}))
                 throw std::runtime_error("invalid reference SELinux property decisions");
+        }
+        for (const auto path : {"/system/etc/selinux/plat_seapp_contexts", "/system_ext/etc/selinux/system_ext_seapp_contexts",
+                                "/product/etc/selinux/product_seapp_contexts", "/vendor/etc/selinux/vendor_seapp_contexts",
+                                "/odm/etc/selinux/odm_seapp_contexts"}) {
+            if (const auto policy = files.find(path); policy != files.end()) {
+                const auto bytes = policy->second.bytes();
+                if (!linux.loadAppDataLabelTypes({reinterpret_cast<const char*>(bytes.data()), bytes.size()}))
+                    throw std::runtime_error("invalid seapp file label types");
+            }
         }
         for (const auto hardware : {false, true}) {
             const auto path = hardware ? "/nestvane-metadata/selinux-hwservice-access.txt" :
