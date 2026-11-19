@@ -1364,7 +1364,7 @@ uint64_t ProbeLinux::open(const Machine& machine, const std::string& path, uint3
     if (entry && (entry->node == Node::loopControl || entry->node == Node::loopDevice) && userId() != 0)
         return uint64_t(-13);
     if (entry && entry->node == Node::socket && !(flags & pathOnly)) return uint64_t(-6);
-    if (entry && entry->temporary && entry->temporary->pinnedMap && !(flags & pathOnly))
+    if (entry && entry->temporary && entry->temporary->pinnedBpfObject() && !(flags & pathOnly))
         return uint64_t(-5); // Ordinary open does not create a BPF object descriptor.
     if (entry && entry->node == Node::directory && (flags & 3)) return uint64_t(-21);
     if (entry && entry->node == Node::regular && ((flags & 3) || (flags & truncate))) return uint64_t(-30);
@@ -5353,7 +5353,7 @@ bool ProbeLinux::syscall(Machine& machine) {
             if (pin) {
                 const auto fd = descriptors().find(object);
                 if (fd == descriptors().end()) { x[0] = uint64_t(-9); break; }
-                if (!fd->second.bpfMap) { x[0] = invalid; break; }
+                if (!fd->second.bpfMap && !fd->second.bpfFilter) { x[0] = invalid; break; }
                 const auto* mount = mountFor(*target);
                 if (!mount || mount->device != "bpf") { x[0] = invalid; break; }
                 if (!writablePath(*target)) { x[0] = uint64_t(-30); break; }
@@ -5366,6 +5366,7 @@ bool ProbeLinux::syscall(Machine& machine) {
                 inode->uid = userId();
                 inode->gid = groupId();
                 inode->pinnedMap = fd->second.bpfMap;
+                inode->pinnedFilter = fd->second.bpfFilter;
                 if (const auto& context = current->fsCreateContext; !context.empty())
                     inode->attributes["security.selinux"].assign(context.c_str(), context.c_str() + context.size() + 1);
                 writableFiles.emplace(backing, std::move(inode));
@@ -5374,7 +5375,7 @@ bool ProbeLinux::syscall(Machine& machine) {
                 break;
             }
             if (!existing) { x[0] = uint64_t(-2); break; }
-            if (!existing->temporary || !existing->temporary->pinnedMap) { x[0] = uint64_t(-13); break; }
+            if (!existing->temporary || !existing->temporary->pinnedBpfObject()) { x[0] = uint64_t(-13); break; }
             const auto& inode = *existing->temporary;
             const auto access = flags & readOnly ? 0 : flags & writeOnly ? 1 : 2;
             const unsigned required = access == 0 ? 4 : access == 1 ? 2 : 6;
@@ -5384,8 +5385,11 @@ bool ProbeLinux::syscall(Machine& machine) {
             }
             const auto newFd = freeDescriptor();
             if (newFd == descriptorCapacity) { x[0] = uint64_t(-24); break; }
-            Descriptor result{"anon_inode:bpf-map", {}, uint32_t(0x80000 | access), Node::bpfMap};
+            const bool program = bool(inode.pinnedFilter);
+            Descriptor result{program ? "anon_inode:bpf-prog" : "anon_inode:bpf-map", {},
+                uint32_t(0x80000 | (program ? 2 : access)), program ? Node::bpfProgram : Node::bpfMap};
             result.bpfMap = inode.pinnedMap;
+            result.bpfFilter = inode.pinnedFilter;
             descriptors().emplace(newFd, std::move(result));
             x[0] = newFd;
             break;

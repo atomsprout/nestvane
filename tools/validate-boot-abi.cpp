@@ -816,6 +816,11 @@ int main() {
         };
         assert(program(0xff) == uint64_t(-22));
         assert(program(0x05 | (uint64_t{3} << 16)) == uint64_t(-22)); // Out-of-range jump.
+        constexpr auto fs = base + 32, mountpoint = base + 64, pinned = base + 880;
+        put(fs, "bpf");
+        put(mountpoint, "/sys/fs/bpf");
+        put(pinned, "/sys/fs/bpf/prog_nestvane_filter");
+        assert(call(40, {fs, mountpoint, fs, 14}) == 0);
         const auto uevent = call(198, {16, 2 | 0x80800, 15});
         assert(uevent < 256);
         assert(machine.store64(address, 16) && machine.store64(address + 8, 1));
@@ -824,9 +829,16 @@ int main() {
         const auto control = call(56, {uint32_t(-100), base, 2});
         assert(control < 256);
         for (const uint64_t limit : {0, 16}) {
-            const auto fd = program(0xb7 | (limit << 32)); // MOV64 r0, immediate
-            assert(fd < 256 && machine.store64(address, fd));
-            assert(call(208, {uevent, 1, 50, address, 4}) == 0 && call(57, {fd}) == 0);
+            const auto loaded = program(0xb7 | (limit << 32)); // MOV64 r0, immediate
+            assert(loaded < 256 && machine.store64(attr, pinned));
+            assert(machine.store64(attr + 8, loaded) && machine.store64(attr + 16, 0));
+            assert(call(280, {6, attr, 24}) == 0 && call(57, {loaded}) == 0); // BPF_OBJ_PIN
+            assert(machine.store64(attr + 8, 8ULL << 32)); // BPF_F_RDONLY
+            const auto reopened = call(280, {7, attr, 24}); // BPF_OBJ_GET
+            assert(reopened < 256 && call(25, {reopened, 1}) == 1);
+            assert(call(35, {uint32_t(-100), pinned, 0}) == 0);
+            assert(machine.store64(address, reopened));
+            assert(call(208, {uevent, 1, 50, address, 4}) == 0 && call(57, {reopened}) == 0);
             assert(call(29, {control, 0x4c80, 31 + limit}) == 31 + limit); // LOOP_CTL_ADD
             const std::array<uint64_t, 7> header{0, 0, buffers, 1, 0, 0, 0};
             assert(machine.store64(buffers, packet) && machine.store64(buffers + 8, 256));
@@ -834,6 +846,7 @@ int main() {
             assert(call(212, {uevent, message, 0}) == (limit ? limit : uint64_t(-11)));
         }
         assert(call(57, {control}) == 0 && call(57, {uevent}) == 0);
+        assert(call(39, {mountpoint, 0}) == 0);
     }
     {
         constexpr auto attr = base + 96;

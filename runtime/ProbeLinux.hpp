@@ -162,6 +162,8 @@ private:
         std::shared_ptr<SharedFileBytes> storage = std::make_shared<SharedFileBytes>();
         std::map<std::string, std::vector<uint8_t>, std::less<>> attributes;
         std::shared_ptr<BpfMap> pinnedMap{};
+        std::shared_ptr<const BpfSocketFilter> pinnedFilter{};
+        bool pinnedBpfObject() const { return pinnedMap || pinnedFilter; }
     };
     struct SocketState {
         uint32_t type;
