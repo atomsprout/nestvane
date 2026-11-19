@@ -148,6 +148,9 @@ struct Machine {
     std::vector<Segment> segments;
     void insertSegment(Segment segment);
 
+    uint64_t dataAddress(uint64_t address) const {
+        return topByteIgnore ? address & 0x00ff'ffff'ffff'ffffULL : address;
+    }
     const uint8_t* read(uint64_t address, size_t size, unsigned flags) const;
     bool readInto(uint64_t address, std::span<uint8_t> output) const;
     bool write(uint64_t address, std::span<const uint8_t> bytes);

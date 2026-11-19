@@ -503,7 +503,7 @@ size_t Machine::findSegment(uint64_t address, size_t size, unsigned flags, size_
 }
 
 const uint8_t* Machine::read(uint64_t address, size_t size, unsigned flags) const {
-    if (topByteIgnore && !(flags & executable)) address &= 0x00ff'ffff'ffff'ffff;
+    if (!(flags & executable)) address = dataAddress(address);
     const auto index = findSegment(address, size, flags, flags & executable ? codeHint : dataHint);
     if (index == segments.size()) return nullptr;
     const auto& segment = segments[index];
@@ -528,7 +528,7 @@ bool Machine::readInto(uint64_t address, std::span<uint8_t> output) const {
         std::memcpy(output.data(), source, output.size());
         return true;
     }
-    if (topByteIgnore) address &= 0x00ff'ffff'ffff'ffff;
+    address = dataAddress(address);
     if (!mappedRange(address, output.size(), readable)) return false;
     while (!output.empty()) {
         const auto& segment = segments[findSegment(address, 1, readable, dataHint)];
@@ -546,7 +546,7 @@ bool Machine::load64(uint64_t address, uint64_t& value) const {
 }
 
 bool Machine::write(uint64_t address, std::span<const uint8_t> bytes) {
-    if (topByteIgnore) address &= 0x00ff'ffff'ffff'ffff;
+    address = dataAddress(address);
     const auto index = findSegment(address, bytes.size(), writable, dataHint);
     if (index != segments.size()) {
         auto& segment = segments[index];

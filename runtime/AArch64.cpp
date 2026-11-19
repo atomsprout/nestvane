@@ -211,18 +211,56 @@ bool memory(Machine& machine, uint32_t word) {
     if ((word & 0x3fff7c00) == 0x085f7c00) {
         if (base % size) machine.fault(cpu.pc, base);
         else if (transfer(machine, base, rt, size, true)) {
-            cpu.exclusiveAddress = base;
+            cpu.exclusiveAddress = machine.dataAddress(base);
             cpu.exclusiveSize = size;
         }
         return true;
     }
     if ((word & 0x3fe07c00) == 0x08007c00) {
         const unsigned rs = (word >> 16) & 31;
-        const bool matched = cpu.exclusiveSize == size && cpu.exclusiveAddress == base;
+        const bool matched = cpu.exclusiveSize == size && cpu.exclusiveAddress == machine.dataAddress(base);
         cpu.exclusiveSize = 0;
         if (base % size) machine.fault(cpu.pc, base);
         else if (!matched) put(cpu, rs, 1, 32);
         else if (transfer(machine, base, rt, size, false)) put(cpu, rs, 0, 32);
+        return true;
+    }
+    const bool loadExclusivePair = (word & 0xbfff0000) == 0x887f0000;
+    const bool storeExclusivePair = (word & 0xbfe00000) == 0x88200000;
+    if (loadExclusivePair || storeExclusivePair) {
+        const unsigned rt2 = (word >> 10) & 31;
+        const unsigned pairSize = size * 2;
+        const auto address = machine.dataAddress(base);
+        const bool matched = cpu.exclusiveSize == pairSize && cpu.exclusiveAddress == address;
+        cpu.exclusiveSize = 0;
+        std::array<uint8_t, 16> bytes{};
+        const auto pair = std::span(bytes).first(pairSize);
+        if (address % pairSize) {
+            machine.fault(cpu.pc, base);
+        } else if (loadExclusivePair) {
+            if (!machine.readInto(address, pair)) {
+                machine.fault(cpu.pc, base);
+                return true;
+            }
+            uint64_t first = 0, second = 0;
+            std::memcpy(&first, bytes.data(), size);
+            std::memcpy(&second, bytes.data() + size, size);
+            put(cpu, rt, first, size * 8);
+            put(cpu, rt2, second, size * 8);
+            cpu.exclusiveAddress = address;
+            cpu.exclusiveSize = pairSize;
+        } else {
+            const unsigned rs = (word >> 16) & 31;
+            if (!matched) {
+                put(cpu, rs, 1, 32);
+                return true;
+            }
+            const auto first = reg(cpu, rt), second = reg(cpu, rt2);
+            std::memcpy(bytes.data(), &first, size);
+            std::memcpy(bytes.data() + size, &second, size);
+            if (machine.write(address, pair)) put(cpu, rs, 0, 32);
+            else machine.fault(cpu.pc, base);
+        }
         return true;
     }
     // Acquire and release ordering is inherent in the single-thread probe.

@@ -18,6 +18,32 @@ int main() {
     constexpr uint64_t base = 0x2000;
     Machine machine(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
     {
+        Machine pairs(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
+        constexpr uint64_t address = base + 0x80;
+        pairs.cpu.x[8] = address;
+        assert(pairs.store64(address, 0x1122334455667788) && pairs.store64(address + 8, 0x99aabbccddeeff00));
+        assert(executeStartupInstruction(pairs, 0xc87fd115)); // ldaxp x21, x20, [x8]
+        assert(pairs.cpu.x[21] == 0x1122334455667788 && pairs.cpu.x[20] == 0x99aabbccddeeff00);
+        pairs.cpu.x[21] = 1;
+        pairs.cpu.x[20] = 2;
+        assert(executeStartupInstruction(pairs, 0xc8245115)); // stxp w4, x21, x20, [x8]
+        uint64_t first = 0, second = 0;
+        assert(pairs.cpu.x[4] == 0 && pairs.load64(address, first) && pairs.load64(address + 8, second));
+        assert(first == 1 && second == 2);
+        assert(executeStartupInstruction(pairs, 0xc87fd115));
+        assert(pairs.store64(address + 8, 3));
+        assert(executeStartupInstruction(pairs, 0xc8245115));
+        assert(pairs.cpu.x[4] == 1 && pairs.load64(address + 8, second) && second == 3);
+        assert(executeStartupInstruction(pairs, 0x887f5115)); // ldxp w21, w20, [x8]
+        assert(pairs.cpu.x[21] == 1 && pairs.cpu.x[20] == 0);
+        pairs.cpu.x[20] = 0xbadcafe512345678ULL;
+        assert(executeStartupInstruction(pairs, 0x8824d115)); // stlxp w4, w21, w20, [x8]
+        assert(pairs.cpu.x[4] == 0 && pairs.load64(address, first) && first == 0x1234567800000001ULL);
+        pairs.cpu.x[8] = address + 8;
+        assert(executeStartupInstruction(pairs, 0xc87fd115));
+        assert(pairs.cpu.stop == Stop::fault && pairs.cpu.faultAddress == address + 8);
+    }
+    {
         Machine permute(Image{base, {}, {}});
         const std::array<uint32_t, 4> left{10, 20, 30, 40}, right{1, 2, 3, 4}, expected{20, 2, 40, 4};
         std::memcpy(permute.cpu.v[2].data(), left.data(), sizeof(left));
