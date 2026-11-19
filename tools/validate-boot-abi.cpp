@@ -130,6 +130,16 @@ int main() {
         std::memcpy(permute.cpu.v[2].data(), widenedLow.data(), sizeof(widenedLow));
         assert(executeStartupInstruction(permute, 0x4e616841)); // fcvtn2 v1.4s, v2.2d
         assert(std::memcmp(permute.cpu.v[1].data(), narrowedHigh.data(), sizeof(narrowedHigh)) == 0);
+        const std::array<uint32_t, 4> minLeft{0, 0x7fc00042, 14, 19}, minRight{0x80000000, 0x3f800000, 0, 0};
+        const std::array<uint32_t, 4> minOutput{0x80000000, 0x3f800000, 0, 0};
+        const std::array<uint32_t, 4> maxOutput{0, 0x3f800000, 0, 0};
+        std::memcpy(permute.cpu.v[2].data(), minLeft.data(), sizeof(minLeft));
+        std::memcpy(permute.cpu.v[3].data(), minRight.data(), sizeof(minRight));
+        assert(executeStartupInstruction(permute, 0x0ea3c442)); // fminnm v2.2s, v2.2s, v3.2s
+        assert(std::memcmp(permute.cpu.v[2].data(), minOutput.data(), sizeof(minOutput)) == 0);
+        std::memcpy(permute.cpu.v[0].data(), minLeft.data(), sizeof(minLeft));
+        assert(executeStartupInstruction(permute, 0x0e20c440)); // fmaxnm v0.2s, v2.2s, v0.2s
+        assert(std::memcmp(permute.cpu.v[0].data(), maxOutput.data(), sizeof(maxOutput)) == 0);
         const double half = -2.5, beyondSignedMax = 0x1p63;
         std::memcpy(permute.cpu.v[5].data(), &half, sizeof(half));
         assert(executeStartupInstruction(permute, 0x9e6400a9)); // fcvtas x9, d5

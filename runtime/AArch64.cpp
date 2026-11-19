@@ -346,6 +346,24 @@ void setLane(std::array<uint8_t, 16>& vector, unsigned index, unsigned size, uin
     std::memcpy(vector.data() + index * size, &value, size);
 }
 
+template<class Float, class UInt>
+Float floatingMinMax(Float left, Float right, bool minimum, bool numeric) {
+    const auto leftBits = std::bit_cast<UInt>(left), rightBits = std::bit_cast<UInt>(right);
+    constexpr UInt quietBit = UInt{1} << (std::numeric_limits<Float>::digits - 2);
+    const bool leftNaN = std::isnan(left), rightNaN = std::isnan(right);
+    if (leftNaN && !(leftBits & quietBit)) return std::bit_cast<Float>(leftBits | quietBit);
+    if (rightNaN && !(rightBits & quietBit)) return std::bit_cast<Float>(rightBits | quietBit);
+    if (leftNaN && (!numeric || rightNaN)) return left;
+    if (rightNaN) return numeric ? left : right;
+    if (leftNaN) return right;
+    if (left == 0 && right == 0) {
+        const bool negative = minimum ? std::signbit(left) || std::signbit(right)
+                                      : std::signbit(left) && std::signbit(right);
+        return negative ? Float{-0.0} : Float{0.0};
+    }
+    return minimum ? std::min(left, right) : std::max(left, right);
+}
+
 bool vectorArithmetic(CPU& cpu, uint32_t word) {
     const unsigned rd = word & 31, rn = (word >> 5) & 31, rm = (word >> 16) & 31;
     const auto& source = cpu.v[rn];
@@ -538,6 +556,20 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
             const auto value = std::bit_cast<double>(lane(source, i, 8));
             setLane(result, first + i, 4, std::bit_cast<uint32_t>(static_cast<float>(value)));
         }
+    } else if ((word & 0xbf20fc00) == 0x0e20c400) { // FMAXNM, FMINNM (vector).
+        const bool wide = word & 0x400000, minimum = word & 0x800000;
+        if (wide && width == 8) return false;
+        const auto apply = [&]<class Float, class UInt>() {
+            constexpr unsigned laneSize = sizeof(Float);
+            for (unsigned i = 0; i < width / laneSize; ++i) {
+                const auto left = std::bit_cast<Float>(UInt(lane(source, i, laneSize)));
+                const auto right = std::bit_cast<Float>(UInt(lane(other, i, laneSize)));
+                const auto value = floatingMinMax<Float, UInt>(left, right, minimum, true);
+                setLane(result, i, laneSize, std::bit_cast<UInt>(value));
+            }
+        };
+        if (wide) apply.operator()<double, uint64_t>();
+        else apply.operator()<float, uint32_t>();
     } else if ((word & 0xbf3ffc00) == 0x0e209800) { // CMEQ (zero).
         for (unsigned i = 0; i < width / size; ++i) {
             setLane(result, i, size, lane(source, i, size) == 0 ? UINT64_MAX : 0);
@@ -924,23 +956,7 @@ bool floatInstruction(CPU& cpu, uint32_t word) {
         }
     } else if (binary == 0x1e204800 || binary == 0x1e205800 ||
                binary == 0x1e206800 || binary == 0x1e207800) { // FMAX, FMIN, FMAXNM, FMINNM.
-        const auto left = get(rn), right = get(rm);
-        const bool minimum = word & 0x1000, numeric = word & 0x2000;
-        const auto leftBits = std::bit_cast<UInt>(left), rightBits = std::bit_cast<UInt>(right);
-        constexpr UInt quietBit = UInt{1} << (std::numeric_limits<Float>::digits - 2);
-        const bool leftNaN = std::isnan(left), rightNaN = std::isnan(right);
-        if (leftNaN && !(leftBits & quietBit)) store(std::bit_cast<Float>(leftBits | quietBit));
-        else if (rightNaN && !(rightBits & quietBit)) store(std::bit_cast<Float>(rightBits | quietBit));
-        else if (leftNaN && (!numeric || rightNaN)) store(left);
-        else if (rightNaN) store(numeric ? left : right);
-        else if (leftNaN) store(right);
-        else if (left == 0 && right == 0) {
-            const bool negative = minimum ? std::signbit(left) || std::signbit(right)
-                                          : std::signbit(left) && std::signbit(right);
-            store(negative ? Float{-0.0} : Float{0.0});
-        } else {
-            store(minimum ? std::min(left, right) : std::max(left, right));
-        }
+        store(floatingMinMax<Float, UInt>(get(rn), get(rm), word & 0x1000, word & 0x2000));
     } else if (binary == 0x1e202000 && (rd == 0 || rd == 8)) {
         const auto a = get(rn), b = rd ? 0 : get(rm);
         cpu.nzcv = std::isunordered(a, b) ? 3 : a < b ? 8 : a == b ? 6 : 2;
