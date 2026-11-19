@@ -148,6 +148,17 @@ int main() {
         std::memcpy(permute.cpu.v[2].data(), zeroAndPositive.data(), sizeof(zeroAndPositive));
         assert(executeStartupInstruction(permute, 0x4ee08843));
         assert(std::memcmp(permute.cpu.v[3].data(), secondGreater.data(), sizeof(secondGreater)) == 0);
+        std::memcpy(permute.cpu.v[1].data(), positiveAndNegative.data(), sizeof(positiveAndNegative));
+        assert(executeStartupInstruction(permute, 0x6ee09823)); // cmle v3.2d, v1.2d, #0
+        assert(std::memcmp(permute.cpu.v[3].data(), secondGreater.data(), sizeof(secondGreater)) == 0);
+        std::memcpy(permute.cpu.v[1].data(), zeroAndPositive.data(), sizeof(zeroAndPositive));
+        assert(executeStartupInstruction(permute, 0x6ee09823));
+        assert(std::memcmp(permute.cpu.v[3].data(), firstGreater.data(), sizeof(firstGreater)) == 0);
+        const std::array<uint16_t, 8> reductionInput{0xffff, 0x7fff, 3, 0xfffe, 0, 1, 2, 0};
+        const std::array<uint16_t, 8> reductionOutput{3};
+        std::memcpy(permute.cpu.v[2].data(), reductionInput.data(), sizeof(reductionInput));
+        assert(executeStartupInstruction(permute, 0x2e71a842)); // uminv h2, v2.4h
+        assert(std::memcmp(permute.cpu.v[2].data(), reductionOutput.data(), sizeof(reductionOutput)) == 0);
         const double half = -2.5, beyondSignedMax = 0x1p63;
         std::memcpy(permute.cpu.v[5].data(), &half, sizeof(half));
         assert(executeStartupInstruction(permute, 0x9e6400a9)); // fcvtas x9, d5

@@ -576,13 +576,18 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
         }
     } else if (const auto compareZero = word & 0xbf3ffc00;
                compareZero == 0x0e208800 || compareZero == 0x0e20a800 ||
-               compareZero == 0x2e208800) { // CMGT, CMLT, CMGE (zero).
+               compareZero == 0x2e208800 || compareZero == 0x2e209800) { // CMGT, CMLT, CMGE, CMLE (zero).
         if (size == 8 && width == 8) return false;
         for (unsigned i = 0; i < width / size; ++i) {
             const auto value = lane(source, i, size);
             const bool negative = value >> (size * 8 - 1);
-            const bool match = compareZero == 0x0e208800 ? !negative && value != 0
-                                                        : negative == (compareZero == 0x0e20a800);
+            bool match = false;
+            switch (compareZero) {
+                case 0x0e208800: match = !negative && value != 0; break;
+                case 0x0e20a800: match = negative; break;
+                case 0x2e208800: match = !negative; break;
+                case 0x2e209800: match = negative || value == 0; break;
+            }
             setLane(result, i, size, match ? UINT64_MAX : 0);
         }
     } else if (const auto unaryInteger = word & 0xbf3ffc00;
@@ -623,10 +628,15 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
         uint64_t sum = 0;
         for (unsigned i = 0; i < width / size; ++i) sum += lane(source, i, size);
         setLane(result, 0, size, sum);
-    } else if ((word & 0xbf3ffc00) == 0x2e30a800) { // UMAXV.
-        if (width / size < 2 || size == 8) return false;
-        uint64_t value = 0;
-        for (unsigned i = 0; i < width / size; ++i) value = std::max(value, lane(source, i, size));
+    } else if (const auto reduction = word & 0xbf3ffc00;
+               reduction == 0x2e30a800 || reduction == 0x2e31a800) { // UMAXV, UMINV.
+        if (size == 8 || (size == 4 && width == 8)) return false;
+        const bool minimum = reduction == 0x2e31a800;
+        auto value = lane(source, 0, size);
+        for (unsigned i = 1; i < width / size; ++i) {
+            const auto next = lane(source, i, size);
+            value = minimum ? std::min(value, next) : std::max(value, next);
+        }
         setLane(result, 0, size, value);
     } else if (fmov == 0x1e260000 || fmov == 0x9e660000) {
         put(cpu, rd, lane(source, 0, word >> 31 ? 8 : 4), word >> 31 ? 64 : 32);
