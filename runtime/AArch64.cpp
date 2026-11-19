@@ -575,12 +575,15 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
             setLane(result, i, size, lane(source, i, size) == 0 ? UINT64_MAX : 0);
         }
     } else if (const auto compareZero = word & 0xbf3ffc00;
-               compareZero == 0x0e20a800 || compareZero == 0x2e208800) { // CMLT and CMGE (zero).
+               compareZero == 0x0e208800 || compareZero == 0x0e20a800 ||
+               compareZero == 0x2e208800) { // CMGT, CMLT, CMGE (zero).
         if (size == 8 && width == 8) return false;
-        const bool less = compareZero == 0x0e20a800;
         for (unsigned i = 0; i < width / size; ++i) {
-            const bool negative = lane(source, i, size) >> (size * 8 - 1);
-            setLane(result, i, size, negative == less ? UINT64_MAX : 0);
+            const auto value = lane(source, i, size);
+            const bool negative = value >> (size * 8 - 1);
+            const bool match = compareZero == 0x0e208800 ? !negative && value != 0
+                                                        : negative == (compareZero == 0x0e20a800);
+            setLane(result, i, size, match ? UINT64_MAX : 0);
         }
     } else if (const auto unaryInteger = word & 0xbf3ffc00;
                unaryInteger == 0x0e20b800 || unaryInteger == 0x2e20b800) { // ABS, NEG (vector).

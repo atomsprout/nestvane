@@ -160,3 +160,5 @@
 - iPhone 11 第 7565 号进程验证缓冲区生命周期通道，原版 Ranchu 在约 67 秒进入 640×960 主显示初始化，消除前一轮的资源分配错误。此版仍复现 Binder 描述符回复失败并达到 720 秒诊断时限。Mac 启动在补齐 `FNEG` 后进入 SurfaceFlinger 刷新调度，随后触发 `LDAXP`。成对独占访存、SurfaceFlinger 控制管道的 epoll 支持，以及继续推进后触发的 `FCVTL` 已分别通过宿主回归。新版签名构建记录 Composer3 加载和主显示连接。
 
 - iPhone 11 第 7590 号进程在 68,561 ms 加载原版 Composer3 HAL，在 68,582 ms 连接原版 Android 主显示。最终报告确认在 `fcvtn v2.2s, v2.2d` 停止，与 Mac 停点一致。Mac 加入转换后继续到同一基本块的向量 `FMINNM`，并确认随后使用 `FMAXNM`。这两条指令与既有标量路径共用数值选择逻辑，宿主回归和 iOS 签名构建已通过。尚待原版 Android 首帧呈现。
+
+- Mac 复测越过向量最值操作后，SurfaceFlinger 将主显示设为 60 Hz、完成开启显示的 power mode 2，随后触发 `cmgt v3.2d, v2.2d, #0`。此前控制管道的 epoll 错误已消失。向量有符号比较修复通过宿主 ABI 和 iOS 签名构建。第 7592 号真机验证进程已经运行包含前一批向量修复的版本。
