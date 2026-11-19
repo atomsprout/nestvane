@@ -218,3 +218,6 @@
 - 在 Android 17 ARM64 SDK 参考镜像上，`pm path android.ext.shared` 返回工厂 APK `/system/app/ExtShared/ExtShared.apk`，包信息确认其声明同名动态共享库。诊断镜像脚本已将其收录。完整重建采集到 14 个 APK 及 3 个相关 APEX，ExtShared 保留清单和 DEX。完整镜像探针新增独立 Bionic 进程读回 `sys.boot_completed` 的检查，启动验收仍在运行。
 - 第 7999 号 iPhone 11 进程在约 14 分 42 秒进入 PackageManager 首次启动设置及系统包扫描。该轮使用此前的镜像，已观察到热状态为 serious，桌面启动仍待验收。
 - 第 7999 号真机测试达到 1,200 秒诊断时限，执行约 228.1 亿条客体指令，最后仍处于系统包扫描阶段。该轮报告已导出。包含 ExtShared、APK 尾页修复、只读私有映射和匿名内存修复的新包通过开发签名与嵌入文件校验，已覆盖安装。第 8152 号进程在 155 ms 进入 Android 17 init，本轮开始时热状态为 serious。
+
+- 带 ExtShared 的 Mac 启动记录显示系统包扫描用时 141.722 秒，PackageManager 写出设置并完成创建。持久化的 `/data/system/packages.list` 有 41 行，按包名确认包含 `android.ext.shared`、Launcher3、SystemUI 和 PackageInstaller。此时尚未确认桌面显示或客体完成启动。
+- 新增可选的 `--smoke-apk` 镜像输入。客体 init 在 `sys.boot_completed=1` 后以 shell 身份调用原版 Android `cmd` 安装并冷启动项目自有 APK，报告分别记录安装、启动命令和 Activity 实际创建。参考 SDK 上命令返回 `Success` 和 `LaunchState: COLD`，应用读回此前保存的计数 1。Mac Nestvane 镜像复测已开始，包含测试 APK 的 iPhoneOS 开发签名包通过校验。

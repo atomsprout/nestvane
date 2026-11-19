@@ -51,6 +51,18 @@ tools/prepare-boot-image.py emulator-5580 --root generated/android17-init-root \
 tools/probe-init.sh generated/android17-framework-diagnostic generated/framework-diagnostic.sqlite3
 ```
 
+如需验收 APK 安装和启动，先生成项目自有的计数器 APK，再构建包含框架应用和 APK 的客体目录。客体在完成启动后使用原版 `cmd` 安装并启动计数器。报告分别记录安装进程、启动命令和 Activity 创建结果。
+
+```sh
+tools/build-smoke-apk.sh
+tools/prepare-boot-image.py emulator-5580 --root generated/android17-init-root \
+  --output generated/android17-framework-smoke --framework-diagnostic --framework-apps \
+  --smoke-apk generated/android17-smoke.apk
+tools/prepare-property-reader.sh generated/android17-framework-smoke
+```
+
+使用带图形后端的 Mac 探针运行该目录，或把它作为 `generated/android17-init-root` 构建 iPhone App。[本地图形后端验证](results/P2-network.md)
+
 ## Android 17 原版 ART 探针
 
 `tools/prepare-art-root.py` 从 ARM64 API 37 SDK 模拟器生成本地资源目录，`--d8` 指定 Android Build Tools 的 D8 路径。`tools/probe-dynamic.sh --art` 运行 Mac 探针。有该资源目录时，iOS 验证构建也会运行它。进度见 [ART 验证](results/P2-art.md)。

@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import tempfile
 from xml.etree import ElementTree
-from zipfile import ZipFile
+from zipfile import BadZipFile, ZipFile
 
 
 FRAMEWORK_APPS = (
@@ -118,6 +118,8 @@ def main():
                         help="Produce a complete offline diagnostic guest root using the compiled image")
     parser.add_argument("--framework-apps", action="store_true",
                         help="Include launcher, SystemUI and package-management apps from the matching reference")
+    parser.add_argument("--smoke-apk", type=Path,
+                        help="Stage the APK from tools/build-smoke-apk.sh for an install and launch check")
     parser.add_argument("--defer-zygote-preload", action="store_true",
                         help="Use Android's lazy-preload option in the offline framework diagnostic")
     parser.add_argument("--hardware-timeout-multiplier", type=int,
@@ -129,6 +131,15 @@ def main():
         parser.error("--defer-zygote-preload requires --framework-diagnostic")
     if args.framework_apps and not args.framework_diagnostic:
         parser.error("--framework-apps requires --framework-diagnostic")
+    if args.smoke_apk is not None:
+        if not args.framework_apps:
+            parser.error("--smoke-apk requires --framework-apps")
+        try:
+            with ZipFile(args.smoke_apk) as apk:
+                if not {"AndroidManifest.xml", "classes.dex"}.issubset(apk.namelist()):
+                    parser.error("--smoke-apk must contain an Android manifest and DEX")
+        except (OSError, ValueError, BadZipFile) as error:
+            parser.error(f"Invalid --smoke-apk: {error}")
     if args.hardware_timeout_multiplier is not None:
         if not args.framework_diagnostic or not 1 <= args.hardware_timeout_multiplier <= 0x7fffffff:
             parser.error("--hardware-timeout-multiplier requires --framework-diagnostic and a positive Android int")
@@ -217,6 +228,10 @@ def main():
                                     args.hardware_timeout_multiplier)
                 if args.framework_apps:
                     copy_framework_apps(adb, remote, active_modules, guest)
+                if args.smoke_apk is not None:
+                    target = guest / "system/etc/nestvane/smoke.apk"
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(args.smoke_apk, target)
                 guest.rename(args.output)
             else:
                 root.rename(args.output)

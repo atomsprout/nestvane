@@ -449,7 +449,12 @@ DynamicReport probeInit(const std::string& directory, const std::string& databas
         linux.setGraphicsPipeFactory(std::move(graphics));
         linux.setGuestTouch(std::move(touch));
         linux.captureAndroidLogs = true;
-        if (progress) linux.androidLogObserver = [&progress](std::string_view message) {
+        const bool expectSmoke = files.contains("/system/etc/nestvane/smoke.apk");
+        bool smokeActivityOpened = false;
+        if (progress || expectSmoke) linux.androidLogObserver = [&](std::string_view message) {
+            if (expectSmoke && message.starts_with("NestvaneSmoke: Opened activity with count "))
+                smokeActivityOpened = true;
+            if (!progress) return;
             constexpr std::string_view milestones[] = {
                 "Zygote: Preloading classes", "Zygote: ...preloaded", "Zygote: end preload",
                 "Resources: Preloading resources",
@@ -462,6 +467,7 @@ DynamicReport probeInit(const std::string& directory, const std::string& databas
                 "SystemServerTiming: StartInputManager", "EventHub: New device:",
                 "mmap APK: ", "PackageManager: Failed to parse", "PackageManager: Time to scan packages",
                 "SystemServerTiming: StartWindowManagerService", "SystemServerTiming: StartActivityManagerReadyPhase",
+                "NestvaneSmoke: ", "ActivityTaskManager: Displayed dev.nestvane.smoke/",
                 "SurfaceFlinger: SurfaceFlinger is starting", "SurfaceFlinger: Using HWComposer service",
                 "SurfaceFlinger: OpenGL ES informations", "mapper.ranchu: GoldfishAddressSpace",
                 "SurfaceFlinger: Can't create AidlComposerClient", "SurfaceFlinger: Loaded AIDL composer3 HAL",
@@ -567,6 +573,38 @@ service nestvane-check-vold-shell /system/bin/service check vold
                         {reinterpret_cast<const uint8_t*>(client.data()), client.size()});
             linux.alias("/dev/kmsg_debug", "/dev/kmsg");
         }
+        if (expectSmoke) {
+            if (!files.contains("/system/bin/cmd")) throw std::runtime_error("smoke APK requires Android cmd");
+            static constexpr std::string_view smoke = R"rc(
+on property:sys.boot_completed=1
+    copy /system/etc/nestvane/smoke.apk /data/local/tmp/nestvane-smoke.apk
+    chown shell shell /data/local/tmp/nestvane-smoke.apk
+    chmod 0644 /data/local/tmp/nestvane-smoke.apk
+    restorecon /data/local/tmp/nestvane-smoke.apk
+    exec_start nestvane-smoke-install
+    rm /data/local/tmp/nestvane-smoke.apk
+    exec_start nestvane-smoke-launch
+
+service nestvane-smoke-install /system/bin/cmd package install -r /data/local/tmp/nestvane-smoke.apk
+    user shell
+    group shell
+    seclabel u:r:shell:s0
+    disabled
+    oneshot
+    stdio_to_kmsg
+
+service nestvane-smoke-launch /system/bin/cmd activity start -W -S -n dev.nestvane.smoke/.MainActivity
+    user shell
+    group shell
+    seclabel u:r:shell:s0
+    disabled
+    oneshot
+    stdio_to_kmsg
+)rc";
+            linux.mount("/system/etc/init/nestvane-smoke.rc",
+                        {reinterpret_cast<const uint8_t*>(smoke.data()), smoke.size()});
+            linux.alias("/dev/kmsg_debug", "/dev/kmsg");
+        }
         linux.alias("/etc", "/system/etc");
         linux.alias("/system/system_ext/etc/compatconfig", "/system_ext/etc/compatconfig");
         linux.alias("/proc/self/exe", filename);
@@ -615,6 +653,25 @@ service nestvane-check-vold-shell /system/bin/service check vold
                                    exited("(/system/bin/vdc checkpoint prepareCheckpoint)");
             result.report += checkpointVerified ? "  stock vdc checkpoint commands verified: yes\n"
                                        : "  stock vdc checkpoint commands verified: no\n";
+        }
+        if (expectSmoke) {
+            const auto succeeded = [&](std::string_view prefix) {
+                const auto found = [&](const std::string& log) {
+                    std::istringstream lines(log);
+                    for (std::string line; std::getline(lines, line);) {
+                        if (line.starts_with(prefix) && line.find("exited with status 0 ") != std::string::npos)
+                            return true;
+                    }
+                    return false;
+                };
+                return found(linux.kernelOutput) || found(linux.recentKernelOutput);
+            };
+            result.report += succeeded("<6>init: Service 'nestvane-smoke-install' ") ?
+                "  guest smoke APK install command: passed\n" : "  guest smoke APK install command: unverified\n";
+            result.report += succeeded("<6>init: Service 'nestvane-smoke-launch' ") ?
+                "  guest smoke APK launch command: passed\n" : "  guest smoke APK launch command: unverified\n";
+            result.report += smokeActivityOpened ?
+                "  guest smoke APK activity creation: verified\n" : "  guest smoke APK activity creation: unverified\n";
         }
         constexpr auto propertyReader = "/system/bin/nestvane-get-properties";
         if (!result.passed) return result;
