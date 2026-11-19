@@ -17,15 +17,12 @@ public:
     std::span<const uint8_t> bytes() const { return blob; }
     bool hasString(uint32_t offset) const { return offset < stringBytes; }
     bool isInt32(uint32_t id) const {
-        for (size_t remaining = records.size(); remaining && id && id <= records.size(); --remaining) {
-            const auto& record = records[id - 1];
-            switch (record.kind) {
-                case 1: return record.data == 4 && (record.elements & 0x00ff00ff) == 32;
-                case 8: case 9: case 10: case 11: case 18: id = record.data; break;
-                default: return false;
-            }
-        }
-        return false;
+        const auto* type = baseType(id);
+        return type && type->kind == 1 && type->data == 4 && (type->elements & 0x00ff00ff) == 32;
+    }
+    bool isStruct(uint32_t id) const {
+        const auto* type = baseType(id);
+        return type && type->kind == 4;
     }
     bool isFunction(uint32_t id) const {
         if (!id || id > records.size() || records[id - 1].kind != 12) return false;
@@ -127,6 +124,16 @@ public:
 
 private:
     struct Record { uint32_t kind, data, elements; };
+    const Record* baseType(uint32_t id) const {
+        for (size_t remaining = records.size(); remaining && id && id <= records.size(); --remaining) {
+            const auto& record = records[id - 1];
+            switch (record.kind) {
+                case 8: case 9: case 10: case 11: case 18: id = record.data; break;
+                default: return &record;
+            }
+        }
+        return nullptr;
+    }
     static constexpr std::array<uint8_t, 20> widths{0, 4, 0, 12, 12, 12, 8, 0, 0, 0, 0, 0, 0, 8, 4, 12, 0, 4, 0, 12};
     static uint32_t read32(std::span<const uint8_t> bytes, size_t offset) {
         uint32_t value;

@@ -5216,8 +5216,10 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
         const bool device = type == deviceHash;
         const bool socket = type == BpfMap::socketStorage;
         const bool ring = type == BpfMap::ringBuffer;
-        if (!array && !device && !socket && !ring && type != hashType && type != perCpuHash) return uint64_t(-95);
-        if ((socket || ring) && !(current->process->effectiveCaps & (capBpf | capSysAdmin))) return uint64_t(-1);
+        const bool prefix = type == BpfMap::prefixMap;
+        if (!array && !device && !socket && !ring && !prefix && type != hashType && type != perCpuHash)
+            return uint64_t(-95);
+        if ((socket || ring || prefix) && !(current->process->effectiveCaps & (capBpf | capSysAdmin))) return uint64_t(-1);
         if (device && !(current->process->effectiveCaps & (1ULL << 12))) return uint64_t(-1); // CAP_NET_ADMIN
         const uint32_t arrayFlags = type == arrayType ? mappable | programReadOnly : 0;
         const uint32_t supportedFlags = readOnly | writeOnly | (device ? programReadOnly : array ? arrayFlags : noPrealloc);
@@ -5228,6 +5230,8 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
                    (device && valueSize != 4 && valueSize != 8) || (flags & ~supportedFlags)) {
             return invalid;
         }
+        if (prefix && (keySize < BpfMap::minPrefixKey || keySize > BpfMap::maxPrefixKey || !(flags & noPrealloc)))
+            return invalid;
         if ((flags & (readOnly | writeOnly)) == (readOnly | writeOnly)) return invalid;
         if (nonzero(20, 28) || nonzero(44, 48) || nonzero(60, input.size())) return uint64_t(-95);
         std::array<uint32_t, 3> btf{};
@@ -5244,6 +5248,7 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
                 return invalid;
         }
         if (socket && (!types || !types->isInt32(keyType))) return invalid;
+        if (prefix && types && !types->isStruct(keyType)) return invalid;
         if (socket && valueSize > 65535 - 128) return tooBig;
         // The mmap array ABI aligns array elements to eight bytes. Per-CPU syscalls copy
         // one aligned value for each possible guest CPU, of which this guest has one.
@@ -5259,7 +5264,7 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
         if (allocatedBytes() > mapBudget - bytes || bpfMaps.size() >= 256) return noMemory;
         if (nextBpfMapId >= INT32_MAX) return uint64_t(-28);
         try {
-            auto map = std::make_shared<BpfMap>();
+            auto map = std::make_shared<BpfMap>(prefix);
             map->id = nextBpfMapId;
             map->type = type;
             map->flags = (flags & ~(readOnly | writeOnly)) | (device ? programReadOnly : 0);
@@ -5340,7 +5345,10 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
             const bool hasKey = key || command != nextKey;
             std::vector<uint8_t> bytes(hasKey ? map.keySize : 0);
             if (hasKey && !machine.readInto(key, bytes)) return fault;
-            const auto entry = hasKey ? map.hash.find(bytes) : map.hash.end();
+            const bool prefix = map.type == BpfMap::prefixMap;
+            const bool validKey = hasKey && (!prefix || map.validPrefix(bytes));
+            if (hasKey && !validKey && (command == update || command == erase)) return invalid;
+            const auto entry = !validKey ? map.hash.end() : command == lookup ? map.findValue(bytes) : map.hash.find(bytes);
             if (command == nextKey) {
                 const auto next = entry == map.hash.end() ? map.hash.begin() : std::next(entry);
                 if (next == map.hash.end()) return uint64_t(-2);
@@ -5355,7 +5363,8 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
             const bool device = map.type == deviceHash;
             if (!device && entry == map.hash.end() && flags == 2) return uint64_t(-2); // BPF_EXIST
             if (entry != map.hash.end() && flags == 1) return uint64_t(-17); // BPF_NOEXIST
-            if (entry == map.hash.end() && map.hash.size() == map.entryCount) return tooBig;
+            if (entry == map.hash.end() && map.hash.size() == map.entryCount)
+                return prefix ? uint64_t(-28) : tooBig;
             std::vector<uint8_t> replacement(map.valueStride);
             if (!machine.readInto(value, replacement)) return fault;
             if (device) {
@@ -5369,7 +5378,15 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
                     std::fill(replacement.begin() + 4, replacement.end(), 0);
                 }
             }
-            map.hash.insert_or_assign(std::move(bytes), std::move(replacement));
+            if (prefix && entry != map.hash.end()) {
+                // Prefixes ignore trailing bits for matching, but enumeration returns the last supplied key.
+                auto node = map.hash.extract(entry);
+                std::ranges::copy(bytes, node.key().begin());
+                node.mapped() = std::move(replacement);
+                map.hash.insert(std::move(node));
+            } else {
+                map.hash.insert_or_assign(std::move(bytes), std::move(replacement));
+            }
             return 0;
         } catch (const std::bad_alloc&) {
             return noMemory;

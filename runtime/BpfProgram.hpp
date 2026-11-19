@@ -22,7 +22,9 @@ namespace nestvane {
 class BpfTypes;
 
 struct BpfMap {
-    static constexpr uint32_t socketStorage = 24, ringBuffer = 27;
+    static constexpr uint32_t prefixMap = 11, socketStorage = 24, ringBuffer = 27;
+    static constexpr size_t minPrefixKey = 5, maxPrefixKey = sizeof(uint32_t) + 256;
+    explicit BpfMap(bool prefixes = false) : hash(CompareKeys{prefixes}) {}
     static constexpr uint32_t ringDiscardBit = 1U << 30, ringBusyBit = 1U << 31;
     uint32_t id = 0, type = 0, flags = 0, entryCount = 0;
     uint32_t keySize = 0, valueSize = 0, valueStride = 0, btfKeyType = 0, btfValueType = 0;
@@ -82,13 +84,53 @@ struct BpfMap {
         return values.pages.data() + 2 * pageSize + (position & (entryCount - 1));
     }
 
+    static uint32_t prefixLength(std::span<const uint8_t> key) {
+        uint32_t prefix;
+        std::memcpy(&prefix, key.data(), sizeof(prefix));
+        return prefix;
+    }
+
+    static bool validPrefix(std::span<const uint8_t> key) {
+        return key.size() >= minPrefixKey && prefixLength(key) <= 8 * (key.size() - sizeof(uint32_t));
+    }
+
     struct CompareKeys {
         using is_transparent = void;
+        bool prefixes;
         bool operator()(std::span<const uint8_t> left, std::span<const uint8_t> right) const {
-            return std::ranges::lexicographical_compare(left, right);
+            if (!prefixes) return std::ranges::lexicographical_compare(left, right);
+            const auto leftLength = prefixLength(left), rightLength = prefixLength(right);
+            const auto common = std::min(leftLength, rightLength);
+            const auto bytes = common / 8, bits = common % 8;
+            left = left.subspan(sizeof(uint32_t));
+            right = right.subspan(sizeof(uint32_t));
+            const auto order = std::memcmp(left.data(), right.data(), bytes);
+            if (order) return order < 0;
+            if (bits) {
+                const auto shift = 8 - bits;
+                const auto a = left[bytes] >> shift, b = right[bytes] >> shift;
+                if (a != b) return a < b;
+            }
+            // Linux traverses left, then right, then the matching parent prefix.
+            return leftLength > rightLength;
         }
     };
-    std::map<std::vector<uint8_t>, std::vector<uint8_t>, CompareKeys> hash;
+    using Entries = std::map<std::vector<uint8_t>, std::vector<uint8_t>, CompareKeys>;
+    Entries hash;
+
+    Entries::iterator findValue(std::span<const uint8_t> key) {
+        if (type != prefixMap) return hash.find(key);
+        if (hash.empty() || !validPrefix(key)) return hash.end();
+        std::array<uint8_t, maxPrefixKey> query;
+        std::ranges::copy(key, query.begin());
+        const auto candidate = std::span(query).first(key.size());
+        for (auto prefix = prefixLength(key);; --prefix) {
+            std::memcpy(query.data(), &prefix, sizeof(prefix));
+            const auto found = hash.find(candidate);
+            if (found != hash.end() || !prefix) return found;
+        }
+    }
+
     // Descriptor duplicates share the same socket owner. Closing the last socket FD
     // leaves an expired weak key, which is reaped before using the map again.
     std::map<std::weak_ptr<void>, std::vector<uint8_t>, std::owner_less<void>> socketValues;
@@ -450,7 +492,7 @@ private:
                 if (index >= map.entryCount) return 0;
                 value = map.arrayElement(index).first(map.valueSize);
             } else {
-                const auto found = map.hash.find(key);
+                const auto found = map.findValue(key);
                 if (found == map.hash.end()) return 0;
                 value = std::span(found->second).first(map.valueSize);
             }

@@ -1284,6 +1284,35 @@ int main() {
         assert(call(215, {reader, pageSize}) == 0 && call(215, {writer, 3 * pageSize}) == 0);
     }
     {
+        constexpr auto attr = base + 0x100, key = base + 0x200, value = key + 8;
+        const auto write = [&](uint64_t address, const auto& record) {
+            return machine.write(address, {reinterpret_cast<const uint8_t*>(&record), sizeof(record)});
+        };
+        const std::array<uint32_t, 5> request{11, 8, 4, 2, 1}; // LPM_TRIE, BPF_F_NO_PREALLOC
+        assert(write(attr, request));
+        const auto map = call(280, {0, attr, sizeof(request)});
+        assert(map < 256);
+        const auto elem = [&](uint32_t command, uint64_t address, uint64_t flags = 0) {
+            const std::array<uint64_t, 4> args{map, address, command == 3 ? 0 : value, flags};
+            assert(write(attr, args));
+            return call(280, {command, attr, sizeof(args)});
+        };
+        assert(machine.store64(key, 0x0000640a00000008) && machine.store64(value, 10));
+        assert(elem(2, key) == 0);
+        assert(machine.store64(key, 0x0000180a0000000d) && machine.store64(value, 20));
+        assert(elem(2, key) == 0);
+        assert(machine.store64(key, 0x04031f0a0000000d) && machine.store64(value, 30));
+        assert(elem(2, key, 1) == uint64_t(-17) && elem(2, key, 2) == 0);
+        assert(elem(4, 0) == 0 && load(value) == 0x04031f0a0000000d); // Child first, original key bytes.
+        assert(machine.store64(key, 0x01001e0a00000020));
+        assert(elem(1, key) == 0 && uint32_t(load(value)) == 30);
+        assert(elem(3, key) == uint64_t(-2)); // Deletion requires an exact prefix.
+        assert(machine.store64(key, 0x0000180a0000000d) && elem(3, key) == 0);
+        assert(machine.store64(key, 0x01001e0a00000020));
+        assert(elem(1, key) == 0 && uint32_t(load(value)) == 10);
+        assert(call(57, {map}) == 0);
+    }
+    {
         constexpr auto attr = base + 96;
         put(base, "/sys/fs/bpf/map_missing");
         assert(machine.store64(attr, base) && machine.store64(attr + 8, 0));
