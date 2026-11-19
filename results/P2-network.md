@@ -260,3 +260,4 @@
 
 - iPhone 11 进程 8290 通过源码版加载器的解释器自检，随后创建 `/sys/fs/bpf/netd_readonly` 时遇到客体目录上限。目录上限已从 512 提升至 2,048，保留 ext4 索引的独立计数。宿主回归先保存并恢复 540 个 `/data` 目录，再成功挂载 bpffs 并创建对应目录。
 - libbpf 提交的 BTF 程序函数与行表现在随程序保留，可通过 `BPF_OBJ_GET_INFO_BY_FD` 读回。Android 17 参考内核和 Nestvane Mac 使用同一 Bionic 探针，均拒绝重复指令偏移，并在初始 BTF 描述符关闭后正常回读函数与行表。宿主 ABI 回归通过。更新运行时后，Mac 中 `clatd.o` 的首条加载失败从 EOPNOTSUPP 推进至 EINVAL。原版节还使用尚未实现的 `bpf_skb_change_proto` 和 `bpf_skb_adjust_room`。
+- 保留原客体数据库的 iPhone 11 进程 8292 越过目录创建失败，源码版加载器自检通过，并加载及固定 `offload.o` 的全部八个分类程序，再完成 `test.o`。真机随后与 Mac 一样停在 `clatd.o`。Mac 诊断确认首个 CLAT 程序的一个 BTF 函数和 88 条行记录已通过校验，下一处是第 183 个指令槽调用的 helper 31（`bpf_skb_change_proto`）。本轮验证使用隔离客体文件视图提供源码构建的加载器，完整 Tethering APEX 重建与 Android 完整启动仍待验证。
