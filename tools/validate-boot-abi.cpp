@@ -159,6 +159,13 @@ int main() {
         std::memcpy(permute.cpu.v[2].data(), reductionInput.data(), sizeof(reductionInput));
         assert(executeStartupInstruction(permute, 0x2e71a842)); // uminv h2, v2.4h
         assert(std::memcmp(permute.cpu.v[2].data(), reductionOutput.data(), sizeof(reductionOutput)) == 0);
+        const int32_t negativeLane = -123;
+        std::memcpy(permute.cpu.v[0].data(), &negativeLane, sizeof(negativeLane));
+        assert(executeStartupInstruction(permute, 0x4e042c0b)); // smov x11, v0.s[0]
+        assert(permute.cpu.x[11] == uint64_t(-123));
+        permute.cpu.v[2][15] = 0x80;
+        assert(executeStartupInstruction(permute, 0x0e1f2c49)); // smov w9, v2.b[15]
+        assert(permute.cpu.x[9] == 0xffffff80);
         const double half = -2.5, beyondSignedMax = 0x1p63;
         std::memcpy(permute.cpu.v[5].data(), &half, sizeof(half));
         assert(executeStartupInstruction(permute, 0x9e6400a9)); // fcvtas x9, d5

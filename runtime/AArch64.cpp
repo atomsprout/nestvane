@@ -661,12 +661,15 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
             unsigned pos = i + offset;
             result[i] = pos < width ? source[pos] : other[pos - width];
         }
-    } else if ((word & 0xbfe0fc00) == 0x0e003c00) { // UMOV.
+    } else if (const auto move = word & 0xbfe0fc00;
+               move == 0x0e003c00 || move == 0x0e002c00) { // UMOV, SMOV.
         const unsigned encoded = (word >> 16) & 31;
         if (!encoded) return false;
         size = encoded & (~encoded + 1);
-        if (size > 8 || (size == 8) != (width == 16)) return false;
-        put(cpu, rd, lane(source, encoded / (size * 2), size), size == 8 ? 64 : 32);
+        const bool signedMove = move == 0x0e002c00, wide = width == 16;
+        if (signedMove ? size > (wide ? 4 : 2) : size > 8 || (size == 8) != wide) return false;
+        const auto value = lane(source, encoded / (size * 2), size);
+        put(cpu, rd, signedMove ? sx(value, size * 8) : value, wide ? 64 : 32);
         return true;
     } else if ((word & 0xffe0fc00) == 0x4e001c00) { // INS (general register).
         const unsigned encoded = (word >> 16) & 31;
