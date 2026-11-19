@@ -34,11 +34,11 @@ bool writeGuest(Machine& machine, uint64_t address, const T& value) {
 
 } // namespace
 
-bool ProbeLinux::binderReadable(const BinderConnection& connection) const {
-    if (connection.owner != processId()) return false;
-    const auto directed = connection.directed.find(currentTid);
+bool ProbeLinux::binderReadable(const BinderConnection& connection, uint64_t pid, uint64_t tid) const {
+    if (connection.owner != pid) return false;
+    const auto directed = connection.directed.find(tid);
     return (directed != connection.directed.end() && !directed->second.empty()) ||
-           (connection.loopers.contains(currentTid) && !connection.incoming.empty());
+           (!connection.incoming.empty() && connection.loopers.contains(tid));
 }
 
 uint64_t ProbeLinux::storeBinderBuffer(BinderConnection& target, std::span<const uint8_t> data,
@@ -462,7 +462,7 @@ uint64_t ProbeLinux::binderWriteRead(Machine& machine, const Descriptor& fd) {
 
     auto& connection = *fd.binder;
     if (!request.readSize) return writeGuest(machine, argument, request) ? 0 : fault;
-    if (!binderReadable(connection)) {
+    if (!binderReadable(connection, processId(), currentTid)) {
         return writeGuest(machine, argument, request) ? uint64_t(-11) : fault;
     }
     auto& directed = connection.directed[currentTid];

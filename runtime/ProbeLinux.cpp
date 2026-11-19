@@ -1732,7 +1732,7 @@ bool ProbeLinux::eventCall(Machine& machine) {
                 const auto ringEvents = ring && ring->ringReadable() ? 0x41 : 0;
                 const bool receiveEnded = endpoint && (endpoint->receiveShutdown ||
                     (!endpoint->netlink && !endpoint->inetDatagram() && endpoint->connected && (!peer || peer->sendShutdown)));
-                const bool readable = (state && state->counter) || childReady || (binder && binderReadable(*binder)) ||
+                const bool readable = (state && state->counter) || childReady || (binder && binderReadable(*binder, processId(), currentTid)) ||
                     (touch && touch->ready()) ||
                     (endpoint && (endpoint->hasInput() || !endpoint->pending.empty() ||
                                   ((peer || endpoint->family == 1) && receiveEnded)));
@@ -5710,7 +5710,15 @@ bool ProbeLinux::readInotify(Machine& machine, const Descriptor& fd) {
 
 void ProbeLinux::wakePollers() {
     for (auto& [tid, thread] : threads) {
-        if (thread.wait == Wait::poll) thread.wait = Wait::none;
+        if (thread.wait != Wait::poll) continue;
+        if (auto binder = thread.waitingBinder.lock()) {
+            const auto& files = thread.process->descriptors;
+            const auto fd = files.find(thread.waitingBinderFd);
+            // A direct Binder ioctl needs queued work or a change to its descriptor.
+            if (fd != files.end() && fd->second.binder == binder &&
+                !binderReadable(*binder, thread.process->id, tid)) continue;
+        }
+        thread.wait = Wait::none;
     }
 }
 
@@ -5785,7 +5793,7 @@ bool ProbeLinux::poll(Machine& machine) {
             const auto count = descriptor->second.event->counter;
             entry.returned = entry.events & ((count ? 1 : 0) | (count < UINT64_MAX - 1 ? 4 : 0));
         } else if (descriptor->second.binder) {
-            entry.returned = entry.events & (binderReadable(*descriptor->second.binder) ? 1 : 0);
+            entry.returned = entry.events & (binderReadable(*descriptor->second.binder, processId(), currentTid) ? 1 : 0);
         } else if (const auto endpoint = descriptor->second.socket) {
             const auto peer = endpoint->peer.lock();
             const bool receiveEnded = endpoint->receiveShutdown ||
@@ -7897,6 +7905,7 @@ bool ProbeLinux::syscall(Machine& machine) {
     const uint64_t number = x[8];
     current->hostEventRetry.reset();
     current->idleBinder.reset();
+    current->waitingBinder.reset();
     if (enforceSeccomp(machine)) return true;
     if (number == 139) return restoreSignalContext(machine); // rt_sigreturn
     if (securityCall(machine) || socketCall(machine) || eventCall(machine) || fileCall(machine)) return true;
@@ -8151,6 +8160,8 @@ bool ProbeLinux::syscall(Machine& machine) {
                 const auto result = binderIoctl(machine, descriptor->second);
                 if (result == uint64_t(-11) && x[1] == 0xc0306201 && !(descriptor->second.effectiveFlags() & 0x800)) {
                     const auto& connection = descriptor->second.binder;
+                    current->waitingBinder = connection;
+                    current->waitingBinderFd = uint32_t(x[0]);
                     const auto replies = connection->replies.find(currentTid);
                     if (connection->loopers.contains(currentTid) &&
                         (replies == connection->replies.end() || replies->second.empty()))

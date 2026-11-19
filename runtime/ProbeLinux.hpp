@@ -125,6 +125,8 @@ private:
         std::shared_ptr<MountNamespace> mountNamespace = {};
         std::shared_ptr<const SeccompFilter> seccomp;
         std::weak_ptr<BinderConnection> idleBinder;
+        std::weak_ptr<BinderConnection> waitingBinder;
+        uint32_t waitingBinderFd = 0;
         bool noNewPrivileges = false;
         Wait wait = Wait::none;
         uint64_t clearTid = 0, futexAddress = 0;
@@ -579,7 +581,7 @@ private:
     uint64_t binderCommand(Machine& machine, const Descriptor& fd, uint32_t command,
                            std::span<const uint8_t> data);
     uint64_t binderWriteRead(Machine& machine, const Descriptor& fd);
-    bool binderReadable(const BinderConnection& connection) const;
+    bool binderReadable(const BinderConnection& connection, uint64_t pid, uint64_t tid) const;
     bool freeBinderBuffer(BinderConnection& connection, uint64_t address, bool delivered);
     uint64_t storeBinderBuffer(BinderConnection& target, std::span<const uint8_t> data,
                               std::span<const uint8_t> offsets, std::span<const uint8_t> extra, std::string_view context);

@@ -4044,6 +4044,12 @@ int main() {
     assert(uint32_t(load(base + 0x720)) == 0x7206);
     assert(bindRequest(channel, 0, 0, "", true) == channel && linux.blocked());
     assert(linux.schedule(machine) && linux.processId() == 1);
+    const auto unrelatedEvent = call(19, {0, 0});
+    assert(unrelatedEvent < 256 && machine.store64(base + 512, 1));
+    assert(call(64, {unrelatedEvent, base + 512, 8}) == 8);
+    machine.cpu.retired += 4096;
+    assert(linux.schedule(machine) && linux.processId() == 1);
+    assert(call(57, {unrelatedEvent}) == 0);
     assert(machine.store64(base + 512, 1) && call(29, {manager, 0x40046205, base + 512}) == 0);
     assert(bindRequest(manager, 0x630c, 0, "", true) == 0);
     assert(uint32_t(load(base + 0x720)) == 0x720d);
