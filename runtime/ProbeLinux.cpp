@@ -368,6 +368,9 @@ ProbeLinux::ProbeLinux(uint64_t pid, uint64_t uid, uint64_t memoryLimit)
     kernelFiles.emplace("/proc/filesystems", "nodev\ttmpfs\nnodev\tproc\nnodev\tbinder\nnodev\tbpf\next4\n");
     addDirectory("/dev/pts", 0755);
     addDirectory("/sys/devices", 0555);
+    addDirectory("/sys/devices/system/cpu", 0555);
+    for (const auto name : {"possible", "present", "online"})
+        kernelFiles.emplace(std::string("/sys/devices/system/cpu/") + name, "0\n");
     addDirectory("/sys/fs/bpf", 0755);
     addDirectory("/sys/class", 0555);
     addDirectory("/sys/block", 0555);
@@ -5133,7 +5136,8 @@ bool ProbeLinux::enforceSeccomp(Machine& machine) {
 uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
     constexpr uint64_t fault = uint64_t(-14), tooBig = uint64_t(-7);
     constexpr uint64_t create = 0, lookup = 1, update = 2, erase = 3, nextKey = 4;
-    constexpr uint32_t hashType = 1, arrayType = 2, noPrealloc = 1, readOnly = 1 << 3, writeOnly = 1 << 4;
+    constexpr uint32_t hashType = 1, arrayType = 2, perCpuHash = 5, perCpuArray = 6;
+    constexpr uint32_t noPrealloc = 1, readOnly = 1 << 3, writeOnly = 1 << 4;
     constexpr uint64_t capBpf = 1ULL << 39, capSysAdmin = 1ULL << 21;
     constexpr size_t mapBudget = 32 * 1024 * 1024;
     const auto& x = machine.cpu.x;
@@ -5155,14 +5159,18 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
         std::array<uint32_t, 5> createFields{};
         std::memcpy(createFields.data(), input.data(), sizeof(createFields));
         const auto [type, keySize, valueSize, entries, flags] = createFields;
-        const bool array = type == arrayType;
-        if (!array && type != hashType) return uint64_t(-95);
+        const bool array = type == arrayType || type == perCpuArray;
+        const bool perCpu = type == perCpuArray || type == perCpuHash;
+        if (!array && type != hashType && type != perCpuHash) return uint64_t(-95);
         const uint32_t supportedFlags = readOnly | writeOnly | (array ? 0 : noPrealloc);
         if ((array && keySize != sizeof(uint32_t)) || !keySize || !valueSize || !entries ||
             (flags & ~supportedFlags) || (flags & (readOnly | writeOnly)) == (readOnly | writeOnly))
             return invalid;
         if (nonzero(20, 28) || nonzero(44, input.size())) return uint64_t(-95);
-        const uint64_t entryBytes = uint64_t(valueSize) + (array ? 0 : uint64_t(keySize) + 128);
+        // BPF userspace copies one 8-byte-aligned value per possible guest CPU.
+        // The guest topology exposed above and through sched_getaffinity has one CPU.
+        const uint64_t valueStride = perCpu ? (uint64_t(valueSize) + 7) & ~uint64_t{7} : valueSize;
+        const uint64_t entryBytes = valueStride + (array ? 0 : uint64_t(keySize) + 128);
         if (entryBytes > mapBudget / entries) return noMemory;
         const size_t bytes = entryBytes * entries;
         const auto newFd = freeDescriptor();
@@ -5176,7 +5184,7 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
             auto map = std::make_shared<BpfMap>();
             map->entryCount = entries;
             map->keySize = keySize;
-            map->valueSize = valueSize;
+            map->valueStride = valueStride;
             map->budgetBytes = bytes;
             map->array = array;
             if (array) map->values.resize(bytes);
@@ -5228,7 +5236,7 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
             if (entry == map.hash.end() && flags == 2) return uint64_t(-2); // BPF_EXIST
             if (entry != map.hash.end() && flags == 1) return uint64_t(-17); // BPF_NOEXIST
             if (entry == map.hash.end() && map.hash.size() == map.entryCount) return tooBig;
-            std::vector<uint8_t> replacement(map.valueSize);
+            std::vector<uint8_t> replacement(map.valueStride);
             if (!machine.readInto(value, replacement)) return fault;
             map.hash.insert_or_assign(std::move(bytes), std::move(replacement));
             return 0;
@@ -5248,12 +5256,12 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
     }
     if (command == erase) return invalid; // Array entries are allocated at creation.
     if (index >= map.entryCount) return command == update ? tooBig : uint64_t(-2);
-    auto bytes = std::span(map.values).subspan(uint64_t(index) * map.valueSize, map.valueSize);
+    auto bytes = std::span(map.values).subspan(uint64_t(index) * map.valueStride, map.valueStride);
     if (command == lookup) return machine.write(value, bytes) ? 0 : fault;
     if (flags == 1) return uint64_t(-17); // BPF_NOEXIST on a preallocated slot.
     // Read into a temporary buffer so a fault on a later guest page leaves the map unchanged.
     try {
-        std::vector<uint8_t> replacement(map.valueSize);
+        std::vector<uint8_t> replacement(map.valueStride);
         if (!machine.readInto(value, replacement)) return fault;
         std::ranges::copy(replacement, bytes.begin());
         return 0;

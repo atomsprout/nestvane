@@ -200,7 +200,7 @@ private:
         uint16_t pollEvents() const;
     };
     struct BpfMap {
-        uint32_t entryCount = 0, keySize = 0, valueSize = 0;
+        uint32_t entryCount = 0, keySize = 0, valueStride = 0;
         size_t budgetBytes = 0;
         bool array = false;
         std::vector<uint8_t> values;

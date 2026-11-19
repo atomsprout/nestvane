@@ -764,6 +764,21 @@ int main() {
         assert(invoke(1, hash, hashOut, output) == uint64_t(-2));
         assert(invoke(3, hash, hashOut, 0) == uint64_t(-2));
         assert(call(57, {hash}) == 0);
+        for (const uint32_t type : {5, 6}) {
+            const std::array<uint32_t, 5> percpuArgs{type, 4, 5, 2, 0};
+            assert(machine.write(attr, {reinterpret_cast<const uint8_t*>(percpuArgs.data()), sizeof(percpuArgs)}));
+            const auto perCpu = call(280, {0, attr, sizeof(percpuArgs)});
+            assert(perCpu < 256 && machine.store64(key, 1));
+            assert(invoke(2, perCpu, key, data) == 0);
+            assert(machine.store64(output + 8, 0xfeed));
+            assert(invoke(1, perCpu, key, output) == 0 && load(output) == expected && load(output + 8) == 0xfeed);
+            assert(call(57, {perCpu}) == 0);
+        }
+        put(base, "/sys/devices/system/cpu/possible");
+        const auto possible = call(56, {uint32_t(-100), base, 0});
+        assert(possible < 256 && call(63, {possible, output, 8}) == 2);
+        assert((load(output) & 0xffff) == 0x0a30);
+        assert(call(57, {possible}) == 0);
     }
     {
         constexpr auto from = base + 0x600, to = base + 0x680, attr = base + 0x700;
