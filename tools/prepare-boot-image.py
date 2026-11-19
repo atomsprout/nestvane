@@ -73,9 +73,22 @@ def replace_line(path, pattern, value):
     path.write_text(updated)
 
 
+def write_guest_hardware_profile(guest):
+    # The reference phone advertises a Bluetooth controller. The Nestvane guest has no controller.
+    config = guest / "system/etc/sysconfig/nestvane-hardware.xml"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text("""<?xml version="1.0" encoding="utf-8"?>
+<config>
+    <unavailable-feature name="android.hardware.bluetooth" />
+    <unavailable-feature name="android.hardware.bluetooth_le" />
+</config>
+""", encoding="utf-8")
+
+
 def make_framework_root(base, image, guest, defer_zygote_preload, hardware_timeout_multiplier=None,
                         tethering_loader=None):
     shutil.copytree(base, guest)
+    write_guest_hardware_profile(guest)
     target = guest / "system/framework/arm64"
     for path in target.iterdir():
         if re.fullmatch(r"boot(?:-[A-Za-z0-9_.+-]+)?\.(?:art|oat|vdex)", path.name):
