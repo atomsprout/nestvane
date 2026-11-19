@@ -237,3 +237,4 @@
 - 采集器补齐原版加载器从分区读取的 BPF ELF，保留子目录与文件名并校验 ELF 架构。相同 SDK 的完整采集获得 1,217 个 Android 文件，其中 11 个 `/system/etc/bpf` 对象和一个 vendor Health 对象是此前缺少的输入。采集的 vendor 文件与差分测试所用字节逐一一致。
 - 可用 `tools/prepare-bpf-uevent-probe.sh` 将独立 Bionic 夹具装入诊断根目录。Mac 启动时，原版 init 启动夹具，后者从 SDK Health 字节码装载程序、固定到 bpffs、关闭创建 FD、重新打开并附着到一个 uevent 套接字。创建探针 loop 设备时，普通监听器收到 `SUBSYSTEM=block`，带过滤器的监听器没有收到；init 记录夹具退出 0。包含同一夹具的 iPhoneOS 签名包已通过文件校验。
 - iPhone 11 第 8205 号进程报告首次系统包扫描耗时 534.122 秒，时间戳为宿主启动后 1,352,481 ms。
+- 第 8205 号 iPhone 11 进程到达 1,800 秒时限。最终报告确认原版 PackageManager 扫描发现 74 个系统应用条目，系统应用扫描用时 531,864 ms，并重复记录原版 HealthLoop 等待 `bpf.progs_loaded`。仍未通过完整启动属性。已备份上一轮报告并安装原版 BPF 过滤器验收构建。第 8210 号进程在 141 ms 进入原版 Android 17 init，短程真机验收正在运行。
