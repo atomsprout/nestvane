@@ -190,7 +190,9 @@ int main(int argc, char** argv) {
         {STREAM_RENDERER_PARAM_WIN0_WIDTH, boot ? 640u : side},
         {STREAM_RENDERER_PARAM_WIN0_HEIGHT, boot ? 960u : side},
     };
-    const int initialized = init(params, std::size(params));
+    const auto startGuestRenderer = load<int (*)(uint32_t, uint32_t)>(module, "gfxstream_guest_renderer_start");
+    const int initialized = boot && startGuestRenderer ? startGuestRenderer(640, 960)
+                                                       : init(params, std::size(params));
     if (initialized) {
         std::fprintf(stderr, "Gfxstream initialization failed (%d)\n", initialized);
         return 1;

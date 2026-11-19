@@ -2,9 +2,34 @@
 
 #include "GraphicsPipe.hpp"
 
+#include <algorithm>
 #include <dlfcn.h>
 
 namespace nestvane {
+
+class GfxstreamRefcountPipe final : public GraphicsPipe {
+public:
+    explicit GfxstreamRefcountPipe(void (*release)(uint32_t)) : release(release) {}
+    ~GfxstreamRefcountPipe() override {
+        if (received == sizeof(handle) && handle) release(handle);
+    }
+
+    int64_t read(std::span<uint8_t>) override { return -5; }
+    int64_t write(std::span<const uint8_t> bytes) override {
+        if (received == sizeof(handle)) return bytes.empty() ? 0 : -22;
+        const auto count = std::min(bytes.size(), sizeof(handle) - received);
+        for (const auto byte : bytes.first(count)) {
+            handle |= uint32_t(byte) << (8 * received++);
+        }
+        return count;
+    }
+    uint16_t pollEvents() const override { return received < sizeof(handle) ? 4 : 0; }
+
+private:
+    void (*release)(uint32_t);
+    uint32_t handle = 0;
+    size_t received = 0;
+};
 
 // The module must stay loaded, with its renderer initialized, until all
 // guest descriptors using the returned factory have been closed.
@@ -39,7 +64,11 @@ inline GraphicsPipeFactory loadGfxstreamPipeFactory(void* module) {
         void* channel;
     };
 
-    return [api](std::string_view service) -> std::unique_ptr<GraphicsPipe> {
+    const auto releaseColorBuffer = reinterpret_cast<void (*)(uint32_t)>(
+        dlsym(module, "gfxstream_guest_color_buffer_release"));
+    return [api, releaseColorBuffer](std::string_view service) -> std::unique_ptr<GraphicsPipe> {
+        if (service == "refcount" && releaseColorBuffer)
+            return std::make_unique<GfxstreamRefcountPipe>(releaseColorBuffer);
         if (service != "opengles") return {};
         if (auto* channel = api.open()) return std::make_unique<Channel>(api, channel);
         return {};

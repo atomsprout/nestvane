@@ -1,4 +1,5 @@
 #include "AArch64.hpp"
+#include "GfxstreamPipe.hpp"
 #include "ProbeLinux.hpp"
 #include <algorithm>
 #include <array>
@@ -318,6 +319,29 @@ int main() {
         assert(call(64, {other, buffer, 11}) == uint64_t(-2) && connected == 1);
         assert(call(64, {other, buffer, 1}) == uint64_t(-5));
         assert(call(57, {other}) == 0);
+        static std::vector<uint32_t> released;
+        linux.setGraphicsPipeFactory([](std::string_view service) -> std::unique_ptr<GraphicsPipe> {
+            assert(service == "refcount");
+            return std::make_unique<GfxstreamRefcountPipe>(+[](uint32_t handle) { released.push_back(handle); });
+        });
+        const auto ownerPipe = call(56, {cwd, path, 0x802});
+        const auto copiedPipe = call(23, {ownerPipe});
+        put(buffer, "pipe:refcount");
+        assert(call(64, {copiedPipe, buffer, 14}) == 14);
+        assert(machine.store64(buffer, 0x67452301));
+        assert(call(63, {ownerPipe, buffer, 4}) == uint64_t(-5));
+        assert(call(64, {ownerPipe, buffer, 2}) == 2);
+        assert(call(64, {copiedPipe, buffer + 2, 4}) == 2);
+        assert(call(64, {ownerPipe, buffer, 4}) == uint64_t(-22));
+        assert(call(57, {ownerPipe}) == 0 && released.empty());
+        assert(call(57, {copiedPipe}) == 0 && released == std::vector<uint32_t>{0x67452301});
+
+        const auto partialPipe = call(56, {cwd, path, 0x802});
+        put(buffer, "pipe:refcount");
+        assert(call(64, {partialPipe, buffer, 14}) == 14);
+        assert(call(64, {partialPipe, buffer, 2}) == 2);
+        assert(call(57, {partialPipe}) == 0 && released.size() == 1);
+
         put(path, "/dev/goldfish_address_space");
         const auto owner = call(56, {cwd, path, 2}), importer = call(56, {cwd, path, 2});
         assert(owner < 256 && importer < 256 && owner != importer);

@@ -450,6 +450,8 @@ DynamicReport probeInit(const std::string& directory, const std::string& databas
                 "SystemServerTiming: StartPackageManagerService",
                 "SurfaceFlinger: SurfaceFlinger is starting", "SurfaceFlinger: Using HWComposer service",
                 "SurfaceFlinger: OpenGL ES informations", "mapper.ranchu: GoldfishAddressSpace",
+                "SurfaceFlinger: Can't create AidlComposerClient", "RanchuHwc: init display",
+                "RanchuHwc: createHostComposerDisplayInfo", "GraphicBufferAllocator: Failed to allocate",
                 "libEGL: couldn't find an OpenGL ES implementation", "libEGL: eglInitialize(",
                 "Watchdog: *** WATCHDOG KILLING SYSTEM PROCESS"
             };

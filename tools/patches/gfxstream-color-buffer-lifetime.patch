@@ -1,0 +1,28 @@
+diff --git a/host/virtio_gpu_gfxstream_renderer.cpp b/host/virtio_gpu_gfxstream_renderer.cpp
+index c7faff320e00f9999a730cc9e49816aa27af35a2..1f57ac1adda10b146b563c99dcc3ac5a518e75fb 100644
+--- a/host/virtio_gpu_gfxstream_renderer.cpp
++++ b/host/virtio_gpu_gfxstream_renderer.cpp
+@@ -351,7 +351,9 @@ extern "C" {
+ VG_EXPORT int gfxstream_guest_renderer_start(uint32_t width, uint32_t height) {
+     if (!width || !height || width > 4096 || height > 4096) return -22;
+     const auto fence = +[](void*, stream_renderer_fence*) {};
++    constexpr char features[] = "RefCountPipe:enabled";
+     stream_renderer_param parameters[] = {
++        {STREAM_RENDERER_PARAM_RENDERER_FEATURES, reinterpret_cast<uintptr_t>(features)},
+         {STREAM_RENDERER_PARAM_USER_DATA, 0},
+         {STREAM_RENDERER_PARAM_FENCE_CALLBACK, reinterpret_cast<uintptr_t>(fence)},
+         {STREAM_RENDERER_PARAM_RENDERER_FLAGS, STREAM_RENDERER_FLAGS_USE_EGL_BIT |
+@@ -369,6 +371,13 @@ VG_EXPORT uint64_t gfxstream_guest_display_read(uint64_t after, uint8_t* rgba, s
+     return fb ? fb->readGuestDisplay(after, rgba, capacity, dimensions) : 0;
+ }
+ 
++// The guest closes this notification pipe when its last descriptor goes away.
++VG_EXPORT void gfxstream_guest_color_buffer_release(uint32_t handle) {
++    if (auto* fb = FrameBuffer::getFB(); fb && handle) {
++        fb->onLastColorBufferRef(handle);
++    }
++}
++
+ // One nonblocking byte stream for a Goldfish opengles connection.
+ VG_EXPORT void* gfxstream_guest_pipe_open() {
+     auto channel = sFrontend()->openGuestRenderChannel();
