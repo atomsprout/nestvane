@@ -453,6 +453,8 @@ DynamicReport probeInit(const std::string& directory, const std::string& databas
                 "SurfaceFlinger: Can't create AidlComposerClient", "SurfaceFlinger: Loaded AIDL composer3 HAL",
                 "SurfaceFlinger: Connecting display", "RanchuHwc: init display",
                 "RanchuHwc: createHostComposerDisplayInfo", "GraphicBufferAllocator: Failed to allocate",
+                "BootAnimation: BootAnimationStartTiming", "BootAnimation: BootAnimationShownTiming",
+                "BootAnimation: Unable to", "BootAnimation: egl",
                 "libEGL: couldn't find an OpenGL ES implementation", "libEGL: eglInitialize(",
                 "Watchdog: *** WATCHDOG KILLING SYSTEM PROCESS"
             };

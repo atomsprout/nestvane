@@ -225,6 +225,8 @@ static NSString* ThermalState() {
                 if (!renderer) return {false, renderer.error() + "\n"};
                 progress("Local Android renderer initialized");
                 NSURL* displayProgress = [documents URLByAppendingPathComponent:@"display-first-frame.txt"];
+                const BOOL captureFirstFrame = [NSProcessInfo.processInfo.environment[@"NESTVANE_CAPTURE_FIRST_FRAME"]
+                    isEqualToString:@"1"];
                 auto displayReader = StartDisplayReader(renderer, ^(UIImage* frame) {
                     const BOOL firstFrame = self.display.hidden;
                     self.display.image = frame;
@@ -240,6 +242,12 @@ static NSString* ThermalState() {
                         NSError* error = nil;
                         if (![message writeToURL:displayProgress atomically:YES encoding:NSUTF8StringEncoding error:&error])
                             NSLog(@"Unable to export display progress: %@", error);
+                        if (captureFirstFrame) {
+                            NSURL* capture = [documents URLByAppendingPathComponent:@"display-first-frame.png"];
+                            NSData* png = UIImagePNGRepresentation(frame);
+                            if (!png || ![png writeToURL:capture options:NSDataWritingAtomic error:&error])
+                                NSLog(@"Unable to export the first Android frame: %@", error);
+                        }
                     }
                 });
                 auto boot = nestvane::probeInit(initRoot.fileSystemRepresentation, database.fileSystemRepresentation,
