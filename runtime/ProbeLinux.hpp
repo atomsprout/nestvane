@@ -149,6 +149,7 @@ private:
         uint64_t owner, start, end;
         int16_t type;
     };
+    struct BpfMap;
     struct WritableFile {
         uint64_t inode;
         uint32_t mode;
@@ -158,6 +159,7 @@ private:
         std::vector<RecordLock> locks;
         std::shared_ptr<SharedFileBytes> storage = std::make_shared<SharedFileBytes>();
         std::map<std::string, std::vector<uint8_t>, std::less<>> attributes;
+        std::shared_ptr<BpfMap> pinnedMap{};
     };
     struct SocketState {
         uint32_t type;

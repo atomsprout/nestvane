@@ -766,6 +766,45 @@ int main() {
         assert(call(57, {hash}) == 0);
     }
     {
+        constexpr auto from = base + 0x600, to = base + 0x680, attr = base + 0x700;
+        constexpr auto key = base + 0x740, value = base + 0x748, output = base + 0x750;
+        constexpr auto fs = base + 32, mountpoint = base + 64;
+        put(fs, "bpf");
+        put(mountpoint, "/sys/fs/bpf");
+        assert(call(40, {fs, mountpoint, fs, 14}) == 0);
+        put(from, "/sys/fs/bpf/nestvane_map");
+        put(to, "/sys/fs/bpf/nestvane_moved");
+        const std::array<uint32_t, 5> create{2, 4, 8, 2, 0};
+        assert(machine.write(attr, {reinterpret_cast<const uint8_t*>(create.data()), sizeof(create)}));
+        const auto map = call(280, {0, attr, sizeof(create)});
+        assert(map < 256 && machine.store64(key, 1) && machine.store64(value, 42));
+        const auto elem = [&](uint64_t command, uint64_t fd, uint64_t slot) {
+            assert(machine.store64(attr, fd) && machine.store64(attr + 8, key));
+            assert(machine.store64(attr + 16, slot) && machine.store64(attr + 24, 0));
+            return call(280, {command, attr, 32});
+        };
+        const auto object = [&](uint64_t command, uint64_t path, uint64_t fdAndFlags) {
+            assert(machine.store64(attr, path) && machine.store64(attr + 8, fdAndFlags));
+            assert(machine.store64(attr + 16, 0));
+            return call(280, {command, attr, 24});
+        };
+        assert(elem(2, map, value) == 0);
+        assert(object(6, from, map) == 0 && object(6, from, map) == uint64_t(-17));
+        assert(call(56, {uint32_t(-100), from, 0}) == uint64_t(-5));
+        assert(call(79, {uint32_t(-100), from, base + 0x780, 0}) == 0);
+        assert((load(base + 0x790) & 0777) == 0600);
+        assert(call(57, {map}) == 0);
+        assert(call(38, {uint32_t(-100), from, uint32_t(-100), to}) == 0);
+        assert(object(7, from, 0) == uint64_t(-2));
+        const auto reopened = object(7, to, 8ULL << 32);
+        assert(reopened < 256 && call(25, {reopened, 1}) == 1);
+        assert(call(35, {uint32_t(-100), to, 0}) == 0 && object(7, to, 0) == uint64_t(-2));
+        assert(elem(1, reopened, output) == 0 && load(output) == 42);
+        assert(elem(2, reopened, value) == uint64_t(-1));
+        assert(call(57, {reopened}) == 0);
+        assert(call(39, {mountpoint, 0}) == 0);
+    }
+    {
         constexpr auto attr = base + 96;
         put(base, "/sys/fs/bpf/map_missing");
         assert(machine.store64(attr, base) && machine.store64(attr + 8, 0));

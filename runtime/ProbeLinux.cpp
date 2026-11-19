@@ -1303,10 +1303,16 @@ uint64_t ProbeLinux::renameFile(Machine& machine) {
     if (const auto error = getPath(x[2], x[3], destination); error) return error;
     const auto* sourceMount = mountFor(source);
     if (!sourceMount || sourceMount != mountFor(destination) ||
-        (!sourceMount->hostData && !sourceMount->device.empty())) return uint64_t(-18);
+        (!sourceMount->hostData && !sourceMount->device.empty() && sourceMount->device != "bpf"))
+        return uint64_t(-18);
     if (source == "/data" || destination == "/data" || current->mountNamespace->mounts.contains(source) ||
         current->mountNamespace->mounts.contains(destination)) return uint64_t(-16);
-    if (backingPath(source) != source || backingPath(destination) != destination) return uint64_t(-18);
+    if (sourceMount->device == "bpf") {
+        source = backingPath(source);
+        destination = backingPath(destination);
+    } else if (backingPath(source) != source || backingPath(destination) != destination) {
+        return uint64_t(-18);
+    }
     if (!writablePath(source) || !writablePath(destination)) return uint64_t(-30);
     auto file = writableFiles.find(source);
     auto link = links.find(source);
@@ -1356,6 +1362,8 @@ uint64_t ProbeLinux::open(const Machine& machine, const std::string& path, uint3
     if (entry && (entry->node == Node::loopControl || entry->node == Node::loopDevice) && userId() != 0)
         return uint64_t(-13);
     if (entry && entry->node == Node::socket && !(flags & pathOnly)) return uint64_t(-6);
+    if (entry && entry->temporary && entry->temporary->pinnedMap && !(flags & pathOnly))
+        return uint64_t(-5); // Ordinary open does not create a BPF object descriptor.
     if (entry && entry->node == Node::directory && (flags & 3)) return uint64_t(-21);
     if (entry && entry->node == Node::regular && ((flags & 3) || (flags & truncate))) return uint64_t(-30);
     if (entry && entry->cgroupFile && (flags & 3) && !canWriteCgroup(*entry->cgroupFile)) return uint64_t(-13);
@@ -5247,7 +5255,8 @@ bool ProbeLinux::syscall(Machine& machine) {
     switch (number) {
         case 280: { // bpf
             if (x[0] <= 4) { x[0] = bpfMapCall(machine); break; }
-            if (x[0] != 7) return false; // BPF_OBJ_GET
+            const bool pin = x[0] == 6; // BPF_OBJ_PIN
+            if (!pin && x[0] != 7) return false; // BPF_OBJ_GET
             if (x[2] > pageSize) { x[0] = uint64_t(-7); break; }
             std::array<uint8_t, pageSize> input{};
             if (!machine.readInto(x[1], std::span(input).first(x[2]))) { x[0] = uint64_t(-14); break; }
@@ -5259,7 +5268,8 @@ bool ProbeLinux::syscall(Machine& machine) {
             std::memcpy(&flags, input.data() + 12, 4);
             std::memcpy(&directory, input.data() + 16, 4);
             constexpr uint32_t readOnly = 8, writeOnly = 16, pathFd = 1 << 14;
-            if (object || (flags & ~(readOnly | writeOnly | pathFd)) ||
+            const auto validFlags = pin ? pathFd : readOnly | writeOnly | pathFd;
+            if ((!pin && object) || (flags & ~validFlags) ||
                 ((flags & (readOnly | writeOnly)) == (readOnly | writeOnly)) || (!(flags & pathFd) && directory) ||
                 std::any_of(input.begin() + 20, input.begin() + std::max<uint64_t>(20, x[2]),
                             [](auto byte) { return byte != 0; })) {
@@ -5277,12 +5287,49 @@ bool ProbeLinux::syscall(Machine& machine) {
                 path = dir->second.path + "/" + path;
             }
             path = normalizePath(path.starts_with('/') ? path : "/" + path);
-            const auto target = followLinks(std::move(path));
+            const auto target = followLinks(std::move(path), !pin);
             if (!target) { x[0] = uint64_t(-40); break; }
             const auto backing = backingPath(*target);
-            // This boot profile has an empty bpffs. A regular inode is not a pinned object.
-            x[0] = !canAccessParent(backing, false) ? uint64_t(-13) :
-                find(backing, 0) ? uint64_t(-13) : uint64_t(-2);
+            const auto existing = find(backing, 0);
+            if (!canAccessParent(backing, pin)) { x[0] = uint64_t(-13); break; }
+            if (pin) {
+                const auto fd = descriptors().find(object);
+                if (fd == descriptors().end()) { x[0] = uint64_t(-9); break; }
+                if (!fd->second.bpfMap) { x[0] = invalid; break; }
+                const auto* mount = mountFor(*target);
+                if (!mount || mount->device != "bpf") { x[0] = invalid; break; }
+                if (!writablePath(*target)) { x[0] = uint64_t(-30); break; }
+                if (existing || resolve(*target)) { x[0] = uint64_t(-17); break; }
+                if (!directoryExists(backing.substr(0, backing.rfind('/')))) { x[0] = uint64_t(-2); break; }
+                if (writableFiles.size() >= 2 * maxWritableFiles) { x[0] = uint64_t(-28); break; }
+                auto inode = std::make_shared<WritableFile>();
+                inode->inode = nextInode++;
+                inode->mode = 0600 & ~current->process->umask;
+                inode->uid = userId();
+                inode->gid = groupId();
+                inode->pinnedMap = fd->second.bpfMap;
+                if (const auto& context = current->fsCreateContext; !context.empty())
+                    inode->attributes["security.selinux"].assign(context.c_str(), context.c_str() + context.size() + 1);
+                writableFiles.emplace(backing, std::move(inode));
+                fileEvent(backing, fileCreated);
+                x[0] = 0;
+                break;
+            }
+            if (!existing) { x[0] = uint64_t(-2); break; }
+            if (!existing->temporary || !existing->temporary->pinnedMap) { x[0] = uint64_t(-13); break; }
+            const auto& inode = *existing->temporary;
+            const auto access = flags & readOnly ? 0 : flags & writeOnly ? 1 : 2;
+            const unsigned required = access == 0 ? 4 : access == 1 ? 2 : 6;
+            if (userId() != 0 && ((inode.mode >> permissionShift(inode.uid, inode.gid)) & required) != required) {
+                x[0] = uint64_t(-13);
+                break;
+            }
+            const auto newFd = freeDescriptor();
+            if (newFd == descriptorCapacity) { x[0] = uint64_t(-24); break; }
+            Descriptor result{"anon_inode:bpf-map", {}, uint32_t(0x80000 | access), Node::bpfMap};
+            result.bpfMap = inode.pinnedMap;
+            descriptors().emplace(newFd, std::move(result));
+            x[0] = newFd;
             break;
         }
         case 17: { // getcwd; the guest starts at the root directory.
