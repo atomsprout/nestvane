@@ -1,6 +1,7 @@
 #pragma once
 
 #include "GraphicsPipe.hpp"
+#include "GuestApkInbox.hpp"
 #include "GuestCamera.hpp"
 #include "GuestRoute.hpp"
 #include "GuestTouch.hpp"
@@ -8,6 +9,7 @@
 #include "GuestFirewall.hpp"
 #include "Ext4.hpp"
 
+#include <stop_token>
 #include <chrono>
 #include <functional>
 #include <map>
@@ -39,6 +41,7 @@ struct ProbeLinux {
     void mountData(const std::string& databasePath);
     void setCamera(std::shared_ptr<GuestCameraSource> source) { camera = std::move(source); }
     void setGraphicsPipeFactory(GraphicsPipeFactory factory) { graphicsPipeFactory = std::move(factory); }
+    void setApkInbox(std::shared_ptr<GuestApkInbox> inbox) { apkInbox = std::move(inbox); }
     void setGuestTouch(std::shared_ptr<GuestTouch> touch);
     bool syncData();
     Machine createMachine(const Image& image) const { return Machine(image, anonymousBudget); }
@@ -54,8 +57,8 @@ struct ProbeLinux {
     bool suspendChild();
     bool blocked() const { return current->wait != Wait::none; }
     bool schedule(Machine& machine, std::chrono::steady_clock::time_point deadline =
-                  std::chrono::steady_clock::time_point::max()) {
-        return machine.cpu.retired < sliceEnd || switchThread(machine, deadline);
+                  std::chrono::steady_clock::time_point::max(), const std::stop_token& stop = {}) {
+        return machine.cpu.retired < sliceEnd || switchThread(machine, deadline, stop);
     }
     std::string workerReport(const Machine& machine, uint64_t observedProcess = 0) const;
     void setBootContext(std::string context);
@@ -133,7 +136,7 @@ private:
         std::array<uint64_t, 3> alternateStack{0, 2, 0};
     };
 
-    bool switchThread(Machine& machine, std::chrono::steady_clock::time_point deadline);
+    bool switchThread(Machine& machine, std::chrono::steady_clock::time_point deadline, const std::stop_token& stop);
     bool cloneThread(Machine& machine);
     bool forkProcess(Machine& machine);
     bool execProcess(Machine& machine);
@@ -331,6 +334,7 @@ private:
     uint64_t graphicsAddressIoctl(Machine& machine, const Descriptor& fd);
     GraphicsPipeFactory graphicsPipeFactory;
     std::shared_ptr<GuestCameraSource> camera;
+    std::shared_ptr<GuestApkInbox> apkInbox;
     bool writeCameraFrame(uint64_t offset, GuestCameraSource::Format format);
     std::shared_ptr<GuestTouch> guestTouch;
     std::weak_ptr<GuestTouch::Reader> guestTouchReader;
@@ -498,6 +502,8 @@ private:
         std::shared_ptr<const BpfTypes> btf{};
         std::shared_ptr<const BpfProgram> bpfProgram{};
         bool bpfFilesystemRoot = false;
+        std::shared_ptr<GuestApkInbox::Request> apkRequest{};
+        uint64_t apkInstaller = 0;
         std::span<const uint8_t> contents() const { return ext4File ? ext4File->bytes() : bytes; }
         uint64_t contentSize() const { return ext4File ? ext4File->size : bytes.size(); }
         static constexpr uint32_t mutableStatus = 0xc00; // O_APPEND and O_NONBLOCK

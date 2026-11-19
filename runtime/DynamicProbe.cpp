@@ -70,7 +70,8 @@ uint64_t initLimit(const char* name, uint64_t fallback, uint64_t maximum) {
     return limit;
 }
 
-DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, std::string_view expectedGate = "true\n") {
+DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, std::string_view expectedGate = "true\n",
+                       std::stop_token stop = {}) {
     const bool init = kind == ProbeKind::init;
     std::ostringstream report;
     switch (kind) {
@@ -92,11 +93,18 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
            << " executable entry=0x" << startup.executableEntry << " phdr=0x" << startup.programHeaders
            << " initial SP=0x" << cpu.sp << std::dec << '\n';
     if (init) report << "  launch: /system/bin/init second_stage (guest PID 1)\n";
-    const uint64_t instructionLimit = init ? initLimit("NESTVANE_INIT_INSTRUCTION_LIMIT", 9'000'000'000, UINT64_MAX) :
-        kind == ProbeKind::art ? 1'500'000'000 : fuel;
-    const auto wallTime = std::chrono::seconds(init ? initLimit("NESTVANE_INIT_WALL_SECONDS", 360, UINT32_MAX) : 360);
-    if (init) report << "  diagnostic limits: " << instructionLimit << " guest instructions, "
-                     << wallTime.count() << " seconds\n";
+    const bool interactive = init && stop.stop_possible();
+    const uint64_t instructionLimit = init ? initLimit("NESTVANE_INIT_INSTRUCTION_LIMIT",
+        interactive ? UINT64_MAX : 9'000'000'000, UINT64_MAX) : kind == ProbeKind::art ? 1'500'000'000 : fuel;
+    const auto wallTime = std::chrono::seconds(init ?
+        initLimit("NESTVANE_INIT_WALL_SECONDS", interactive ? 0 : 360, UINT32_MAX) : 360);
+    if (init) {
+        report << "  diagnostic limits: ";
+        if (instructionLimit == UINT64_MAX) report << "unlimited guest instructions";
+        else report << instructionLimit << " guest instructions";
+        if (wallTime.count()) report << ", " << wallTime.count() << " seconds\n";
+        else report << ", no wall-time deadline\n";
+    }
     uint32_t word = 0;
     uint64_t syscallCount = 0;
     const unsigned traceLimit = init ? 100000 : kind == ProbeKind::art ? 16000 : 20000;
@@ -109,7 +117,7 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
     std::optional<uint64_t> unhandled;
     const auto start = std::chrono::steady_clock::now();
     bool idle = false, timedOut = false;
-    const auto deadline = start + wallTime;
+    const auto deadline = wallTime.count() ? start + wallTime : std::chrono::steady_clock::time_point::max();
     while (cpu.retired < instructionLimit) {
         if (cpu.stop == Stop::fault) {
             const auto pc = cpu.pc, address = cpu.faultAddress, lr = cpu.x[30], sp = cpu.sp;
@@ -129,11 +137,14 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
                 }
             }
         } else if (cpu.stop != Stop::running) break;
-        if (init && (linux.blocked() || !(cpu.retired & 4095)) && std::chrono::steady_clock::now() >= deadline) {
-            timedOut = true;
-            break;
+        if (init && (linux.blocked() || !(cpu.retired & 4095))) {
+            if (stop.stop_requested()) break;
+            if (std::chrono::steady_clock::now() >= deadline) {
+                timedOut = true;
+                break;
+            }
         }
-        if (!linux.schedule(machine, deadline)) {
+        if (!linux.schedule(machine, deadline, stop)) {
             timedOut = std::chrono::steady_clock::now() >= deadline;
             idle = !timedOut;
             break;
@@ -292,6 +303,8 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
         report << std::dec << '\n';
     } else if (cpu.stop == Stop::exit) {
         report << "  guest exit code: " << cpu.exitCode << '\n';
+    } else if (stop.stop_requested()) {
+        report << "  Android session stopped\n";
     } else if (timedOut) {
         report << "  diagnostic wall-time deadline reached\n";
     } else if (idle) {
@@ -413,7 +426,8 @@ DynamicReport probeArt(const std::string& directory) {
 
 DynamicReport probeInit(const std::string& directory, const std::string& databasePath, const BootProgress& progress,
                         GraphicsPipeFactory graphics, std::shared_ptr<GuestTouch> touch,
-                        std::shared_ptr<GuestCameraSource> camera) {
+                        std::shared_ptr<GuestCameraSource> camera, std::shared_ptr<GuestApkInbox> apkInbox,
+                        std::stop_token stop) {
     try {
         if (progress) progress("Starting Android 17 init");
         namespace fs = std::filesystem;
@@ -453,6 +467,25 @@ DynamicReport probeInit(const std::string& directory, const std::string& databas
         linux.setCamera(std::move(camera));
         linux.setGuestTouch(std::move(touch));
         linux.captureAndroidLogs = true;
+        if (apkInbox) {
+            if (!files.contains(GuestApkInbox::installer) || !files.contains("/system/bin/cmd"))
+                throw std::runtime_error("APK import requires the guest installer and Android cmd");
+            linux.setApkInbox(std::move(apkInbox));
+            static constexpr std::string_view installer = R"rc(
+on property:sys.boot_completed=1
+    start nestvane-apk-install
+
+service nestvane-apk-install /system/bin/nestvane-apk-install
+    user shell
+    group shell
+    seclabel u:r:shell:s0
+    disabled
+    stdio_to_kmsg
+)rc";
+            linux.mount("/system/etc/init/nestvane-apk-install.rc",
+                        {reinterpret_cast<const uint8_t*>(installer.data()), installer.size()});
+            linux.alias("/dev/kmsg_debug", "/dev/kmsg");
+        }
         const bool expectSmoke = files.contains("/system/etc/nestvane/smoke.apk");
         bool smokeActivityOpened = false;
         if (progress || expectSmoke) linux.androidLogObserver = [&](std::string_view message) {
@@ -612,7 +645,7 @@ service nestvane-smoke-launch /system/bin/cmd activity start -W -S -n dev.nestva
         linux.alias("/system/system_ext/etc/compatconfig", "/system_ext/etc/compatconfig");
         linux.alias("/proc/self/exe", filename);
         linux.alias("/system/bin/ueventd", "/system/bin/init");
-        auto result = runProbe(image, linux, ProbeKind::init);
+        auto result = runProbe(image, linux, ProbeKind::init, "true\n", stop);
         if (const auto reference = files.find("/nestvane-metadata/reference-classpath.txt"); reference != files.end()) {
             const auto expected = reference->second.bytes();
             const auto actual = linux.bootGuestFile("/data/system/environ/classpath");

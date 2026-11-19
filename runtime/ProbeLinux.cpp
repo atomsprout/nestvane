@@ -3277,6 +3277,28 @@ bool ProbeLinux::fileCall(Machine& machine) {
             else if (descriptor->second.node != Node::directory) { x[0] = uint64_t(-20); break; }
             else path = normalizePath(descriptor->second.path + "/" + *rawPath);
             if (x[8] == 56) {
+                if (path == GuestApkInbox::device && apkInbox) {
+                    if (userId() != 2000 || current->process->context != "u:r:shell:s0" ||
+                        current->process->executable != GuestApkInbox::installer) {
+                        x[0] = uint64_t(-13);
+                        break;
+                    }
+                    if (x[2] & ~0x80800ULL) { x[0] = invalid; break; }
+                    const auto fd = freeDescriptor();
+                    if (fd == descriptorCapacity) { x[0] = uint64_t(-24); break; }
+                    auto request = apkInbox->take();
+                    if (!request) {
+                        if (!(x[2] & 0x800)) return waitForHostEvents();
+                        x[0] = uint64_t(-11);
+                        break;
+                    }
+                    Descriptor entry{path, request->bytes, uint32_t(x[2]), Node::regular};
+                    entry.apkRequest = std::move(request);
+                    entry.apkInstaller = processId();
+                    descriptors().emplace(fd, std::move(entry));
+                    x[0] = fd;
+                    break;
+                }
                 const auto ownProc = "/proc/" + std::to_string(processId());
                 const bool procMaps = path == "/proc/self/maps" || path == ownProc + "/maps";
                 uint64_t statTid = 0;
@@ -3999,7 +4021,7 @@ uint64_t ProbeLinux::map(Machine& machine) {
         if (x[5] < raw.size()) bytes = raw.subspan(x[5], std::min<uint64_t>(length, raw.size() - x[5]));
         backedLength = pageAlignedLength(bytes.size());
         // The root loader and retained read-only APEX mounts own these bytes throughout the boot.
-        if (!(x[2] & 2) && !fd.temporary && files.contains(fd.path))
+        if (!(x[2] & 2) && !fd.temporary && !fd.apkRequest && files.contains(fd.path))
             imageLength = bytes.size() & ~(pageSize - 1);
     }
     const bool sparse = anon && !x[2];
@@ -4310,7 +4332,7 @@ std::optional<std::chrono::steady_clock::time_point> ProbeLinux::refreshTimers(
     return next;
 }
 
-bool ProbeLinux::switchThread(Machine& machine, std::chrono::steady_clock::time_point deadline) {
+bool ProbeLinux::switchThread(Machine& machine, std::chrono::steady_clock::time_point deadline, const std::stop_token& stop) {
     using namespace std::chrono;
     auto now = steady_clock::now();
     std::optional<steady_clock::time_point> nextDeadline;
@@ -4348,12 +4370,13 @@ bool ProbeLinux::switchThread(Machine& machine, std::chrono::steady_clock::time_
     };
     if (!binderDeathSubscribers.empty()) refreshBinderDeaths();
     updateTimers();
-    while (!runnable && nextDeadline && now < deadline) {
-        std::this_thread::sleep_until(std::min(*nextDeadline, deadline));
+    while (!runnable && nextDeadline && now < deadline && !stop.stop_requested()) {
+        const auto wake = std::min(*nextDeadline, deadline);
+        std::this_thread::sleep_until(stop.stop_possible() ? std::min(wake, now + milliseconds(100)) : wake);
         now = steady_clock::now();
         updateTimers();
     }
-    if (now >= deadline) return false;
+    if (now >= deadline || stop.stop_requested()) return false;
     auto next = threads.upper_bound(currentTid);
     for (size_t tested = 0; tested < threads.size(); ++tested) {
         if (next == threads.end()) next = threads.begin();
@@ -7555,6 +7578,21 @@ bool ProbeLinux::syscall(Machine& machine) {
             if (descriptor == descriptors().end()) { x[0] = uint64_t(-9); break; }
             return lockWholeFile(machine, descriptor->second);
         case 29: // ioctl
+            if (descriptor != descriptors().end() && descriptor->second.apkRequest &&
+                x[1] == GuestApkInbox::resultIoctl) {
+                const auto& file = descriptor->second;
+                if (file.apkInstaller != processId()) { x[0] = uint64_t(-1); break; }
+                if (file.apkRequest->finished()) { x[0] = uint64_t(-114); break; }
+                const auto* status = machine.read(x[2], sizeof(uint32_t), 4);
+                if (!status) { x[0] = uint64_t(-14); break; }
+                uint32_t waitStatus;
+                std::memcpy(&waitStatus, status, sizeof waitStatus);
+                const auto outcome = waitStatus ? GuestApkInbox::Result::rejected :
+                    (!dataDatabase || syncData()) ? GuestApkInbox::Result::installed : GuestApkInbox::Result::storageError;
+                file.apkRequest->finish(outcome);
+                x[0] = 0;
+                break;
+            }
             if (descriptor == descriptors().end()) { x[0] = uint64_t(-9); break; }
             if (x[1] == 0x8913 || x[1] == 0x8914 || x[1] == 0x8921 || x[1] == 0x8933) {
                 if (!descriptor->second.socket) { x[0] = uint64_t(-25); break; }

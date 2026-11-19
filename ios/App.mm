@@ -1,5 +1,6 @@
 #import <CoreGraphics/CoreGraphics.h>
 #import <UIKit/UIKit.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 #include "DynamicProbe.hpp"
 #include "GfxstreamPipe.hpp"
@@ -134,14 +135,19 @@ static NSString* ThermalState() {
 }
 @end
 
-@interface ValidationViewController : UIViewController
+@interface ValidationViewController : UIViewController <UIDocumentPickerDelegate>
 @property(nonatomic, strong) UILabel* status;
 @property(nonatomic, strong) UITextView* details;
 @property(nonatomic, strong) GuestDisplayView* display;
 @property(nonatomic, strong) UIButton* run;
+@property(nonatomic, strong) UIButton* importApk;
+@property(nonatomic, strong) UILabel* apkStatus;
 @end
 
-@implementation ValidationViewController
+@implementation ValidationViewController {
+    std::shared_ptr<nestvane::GuestApkInbox> _apkInbox;
+    std::stop_source _androidStop;
+}
 
 - (void)viewDidLoad {
     [super viewDidLoad];
@@ -176,9 +182,21 @@ static NSString* ThermalState() {
 
     self.run = [UIButton buttonWithType:UIButtonTypeSystem];
     [self.run setTitle:@"Run validation" forState:UIControlStateNormal];
-    [self.run addTarget:self action:@selector(runValidation) forControlEvents:UIControlEventTouchUpInside];
+    [self.run addTarget:self action:@selector(runOrStop) forControlEvents:UIControlEventTouchUpInside];
 
-    UIStackView* layout = [[UIStackView alloc] initWithArrangedSubviews:@[title, self.status, self.details, self.display, self.run]];
+    self.importApk = [UIButton buttonWithType:UIButtonTypeSystem];
+    [self.importApk setTitle:@"Install APK…" forState:UIControlStateNormal];
+    [self.importApk addTarget:self action:@selector(chooseApk) forControlEvents:UIControlEventTouchUpInside];
+    self.importApk.hidden = YES;
+
+    self.apkStatus = [UILabel new];
+    self.apkStatus.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+    self.apkStatus.adjustsFontForContentSizeCategory = YES;
+    self.apkStatus.numberOfLines = 0;
+    self.apkStatus.hidden = YES;
+
+    UIStackView* layout = [[UIStackView alloc] initWithArrangedSubviews:
+        @[title, self.status, self.details, self.display, self.apkStatus, self.importApk, self.run]];
     layout.axis = UILayoutConstraintAxisVertical;
     layout.spacing = 12;
     layout.translatesAutoresizingMaskIntoConstraints = NO;
@@ -194,8 +212,94 @@ static NSString* ThermalState() {
     [self runValidation];
 }
 
+- (void)runOrStop {
+    if (_androidStop.stop_possible()) {
+        _androidStop.request_stop();
+        self.run.enabled = NO;
+        self.importApk.enabled = NO;
+    } else {
+        [self runValidation];
+    }
+}
+
+- (void)chooseApk {
+    if (!_apkInbox || !self.importApk.enabled) return;
+    UIDocumentPickerViewController* picker = [[UIDocumentPickerViewController alloc]
+        initForOpeningContentTypes:@[UTTypeData] asCopy:YES];
+    picker.delegate = self;
+    [self presentViewController:picker animated:YES completion:nil];
+}
+
+- (void)documentPicker:(UIDocumentPickerViewController*)controller didPickDocumentsAtURLs:(NSArray<NSURL*>*)urls {
+    const auto inbox = _apkInbox;
+    NSURL* source = urls.firstObject;
+    if (!inbox || !source) return;
+    self.apkStatus.hidden = NO;
+    if ([source.pathExtension caseInsensitiveCompare:@"apk"] != NSOrderedSame) {
+        self.apkStatus.text = @"Choose an .apk file.";
+        return;
+    }
+    self.importApk.enabled = NO;
+    self.apkStatus.text = @"Waiting for Android to install the APK…";
+    __weak ValidationViewController* weakSelf = self;
+    const std::weak_ptr<nestvane::GuestApkInbox> active = inbox;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        using Inbox = nestvane::GuestApkInbox;
+        const auto report = [weakSelf, active](NSString* message) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                ValidationViewController* owner = weakSelf;
+                const auto current = active.lock();
+                if (!owner || !current || owner->_apkInbox != current) return;
+                owner.apkStatus.text = message;
+                owner.importApk.enabled = owner->_androidStop.stop_possible() && !owner->_androidStop.stop_requested();
+            });
+        };
+        const BOOL access = [source startAccessingSecurityScopedResource];
+        NSNumber* size = nil;
+        NSNumber* regular = nil;
+        const BOOL readable = [source getResourceValue:&regular forKey:NSURLIsRegularFileKey error:nil] &&
+            [source getResourceValue:&size forKey:NSURLFileSizeKey error:nil] && regular.boolValue;
+        if (!readable || !size.unsignedLongLongValue || size.unsignedLongLongValue > Inbox::maxBytes) {
+            if (access) [source stopAccessingSecurityScopedResource];
+            report(@"Choose an APK file up to 64 MiB.");
+            return;
+        }
+        NSData* data = [NSData dataWithContentsOfURL:source options:NSDataReadingMappedIfSafe error:nil];
+        if (!data || data.length != size.unsignedLongLongValue) {
+            if (access) [source stopAccessingSecurityScopedResource];
+            report(@"Couldn’t read the selected APK.");
+            return;
+        }
+        const auto* bytes = static_cast<const uint8_t*>(data.bytes);
+        std::vector<uint8_t> file(bytes, bytes + data.length);
+        if (access) [source stopAccessingSecurityScopedResource];
+        if (!inbox->submit(std::move(file), [report](Inbox::Result result) {
+            switch (result) {
+                case Inbox::Result::installed: report(@"APK installed. Open it from the Android launcher."); break;
+                case Inbox::Result::rejected: report(@"Android couldn’t install this APK."); break;
+                case Inbox::Result::storageError: report(@"Android could not save the installation."); break;
+                case Inbox::Result::guestStopped: report(@"Android stopped before finishing the installation."); break;
+            }
+        })) report(@"Android couldn’t start the installation.");
+    });
+}
+
 - (void)runValidation {
     self.run.enabled = NO;
+    NSString* installer = [NSBundle.mainBundle.resourcePath
+        stringByAppendingPathComponent:@"android17-init-root/system/bin/nestvane-apk-install"];
+    _apkInbox = [NSFileManager.defaultManager fileExistsAtPath:installer] ?
+        std::make_shared<nestvane::GuestApkInbox>() : nullptr;
+    const auto apkInbox = _apkInbox;
+    _androidStop = apkInbox ? std::stop_source{} : std::stop_source{std::nostopstate};
+    const auto stop = _androidStop.get_token();
+    if (stop.stop_possible()) {
+        [self.run setTitle:@"Stop Android" forState:UIControlStateNormal];
+        self.run.enabled = YES;
+    }
+    self.importApk.hidden = !apkInbox;
+    self.importApk.enabled = bool(apkInbox);
+    self.apkStatus.hidden = YES;
     auto touch = std::make_shared<nestvane::GuestTouch>();
     [self.display setTouchDevice:touch];
     self.display.image = nil;
@@ -276,7 +380,8 @@ static NSString* ThermalState() {
                 NSString* rendererPath = [NSBundle.mainBundle.privateFrameworksPath
                     stringByAppendingPathComponent:@"NestvaneGfxstream.framework/NestvaneGfxstream"];
                 if (![manager fileExistsAtPath:rendererPath]) {
-                    return nestvane::probeInit(initRoot.fileSystemRepresentation, database.fileSystemRepresentation, progress);
+                    return nestvane::probeInit(initRoot.fileSystemRepresentation, database.fileSystemRepresentation,
+                                               progress, {}, touch, {}, apkInbox, stop);
                 }
 
                 progress("Initializing local Android renderer");
@@ -324,7 +429,8 @@ static NSString* ThermalState() {
                     }
                 });
                 auto boot = nestvane::probeInit(initRoot.fileSystemRepresentation, database.fileSystemRepresentation,
-                                                progress, renderer.pipeFactory(), touch, nestvane::makeIOSCamera());
+                                                progress, renderer.pipeFactory(), touch, nestvane::makeIOSCamera(),
+                                                apkInbox, stop);
                 boot.report.insert(0, "Local Android renderer initialized\n");
                 return boot;
             };
@@ -337,13 +443,18 @@ static NSString* ThermalState() {
                 status = @"Android 17 Runtime APEX activated";
             else status = @"Android 17 init and properties verified";
         }
+        if (apkInbox) apkInbox->stop();
         if (artStatus) status = artStatus;
+        if (stop.stop_requested()) status = @"Android stopped";
         NSString* report = exportReport(outputURL, result.report);
 
         dispatch_async(dispatch_get_main_queue(), ^{
             self.status.text = status;
             [self.display setTouchDevice:std::shared_ptr<nestvane::GuestTouch>{}];
             self.details.text = report;
+            self->_androidStop = std::stop_source{std::nostopstate};
+            self.importApk.enabled = NO;
+            [self.run setTitle:apkInbox ? @"Start Android" : @"Run validation" forState:UIControlStateNormal];
             self.run.enabled = YES;
             UIApplication.sharedApplication.idleTimerDisabled = NO;
         });

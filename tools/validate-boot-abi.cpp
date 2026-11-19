@@ -17,6 +17,32 @@ using namespace nestvane;
 
 int main() {
     {
+        using Result = GuestApkInbox::Result;
+        GuestApkInbox inbox;
+        std::vector<Result> outcomes;
+        const auto finished = [&](Result result) { outcomes.push_back(result); };
+        assert(!inbox.take() && !inbox.submit({}, finished));
+        assert(inbox.submit({0x50, 0x4b}, finished));
+        assert(!inbox.submit({1}, finished));
+        const auto first = inbox.take();
+        assert(first && first->bytes == std::vector<uint8_t>({0x50, 0x4b}));
+        assert(!inbox.take() && !inbox.submit({2}, finished));
+        first->finish(Result::installed);
+        first->finish(Result::rejected);
+        assert(outcomes == std::vector{Result::installed});
+        assert(inbox.submit({3}, finished));
+        {
+            const auto abandoned = inbox.take();
+            assert(abandoned && !abandoned->finished());
+        }
+        assert(outcomes.back() == Result::guestStopped && outcomes.size() == 2);
+        assert(inbox.submit({4}, finished));
+        inbox.stop();
+        inbox.stop();
+        assert(!inbox.take() && !inbox.submit({5}, finished));
+        assert(outcomes.size() == 3 && outcomes.back() == Result::guestStopped);
+    }
+    {
         auto map = std::make_shared<BpfMap>();
         map->id = 1;
         map->array = true;

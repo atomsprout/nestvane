@@ -1,10 +1,12 @@
 #pragma once
 
 #include "GraphicsPipe.hpp"
+#include "GuestApkInbox.hpp"
 #include "GuestCamera.hpp"
 #include "GuestTouch.hpp"
 
 #include <memory>
+#include <stop_token>
 
 #include <functional>
 #include <string>
@@ -22,6 +24,7 @@ DynamicReport probeDynamic(const std::string& directory);
 using BootProgress = std::function<void(std::string_view)>;
 DynamicReport probeInit(const std::string& directory, const std::string& databasePath = {}, const BootProgress& progress = {},
                         GraphicsPipeFactory graphics = {}, std::shared_ptr<GuestTouch> touch = {},
-                        std::shared_ptr<GuestCameraSource> camera = {});
+                        std::shared_ptr<GuestCameraSource> camera = {},
+                        std::shared_ptr<GuestApkInbox> apkInbox = {}, std::stop_token stop = {});
 
 } // namespace nestvane

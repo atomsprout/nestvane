@@ -341,3 +341,4 @@
 - iPhone 11 进程 8510 到达 90 亿条客体指令上限。报告确认该诊断构建缺少仓库已有的 `state` 和 `policy` xtables 扩展支持，netd 因此反复退出，原版 init 重启 Zygote。`sys.boot_completed`、APK 安装与实际可交互帧均未取得本轮证据。
 - 加入 Unix socket 的读事件边沿触发。连接排队、收到数据和对端关闭可以再次唤醒订阅，待读数据未变化时不会重复报告。宿主 ABI 与 Android 17 Bionic 对照通过，包括 Unix 分组套接字 EOF 的 `EPOLLIN | EPOLLHUP`。Mac 启动确认原版 netd 注册服务，Zygote 预加载 18,596 个类，原版 `system_server` 开始启动 ActivityManager。使用同一份完整仓库代码和源码版 Tethering 加载器重新编译 iPhoneOS 验证包；iPhone 11 进程 8539 以 400 亿条指令、1,800 秒上限启动，77.5 秒连接原版 SurfaceFlinger 的显示设备。[Linux Unix socket 实现](https://github.com/torvalds/linux/blob/master/net/unix/af_unix.c)
 - iPhone 11 进程 8539 在 103.9 秒报告原版 BootAnimation 已显示。宿主分别于 106.252 秒显示首帧、106.298 秒保存首个非纯色帧。检查该进程独立记录的 640 × 960 PNG，内容为原版 Android 开机标志。215.939 秒进入 Zygote 类预加载。桌面和系统启动完成仍待真机验收。
+- iPhone 11 进程 8539 运行原版 `system_server`，约 12 分 49 秒完成 DisplayManager 首屏等待，约 12 分 50 秒开始初始化 PackageManager。已完成系统配置读取和共享用户注册，Launcher 和 APK 安装还待本轮日志验证。

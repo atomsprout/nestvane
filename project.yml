@@ -27,6 +27,7 @@ targets:
         buildPhase: resources
     dependencies:
       - sdk: UIKit.framework
+      - sdk: UniformTypeIdentifiers.framework
       - sdk: AVFoundation.framework
       - sdk: CoreMedia.framework
       - sdk: CoreVideo.framework
