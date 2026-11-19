@@ -1363,21 +1363,47 @@ bool values(CPU& cpu, uint32_t word) {
 bool executeStartupInstruction(Machine& machine, uint32_t word) {
     auto& cpu = machine.cpu;
     uint64_t next = cpu.pc + 4;
-    // Architectural hints in the disabled PAC/BTI compatibility profile.
-    if ((word & 0xfffff0ff) == 0xd503305f) {
-        cpu.exclusiveSize = 0;
-        cpu.pc = next;
-        ++cpu.retired;
-        return true;
+    // A64 instruction bits 28:25 select the major encoding group.
+    bool handled;
+    switch ((word >> 25) & 15) {
+        case 4: case 12:
+            handled = memory(machine, word);
+            break;
+        case 6: case 7: case 14: case 15:
+            handled = vectors(machine, word);
+            break;
+        case 5:
+            handled = (word & 0x01000000) ? arithmetic(cpu, word) : logic(cpu, word);
+            break;
+        case 8: case 13:
+            handled = arithmetic(cpu, word) || values(cpu, word);
+            break;
+        case 9:
+            handled = logic(cpu, word) || values(cpu, word);
+            break;
+        case 10: {
+            if ((word & 0xfffff0ff) == 0xd503305f) { // CLREX
+                cpu.exclusiveSize = 0;
+                cpu.pc = next;
+                ++cpu.retired;
+                return true;
+            }
+            // Ordering is inherent in the interpreter. PAC and BTI are disabled.
+            const bool barrier = word == 0xd50339bf || word == 0xd5033abf || word == 0xd5033bbf ||
+                                 word == 0xd5033dbf || word == 0xd5033ebf || word == 0xd5033fbf || word == 0xd5033fdf;
+            const bool hint = barrier || word == 0xd503201f || word == 0xd503245f || word == 0xd503249f ||
+                              word == 0xd50324df || word == 0xd503233f || word == 0xd50323bf ||
+                              word == 0xd503237f || word == 0xd50323ff || word == 0xd50320ff;
+            handled = hint || branches(cpu, word, next) || values(cpu, word);
+            break;
+        }
+        case 11:
+            handled = branches(cpu, word, next);
+            break;
+        default:
+            return false;
     }
-    // Guest operations retire in order and instruction fetch sees the latest mapped bytes.
-    const bool barrier = word == 0xd50339bf || word == 0xd5033abf || word == 0xd5033bbf ||
-                         word == 0xd5033dbf || word == 0xd5033ebf || word == 0xd5033fbf || word == 0xd5033fdf;
-    const bool hint = barrier || word == 0xd503201f || word == 0xd503245f || word == 0xd503249f ||
-                      word == 0xd50324df || word == 0xd503233f || word == 0xd50323bf ||
-                      word == 0xd503237f || word == 0xd50323ff || word == 0xd50320ff;
-    if (!hint && !branches(cpu, word, next) && !arithmetic(cpu, word) && !logic(cpu, word) &&
-        !values(cpu, word) && !memory(machine, word) && !vectors(machine, word)) return false;
+    if (!handled) return false;
     if (cpu.stop == Stop::running) {
         cpu.pc = next;
         ++cpu.retired;
