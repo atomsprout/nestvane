@@ -1,6 +1,7 @@
 #pragma once
 
 #include "GraphicsPipe.hpp"
+#include "GuestCamera.hpp"
 #include "GuestTouch.hpp"
 #include "Runtime.hpp"
 #include "GuestFirewall.hpp"
@@ -35,6 +36,7 @@ struct ProbeLinux {
     void addBootCgroups();
     void alias(std::string path, std::string target);
     void mountData(const std::string& databasePath);
+    void setCamera(std::shared_ptr<GuestCameraSource> source) { camera = std::move(source); }
     void setGraphicsPipeFactory(GraphicsPipeFactory factory) { graphicsPipeFactory = std::move(factory); }
     void setGuestTouch(std::shared_ptr<GuestTouch> touch);
     bool syncData();
@@ -226,7 +228,7 @@ private:
         std::unique_ptr<GraphicsPipe> backend;
         std::vector<uint8_t> unread;
         size_t offset = 0;
-        bool failed = false;
+        bool failed = false, cameraChannel = false;
 
         uint16_t pollEvents() const;
     };
@@ -316,6 +318,8 @@ private:
     std::shared_ptr<GraphicsRegion> allocateGraphicsRegion(uint64_t requested);
     uint64_t graphicsAddressIoctl(Machine& machine, const Descriptor& fd);
     GraphicsPipeFactory graphicsPipeFactory;
+    std::shared_ptr<GuestCameraSource> camera;
+    bool writeCameraFrame(uint64_t offset, GuestCameraSource::Format format);
     std::shared_ptr<GuestTouch> guestTouch;
     std::weak_ptr<GuestTouch::Reader> guestTouchReader;
     uint64_t touchIoctl(Machine& machine, const Descriptor& fd);

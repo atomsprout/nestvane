@@ -1101,6 +1101,110 @@ int main() {
         assert(call(215, {view, pageSize * 2}) == 0 && call(215, {tail, pageSize * 3}) == 0);
     }
     {
+        struct CameraFixture final : GuestCameraSource {
+            Status state = Status::unavailable;
+            unsigned stops = 0;
+            bool available() const override { return true; }
+            bool start() override { state = Status::starting; return true; }
+            Status status() const override { return state; }
+            bool copyFrame(Format format, std::span<uint8_t> bytes) override {
+                assert(bytes.size() == frameBytes(format));
+                std::ranges::fill(bytes, format == Format::rgba ? 0x92 : 0x31);
+                return true;
+            }
+            void stop() override { state = Status::unavailable; ++stops; }
+        };
+        auto camera = std::make_shared<CameraFixture>();
+        ProbeLinux guest(1, 0);
+        guest.setCamera(camera);
+        auto device = guest.createMachine(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
+        const auto syscall = [&](uint64_t number, std::initializer_list<uint64_t> args) {
+            device.cpu.x.fill(0);
+            std::ranges::copy(args, device.cpu.x.begin());
+            device.cpu.x[8] = number;
+            assert(guest.syscall(device));
+            return device.cpu.x[0];
+        };
+        const auto word = [&](uint64_t address) {
+            uint64_t value = 0;
+            assert(device.load64(address, value));
+            return value;
+        };
+        constexpr auto path = base + 64, wire = base + 256;
+        const auto put = [&](uint64_t address, const std::string& text) {
+            assert(device.write(address, {reinterpret_cast<const uint8_t*>(text.c_str()), text.size() + 1}));
+        };
+        const auto open = [&](const std::string& name) {
+            put(path, name);
+            return syscall(56, {uint32_t(-100), path, 0x802});
+        };
+        const auto send = [&](uint64_t fd, const std::string& command) {
+            put(wire, command);
+            return syscall(64, {fd, wire, command.size() + 1});
+        };
+        const auto reply = [&](uint64_t fd) {
+            assert(syscall(63, {fd, wire, 8}) == 8);
+            const auto* hex = reinterpret_cast<const char*>(device.read(wire, 8, 4));
+            assert(hex);
+            size_t length = 0;
+            assert(std::from_chars(hex, hex + 8, length, 16).ec == std::errc{});
+            assert(length > 0 && length <= 256 && syscall(63, {fd, wire, length}) == length);
+            const auto* body = reinterpret_cast<const char*>(device.read(wire, length, 4));
+            assert(body && body[length - 1] == '\0');
+            return std::string(body, length - 1);
+        };
+        const auto command = [&](uint64_t fd, const std::string& text) {
+            assert(send(fd, text) == text.size() + 1);
+            return reply(fd);
+        };
+        guest.setBootContext("u:r:shell:s0");
+        const auto denied = open("/dev/goldfish_pipe_dprctd");
+        assert(denied < 256 && send(denied, "pipe:qemud:camera") == uint64_t(-2));
+        assert(syscall(57, {denied}) == 0);
+        guest.setBootContext("u:r:hal_camera_default:s0");
+        const auto catalog = open("/dev/goldfish_pipe_dprctd");
+        assert(catalog < 256);
+        put(wire, "pipe:qemud:camera");
+        assert(syscall(64, {catalog, wire, 5}) == 5);
+        assert(syscall(64, {catalog, wire + 5, 13}) == 13);
+        guest.setBootContext("u:r:shell:s0");
+        assert(send(catalog, "list") == uint64_t(-13));
+        guest.setBootContext("u:r:hal_camera_default:s0");
+        assert(command(catalog, "list").starts_with("ok:name=nestvane-rear "));
+        assert(syscall(57, {catalog}) == 0);
+        const auto rear = open("/dev/goldfish_pipe_dprctd");
+        const std::string rearService = "pipe:qemud:camera:name=nestvane-rear";
+        assert(rear < 256 && send(rear, rearService) == rearService.size() + 1);
+        assert(command(rear, "connect") == "ok");
+        assert(send(rear, "start") == 6 && syscall(63, {rear, wire, 8}) == uint64_t(-11));
+        camera->state = GuestCameraSource::Status::ready;
+        assert(reply(rear) == "ok");
+        assert(command(rear, "frame dim=640x480 pix=876758866 offset=0").starts_with("ko:"));
+        const auto address = open("/dev/goldfish_address_space");
+        assert(address < 256);
+        const auto ping = [&](uint64_t size, uint64_t metadata) {
+            assert(device.store64(wire, 0) && device.store64(wire + 8, size) &&
+                   device.store64(wire + 16, metadata) && device.store64(wire + 24, 40) &&
+                   device.store64(wire + 32, 0));
+            assert(syscall(29, {address, 0xc028470c, wire}) == 0 && word(wire + 16) == 0);
+        };
+        ping(0, 6);
+        ping(GuestCameraSource::frameBytes(GuestCameraSource::Format::rgba), 1);
+        const auto offset = word(wire), length = word(wire + 8);
+        assert(device.store64(wire, offset) && device.store64(wire + 8, length));
+        assert(syscall(29, {address, 0xc010470d, wire}) == 0);
+        const auto mapping = syscall(222, {0, length, 3, 1, address, offset});
+        assert(mapping < (1ULL << 45));
+        assert(command(rear, "frame dim=640x480 pix=876758866 offset=" + std::to_string(offset)) == "ok");
+        assert(word(mapping) == 0x9292929292929292ULL);
+        assert(command(rear, "frame dim=640x480 pix=842093913 offset=" + std::to_string(offset)) == "ok");
+        assert(word(mapping) == 0x3131313131313131ULL);
+        assert(command(rear, "frame dim=640x480 pix=876758866 offset=" + std::to_string(offset + length)).starts_with("ko:"));
+        assert(command(rear, "stop") == "ok" && camera->stops == 1);
+        assert(send(rear, "start") == 6 && syscall(57, {rear}) == 0 && camera->stops == 2);
+        assert(syscall(215, {mapping, length}) == 0 && syscall(57, {address}) == 0);
+    }
+    {
         using namespace std::chrono;
         struct EchoGraphicsPipe : GraphicsPipe {
             std::vector<uint8_t> queued;

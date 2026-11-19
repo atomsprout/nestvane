@@ -4,6 +4,7 @@
 #include "DynamicProbe.hpp"
 #include "GfxstreamPipe.hpp"
 #include "GfxstreamSession.hpp"
+#include "IOSCamera.hpp"
 #include "Validation.hpp"
 
 #include <chrono>
@@ -323,7 +324,7 @@ static NSString* ThermalState() {
                     }
                 });
                 auto boot = nestvane::probeInit(initRoot.fileSystemRepresentation, database.fileSystemRepresentation,
-                                                progress, renderer.pipeFactory(), touch);
+                                                progress, renderer.pipeFactory(), touch, nestvane::makeIOSCamera());
                 boot.report.insert(0, "Local Android renderer initialized\n");
                 return boot;
             };

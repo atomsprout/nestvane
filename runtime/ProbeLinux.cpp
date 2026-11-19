@@ -1070,9 +1070,9 @@ std::optional<ProbeLinux::Descriptor> ProbeLinux::find(std::string_view path, ui
     if (loopDevices.contains(path)) return Descriptor{std::string(path), {}, flags, Node::loopDevice};
     if (guestTouch && path == touchDevicePath)
         return Descriptor{std::string(path), {}, flags, Node::touchDevice};
-    if (graphicsPipeFactory && path == graphicsAddressDevice)
+    if ((graphicsPipeFactory || camera) && path == graphicsAddressDevice)
         return Descriptor{std::string(path), {}, flags, Node::graphicsAddressSpace};
-    if (graphicsPipeFactory && path == graphicsDevice)
+    if ((graphicsPipeFactory || camera) && path == graphicsDevice)
         return Descriptor{std::string(path), {}, flags, Node::graphicsPipe};
     if (path == "/dev/null") return Descriptor{std::string(path), {}, flags, Node::null};
     if (path == "/dev/random" || path == "/dev/urandom")
@@ -1986,6 +1986,7 @@ uint16_t ProbeLinux::GraphicsPipeState::pollEvents() const {
 }
 
 uint64_t ProbeLinux::readGraphics(Machine& machine, GraphicsPipeState& pipe, uint64_t address, uint64_t size) {
+    if (pipe.cameraChannel && current->process->context != "u:r:hal_camera_default:s0") return uint64_t(-13);
     if (!size) return 0;
     if (pipe.failed) return uint64_t(-5);
     if (!pipe.backend) return uint64_t(-11);
@@ -2010,7 +2011,19 @@ uint64_t ProbeLinux::readGraphics(Machine& machine, GraphicsPipeState& pipe, uin
     return count;
 }
 
+bool ProbeLinux::writeCameraFrame(uint64_t offset, GuestCameraSource::Format format) {
+    const auto bytes = GuestCameraSource::frameBytes(format);
+    for (const auto& [_, descriptor] : descriptors()) {
+        if (!descriptor.graphicsAddress) continue;
+        const auto region = descriptor.graphicsAddress->mapping(offset, bytes);
+        if (!region || region->released) continue;
+        return camera->copyFrame(format, std::span(region->storage.pages).subspan(offset - region->offset, bytes));
+    }
+    return false;
+}
+
 uint64_t ProbeLinux::writeGraphics(const Machine& machine, GraphicsPipeState& pipe, uint64_t address, uint64_t size) {
+    if (pipe.cameraChannel && current->process->context != "u:r:hal_camera_default:s0") return uint64_t(-13);
     if (!size) return 0;
     if (pipe.failed) return uint64_t(-5);
     if (!pipe.backend) {
@@ -2025,8 +2038,18 @@ uint64_t ProbeLinux::writeGraphics(const Machine& machine, GraphicsPipeState& pi
         pipe.serviceHeader.append(reinterpret_cast<const char*>(bytes.data()), delimiter - bytes.begin());
         if (delimiter == bytes.end() && pipe.serviceHeader.size() < maxHeader) return count;
         const auto service = std::string_view(pipe.serviceHeader);
-        if (delimiter != bytes.end() && (service == "pipe:opengles" || service == "pipe:GLProcessPipe" || service == "pipe:refcount"))
-            pipe.backend = graphicsPipeFactory(service.substr(5));
+        if (delimiter != bytes.end() && service.starts_with("pipe:")) {
+            const auto name = service.substr(5);
+            if (camera && current->process->context == "u:r:hal_camera_default:s0" &&
+                (name == GuestCameraPipe::catalog || name == GuestCameraPipe::rear)) {
+                pipe.cameraChannel = true;
+                pipe.backend = std::make_unique<GuestCameraPipe>(camera, name == GuestCameraPipe::catalog,
+                    [this](auto offset, auto format) { return writeCameraFrame(offset, format); });
+            } else if (graphicsPipeFactory &&
+                       (name == "opengles" || name == "GLProcessPipe" || name == "refcount")) {
+                pipe.backend = graphicsPipeFactory(name);
+            }
+        }
         pipe.failed = !pipe.backend;
         pipe.serviceHeader.clear();
         wakePollers();

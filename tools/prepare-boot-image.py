@@ -98,8 +98,11 @@ def make_framework_root(base, image, guest, defer_zygote_preload, hardware_timeo
         # The SDK normally selects these drivers from Ranchu's early-init actions.
         vendor_properties = guest / "vendor/build.prop"
         values = vendor_properties.read_text().rstrip("\n")
-        for key, value in (("ro.hardware.egl", "emulation"), ("ro.hardware.gralloc", "ranchu"),
-                           ("ro.boot.qemu.gltransport.name", "pipe")):
+        drivers = {"ro.hardware.egl": "emulation", "ro.hardware.gralloc": "ranchu",
+                   "ro.boot.qemu.gltransport.name": "pipe"}
+        if (guest / "vendor/bin/hw/android.hardware.camera.provider.ranchu").is_file():
+            drivers["ro.boot.qemu.camera_protocol_ver"] = "1"
+        for key, value in drivers.items():
             if not re.search(rf"^{re.escape(key)}=", values, flags=re.MULTILINE):
                 values += f"\n{key}={value}"
         vendor_properties.write_text(values + "\n")

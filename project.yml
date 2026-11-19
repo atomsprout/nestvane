@@ -27,12 +27,16 @@ targets:
         buildPhase: resources
     dependencies:
       - sdk: UIKit.framework
+      - sdk: AVFoundation.framework
+      - sdk: CoreMedia.framework
+      - sdk: CoreVideo.framework
       - sdk: CoreGraphics.framework
       - sdk: libsqlite3.tbd
     info:
       path: generated/Info.plist
       properties:
         CFBundleDisplayName: nestvane
+        NSCameraUsageDescription: Nestvane shares the rear camera with Android apps when you use their camera.
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait

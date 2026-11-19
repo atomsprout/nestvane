@@ -412,7 +412,8 @@ DynamicReport probeArt(const std::string& directory) {
 }
 
 DynamicReport probeInit(const std::string& directory, const std::string& databasePath, const BootProgress& progress,
-                        GraphicsPipeFactory graphics, std::shared_ptr<GuestTouch> touch) {
+                        GraphicsPipeFactory graphics, std::shared_ptr<GuestTouch> touch,
+                        std::shared_ptr<GuestCameraSource> camera) {
     try {
         if (progress) progress("Starting Android 17 init");
         namespace fs = std::filesystem;
@@ -449,6 +450,7 @@ DynamicReport probeInit(const std::string& directory, const std::string& databas
                                           interpreter, {"second_stage"}, 0);
         ProbeLinux linux(1, 0, 512 * 1024 * 1024);
         linux.setGraphicsPipeFactory(std::move(graphics));
+        linux.setCamera(std::move(camera));
         linux.setGuestTouch(std::move(touch));
         linux.captureAndroidLogs = true;
         const bool expectSmoke = files.contains("/system/etc/nestvane/smoke.apk");
