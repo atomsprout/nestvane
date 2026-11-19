@@ -11,9 +11,9 @@ mkdir -p generated
 temporary="$(mktemp -d "$PWD/generated/smoke-apk.XXXXXX")"
 trap 'rm -rf "$temporary"' EXIT
 mkdir "$temporary/classes"
-javac --release 8 -Xlint:-options -cp "$android_jar" -d "$temporary/classes" fixtures/apk/MainActivity.java
+javac --release 8 -Xlint:-options -cp "$android_jar" -d "$temporary/classes" fixtures/apk/*.java
 "$build_tools/d8" --release --lib "$android_jar" --min-api 23 --output "$temporary" \
-    "$temporary/classes/dev/nestvane/smoke/MainActivity.class"
+    "$temporary/classes/dev/nestvane/smoke/"*.class
 "$build_tools/aapt2" link -I "$android_jar" --manifest fixtures/apk/AndroidManifest.xml -o "$temporary/resources.apk"
 (cd "$temporary" && zip -q resources.apk classes.dex)
 "$build_tools/zipalign" -f 4 "$temporary/resources.apk" "$temporary/aligned.apk"

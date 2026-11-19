@@ -1,6 +1,7 @@
 package dev.nestvane.smoke;
 
 import android.app.Activity;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Bundle;
 import android.util.Log;
@@ -37,6 +38,10 @@ public final class MainActivity extends Activity {
             }
         });
         layout.addView(increment);
+        Button camera = new Button(this);
+        camera.setText("Check rear camera");
+        camera.setOnClickListener(view -> startActivity(new Intent(this, CameraActivity.class)));
+        layout.addView(camera);
         setContentView(layout);
         Log.i("NestvaneSmoke", "Opened activity with count " + savedCount);
     }

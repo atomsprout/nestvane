@@ -1,7 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="dev.nestvane.smoke">
     <uses-sdk android:minSdkVersion="23" android:targetSdkVersion="37" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
     <application android:label="Nestvane Smoke" android:theme="@android:style/Theme.Material.Light.NoActionBar"
                  android:allowBackup="false">
+        <activity android:name=".CameraActivity" android:exported="false" />
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
