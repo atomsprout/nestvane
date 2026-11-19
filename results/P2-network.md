@@ -84,3 +84,5 @@
 - 权限修复后，Mac 和 iPhone 11 都确认原版 Aconfig 能打开默认标志和 `/metadata` 目标文件，随后停在 `copy_file_range`。Mac 返回跨挂载点错误后观察到原版代码改用 `sendfile`，现已实现客体常规文件间复制。并实现 HIDL 使用的 Binder scatter/gather 请求和回复。宿主回归覆盖跨进程缓冲区复制、父指针修正和非法偏移，ASan/UBSan 通过。最新版已在 iPhone 11 开始复测。[运行记录](p2-zygote-eager.txt) · [HwBinder 传输](https://android.googlesource.com/platform/system/libhwbinder/+/refs/heads/main/IPCThreadState.cpp)
 
 - Mac 复测确认原版 Aconfig 平台与主线初始化均退出 0，原版 Java 框架取得 HIDL 服务管理器。ActivityManager 下一步停在 `inotify_init1`。现已在客体文件系统实现文件监听，覆盖创建、写入、关闭、改名、删除、取消监听与 epoll 唤醒，宿主回归、ASan/UBSan 和 iOS Release 构建通过。[运行记录](p2-zygote-eager.txt) · [Linux inotify ABI](https://man7.org/linux/man-pages/man7/inotify.7.html)
+
+- iPhone 11 确认原版平台 Aconfig 初始化退出 0，并取得 HIDL 服务管理器，随后复现同一个 `inotify_init1` 停点。真机保留的数据还触发了临时 Wi-Fi 标志文件的创建上限，宿主回归已验证持久文件和临时文件可分别使用各自的数量上限。真机数据保持原状，下一轮验证主线 Aconfig 和 inotify。[运行记录](p2-zygote-eager.txt)

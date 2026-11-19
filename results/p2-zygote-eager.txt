@@ -253,3 +253,14 @@ android_os_HwBinder: HwBinder: Starting thread pool for getting: android.hidl.ma
   syscall 26 (inotify_init1) ... x0=0x80000 [unimplemented in guest PID 164, suspended]
   guest execution wall time: 173752 ms
 Inotify coverage: guest create, modify, close, rename with shared cookie, deletion, watch removal, nonblocking reads and epoll readiness. Host suite, ASan/UBSan and iOS Release build passed.
+
+iPhone 11 with file copy and HwBinder scatter/gather
+iOS device 26.0.1 | process 6985 | thermal nominal → serious
+init: Service 'early_system_aconfigd_platform_init' (pid 74) exited with status 0
+init: Service 'system_aconfigd_platform_init' (pid 83) exited with status 0
+init: Service 'mainline_aconfigd_init' (pid 134) exited with status 1
+aconfigd_mainline: failed to open a new Wi-Fi flag map in /metadata: ENOSPC
+android_os_HwBinder: HwBinder: Starting thread pool for getting: android.hidl.manager@1.0::IServiceManager/default
+  syscall 26 (inotify_init1) [unimplemented in guest PID 165, suspended]
+  guest execution wall time: 484261 ms
+Independent persistent and temporary file counts: host suite and ASan/UBSan passed.

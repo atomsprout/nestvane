@@ -1453,6 +1453,23 @@ int main() {
             assert(guest.syscall(machine));
             return machine.cpu.x[0];
         };
+        {
+            ProbeLinux quota(1, 0);
+            quota.mountData((cleanup.directory / "quota.sqlite3").string());
+            quota.addBootTmpfs("/metadata", 0755, 0, 6);
+            constexpr uint64_t cwd = uint32_t(-100);
+            for (unsigned i = 0; i < 1024; ++i) {
+                const auto path = "/metadata/" + std::to_string(i);
+                put(base, path.c_str());
+                const auto file = invoke(quota, 56, {cwd, base, 0xc1, 0600});
+                assert(file < 256 && invoke(quota, 57, {file}) == 0);
+            }
+            put(base, "/metadata/overflow");
+            assert(invoke(quota, 56, {cwd, base, 0xc1, 0600}) == uint64_t(-28));
+            put(base, "/data/package");
+            const auto persistent = invoke(quota, 56, {cwd, base, 0xc1, 0600});
+            assert(persistent < 256 && invoke(quota, 57, {persistent}) == 0 && quota.syncData());
+        }
         constexpr auto atCwd = uint32_t(-100);
         constexpr auto firstPath = base + 0x280, secondPath = base + 0x300, payload = base + 0x380;
         assert(writer.loadFsCreatePolicy(

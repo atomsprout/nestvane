@@ -19,6 +19,7 @@ constexpr uint64_t mappingFloor = 0x1'0000'0000;
 constexpr uint64_t lowMappingFloor = 0x10000;
 constexpr uint64_t mappingLimit = 0x20'0000'0000; // 128 GiB guest arena; includes 24 randomized page bits.
 constexpr uint64_t maxGuestFileBytes = 2 * 1024 * 1024;
+constexpr size_t maxWritableFiles = 1024;
 constexpr size_t maxGuestTasks = 256;
 constexpr std::string_view cgroupRoot = "/sys/fs/cgroup";
 constexpr std::string_view cgroupProcs = "/cgroup.procs";
@@ -1312,13 +1313,17 @@ uint64_t ProbeLinux::open(const Machine& machine, const std::string& path, uint3
         if (!writablePath(path)) return uint64_t(-30);
         if (const auto* mount = mountFor(path); mount && mount->device == "bpf") return uint64_t(-13);
         if (!canAccessParent(pathname, true)) return uint64_t(-13);
-        if (writableFiles.size() >= 1024) return uint64_t(-28);
+        const bool persistent = dataPath(pathname);
+        if (writableFiles.size() >= maxWritableFiles &&
+            size_t(std::count_if(writableFiles.begin(), writableFiles.end(), [persistent](const auto& entry) {
+                return entry.second->persistent == persistent;
+            })) >= maxWritableFiles) return uint64_t(-28);
         auto file = std::make_shared<WritableFile>();
         file->inode = nextInode++;
         file->mode = mode & 0777 & ~current->process->umask;
         file->uid = userId();
         file->gid = groupId();
-        file->persistent = dataPath(pathname);
+        file->persistent = persistent;
         if (const auto& context = current->fsCreateContext; !context.empty())
             file->attributes["security.selinux"].assign(context.c_str(), context.c_str() + context.size() + 1);
         writableFiles.emplace(pathname, std::move(file));
