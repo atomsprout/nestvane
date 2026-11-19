@@ -32,6 +32,7 @@ constexpr size_t maxWritableFiles = 1024;
 constexpr size_t maxGuestDirectories = 2048;
 constexpr size_t maxGuestTasks = 256;
 constexpr uint32_t guestLoopbackIndex = 1;
+constexpr uint32_t guestLoopbackMtu = 65536;
 constexpr size_t bpfMapBudget = 32 * 1024 * 1024;
 constexpr std::string_view cgroupRoot = "/sys/fs/cgroup";
 constexpr std::string_view cgroupProcs = "/cgroup.procs";
@@ -2020,6 +2021,7 @@ uint64_t ProbeLinux::socketWrite(Machine& machine, const Descriptor& fd, uint64_
 
 uint64_t ProbeLinux::socketWrite(Machine& machine, const Descriptor& fd, std::span<const SocketVector> vectors) {
     if (fd.socket->inetDatagram()) return sendInetDatagram(machine, fd.socket, vectors);
+    if (fd.socket->inetStream() && !inetLoopbackUp) return uint64_t(-100);
     constexpr uint64_t maxPacketBytes = 65536;
     auto peer = fd.socket->peer.lock();
     if (!fd.socket->connected) return uint64_t(-107);
@@ -5534,6 +5536,7 @@ uint64_t ProbeLinux::connectInetSocket(Machine& machine, const std::shared_ptr<S
     if (!filterInetAddress(*socket, socket->family == 2 ? BpfProgram::connect4 : BpfProgram::connect6, destination))
         return uint64_t(-1);
     if (const auto error = routeInetDestination(destination)) return error;
+    if (!inetLoopbackUp) return uint64_t(-100);
     if (socket->inetStream()) return connectInetStream(socket, destination);
     if (!socket->localInetAddress[0]) {
         InetAddress local{};
@@ -5742,6 +5745,7 @@ uint64_t ProbeLinux::sendInetDatagram(Machine& machine, const std::shared_ptr<So
         return uint64_t(-89);
     }
     if (socket->sendShutdown) return uint64_t(-32);
+    if (!inetLoopbackUp) return uint64_t(-100);
     const bool ipv4 = socket->family == 2;
     const size_t headerSize = ipv4 ? 28 : 48;
     size_t size = 0;
@@ -6910,6 +6914,37 @@ bool ProbeLinux::syscall(Machine& machine) {
             break;
         case 29: // ioctl
             if (descriptor == descriptors().end()) { x[0] = uint64_t(-9); break; }
+            if (x[1] == 0x8913 || x[1] == 0x8914 || x[1] == 0x8921 || x[1] == 0x8933) {
+                if (!descriptor->second.socket) { x[0] = uint64_t(-25); break; }
+                struct Request {
+                    std::array<char, 16> name;
+                    std::array<uint8_t, 24> value;
+                };
+                static_assert(sizeof(Request) == 40);
+                Request input{};
+                if (!machine.readInto(x[2], {reinterpret_cast<uint8_t*>(&input), sizeof(input)})) {
+                    x[0] = uint64_t(-14);
+                    break;
+                }
+                auto name = std::string_view(input.name.data(), input.name.size());
+                name = name.substr(0, name.find('\0'));
+                name = name.substr(0, name.find(':'));
+                if (name != "lo") { x[0] = uint64_t(-19); break; }
+                const auto value = x[2] + offsetof(Request, value);
+                constexpr uint16_t up = 1, loopback = 8, running = 0x40;
+                if (x[1] == 0x8913) { // SIOCGIFFLAGS
+                    const auto flags = uint16_t(loopback | (inetLoopbackUp ? up | running : 0));
+                    x[0] = writeGuest(machine, value, flags) ? 0 : uint64_t(-14);
+                } else if (x[1] == 0x8914) { // SIOCSIFFLAGS
+                    if (!(current->process->effectiveCaps & (1ULL << 12))) { x[0] = uint64_t(-1); break; }
+                    inetLoopbackUp = input.value[0] & up;
+                    x[0] = 0;
+                } else { // SIOCGIFMTU, SIOCGIFINDEX
+                    x[0] = writeGuest(machine, value, x[1] == 0x8921 ? guestLoopbackMtu : guestLoopbackIndex)
+                        ? 0 : uint64_t(-14);
+                }
+                break;
+            }
             if (x[1] == 0x8004f50c) { // F2FS_IOC_GET_FEATURES, no F2FS mount in the guest.
                 x[0] = uint64_t(-25);
                 break;

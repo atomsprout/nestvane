@@ -257,6 +257,7 @@ private:
     CgroupSocketHooks inetIngressPrograms, inetEgressPrograms, inetSocketOperationPrograms;
     std::map<std::tuple<uint32_t, uint32_t, uint16_t>, std::weak_ptr<SocketState>> inetBindings;
     uint16_t nextEphemeralPort = 32768;
+    bool inetLoopbackUp = true;
     std::shared_ptr<CgroupSocketHooks> inetReleasePrograms = std::make_shared<CgroupSocketHooks>();
     uint64_t bpfMapCall(Machine& machine);
     uint64_t loadBpfProgram(Machine& machine);
