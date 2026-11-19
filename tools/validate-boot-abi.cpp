@@ -1082,17 +1082,26 @@ int main() {
     assert(call(63, {event, base + 512, 8}) == 8 && load(base + 512) == 3);
     assert(call(22, {poll, base + 512, 1}) == 0);
 
-    const auto timer = call(85, {1, 0x80800});
-    assert(timer < 256 && call(21, {poll, 1, timer, base + 256}) == 0);
-    assert(call(63, {timer, base + 512, 8}) == uint64_t(-11));
-    const std::array<uint64_t, 4> expiredTimer{0, 0, 0, 1};
-    assert(machine.write(base + 280, {reinterpret_cast<const uint8_t*>(expiredTimer.data()), sizeof expiredTimer}));
-    assert(call(86, {timer, 1, base + 280, base + 0x380}) == 0);
-    assert(load(base + 0x390) == 0 && load(base + 0x398) == 0);
-    assert(call(22, {poll, base + 512, 1}) == 1);
-    assert(call(63, {timer, base + 512, 8}) == 8 && load(base + 512) == 1);
-    assert(call(22, {poll, base + 512, 1}) == 0);
-    assert(call(57, {timer}) == 0);
+    for (const uint64_t clock : {1, 9}) {
+        const auto timer = call(85, {clock, 0x80800});
+        assert(timer < 256 && call(21, {poll, 1, timer, base + 256}) == 0);
+        assert(call(63, {timer, base + 512, 8}) == uint64_t(-11));
+        const std::array<uint64_t, 4> expiredTimer{0, 0, 0, 1};
+        assert(machine.write(base + 280, {reinterpret_cast<const uint8_t*>(expiredTimer.data()), sizeof expiredTimer}));
+        assert(call(86, {timer, 1, base + 280, base + 0x380}) == 0);
+        assert(load(base + 0x390) == 0 && load(base + 0x398) == 0);
+        assert(call(22, {poll, base + 512, 1}) == 1);
+        assert(call(63, {timer, base + 512, 8}) == 8 && load(base + 512) == 1);
+        assert(call(22, {poll, base + 512, 1}) == 0);
+        assert(call(57, {timer}) == 0);
+    }
+    {
+        ProbeLinux unprivileged(1, 1000);
+        Machine task(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
+        task.cpu.x[0] = 9;
+        task.cpu.x[8] = 85;
+        assert(unprivileged.syscall(task) && task.cpu.x[0] == uint64_t(-1));
+    }
     {
         const auto touch = std::make_shared<GuestTouch>();
         linux.setGuestTouch(touch);
@@ -1514,6 +1523,8 @@ int main() {
     assert(call(283, {8, 0}) == uint64_t(-1));
     assert(call(283, {16, 0}) == 0 && call(283, {8, 0}) == 0);
 
+    const auto wakeTimer = call(85, {9, 0x80800});
+    assert(wakeTimer < 256);
     constexpr auto caps = base + 600;
     assert(machine.store64(base + 512, 0x20080522));
     assert(call(90, {base + 512, caps}) == 0 && load(caps) == UINT64_MAX);
@@ -1521,6 +1532,10 @@ int main() {
     assert(machine.store64(caps + 8, 0x100));
     assert(machine.store64(caps + 16, 0));
     assert(call(91, {base + 512, caps}) == 0);
+    const std::array<uint64_t, 4> disarmTimer{};
+    assert(machine.write(base + 768, {reinterpret_cast<const uint8_t*>(disarmTimer.data()), sizeof(disarmTimer)}));
+    assert(call(86, {wakeTimer, 0, base + 768}) == uint64_t(-1));
+    assert(call(57, {wakeTimer}) == 0);
     assert(call(167, {47, 2, 8}) == 0 && call(167, {47, 1, 8}) == 1);
     assert(machine.store64(caps, 0x300'0000'0100ULL));
     assert(call(91, {base + 512, caps}) == uint64_t(-1));

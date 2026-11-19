@@ -1436,6 +1436,7 @@ uint32_t ProbeLinux::freeDescriptor(uint32_t minimum) const {
 }
 
 bool ProbeLinux::eventCall(Machine& machine) {
+    constexpr uint64_t capWakeAlarm = 1ULL << 35;
     auto& x = machine.cpu.x;
     constexpr uint32_t cloexec = 0x80000, nonblock = 0x800;
     const auto descriptor = descriptors().find(uint32_t(x[0]));
@@ -1471,13 +1472,19 @@ bool ProbeLinux::eventCall(Machine& machine) {
             break;
         }
         case 85: { // timerfd_create
-            if ((x[0] != 1 && x[0] != 7) || (x[1] & ~(cloexec | nonblock))) { x[0] = invalid; break; }
+            const bool wakeAlarm = x[0] == 9; // CLOCK_BOOTTIME_ALARM
+            if ((x[0] != 1 && x[0] != 7 && !wakeAlarm) || (x[1] & ~(cloexec | nonblock))) {
+                x[0] = invalid;
+                break;
+            }
+            if (wakeAlarm && !(current->process->effectiveCaps & capWakeAlarm)) { x[0] = uint64_t(-1); break; }
             const auto fd = freeDescriptor();
             if (fd == descriptorCapacity) { x[0] = uint64_t(-24); break; }
             std::erase_if(timers, [](const auto& timer) { return timer.expired(); });
             Descriptor entry{"anon_inode:[timerfd]", {}, uint32_t(x[1]), Node::timer};
             entry.event = std::make_shared<EventState>();
-            entry.event->timer.emplace();
+            // Wake alarm timers use the guest scheduler while the iOS app is running.
+            entry.event->timer.emplace().wakeAlarm = wakeAlarm;
             timers.emplace_back(entry.event);
             descriptors().emplace(fd, std::move(entry));
             x[0] = fd;
@@ -1507,6 +1514,11 @@ bool ProbeLinux::eventCall(Machine& machine) {
                 std::memcpy(values.data(), input, sizeof values);
                 const auto interval = duration(values[0], values[1]), value = duration(values[2], values[3]);
                 if (!interval || !value) { x[0] = invalid; break; }
+                if (timer.wakeAlarm && !(current->process->effectiveCaps & capWakeAlarm)) {
+                    x[0] = uint64_t(-1);
+                    break;
+                }
+                replacement.wakeAlarm = timer.wakeAlarm;
                 replacement.interval = *interval;
                 const auto epoch = x[1] ? steady_clock::time_point{} : now;
                 if (value->count()) {

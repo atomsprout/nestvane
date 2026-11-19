@@ -238,6 +238,7 @@ private:
         struct Timer {
             std::optional<std::chrono::steady_clock::time_point> next;
             std::chrono::nanoseconds interval{};
+            bool wakeAlarm = false;
         };
         std::optional<Timer> timer;
         uint64_t counter = 0;
