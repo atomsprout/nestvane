@@ -79,6 +79,15 @@ def collect(serial, readelf, destination, small_art_heap):
     print("Android build:", shell("getprop", "ro.build.id"), flush=True)
     classpath = shell("cat", "/data/system/environ/classpath")
     framework, packages = reference_boot_inputs(classpath, shell("cat", "/apex/apex-info-list.xml"))
+    system_server_pid = shell("pidof", "system_server")
+    if not system_server_pid.isdecimal():
+        raise SystemExit("Expected one running system_server in the reference")
+    system_server_maps = shell("cat", f"/proc/{system_server_pid}/maps")
+    system_server_libraries = set(re.findall(
+        r"[ \t](/(?:system|system_ext)/lib64/[A-Za-z0-9_.+-]+\.so)$",
+        system_server_maps, re.MULTILINE))
+    if not system_server_libraries:
+        raise SystemExit("No platform libraries found in the reference system_server mappings")
     available = {}
     for directory in search:
         for name in shell("ls", "-1", directory).splitlines():
@@ -163,6 +172,7 @@ def collect(serial, readelf, destination, small_art_heap):
                 pending.extend(("/system/lib64/heapprofd_client_api.so", "/system/lib64/libartpalette-system.so"))
             if zygote in programs:
                 # Preloaded libraries and APEX-to-system imports are not in app_process64's DT_NEEDED.
+                pending.extend(sorted(system_server_libraries))
                 pending.extend(("/system/lib64/libincident.so", "/system/lib64/libadbd_fs.so",
                                 "/system/lib64/libadbd_auth.so", "/system/lib64/libandroid_servers.so",
                                 "/system/lib64/libdrmframework_jni.so", "/system/lib64/libmedia_jni.so",
