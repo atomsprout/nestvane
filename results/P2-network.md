@@ -111,7 +111,7 @@
   ld.lld -m aarch64elf -static --no-relax -T fixtures/guest.ld \
     /tmp/nestvane-gfxstream-guest.o -o /tmp/nestvane-gfxstream-guest.elf
   xcrun clang++ -O2 -std=c++20 -Wall -Wextra -Werror -Iruntime -isystem "$GFXSTREAM_SOURCE/host/include" \
-    runtime/{Runtime,AArch64,ProbeLinux,ProbeData,ProbeBinder,Ext4}.cpp \
+    runtime/{Runtime,AArch64,DynamicProbe,ProbeLinux,ProbeData,ProbeBinder,Ext4}.cpp \
     tools/{no-aot,probe-gfxstream-host}.cpp -lsqlite3 -o /tmp/nestvane-probe-gfxstream-host
   export ANDROID_GFXSTREAM_EGL=1 DYLD_LIBRARY_PATH="$sdk_lib:$sdk_lib/gles_angle:$sdk_lib/vulkan"
   /tmp/nestvane-probe-gfxstream-host "$sdk_lib/libgfxstream_backend.dylib"
@@ -134,4 +134,6 @@
   cmake --build /tmp/nestvane-gfxstream-ios --target gfxstream_backend
   ```
 
-- iPhone 11（iOS 26.0.1，第 7368 号进程）从开发签名包成功载入 gfxstream framework，并解析三个实际渲染入口。此项验证到动态加载为止。加入 [Goldfish 通道补丁](../tools/patches/gfxstream-guest-pipe.patch) 后，iPhoneOS 构建成功导出五个通道操作。Mac 使用同一补丁的构建通过 ARM64 客体版本查询，由原版 RenderChannel 异步响应。该补丁可在 (iphoneos) 补丁之后应用，也可单独用于 Mac 构建。
+- iPhone 11（iOS 26.0.1，第 7368 号进程）从开发签名包成功载入 gfxstream framework，并解析三个实际渲染入口。此项验证到动态加载为止。加入 [Goldfish 通道补丁](../tools/patches/gfxstream-guest-pipe.patch) 后，iPhoneOS 构建成功导出五个通道操作。Mac 使用同一补丁的构建通过 ARM64 客体版本查询，由原版 RenderChannel 异步响应。该补丁可在 iPhoneOS 补丁之后应用，也可单独用于 Mac 构建。
+
+- Mac 使用带非阻塞通道的本地 Gfxstream 构建运行原版 Android 17。原版 Composer3 和 Allocator 向服务管理器查询并登记各自的默认接口。SurfaceFlinger 完成 EGL 初始化，读到宿主 OpenGL ES 3.0 及最大纹理尺寸 16,384。随后 Ranchu Mapper 打开 Goldfish 共享显存设备失败，尚未验证默认显示。复现可在上述编译命令后，用带通道补丁的宿主库执行 `/tmp/nestvane-probe-gfxstream-host /path/to/patched-renderer.dylib --init guest-root-path guest.sqlite3`。宿主库应使用不同于 SDK 渲染库的文件名，确保 dyld 选择目标二进制。

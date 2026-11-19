@@ -1,6 +1,7 @@
 // macOS probe for the Android Emulator SDK renderer, using upstream Gfxstream's public C ABI.
 #include "gfxstream/virtio-gpu-gfxstream-renderer.h"
 #include "AArch64.hpp"
+#include "DynamicProbe.hpp"
 #include "GfxstreamPipe.hpp"
 #include "ProbeLinux.hpp"
 
@@ -128,8 +129,9 @@ bool runSdkVersionProbe(void* module, const RendererTransfer& transfer, const ch
 }
 
 int main(int argc, char** argv) {
-    if (argc != 2 && argc != 3) {
-        std::fprintf(stderr, "Usage: %s path/to/libgfxstream_backend.dylib [guest.elf]\n", argv[0]);
+    const bool boot = (argc == 4 || argc == 5) && std::string_view(argv[2]) == "--init";
+    if (argc != 2 && argc != 3 && !boot) {
+        std::fprintf(stderr, "Usage: %s renderer.dylib [guest.elf | --init guest-root [database]]\n", argv[0]);
         return 2;
     }
 
@@ -157,8 +159,8 @@ int main(int argc, char** argv) {
         {STREAM_RENDERER_PARAM_FENCE_CALLBACK, reinterpret_cast<uintptr_t>(&writeFence)},
         {STREAM_RENDERER_PARAM_RENDERER_FLAGS,
             STREAM_RENDERER_FLAGS_USE_SURFACELESS_BIT | STREAM_RENDERER_FLAGS_USE_GLES_BIT},
-        {STREAM_RENDERER_PARAM_WIN0_WIDTH, side},
-        {STREAM_RENDERER_PARAM_WIN0_HEIGHT, side},
+        {STREAM_RENDERER_PARAM_WIN0_WIDTH, boot ? 640u : side},
+        {STREAM_RENDERER_PARAM_WIN0_HEIGHT, boot ? 960u : side},
     };
     const int initialized = init(params, std::size(params));
     if (initialized) {
@@ -166,6 +168,20 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    if (boot) {
+        auto factory = nestvane::loadGfxstreamPipeFactory(module);
+        if (!factory) {
+            std::fprintf(stderr, "A renderer with the nonblocking guest pipe patch is required for Android boot\n");
+            destroy();
+            return 1;
+        }
+        const auto report = nestvane::probeInit(argv[3], argc == 5 ? argv[4] : "", [](std::string_view event) {
+            std::fprintf(stderr, "[Android boot] %.*s\n", int(event.size()), event.data());
+        }, std::move(factory));
+        std::fputs(report.report.c_str(), stdout);
+        destroy();
+        return report.passed ? 0 : 1;
+    }
     if (argc == 3) {
         bool passed = false;
         try {
