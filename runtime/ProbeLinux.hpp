@@ -85,7 +85,7 @@ struct ProbeLinux {
     std::string recentAndroidOutput;
     std::string watchdogReport;
     bool captureAndroidLogs = false;
-    std::function<void(std::string_view)> androidLogObserver;
+    std::function<void(std::string_view)> androidLogObserver, watchdogObserver;
     size_t exportFiles(ProbeLinux& reader, std::string_view prefix) const;
     bool exportExt4Mount(ProbeLinux& reader, std::string_view path) const;
     std::span<const uint8_t> bootGuestFile(std::string_view path) const;
@@ -435,6 +435,7 @@ private:
         std::weak_ptr<BinderConnection> connection;
         uint64_t thread;
         bool acceptsFiles = false;
+        std::shared_ptr<const BinderRoute> parent;
     };
     struct BinderFileTransfer {
         size_t offset;

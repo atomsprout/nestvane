@@ -427,7 +427,7 @@ DynamicReport probeArt(const std::string& directory) {
 DynamicReport probeInit(const std::string& directory, const std::string& databasePath, const BootProgress& progress,
                         GraphicsPipeFactory graphics, std::shared_ptr<GuestTouch> touch,
                         std::shared_ptr<GuestCameraSource> camera, std::shared_ptr<GuestApkInbox> apkInbox,
-                        std::stop_token stop) {
+                        std::stop_token stop, const BootProgress& watchdog) {
     try {
         if (progress) progress("Starting Android 17 init");
         namespace fs = std::filesystem;
@@ -473,6 +473,7 @@ DynamicReport probeInit(const std::string& directory, const std::string& databas
             linux.setTetheringLoader(bytes);
         }
         linux.captureAndroidLogs = true;
+        linux.watchdogObserver = watchdog;
         if (apkInbox) {
             if (!files.contains(GuestApkInbox::installer) || !files.contains("/system/bin/cmd"))
                 throw std::runtime_error("APK import requires the guest installer and Android cmd");

@@ -8393,8 +8393,10 @@ bool ProbeLinux::syscall(Machine& machine) {
                         if (character >= 32 || character == '\n' || character == '\t') message.push_back(character);
                 }
                 if (readable && !message.empty()) {
-                    if (watchdogReport.empty() && message.starts_with("Watchdog: *** WATCHDOG KILLING SYSTEM PROCESS"))
+                    if (watchdogReport.empty() && message.starts_with("Watchdog: *** WATCHDOG KILLING SYSTEM PROCESS")) {
                         watchdogReport = workerReport(machine, processId());
+                        if (watchdogObserver) watchdogObserver(watchdogReport);
+                    }
                     if (androidLogObserver) androidLogObserver(message);
                     message.push_back('\n');
                     captureLog(androidOutput, recentAndroidOutput, 128 * 1024, message);

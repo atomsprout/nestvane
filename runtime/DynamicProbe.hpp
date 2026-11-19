@@ -25,6 +25,7 @@ using BootProgress = std::function<void(std::string_view)>;
 DynamicReport probeInit(const std::string& directory, const std::string& databasePath = {}, const BootProgress& progress = {},
                         GraphicsPipeFactory graphics = {}, std::shared_ptr<GuestTouch> touch = {},
                         std::shared_ptr<GuestCameraSource> camera = {},
-                        std::shared_ptr<GuestApkInbox> apkInbox = {}, std::stop_token stop = {});
+                        std::shared_ptr<GuestApkInbox> apkInbox = {}, std::stop_token stop = {},
+                        const BootProgress& watchdog = {});
 
 } // namespace nestvane

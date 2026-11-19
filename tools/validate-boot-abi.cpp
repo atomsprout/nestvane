@@ -3106,6 +3106,11 @@ int main() {
 
     {
         linux.captureAndroidLogs = true;
+        unsigned snapshots = 0;
+        linux.watchdogObserver = [&](std::string_view report) {
+            assert(report.find("guest task 1/1 ") != std::string_view::npos);
+            ++snapshots;
+        };
         const auto logSocket = call(198, {1, 2, 0}); // AF_UNIX SOCK_DGRAM
         assert(logSocket < 256);
         constexpr char address[] = "\x01\0/dev/socket/logdw";
@@ -3124,6 +3129,10 @@ int main() {
         write(base + 384, vectors);
         assert(call(66, {logSocket, base + 384, vectors.size()}) == 2 + sizeof(tag) + sizeof(message));
         assert(linux.watchdogReport.find("guest task 1/1 ") != std::string::npos);
+        write(base + 384, vectors);
+        assert(call(66, {logSocket, base + 384, vectors.size()}) == 2 + sizeof(tag) + sizeof(message));
+        assert(snapshots == 1);
+        linux.watchdogObserver = {};
         assert(call(57, {logSocket}) == 0);
         linux.captureAndroidLogs = false;
     }
@@ -3992,6 +4001,22 @@ int main() {
     assert(bindRequest(manager, 0x40046305, 0, "", false, {}, handle) == 0);
     // binder_handle_cookie is packed: the cookie follows a 32-bit handle.
     assert(bindRequest(manager, 0x400c630e, 0, "", false, {}, handle) == 0);
+    assert(bindRequest(manager, 0x40406300, 46, "callback", true, {}, handle) == 0);
+    assert(uint32_t(load(base + 0x720)) == 0x7206);
+    assert(bindRequest(manager, 0, 0, "", true) == manager && linux.blocked());
+    assert(linux.schedule(machine) && linux.processId() == binderChild);
+    assert(bindRequest(channel, 0, 0, "", true) == 0 && uint32_t(load(base + 0x720)) == 0x80407202);
+    assert(load(base + 0x724) == objectPtr && uint32_t(load(base + 0x734)) == 46);
+    const auto callback = load(base + 0x724 + 6 * 8);
+    assert(std::memcmp(machine.read(callback, 8, 4), "callback", 8) == 0);
+    assert(bindRequest(channel, 0x40406301, 0, "callback reply", true) == 0);
+    assert(uint32_t(load(base + 0x720)) == 0x7206);
+    machine.cpu.retired += 4096;
+    assert(linux.schedule(machine) && linux.processId() == 1);
+    assert(bindRequest(manager, 0, 0, "", true) == 0 && uint32_t(load(base + 0x720)) == 0x80407203);
+    const auto callbackReply = load(base + 0x724 + 6 * 8);
+    assert(std::memcmp(machine.read(callbackReply, 14, 4), "callback reply", 14) == 0);
+    assert(bindRequest(manager, 0x40086303, 0, "", false, {}, callbackReply) == 0);
     const std::array<uint64_t, 3> proxy{flatHandle, handle, 0};
     const std::string_view proxyBytes(reinterpret_cast<const char*>(proxy.data()), sizeof proxy);
     assert(bindRequest(manager, 0x40406301, 0, proxyBytes, true, objectOffset) == 0);

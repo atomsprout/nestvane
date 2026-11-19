@@ -248,7 +248,19 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
         acceptsFiles = node.object.flags & acceptNodeFiles;
     }
     if (!target) return fail(brDeadReply);
-    auto& destination = replying ? target->directed[replyThread] : target->incoming;
+    const bool synchronousCall = !replying && !(transaction.flags & oneWay);
+    if (synchronousCall && !outstanding.empty()) {
+        // Send a synchronous callback to the waiting caller, including callers
+        // further up the chain. That thread need not be a registered looper.
+        for (const BinderRoute* route = &outstanding.back(); route; route = route->parent.get()) {
+            if (route->connection.lock() != target) continue;
+            const auto thread = threads.find(route->thread);
+            if (thread == threads.end() || thread->second.wait == Wait::exited) continue;
+            replyThread = route->thread;
+            break;
+        }
+    }
+    auto& destination = replyThread ? target->directed[replyThread] : target->incoming;
     if (destination.size() >= 32) return fail(brFailedReply);
     const auto label = sendLabel ? std::string_view(current->process->context) : std::string_view{};
 
@@ -398,8 +410,11 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
     transaction.offsets = address + ((transaction.dataSize + 7) & ~uint64_t{7});
     const auto opcode = replying ? brReply : label.empty() ? brTransaction : brTransactionSecctx;
     BinderPacket packet{opcode, transaction, label.empty() ? 0 : address + extraOffset + extra.size()};
-    if (!replying && !(transaction.flags & oneWay))
-        packet.reply = BinderRoute{fd.binder, currentTid, bool(transaction.flags & acceptReplyFiles)};
+    if (synchronousCall) {
+        auto parent = outstanding.empty() ? std::shared_ptr<const BinderRoute>{}
+                                          : std::make_shared<const BinderRoute>(outstanding.back());
+        packet.reply = BinderRoute{fd.binder, currentTid, bool(transaction.flags & acceptReplyFiles), std::move(parent)};
+    }
     packet.files = std::move(files);
     destination.push_back(std::move(packet));
     if (binderTrace.size() < 8192) {
