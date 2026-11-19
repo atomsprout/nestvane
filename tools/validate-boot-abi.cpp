@@ -140,6 +140,34 @@ int main() {
         assert(program.classify(packet) == 0); // Truncated read terminates the program immediately.
         assert(!program.load(BpfProgram::socketOperations, bytes, {}));
     }
+    {
+        auto map = std::make_shared<BpfMap>();
+        map->type = BpfMap::lruHash;
+        map->entryCount = 1;
+        map->keySize = map->valueSize = map->valueStride = 4;
+        const std::vector<uint8_t> key{0, 0, 0, 0};
+        map->storeHash(key, {42, 0, 0, 0}, map->hash.end());
+        const auto encode = [](uint8_t op, uint8_t registers, int16_t offset = 0, int32_t immediate = 0) {
+            return op | (uint64_t(registers) << 8) | (uint64_t(uint16_t(offset)) << 16) |
+                   (uint64_t(uint32_t(immediate)) << 32);
+        };
+        const std::array code{
+            encode(0x85, 0x10, 0, 1), encode(0x95, 0), // Local call to slot 2.
+            encode(0x18, 0x17, 0, 12), uint64_t{0}, encode(0xb7, 1), encode(0x63, 0x1a, -4),
+            encode(0xbf, 0x71), encode(0xbf, 0xa2), encode(0x07, 2, 0, -4), encode(0x85, 0, 0, 1),
+            encode(0x15, 0, 11), encode(0xbf, 0x06), // Keep the old value across an update.
+            encode(0xb7, 3, 0, 77), encode(0x63, 0x3a, -8),
+            encode(0xbf, 0x71), encode(0xbf, 0xa2), encode(0x07, 2, 0, -4),
+            encode(0xbf, 0xa3), encode(0x07, 3, 0, -8), encode(0xb7, 4), encode(0x85, 0, 0, 2),
+            encode(0x61, 0x60), encode(0x95, 0)};
+        const auto bytes = std::span(reinterpret_cast<const uint8_t*>(code.data()), sizeof(code));
+        BpfProgram::DebugInfo debug{};
+        debug.functions = {{0, 1}, {2, 2}};
+        BpfProgram program({}, std::move(debug));
+        assert(program.load(BpfProgram::cgroupPacket, bytes, [&](uint32_t fd) { return fd == 12 ? map : nullptr; }));
+        BpfProgram::Packet packet;
+        assert(program.classify(packet) == 42 && map->hash.find(key)->second.bytes[0] == 77);
+    }
     constexpr uint64_t base = 0x2000;
     Machine machine(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
     {

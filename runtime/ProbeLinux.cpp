@@ -5437,7 +5437,8 @@ uint64_t ProbeLinux::loadBpfProgram(Machine& machine) {
     std::memcpy(&ifindex, input.data() + 64, sizeof(ifindex));
     std::memcpy(&attachType, input.data() + 68, sizeof(attachType));
     const auto expected = type == BpfProgram::socketOperations ? BpfProgram::cgroupSocketOperations : 0;
-    if ((flags & ~3U) || flags == 3 || ifindex || (attachType && attachType != expected) ||
+    const bool validAttach = type == BpfProgram::cgroupPacket ? attachType <= 1 : !attachType || attachType == expected;
+    if ((flags & ~3U) || flags == 3 || ifindex || !validAttach ||
         std::any_of(input.begin() + 108, input.end(), [](auto b) { return b != 0; }))
         return uint64_t(-95);
     if (!count || count > BpfProgram::maxInstructions) return uint64_t(-7);
@@ -5543,7 +5544,7 @@ uint64_t ProbeLinux::testBpfProgram(Machine& machine) {
     const auto fd = descriptors().find(test.fd);
     if (fd == descriptors().end()) return uint64_t(-9);
     const auto& program = fd->second.bpfProgram;
-    if (!program || program->type() != BpfProgram::classifier) return invalid;
+    if (!program || !BpfProgram::packetProgram(program->type())) return invalid;
     try {
         BpfProgram::Packet packet;
         packet.bytes.resize(test.inputSize);
@@ -5564,6 +5565,7 @@ uint64_t ProbeLinux::testBpfProgram(Machine& machine) {
         }
         packet.ifindex = guestLoopbackIndex;
         packet.networkOffset = 14;
+        packet.hasMacHeader = true;
         packet.socketCookie = nextBpfTestCookie++;
         const auto repetitions = std::max(1U, test.repeat);
         const auto start = std::chrono::steady_clock::now();
