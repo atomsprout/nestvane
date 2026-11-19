@@ -127,6 +127,7 @@ def collect(serial, readelf, destination, small_art_heap):
         bootanimation = "/system/bin/bootanimation"
         aconfigd = "/system/bin/aconfigd-system"
         bpfloader = "/system/bin/bpfloader"
+        netd = "/system/bin/netd"
         uprobestats = "/apex/com.android.uprobestats/bin/uprobestatsbpfload"
         keymint = "/vendor/bin/hw/android.hardware.security.keymint-service"
         lights = "/vendor/bin/hw/android.hardware.lights-service.example"
@@ -135,7 +136,7 @@ def collect(serial, readelf, destination, small_art_heap):
         allocator = "/vendor/bin/hw/android.hardware.graphics.allocator-service.ranchu"
         for programs, search_paths in (
             ((vold, service, cmd, vdc, keystore, casefold, vold_prepare, odsign, bpfloader), ("/system/lib64",)),
-            ((zygote, installd, system_suspend, surfaceflinger, bootanimation, aconfigd), ("/system/lib64", "/system_ext/lib64")),
+            ((zygote, installd, system_suspend, surfaceflinger, bootanimation, aconfigd, netd), ("/system/lib64", "/system_ext/lib64")),
             ((keymint, lights, health, composer, allocator), ("/vendor/lib64", "/system/lib64")),
         ):
             dependencies = {}
@@ -334,7 +335,7 @@ def collect(serial, readelf, destination, small_art_heap):
         sdkext = "/apex/com.android.sdkext/bin"
         programs = ("/system/bin/apexd", system_self_test, vendor_self_test, vold, vdc, keystore, keymint,
                     casefold, vold_prepare, odsign, zygote, installd, system_suspend, lights, health, surfaceflinger,
-                    bootanimation, composer, allocator, aconfigd,
+                    bootanimation, composer, allocator, aconfigd, netd,
                     f"{sdkext}/derive_sdk", f"{sdkext}/derive_classpath",
                     "/apex/com.android.art/bin/art_boot", "/apex/com.android.art/bin/odrefresh",
                     "/apex/com.android.tethering/bin/netbpfload", uprobestats, bpfloader,
