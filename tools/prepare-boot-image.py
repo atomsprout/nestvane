@@ -27,8 +27,11 @@ def make_framework_root(base, image, guest, defer_zygote_preload):
     for path in image.iterdir():
         shutil.copyfile(path, target / path.name)
 
-    replace_line(guest / "system/etc/init/hw/init.rc", r"^([ \t]+)trigger load-bpf-programs$",
+    init_rc = guest / "system/etc/init/hw/init.rc"
+    replace_line(init_rc, r"^([ \t]+)trigger load-bpf-programs$",
                  r"\1# Omitted in the offline framework diagnostic")
+    # The host supplies /data for this profile, so fs_mgr does not queue its normal event.
+    replace_line(init_rc, r"^([ \t]+)trigger boot$", r"\1trigger boot\n\1trigger nonencrypted")
     replace_line(guest / "product/etc/build.prop", r"^ro\.dalvik\.vm\.enable_uffd_gc=[^\r\n]*$",
                  "ro.dalvik.vm.enable_uffd_gc=false")
     replace_line(guest / "system/build.prop", r"^dalvik\.vm\.usejit=[^\r\n]*$", "dalvik.vm.usejit=false")

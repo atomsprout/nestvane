@@ -1,6 +1,10 @@
 .text
 .global _start
 _start:
+    movz x0, #17 // AT_CLKTCK
+    bl getauxval
+    cmp x0, #100
+    b.ne .Lbad_clock_tick
     adr x0, message
     bl strlen
     add x2, x0, #0
@@ -8,6 +12,11 @@ _start:
     movz x0, #1
     bl write
     sub x0, x0, #(message_end - message - 1)
+    movz x8, #93
+    svc #0
+
+.Lbad_clock_tick:
+    movz x0, #1
     movz x8, #93
     svc #0
 

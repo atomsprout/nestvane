@@ -294,7 +294,8 @@ void setupStack(Machine& machine, const Startup& startup) {
         3, startup.programHeaders, 4, startup.programHeaderSize, 5, startup.programHeaderCount,
         6, pageSize, 7, startup.interpreterBase, 9, startup.executableEntry,
         11, ids[0], 12, ids[1], 13, ids[2], 14, ids[3],
-        15, platformPointer, 16, 0, 23, 0, 25, randomPointer, 31, name,
+        15, platformPointer, 16, 0, 17, 100, // AT_CLKTCK, the Linux guest USER_HZ.
+        23, 0, 25, randomPointer, 31, name,
         0, 0,
     });
     if (initial.size() % 2) initial.push_back(0);

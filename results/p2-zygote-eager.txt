@@ -157,3 +157,22 @@ Caused by: java.lang.RuntimeException: SysMemInfo read failed
   guest execution wall time: 194488 ms
 Guest meminfo coverage: access, stat, read-only open, EOF and updated memory accounting agree with guest sysinfo
 Host ABI suite, ASan/UBSan and iOS Release build: passed
+
+Mac with guest meminfo
+[Android boot] Zygote: end preload
+[Android boot] SystemServer: Entered the Android system server!
+SystemServerTiming: StartActivityManager
+Installer: installd not found; trying again
+Watchdog: WAITED_UNTIL_PRE_WATCHDOG
+AndroidRuntime: *** FATAL EXCEPTION IN SYSTEM PROCESS: watchdog
+java.lang.ArithmeticException: divide by zero
+    at com.android.internal.os.ProcessCpuTracker.<init>(ProcessCpuTracker.java:322)
+  guest execution wall time: 194156 ms
+Reference Android 17 getconf CLK_TCK: 100
+Same dynamically linked fixture checked getauxval(AT_CLKTCK) and exited 0 on SDK Android 17 and Nestvane for Mac.
+
+New framework diagnostic image
+Collected 1130 Android files using the SDK Android 17 reference.
+Added /system/lib64/libwebviewchromium_loader.so, 51456 bytes.
+Guest root file bytes: 784434576
+Image includes the original nonencrypted action and now queues it after the boot trigger.

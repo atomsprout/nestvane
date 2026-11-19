@@ -1473,6 +1473,11 @@ int main() {
     assert(stackWord(2) + startup.arguments[0].size() + 1 == stackWord(3));
     assert(stackWord(3) + startup.arguments[1].size() + 1 == stackWord(5));
     assert(stackWord(5) + startup.environment[0].size() + 1 == stackWord(6));
+    uint64_t ticksPerSecond = 0;
+    for (size_t index = 8; const auto tag = stackWord(index); index += 2) {
+        if (tag == 17) ticksPerSecond = stackWord(index + 1);
+    }
+    assert(ticksPerSecond == 100);
 
     put(base + 0x320, "art-heap-test");
     assert(call(279, {base + 0x320, 4}) == uint64_t(-22));

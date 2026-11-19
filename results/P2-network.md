@@ -72,3 +72,5 @@
 - iPhone 11 复测已越过 `USUBL`，随后和 Mac 一样到达按元素向量乘法。包含两批乘法修复的签名构建已在同一台真机启动。Mac 已越过扩宽乘法，随后在读取 `NZCV` 时停下。其读写已实现并通过宿主回归和 ASan/UBSan。[运行记录](p2-zygote-eager.txt)
 
 - iPhone 11 已越过两次向量乘法停点，在 `NZCV` 复现 Mac 的旧停点。Mac 补齐 `NZCV` 后，常规 Zygote 完成全部预加载并进入原版 `SystemServer`，ActivityManager 启动时因找不到 `/proc/meminfo` 退出。新增内存信息快照，与客体 `sysinfo` 共用估算。已通过宿主回归、ASan/UBSan 和 iOS Release 构建，新一轮真机启动已开始。[运行记录](p2-zygote-eager.txt) · [Android SysMemInfo](https://android.googlesource.com/platform/system/memory/libmeminfo/+/refs/heads/main/sysmeminfo.cpp)
+
+- Mac 复测已越过 `/proc/meminfo`。ActivityManager 启动期间，`SystemServer` 多次等待 `installd`，watchdog 随后在换算 CPU 时钟 tick 时除以零。已为客体 ELF 提供 `AT_CLKTCK=100`，同一个动态链接夹具在 Nestvane 和原版 API 37 均读到 100 并退出 0。离线诊断在宿主提供 `/data` 后恢复触发原版 `nonencrypted` 启动动作，以带起 `installd` 等服务。采集器同时补齐缺少的 WebView 引导库，干净镜像已重建。[运行记录](p2-zygote-eager.txt) · [Bionic sysconf](https://android.googlesource.com/platform/bionic/+/refs/heads/main/libc/bionic/sysconf.cpp) · [Android init 事件](https://android.googlesource.com/platform/system/core/+/refs/heads/main/init/builtins.cpp)
