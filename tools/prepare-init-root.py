@@ -213,9 +213,11 @@ def collect(serial, readelf, destination, small_art_heap):
                            f"/etc/selinux/{label}_service_contexts", f"/etc/selinux/{label}_hwservice_contexts",
                            f"/etc/selinux/{label}_seapp_contexts",
                            f"/etc/selinux/{label}_keystore2_key_contexts",
-                           "/build.prop", "/etc/build.prop"):
+                           f"/etc/selinux/{label}_mac_permissions.xml", "/build.prop", "/etc/build.prop"):
                 guest = partition + suffix
                 if not shell("ls", "-d", guest, "2>/dev/null", "||", "true"):
+                    if guest == "/system/etc/selinux/plat_mac_permissions.xml":
+                        raise SystemExit(f"Missing required Android app-label policy: {guest}")
                     continue
                 local = root / guest.lstrip("/")
                 local.parent.mkdir(parents=True, exist_ok=True)

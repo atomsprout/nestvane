@@ -196,3 +196,6 @@
 
 - 新的 `--framework-diagnostic --framework-apps` 打包选项从已通过版本与 boot 输入哈希校验的 ARM64 SDK 参考环境收集桌面所需的系统应用。样本包含 Launcher3、SystemUI、Settings、PackageInstaller、DocumentsUI、存储提供方和关联的三个 APEX。构建 CE2A.260420.051.A3 的完整命令已成功，13 个 APK 均保留 DEX。镜像约 956 MiB，已在 Mac 开始启动验证。APK 安装和桌面启动仍待确认。
 - 处理 fs-verity 探测后的 Mac 启动日志确认包管理完成 `createSubComponents`，继续执行 `get system config` 和 `addSharedUsers`。当前不含额外系统 APK 的诊断镜像尚未证明包管理可用。
+
+- 带 13 个系统 APK 的镜像已成功打成约 971 MiB 的 iPhone 开发签名包，确认 Launcher3 和 PackageInstaller 在 App 包内。第 7962 号进程在 iPhone 11 初始化本地渲染器并进入真实 Android 17 启动。
+- Mac 终端堆栈显示，原版 PackageManager 因 `/system/etc/selinux/plat_mac_permissions.xml` 返回 ENOENT 而终止。采集工具补齐了参考镜像的五个分区策略，要求平台策略存在。五份原版 XML 均已取回并通过结构解析，平台文件含六条签名策略，vendor 文件含一条。带这些文件的镜像开始下一轮启动验证。[Android 应用标签策略加载](https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/services/core/java/com/android/server/pm/SELinuxMMAC.java)
