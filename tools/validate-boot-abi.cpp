@@ -186,6 +186,13 @@ int main() {
         std::memcpy(permute.cpu.v[0].data(), squareInput.data(), sizeof(squareInput));
         assert(executeStartupInstruction(permute, 0x2ea1f800)); // fsqrt v0.2s, v0.2s
         assert(std::memcmp(permute.cpu.v[0].data(), squareRoot.data(), sizeof(squareRoot)) == 0);
+        const float toCeil = -4.75f, outOfRange = 0x1p31f;
+        std::memcpy(permute.cpu.v[1].data(), &toCeil, sizeof(toCeil));
+        assert(executeStartupInstruction(permute, 0x1e280028)); // fcvtps w8, s1
+        assert(permute.cpu.x[8] == uint32_t(-4));
+        std::memcpy(permute.cpu.v[1].data(), &outOfRange, sizeof(outOfRange));
+        assert(executeStartupInstruction(permute, 0x1e280028));
+        assert(permute.cpu.x[8] == INT32_MAX);
         const double half = -2.5, beyondSignedMax = 0x1p63;
         std::memcpy(permute.cpu.v[5].data(), &half, sizeof(half));
         assert(executeStartupInstruction(permute, 0x9e6400a9)); // fcvtas x9, d5
