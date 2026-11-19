@@ -1127,6 +1127,100 @@ int main() {
         assert(call(215, {view, pageSize * 2}) == 0 && call(215, {tail, pageSize * 3}) == 0);
     }
     {
+        ProbeLinux routing(1, 0);
+        auto guest = routing.createMachine(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
+        const auto syscall = [&](uint64_t number, std::initializer_list<uint64_t> args) {
+            guest.cpu.x.fill(0);
+            std::ranges::copy(args, guest.cpu.x.begin());
+            guest.cpu.x[8] = number;
+            assert(routing.syscall(guest));
+            return guest.cpu.x[0];
+        };
+        constexpr auto kernel = base + 64, input = base + 128, vector = base + 512, output = base + 1024;
+        constexpr auto address = base + 1536;
+        const auto write = [&](uint64_t where, const auto& data) {
+            return guest.write(where, {reinterpret_cast<const uint8_t*>(&data), sizeof(data)});
+        };
+        const auto route = syscall(198, {16, 0x802, 0});
+        assert(route < 256 && write(kernel, std::array<uint32_t, 3>{16, 0, 0}));
+        assert(syscall(203, {route, kernel, 12}) == 0);
+        assert(syscall(207, {route, output, 256}) == uint64_t(-11));
+        constexpr auto timeout = base + 1792, pollfd = base + 1816;
+        assert(write(timeout, std::array<uint64_t, 2>{}));
+        assert(write(pollfd, uint64_t(route) | (1ULL << 32)));
+        assert(syscall(73, {pollfd, 1, timeout}) == 0);
+        uint32_t sequence = 0;
+        const auto request = [&](uint16_t type, uint16_t flags, std::span<const uint8_t> payload) {
+            const NetlinkHeader header{uint32_t(sizeof(NetlinkHeader) + payload.size()), type, flags,
+                                       ++sequence, 0};
+            assert(write(input, header) && guest.write(input + 64, payload));
+            const std::array<uint64_t, 4> parts{input, sizeof(header), input + 64, payload.size()};
+            assert(write(vector, parts));
+            assert(syscall(66, {route, vector, 2}) == header.length);
+        };
+        const auto receive = [&](uint16_t expected, uint16_t flags) {
+            const auto count = syscall(207, {route, output, 256});
+            assert(count >= sizeof(NetlinkHeader) && count <= 256);
+            std::vector<uint8_t> reply(count);
+            assert(guest.readInto(output, reply));
+            const auto header = readNetlink<NetlinkHeader>(reply, 0);
+            assert(header.length == count && header.type == expected && header.flags == flags &&
+                   header.sequence == sequence && header.port == 1);
+            return reply;
+        };
+        const auto rule = [](uint8_t family, uint8_t action, uint32_t priority, uint32_t table) {
+            std::vector<uint8_t> payload(12);
+            payload[0] = family;
+            payload[7] = action;
+            appendNetlinkValue(payload, 6, priority); // FRA_PRIORITY
+            if (table) appendNetlinkValue(payload, 15, table); // FRA_TABLE
+            return payload;
+        };
+        const auto acknowledge = [&](uint16_t type, uint16_t flags, std::span<const uint8_t> payload, int status) {
+            request(type, netlinkRequest | netlinkAck | flags, payload);
+            const auto reply = receive(netlinkError, 0);
+            assert(readNetlink<int32_t>(reply, 16) == status);
+            assert(readNetlink<NetlinkHeader>(reply, 20).type == type);
+        };
+        const auto dumpRules = [&](uint8_t family, std::span<const uint32_t> priorities) {
+            request(GuestRoute::getRule, netlinkRequest | netlinkDump, std::array<uint8_t, 12>{family});
+            for (const auto priority : priorities) {
+                const auto message = receive(GuestRoute::newRule, netlinkMulti);
+                assert(message.size() >= 36 && message[16] == family);
+                assert(readNetlink<uint16_t>(message, 30) == 6 &&
+                       readNetlink<uint32_t>(message, 32) == priority);
+            }
+            assert(readNetlink<int32_t>(receive(netlinkDone, netlinkMulti), 16) == 0);
+        };
+        dumpRules(2, std::array<uint32_t, 3>{0, 32766, 32767});
+        dumpRules(10, std::array<uint32_t, 2>{0, 32766});
+        request(GuestRoute::getLink, netlinkRequest | netlinkDump, std::array<uint8_t, 16>{});
+        const auto link = receive(GuestRoute::newLink, netlinkMulti);
+        assert(readNetlink<uint32_t>(link, 20) == 1 && readNetlink<uint32_t>(link, 24) & 9);
+        assert(std::memcmp(link.data() + 36, "lo", 3) == 0);
+        receive(netlinkDone, netlinkMulti);
+        request(GuestRoute::getAddress, netlinkRequest | netlinkDump, std::array<uint8_t, 8>{10});
+        const auto ip6 = receive(GuestRoute::newAddress, netlinkMulti);
+        assert(ip6[16] == 10 && ip6[17] == 128 && ip6[43] == 1);
+        receive(netlinkDone, netlinkMulti);
+
+        const auto denial = rule(2, 8, 100, 0); // FR_ACT_PROHIBIT
+        const auto local = rule(2, 1, 0, 255);
+        acknowledge(GuestRoute::newRule, 0x600, denial, 0);
+        acknowledge(GuestRoute::newRule, 0x600, denial, -17);
+        dumpRules(2, std::array<uint32_t, 4>{0, 100, 32766, 32767});
+        acknowledge(GuestRoute::deleteRule, 0, local, 0);
+        const auto client = syscall(198, {2, 0x802, 0});
+        assert(client < 256 && write(address, std::array<uint8_t, 16>{2, 0, 0x42, 0, 127, 0, 0, 1}));
+        assert(syscall(203, {client, address, 16}) == uint64_t(-13));
+        acknowledge(GuestRoute::deleteRule, 0, denial, 0);
+        acknowledge(GuestRoute::deleteRule, 0, denial, -2);
+        assert(syscall(203, {client, address, 16}) == uint64_t(-101));
+        acknowledge(GuestRoute::newRule, 0x600, local, 0);
+        assert(syscall(203, {client, address, 16}) == 0);
+        assert(syscall(57, {client}) == 0 && syscall(57, {route}) == 0);
+    }
+    {
         struct CameraFixture final : GuestCameraSource {
             Status state = Status::unavailable;
             unsigned stops = 0;
