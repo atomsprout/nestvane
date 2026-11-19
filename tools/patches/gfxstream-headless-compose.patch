@@ -1,0 +1,24 @@
+diff --git a/host/frame_buffer.cpp b/host/frame_buffer.cpp
+--- a/host/frame_buffer.cpp
++++ b/host/frame_buffer.cpp
+@@ -3289,8 +3289,11 @@
+ #ifdef CONFIG_AEMU
+     const auto& multiDisplay = get_gfxstream_multi_display_operations();
+     const bool is_pixel_fold = multiDisplay.is_pixel_fold();
++#else
++    constexpr bool is_pixel_fold = false;
++#endif
+     if (needPost) {
+-        // AEMU with -no-window mode uses this code path.
++        // The legacy Goldfish compose command posts the primary display, including in headless builds.
+         ComposeDevice* composeDevice = (ComposeDevice*)buffer;
+ 
+         switch (composeDevice->version) {
+@@ -3310,7 +3313,6 @@
+             }
+         }
+     }
+-#endif
+ 
+     return true;
+ }
