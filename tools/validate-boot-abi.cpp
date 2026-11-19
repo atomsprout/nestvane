@@ -190,6 +190,8 @@ int main() {
         std::memcpy(permute.cpu.v[1].data(), &toCeil, sizeof(toCeil));
         assert(executeStartupInstruction(permute, 0x1e280028)); // fcvtps w8, s1
         assert(permute.cpu.x[8] == uint32_t(-4));
+        assert(executeStartupInstruction(permute, 0x1e300034)); // fcvtms w20, s1
+        assert(permute.cpu.x[20] == uint32_t(-5));
         std::memcpy(permute.cpu.v[1].data(), &outOfRange, sizeof(outOfRange));
         assert(executeStartupInstruction(permute, 0x1e280028));
         assert(permute.cpu.x[8] == INT32_MAX);
@@ -197,6 +199,8 @@ int main() {
         std::memcpy(permute.cpu.v[5].data(), &half, sizeof(half));
         assert(executeStartupInstruction(permute, 0x9e6400a9)); // fcvtas x9, d5
         assert(permute.cpu.x[9] == uint64_t(-3));
+        assert(executeStartupInstruction(permute, 0x9e7000aa)); // fcvtms x10, d5
+        assert(permute.cpu.x[10] == uint64_t(-3));
         std::memcpy(permute.cpu.v[5].data(), &beyondSignedMax, sizeof(beyondSignedMax));
         assert(executeStartupInstruction(permute, 0x9e6400a9));
         assert(permute.cpu.x[9] == INT64_MAX);

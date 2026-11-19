@@ -969,10 +969,12 @@ bool floatInstruction(CPU& cpu, uint32_t word) {
                                                 std::bit_cast<int32_t>(uint32_t(value));
         const Float number = word & 0x10000 ? static_cast<Float>(value) : static_cast<Float>(signedValue);
         store(std::ldexp(number, -int(fractionalBits)));
-    } else if (unary == 0x1e380000 || unary == 0x1e240000 || unary == 0x1e280000) { // FCVTZS / FCVTAS / FCVTPS.
+    } else if (unary == 0x1e380000 || unary == 0x1e240000 ||
+               unary == 0x1e280000 || unary == 0x1e300000) { // FCVTZS / FCVTAS / FCVTPS / FCVTMS.
         const auto input = get(rn);
         const auto value = unary == 0x1e240000 ? std::round(input) :
-                           unary == 0x1e280000 ? std::ceil(input) : input;
+                           unary == 0x1e280000 ? std::ceil(input) :
+                           unary == 0x1e300000 ? std::floor(input) : input;
         const auto bound = std::ldexp(Float{1}, bits - 1);
         const auto sign = uint64_t{1} << (bits - 1);
         const auto integer = std::isnan(value) ? 0 : value >= bound ? sign - 1 :
