@@ -130,9 +130,10 @@ bool fullyMapped(const Machine& machine, uint64_t address, uint64_t end) {
 }
 
 enum class ForkAdvice { omit, inherit, wipe, keep };
+using SparseBacking = std::map<uint64_t, std::shared_ptr<AnonymousPages>>;
 
 void changeRange(Machine& machine, uint64_t start, uint64_t end, std::optional<unsigned> flags,
-                 std::optional<ForkAdvice> advice = {}) {
+                 std::optional<ForkAdvice> advice = {}, const SparseBacking& sparseBacking = {}) {
     const bool retain = flags || advice;
     std::vector<Segment> pages;
     for (auto& segment : machine.segments) {
@@ -202,7 +203,11 @@ void changeRange(Machine& machine, uint64_t start, uint64_t end, std::optional<u
                 return;
             }
             if (segment.reservedSize) {
-                if (permissions && !segment.beyondFileEnd) {
+                if (const auto planned = sparseBacking.find(from); changed && planned != sparseBacking.end()) {
+                    Segment fragment{from, {}, permissions, to - from, false, {}, 0, true};
+                    fragment.anonymousPages = planned->second;
+                    append(std::move(fragment));
+                } else if (permissions && !segment.beyondFileEnd) {
                     append({from, std::vector<uint8_t>(to - from), permissions, 0, false, {}, 0, segment.anonymous, false, false, segment.fileMapping});
                 } else {
                     append({from, {}, 0, to - from, segment.beyondFileEnd, {}, 0, segment.anonymous, false, false, segment.fileMapping});
@@ -232,7 +237,7 @@ bool allowsBacking(const Machine& machine, uint64_t start, uint64_t end, uint64_
 }
 
 uint64_t protect(Machine& machine, uint64_t start, uint64_t count, uint64_t prot,
-                 uint64_t memoryLimit, bool refuseExecGain) {
+                 uint64_t memoryLimit, bool refuseExecGain, const std::shared_ptr<AnonymousBudget>& anonymousBudget) {
     if (start % pageSize || count > maxReservation || prot > 7) return invalid;
     if ((prot & 6) == 6) return refuseExecGain ? uint64_t(-13) : invalid;
     const auto length = pageAlignedLength(count);
@@ -247,18 +252,30 @@ uint64_t protect(Machine& machine, uint64_t start, uint64_t count, uint64_t prot
             const bool denied = (prot & ~segment.maxProtection) || ((prot & 2) && segment.sharedReadOnly);
             return denied && segment.address < end && start < segment.address + segment.mappedSize();
         })) return uint64_t(-13);
+    SparseBacking sparseBacking;
     if (prot) {
+        constexpr uint64_t sparseProtectThreshold = 1024 * 1024;
         uint64_t needed = 0;
         for (const auto& segment : machine.segments) {
             if (segment.shared || segment.anonymousPages || segment.beyondFileEnd ||
                 (segment.imageView && !(prot & 2))) continue;
             const auto left = std::max(start, segment.address);
             const auto right = std::min(end, segment.address + segment.mappedSize());
-            if (left < right) needed += right - left;
+            if (left >= right) continue;
+            const auto span = right - left;
+            if (segment.anonymous && !segment.sharedAnonymous && segment.reservedSize &&
+                span >= sparseProtectThreshold) {
+                // Protecting a reserved allocator arena must not need resident pages up front.
+                auto pages = AnonymousPages::allocate(span, anonymousBudget);
+                if (!pages) return noMemory;
+                sparseBacking.emplace(left, std::move(pages));
+            } else {
+                needed += span;
+            }
         }
         if (!allowsBacking(machine, start, end, needed, memoryLimit)) return noMemory;
     }
-    changeRange(machine, start, end, guestFlags(prot));
+    changeRange(machine, start, end, guestFlags(prot), {}, sparseBacking);
     return 0;
 }
 
@@ -5879,7 +5896,8 @@ bool ProbeLinux::syscall(Machine& machine) {
             break;
         }
         case 226: // mprotect
-            x[0] = protect(machine, x[0], x[1], x[2], memoryLimit, current->process->mdwe & mdweRefuseExecGain);
+            x[0] = protect(machine, x[0], x[1], x[2], memoryLimit,
+                           current->process->mdwe & mdweRefuseExecGain, anonymousBudget);
             break;
         case 227: { // msync
             const auto length = x[1] <= maxReservation ? pageAlignedLength(x[1]) : UINT64_MAX;

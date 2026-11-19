@@ -397,6 +397,20 @@ int main() {
         return value;
     };
     {
+        constexpr uint64_t committedLength = 1024 * 1024;
+        const auto reservation = call(222, {0, committedLength + 2 * pageSize, 0, 0x4022, UINT32_MAX, 0});
+        const auto committed = reservation + pageSize;
+        const auto dirty = linux.dirtyAnonymousBytes();
+        assert(!machine.read(committed, 1, 4));
+        assert(call(226, {committed, committedLength, 3}) == 0);
+        assert(!machine.read(reservation, 1, 4) && !machine.read(committed + committedLength, 1, 4));
+        assert(load(committed) == 0 && linux.dirtyAnonymousBytes() == dirty);
+        assert(machine.store64(committed, 42) && load(committed) == 42);
+        assert(linux.dirtyAnonymousBytes() > dirty && linux.dirtyAnonymousBytes() < dirty + committedLength);
+        assert(call(215, {reservation, committedLength + 2 * pageSize}) == 0);
+        assert(linux.dirtyAnonymousBytes() == dirty);
+    }
+    {
         static std::array<uint8_t, pageSize * 3 + 32> contents{};
         contents[pageSize] = 0x37;
         contents[2 * pageSize] = 0x72;
