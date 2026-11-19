@@ -31,6 +31,9 @@ constexpr unsigned sigChild = 17;
 constexpr uint64_t receiveTimeoutOld = 20, receiveTimeoutNew = 66;
 constexpr uint64_t sendTimeoutOld = 21, sendTimeoutNew = 67;
 constexpr std::string_view graphicsDevice = "/dev/goldfish_pipe_dprctd";
+constexpr std::string_view graphicsAddressDevice = "/dev/goldfish_address_space";
+constexpr uint64_t graphicsAddressBase = 0x800000000ULL, graphicsAlignment = 16 * 1024;
+constexpr uint64_t goldfishHostMemory = 5, goldfishSharedSlots = 6;
 constexpr size_t maxGraphicsTransfer = 64 * 1024;
 constexpr uint32_t fileAccessed = 1, fileModified = 2, fileAttributes = 4, fileClosedWrite = 8,
                    fileClosedRead = 16, fileOpened = 32, fileMovedFrom = 64, fileMovedTo = 128,
@@ -803,6 +806,7 @@ bool ProbeLinux::exportExt4Mount(ProbeLinux& reader, std::string_view path) cons
 }
 
 uint64_t ProbeLinux::stat(Machine& machine, uint64_t address, const Descriptor& fd) const {
+    if (fd.node == Node::graphicsAddressSpace) return statFile(machine, address, 0, 70'266, 0020666, 1000, 1000, 0x100a0a);
     if (fd.node == Node::graphicsPipe) return statFile(machine, address, 0, 70'267, 0020666, 1000, 1000, 0x100a0b);
     if (fd.node == Node::ashmem) return statFile(machine, address, 0, 69'999, 0020666, 0, 0, 0x100a03);
     if (fd.temporary) {
@@ -1003,7 +1007,10 @@ std::optional<ProbeLinux::Descriptor> ProbeLinux::find(std::string_view path, ui
     if (path == "/dev/loop-control") return Descriptor{std::string(path), {}, flags, Node::loopControl};
     if (binderDevices.contains(path)) return Descriptor{std::string(path), {}, flags, Node::binder};
     if (loopDevices.contains(path)) return Descriptor{std::string(path), {}, flags, Node::loopDevice};
-    if (path == graphicsDevice && graphicsPipeFactory) return Descriptor{std::string(path), {}, flags, Node::graphicsPipe};
+    if (graphicsPipeFactory && path == graphicsAddressDevice)
+        return Descriptor{std::string(path), {}, flags, Node::graphicsAddressSpace};
+    if (graphicsPipeFactory && path == graphicsDevice)
+        return Descriptor{std::string(path), {}, flags, Node::graphicsPipe};
     if (path == "/dev/null") return Descriptor{std::string(path), {}, flags, Node::null};
     if (path == "/dev/random" || path == "/dev/urandom")
         return Descriptor{std::string(path), {}, flags, Node::entropy};
@@ -1336,6 +1343,8 @@ uint64_t ProbeLinux::open(const Machine& machine, const std::string& path, uint3
         fileEvent(pathname, fileCreated);
         entry = find(pathname, flags);
     }
+    if (!entry->pathOnly() && entry->node == Node::graphicsAddressSpace)
+        entry->graphicsAddress = std::make_shared<GraphicsAddressSpace>();
     if (!entry->pathOnly() && entry->node == Node::graphicsPipe) entry->graphics = std::make_shared<GraphicsPipeState>();
     if (!entry->pathOnly() && entry->node == Node::binder) {
         const auto& node = binderDevices.at(entry->path);
@@ -1616,6 +1625,146 @@ uint64_t ProbeLinux::socketRead(Machine& machine, const Descriptor& fd, uint64_t
     endpoint.inbox.pop_front();
     wakePollers();
     return count;
+}
+
+std::shared_ptr<ProbeLinux::GraphicsRegion> ProbeLinux::GraphicsAddressSpace::mapping(uint64_t offset, uint64_t size) const {
+    const auto includes = [=](uint64_t start, uint64_t length) {
+        return offset >= start && offset - start <= length && size <= length - (offset - start);
+    };
+    if (type != goldfishSharedSlots) {
+        const auto found = owned.upper_bound(offset);
+        if (found != owned.begin()) {
+            const auto& [base, region] = *std::prev(found);
+            if (includes(base, region->storage.size)) return region;
+        }
+    }
+    for (auto found = claims.upper_bound(offset); found != claims.begin();) {
+        const auto& [base, claim] = *--found;
+        if (includes(base, claim.size)) return claim.region;
+        if (offset - claim.region->offset >= claim.region->storage.size) break;
+    }
+    return {};
+}
+
+std::shared_ptr<ProbeLinux::GraphicsRegion> ProbeLinux::allocateGraphicsRegion(uint64_t requested) {
+    if (!requested || requested > maxDataFileBytes) return {};
+    const auto size = (requested + graphicsAlignment - 1) & ~(graphicsAlignment - 1);
+    uint64_t offset = graphicsAlignment;
+    for (auto it = graphicsRegions.begin(); it != graphicsRegions.end();) {
+        if (const auto region = it->second.lock()) {
+            if (it->first - offset >= size) break;
+            offset = it->first + region->storage.size;
+            ++it;
+        } else {
+            it = graphicsRegions.erase(it);
+        }
+    }
+    if (offset > graphicsAddressBase - size) return {};
+    try {
+        auto region = std::make_shared<GraphicsRegion>();
+        region->offset = offset;
+        WritableFile backing{};
+        backing.memoryFile = true;
+        backing.storage = {region, &region->storage};
+        if (resize(backing, size)) return {};
+        if (memoryFiles.size() >= descriptorCapacity) return {};
+        memoryFiles.push_back(backing.storage);
+        graphicsRegions.insert_or_assign(offset, region);
+        return region;
+    } catch (const std::bad_alloc&) {
+        return {};
+    }
+}
+
+uint64_t ProbeLinux::graphicsAddressIoctl(Machine& machine, const Descriptor& fd) {
+    if (!fd.graphicsAddress) return uint64_t(-9);
+    auto& device = *fd.graphicsAddress;
+    const auto& x = machine.cpu.x;
+    const auto load = [&]<typename Request>(Request& request) {
+        return machine.readInto(x[2], {reinterpret_cast<uint8_t*>(&request), sizeof(request)});
+    };
+    const auto release = [&](uint64_t offset) {
+        const auto found = device.owned.find(offset);
+        if (found == device.owned.end()) return false;
+        found->second->released = true;
+        device.owned.erase(found);
+        return true;
+    };
+    switch (x[1]) {
+        case 0xc018470a: { // ALLOCATE_BLOCK
+            struct Block { uint64_t size, offset, physical; } request{};
+            if (!load(request)) return uint64_t(-14);
+            const auto allocation = allocateGraphicsRegion(request.size);
+            if (!allocation) return noMemory;
+            request = {allocation->storage.size, allocation->offset, graphicsAddressBase + allocation->offset};
+            if (!writeGuest(machine, x[2], request)) return uint64_t(-14);
+            device.owned.emplace(allocation->offset, allocation);
+            return 0;
+        }
+        case 0xc008470b: case 0xc008470e: { // DEALLOCATE_BLOCK, UNCLAIM_SHARED
+            uint64_t offset = 0;
+            if (!load(offset)) return uint64_t(-14);
+            if (x[1] == 0xc008470b) return release(offset) ? 0 : uint64_t(-6);
+            const auto claim = device.claims.find(offset);
+            if (claim == device.claims.end()) return uint64_t(-6);
+            device.claims.erase(claim);
+            return 0;
+        }
+        case 0xc010470d: { // CLAIM_SHARED
+            struct Claim { uint64_t offset, size; } request{};
+            if (!load(request)) return uint64_t(-14);
+            const auto end = graphicsRegions.upper_bound(request.offset);
+            if (!request.size || request.offset % pageSize || end == graphicsRegions.begin()) return invalid;
+            const auto candidate = std::prev(end)->second.lock();
+            if (!candidate || candidate->released) return uint64_t(-6);
+            const auto position = request.offset - candidate->offset;
+            if (position > candidate->storage.size || request.size > candidate->storage.size - position) return invalid;
+            if (device.claims.size() >= descriptorCapacity) return uint64_t(-28);
+            if (!writeGuest(machine, x[2], request)) return uint64_t(-14);
+            device.claims.emplace(request.offset, GraphicsAddressSpace::Claim{candidate, request.size});
+            return 0;
+        }
+        case 0xc028470c: { // PING
+            struct Ping {
+                uint64_t offset, size, metadata;
+                uint32_t version, fence, flags, direction;
+            } request{};
+            if (!load(request)) return uint64_t(-14);
+            if (request.offset > UINT64_MAX - graphicsAddressBase || request.flags) return invalid;
+            const auto offset = request.offset;
+            const auto command = request.metadata;
+            request.offset += graphicsAddressBase;
+            request.metadata = 0;
+            if (!device.type) {
+                if (command != goldfishHostMemory && command != goldfishSharedSlots) request.metadata = uint64_t(-19);
+                if (!writeGuest(machine, x[2], request)) return uint64_t(-14);
+                if (!request.metadata) device.type = command;
+                return 0;
+            }
+
+            if (command == 1 && device.type == goldfishSharedSlots) {
+                const auto allocation = allocateGraphicsRegion(request.size);
+                if (allocation) {
+                    request.offset = allocation->offset;
+                    request.size = allocation->storage.size;
+                } else {
+                    request.metadata = noMemory;
+                }
+                if (!writeGuest(machine, x[2], request)) return uint64_t(-14);
+                if (allocation) device.owned.emplace(allocation->offset, allocation);
+                return 0;
+            }
+
+            const auto found = device.owned.find(offset);
+            if (command != 1 && command != 2) request.metadata = invalid;
+            else if (found == device.owned.end()) request.metadata = uint64_t(-6);
+            else if (command == 1 && (!request.size || request.size > found->second->storage.size)) request.metadata = invalid;
+            if (!writeGuest(machine, x[2], request)) return uint64_t(-14);
+            if (!request.metadata && command == 2 && device.type == goldfishSharedSlots) release(offset);
+            return 0;
+        }
+        default: return uint64_t(-25);
+    }
 }
 
 uint16_t ProbeLinux::GraphicsPipeState::pollEvents() const {
@@ -2889,6 +3038,19 @@ uint64_t ProbeLinux::map(Machine& machine) {
         if (file == descriptors().end() || file->second.pathOnly()) return uint64_t(-9);
         const auto& fd = file->second;
         if ((fd.flags & 3) == 1) return uint64_t(-13);
+        if (fd.graphicsAddress) {
+            if (sharing != 1) return uint64_t(-95);
+            if ((x[2] & 4) || ((x[2] & 2) && !(fd.flags & 3))) return uint64_t(-13);
+            const auto region = fd.graphicsAddress->mapping(x[5], length);
+            if (!region) return uint64_t(-1);
+            Segment segment{start, {}, guestFlags(x[2]), length, false, {region, &region->storage},
+                            x[5] - region->offset, false, !(fd.flags & 3), false, true};
+            segment.maxProtection = 3;
+            if (atAddress) changeRange(machine, start, end, {});
+            if (!atAddress || (x[3] & fixedNoReplace)) nextMapping = std::max(nextMapping, end);
+            machine.insertSegment(std::move(segment));
+            return start;
+        }
         if (fd.ashmem) {
             auto& region = *fd.ashmem;
             const auto backed = region.size <= maxDataFileBytes ? pageAlignedLength(region.size) : 0;
@@ -4786,6 +4948,7 @@ bool ProbeLinux::syscall(Machine& machine) {
             }
             if (descriptor->second.pty) x[0] = ptyIoctl(machine, descriptor->second);
             else if (descriptor->second.node == Node::ashmem) x[0] = ashmemIoctl(machine, descriptor->second);
+            else if (descriptor->second.node == Node::graphicsAddressSpace) x[0] = graphicsAddressIoctl(machine, descriptor->second);
             else if (x[1] == 0x5401) x[0] = uint64_t(-25); // TCGETS on a non-terminal.
             else if (descriptor->second.binder) {
                 const auto result = binderIoctl(machine, descriptor->second);

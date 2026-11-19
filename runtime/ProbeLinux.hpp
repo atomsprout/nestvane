@@ -141,7 +141,7 @@ private:
     uint64_t installSeccomp(Machine& machine, uint64_t address);
     bool enforceSeccomp(Machine& machine);
 
-    enum class Node { regular, temporary, directory, input, output, error, null, entropy, kernelLog, poller, event, inotify, signal, socket, mountNamespace, pipeRead, pipeWrite, execLabel, fsCreateLabel, socketCreateLabel, securityInfo, securityCreate, securityAccess, securityValidate, loopControl, loopDevice, timer, ptyMaster, ptySlave, ueventTrigger, kernelSetting, binder, processHandle, cgroupProcs, ashmem, graphicsPipe };
+    enum class Node { regular, temporary, directory, input, output, error, null, entropy, kernelLog, poller, event, inotify, signal, socket, mountNamespace, pipeRead, pipeWrite, execLabel, fsCreateLabel, socketCreateLabel, securityInfo, securityCreate, securityAccess, securityValidate, loopControl, loopDevice, timer, ptyMaster, ptySlave, ueventTrigger, kernelSetting, binder, processHandle, cgroupProcs, ashmem, graphicsPipe, graphicsAddressSpace };
     struct RecordLock {
         uint64_t owner, start, end;
         int16_t type;
@@ -189,8 +189,30 @@ private:
 
         uint16_t pollEvents() const;
     };
-    GraphicsPipeFactory graphicsPipeFactory;
     struct Descriptor;
+    struct GraphicsRegion {
+        uint64_t offset = 0;
+        SharedFileBytes storage;
+        bool released = false;
+    };
+    struct GraphicsAddressSpace {
+        struct Claim {
+            std::shared_ptr<GraphicsRegion> region;
+            uint64_t size;
+        };
+        uint64_t type = 0;
+        std::map<uint64_t, std::shared_ptr<GraphicsRegion>> owned;
+        std::multimap<uint64_t, Claim> claims;
+
+        ~GraphicsAddressSpace() {
+            for (const auto& [offset, region] : owned) region->released = true;
+        }
+        std::shared_ptr<GraphicsRegion> mapping(uint64_t offset, uint64_t size) const;
+    };
+    std::map<uint64_t, std::weak_ptr<GraphicsRegion>> graphicsRegions;
+    std::shared_ptr<GraphicsRegion> allocateGraphicsRegion(uint64_t requested);
+    uint64_t graphicsAddressIoctl(Machine& machine, const Descriptor& fd);
+    GraphicsPipeFactory graphicsPipeFactory;
     struct EventState;
     struct Watch {
         uint32_t mask;
@@ -329,6 +351,7 @@ private:
         std::shared_ptr<Directory> cgroupFile{};
         std::shared_ptr<Ashmem> ashmem{};
         std::shared_ptr<GraphicsPipeState> graphics{};
+        std::shared_ptr<GraphicsAddressSpace> graphicsAddress{};
         std::span<const uint8_t> contents() const { return ext4File ? ext4File->bytes() : bytes; }
         uint64_t contentSize() const { return ext4File ? ext4File->size : bytes.size(); }
         static constexpr uint32_t mutableStatus = 0xc00; // O_APPEND and O_NONBLOCK

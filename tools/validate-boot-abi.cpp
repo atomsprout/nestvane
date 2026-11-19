@@ -309,6 +309,54 @@ int main() {
         assert(call(64, {other, buffer, 11}) == uint64_t(-2) && connected == 1);
         assert(call(64, {other, buffer, 1}) == uint64_t(-5));
         assert(call(57, {other}) == 0);
+        put(path, "/dev/goldfish_address_space");
+        const auto owner = call(56, {cwd, path, 2}), importer = call(56, {cwd, path, 2});
+        assert(owner < 256 && importer < 256 && owner != importer);
+        constexpr uint64_t wireBase = 0x800000000ULL;
+        const auto ping = [&](uint64_t fd, uint64_t offset, uint64_t size, uint64_t metadata) {
+            assert(machine.store64(buffer, offset) && machine.store64(buffer + 8, size) &&
+                   machine.store64(buffer + 16, metadata) && machine.store64(buffer + 24, 40) &&
+                   machine.store64(buffer + 32, 0));
+            return call(29, {fd, 0xc028470c, buffer});
+        };
+        assert(ping(owner, 0, 0, 6) == 0 && load(buffer) == wireBase && load(buffer + 16) == 0);
+        assert(ping(owner, 0, 4097, 1) == 0 && load(buffer + 16) == 0);
+        const auto offset = load(buffer), length = load(buffer + 8);
+        assert(offset % 16384 == 0 && length == 16384);
+        assert(call(222, {0, length, 3, 1, importer, offset}) == uint64_t(-1));
+        assert(call(222, {0, length, 3, 1, owner, offset}) == uint64_t(-1));
+        const auto claim = [&](uint64_t fd, uint64_t size) {
+            assert(machine.store64(buffer, offset) && machine.store64(buffer + 8, size));
+            return call(29, {fd, 0xc010470d, buffer});
+        };
+        assert(claim(importer, length + 1) == uint64_t(-22));
+        assert(claim(owner, length) == 0 && claim(importer, length) == 0 && claim(importer, length) == 0);
+        const auto left = call(222, {0, length, 3, 1, owner, offset});
+        const auto right = call(222, {0, length, 3, 1, importer, offset});
+        assert(left < (uint64_t{1} << 45) && right < (uint64_t{1} << 45) && left != right);
+        assert(machine.store64(left + pageSize, 0x09375674a1b2c3d4) && load(right + pageSize) == 0x09375674a1b2c3d4);
+        assert(machine.store64(buffer, offset) && call(29, {importer, 0xc008470e, buffer}) == 0);
+        const auto third = call(222, {0, pageSize, 3, 1, importer, offset + pageSize});
+        assert(third < (uint64_t{1} << 45) && load(third) == load(right + pageSize));
+        assert(ping(owner, offset, 0, 2) == 0 && load(buffer) == wireBase + offset && load(buffer + 16) == 0);
+        assert(claim(importer, length) == uint64_t(-6));
+        assert(call(57, {owner}) == 0 && call(57, {importer}) == 0);
+        assert(machine.store64(third, 99) && load(left + pageSize) == 99);
+        assert(call(215, {left, length}) == 0 && call(215, {right, length}) == 0 && call(215, {third, pageSize}) == 0);
+
+        const auto normal = call(56, {cwd, path, 2});
+        assert(normal < 256 && ping(normal, 0, 0, 5) == 0 && load(buffer + 16) == 0);
+        assert(machine.store64(buffer, pageSize));
+        assert(call(29, {normal, 0xc018470a, buffer}) == 0);
+        const auto directSize = load(buffer), directOffset = load(buffer + 8);
+        assert(directSize >= pageSize && load(buffer + 16) == wireBase + directOffset);
+        assert(ping(normal, directOffset, directSize, 1) == 0 && load(buffer + 16) == 0);
+        const auto direct = call(222, {0, pageSize, 3, 1, normal, directOffset});
+        assert(direct < (uint64_t{1} << 45) && load(direct) == 0);
+        assert(ping(normal, directOffset, 0, 2) == 0 && load(buffer + 16) == 0);
+        assert(machine.store64(buffer, directOffset) && call(29, {normal, 0xc008470b, buffer}) == 0);
+        assert(call(222, {0, pageSize, 3, 1, normal, directOffset}) == uint64_t(-1));
+        assert(call(215, {direct, pageSize}) == 0 && call(57, {normal}) == 0);
         linux.setGraphicsPipeFactory({});
     }
     {
