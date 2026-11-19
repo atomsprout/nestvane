@@ -347,8 +347,10 @@ public:
                     case 84: case 85: case 86:
                         if (type != cgroupPacket) return false;
                         break;
-                    case 68: case 95: case 125: case 130: case 131:
-                    case 132: case 133: case 134: case 164:
+                    case 130: case 131: case 132: case 133: case 134: // Ring-buffer helpers.
+                        if (type != socketFilter && !packetProgram(type)) return false;
+                        break;
+                    case 68: case 95: case 125: case 164:
                         if (!packetProgram(type)) return false;
                         break;
                     case 9: case 10: case 11: case 23: case 31: case 39: case 40: case 43: case 50:

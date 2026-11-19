@@ -1400,17 +1400,18 @@ int main() {
                    (uint64_t(uint32_t(immediate)) << 32);
         };
         put(license, "GPL");
-        const auto loadProgram = [&](uint32_t length, uint32_t finish) {
+        const auto loadProgram = [&](uint32_t type, uint32_t length, uint32_t finish) {
             const std::array instructions{
                 encode(0x18, 0x11, 0, ring), uint64_t{0},
                 encode(0xb7, 0x02, 0, length), encode(0xb7, 0x03), encode(0x85, 0, 0, 131),
                 encode(0x15, 0, 6), encode(0xb7, 0x01, 0, 123), encode(0x7b, 0x10, length - 8),
                 encode(0xbf, 0x01), encode(0xb7, 0x02), encode(0x85, 0, 0, finish), encode(0xb7, 0), encode(0x95, 0)};
-            const std::array<uint64_t, 8> request{3 | (uint64_t(instructions.size()) << 32), code, license};
+            const std::array<uint64_t, 8> request{type | (uint64_t(instructions.size()) << 32), code, license};
             assert(write(code, instructions) && write(attr, request));
             return call(280, {5, attr, sizeof(request)});
         };
-        const auto small = loadProgram(8, 132), wrapping = loadProgram(16, 132), discarded = loadProgram(8, 133);
+        const auto small = loadProgram(1, 8, 132); // Socket filter as used by Android's platform self-test.
+        const auto wrapping = loadProgram(3, 16, 132), discarded = loadProgram(3, 8, 133);
         assert(small < 256 && wrapping < 256 && discarded < 256);
         assert(write(packet, std::array<uint8_t, 64>{}));
         const auto run = [&](uint64_t program, uint64_t repeat) {
