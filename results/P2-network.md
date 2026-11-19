@@ -143,3 +143,5 @@
 - iPhone 11 第 7389 号进程使用 [签名打包工具](../tools/embed-ios-graphics.sh) 安装 gfxstream、EGL 和 GLES 三个框架。正常 App 启动自动初始化本地渲染器，71 ms 后进入原版 Android，随后 SurfaceFlinger 启动。渲染器由完整启动过程持有，客体描述符关闭后再释放。尚待共享显存和显示帧验证。
 
 - Android 17 SDK 参考模拟器中，两个独立 Goldfish 描述符映射同一共享显存块，读回了彼此的写入。客体现在支持 Goldfish 分配、声明、释放和共享映射。共享分配按参考值 16 KiB 对齐。常规块使用同一边界并返回实际分配尺寸。宿主 ABI 回归、ASan/UBSan 与 iOS 签名构建通过。Mac 接入真实 Gfxstream 后，原版 Ranchu HWC 初始化 640×960 主显示配置并启动 VSync 线程，之后在 `cmeq d0, d1, d0` 停止。待验证 Android 帧的合成和真机呈现。[Goldfish 设备 ABI](https://android.googlesource.com/kernel/goldfish-modules/+/f1eb0fa28a745663513be2f426e8c8106f5630fc/uapi/goldfish_address_space.h)
+
+- iPhone 11 第 7389 号进程的最终报告确认原版 SurfaceFlinger 完成 EGL 1.4 初始化，获得 OpenGL ES 3.0，渲染器为 ANGLE Metal Apple A13 GPU，最大纹理尺寸 16,384。原版 Zygote 完成预加载，`system_server` 在约 420 秒进入，LightsService 启动后进入 DisplayManager。此轮构建尚未包含共享显存实现，Ranchu Mapper 打开设备失败，运行到达 720 秒诊断时限。随后共享显存代码和标量 `CMEQ` 修复分别通过宿主回归与 iOS 签名构建。
