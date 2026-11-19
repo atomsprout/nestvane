@@ -169,3 +169,6 @@
 - 启动镜像采集加入原版 `bootanimation`，同版 API 37 ARM64 参考采集共 1,196 个文件，确认 `libbootanimation_preapex.so` 及其额外 ELF 依赖，并读回参考 SELinux 的 `init → bootanim` 转换。既有 `framework-res.apk` 包含内建开机动画使用的两张标志图片。待实测客体提交动画帧。[AOSP 开机动画实现](https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/cmds/bootanimation/BootAnimation.cpp)
 
 - 带原版开机动画的客体启动到 `bootanim`，创建了动画 Surface，并进入内建动画绘制。Mac 上首先触发向量 `URSHR`，修复后推进到 `RADDHN`。首帧尚待验证。
+
+- iPhone 11 第 7604 号进程完成 DisplayManager（2,458 ms）和 WaitForDisplay（4,291 ms），随后进入 PackageManagerService。系统在包管理初始化期间触发 Watchdog，APK 安装尚待验证。
+- Mac 上原版开机动画触发真实的窗口缓冲区刷新。此前 Gfxstream 启动默认声明 Virtio GPU 同步能力，客体 EGL 随后因无法打开 render node 在同步路径触发空指针异常。[Goldfish 同步补丁](../tools/patches/gfxstream-goldfish-sync.patch) 在缓冲区生命周期补丁之后应用，只对 Nestvane 的旧版 Goldfish 启动器关闭这项不支持的能力。Mac 复测越过这处异常并在 SurfaceFlinger 的向量 `FSQRT` 处停止。iPhoneOS 后端目标已构建。

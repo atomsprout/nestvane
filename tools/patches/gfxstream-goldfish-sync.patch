@@ -1,0 +1,8 @@
+--- a/host/virtio_gpu_gfxstream_renderer.cpp
++++ b/host/virtio_gpu_gfxstream_renderer.cpp
+@@ -353,3 +353,4 @@
+     const auto fence = +[](void*, stream_renderer_fence*) {};
+-    constexpr char features[] = "RefCountPipe:enabled";
++    // The legacy Goldfish transport has no /dev/dri render node.
++    constexpr char features[] = "RefCountPipe:enabled,VirtioGpuNativeSync:disabled";
+     stream_renderer_param parameters[] = {
