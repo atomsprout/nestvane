@@ -35,7 +35,7 @@ public:
             const auto version = revision.back();
             if (match && name == "connmark") return version == 1 ? 0 : uint64_t(-93);
             if (!match && name == "CONNMARK") return (version == 1 || version == 2) ? 0 : uint64_t(-93);
-            const bool known = match ? name == "comment" || name == "tcp" || name == "udp" : name == "TCPMSS";
+            const bool known = match ? name == "comment" || name == "tcp" || name == "udp" || name == "u32" : name == "TCPMSS";
             return !known ? missing : version ? uint64_t(-93) : 0;
         }
         if (option != 64 && option != 65) return unsupported;
@@ -158,6 +158,20 @@ private:
     struct Counters { uint64_t packets, bytes; };
     static_assert(sizeof(Info) == 84 && sizeof(Replace) == 96 && sizeof(Counters) == 16);
 
+    // ARM64 Linux xt_u32 match data, rounded to eight bytes by xtables.
+    static constexpr size_t u32MaxElements = 11;
+    enum U32Code : uint8_t { u32Mask, u32Left, u32Right, u32Offset };
+    struct U32Operation { uint32_t operand; uint8_t code; };
+    struct U32Range { uint32_t low, high; };
+    struct U32Test {
+        std::array<U32Operation, u32MaxElements> operations;
+        std::array<U32Range, u32MaxElements> ranges;
+        uint8_t operationCount, rangeCount;
+    };
+    static_assert(sizeof(U32Operation) == 8 && sizeof(U32Test) == 180);
+    static constexpr size_t u32TestCountOffset = u32MaxElements * sizeof(U32Test);
+    static constexpr size_t u32PayloadSize = (u32TestCountOffset + 2 + 7) & ~size_t(7);
+
     struct Table {
         uint32_t hooks;
         Positions starts{}, policies{};
@@ -233,6 +247,54 @@ private:
         return &table;
     }
 
+    static bool validU32(std::span<const uint8_t> data) {
+        if (data.size() != u32PayloadSize || data[u32TestCountOffset] > u32MaxElements ||
+            data[u32TestCountOffset + 1] > 1) return false;
+        for (size_t i = 0; i < data[u32TestCountOffset]; ++i) {
+            const auto test = load<U32Test>(data, i * sizeof(U32Test));
+            if (!test.operationCount || test.operationCount > u32MaxElements ||
+                test.rangeCount > u32MaxElements) return false;
+            for (size_t j = 1; j < test.operationCount; ++j) {
+                const auto& [operand, code] = test.operations[j];
+                if (code > u32Offset || ((code == u32Left || code == u32Right) && operand >= 32)) return false;
+            }
+        }
+        return true;
+    }
+
+    static bool matchU32(std::span<const uint8_t> data, std::span<const uint8_t> packet) {
+        const auto readWord = [&](uint64_t offset, uint32_t& word) {
+            if (offset > packet.size() || packet.size() - offset < 4) return false;
+            word = uint32_t(network16(packet, offset)) << 16 | network16(packet, offset + 2);
+            return true;
+        };
+        const auto matchesAll = [&] {
+            for (size_t i = 0; i < data[u32TestCountOffset]; ++i) {
+                const auto test = load<U32Test>(data, i * sizeof(U32Test));
+                uint64_t cursor = 0;
+                uint32_t word = 0;
+                if (!readWord(test.operations.front().operand, word)) return false;
+                for (size_t j = 1; j < test.operationCount; ++j) {
+                    const auto [operand, code] = test.operations[j];
+                    switch (code) {
+                        case u32Mask: word &= operand; break;
+                        case u32Left: word <<= operand; break;
+                        case u32Right: word >>= operand; break;
+                        case u32Offset:
+                            cursor += word;
+                            if (!readWord(cursor + operand, word)) return false;
+                            break;
+                    }
+                }
+                if (std::ranges::none_of(std::span(test.ranges).first(test.rangeCount), [&](const auto& range) {
+                    return range.low <= word && word <= range.high;
+                })) return false;
+            }
+            return true;
+        };
+        return matchesAll() != bool(data[u32TestCountOffset + 1]);
+    }
+
     static uint64_t validate(Table& table, const Layout& layout, uint32_t count, std::string_view name) {
         std::vector<uint32_t> jumps;
         auto bytes = std::span(table.entries);
@@ -261,6 +323,8 @@ private:
                 if (extension[31]) return missing;
                 if (matchName == "comment") {
                     if (length != 288) return invalid;
+                } else if (matchName == "u32") {
+                    if (!validU32(extension.subspan(targetHeader, length - targetHeader))) return invalid;
                 } else if (matchName == "tcp") {
                     if (length != 48 || protocol != 6 || (entry[layout.inversions] & 0x40) ||
                         (extension[43] & ~15)) return invalid;
@@ -349,6 +413,8 @@ private:
                 if (!state.connectionMark) return false;
                 const bool same = (*state.connectionMark & load<uint32_t>(body, 4)) == load<uint32_t>(body, 0);
                 if (same == bool(body[8])) return false;
+            } else if (type == "u32") {
+                if (!matchU32(body, packet)) return false;
             } else if (type != "comment" && !matchTransport(type, body, packet, layout.ipv6)) {
                 return false;
             }

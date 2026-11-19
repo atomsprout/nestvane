@@ -660,7 +660,7 @@ int main() {
             const auto level = ipv6 ? 41U : 0U;
             const auto offsets = ipv6 ? 140U : 88U;
             const auto protocol = ipv6 ? 128U : 80U;
-            constexpr auto address = base + 64, length = base + 2500, counters = base + 2560;
+            constexpr auto address = base + 64, length = base + 3800, counters = base + 3840;
             const auto store = [](auto& buffer, size_t at, const auto& value) {
                 std::memcpy(buffer.data() + at, &value, sizeof(value));
             };
@@ -789,6 +789,67 @@ int main() {
             version.back() = 1;
             assert(data.write(address, version) && firewall.get(data, ipv6) == 0);
 
+            version.fill(0);
+            std::memcpy(version.data(), "u32", 3);
+            assert(data.write(address, version) && firewall.get(data, ipv6) == 0);
+
+            // Match both the TCP header's dynamic length and two independent payload words.
+            constexpr auto matchSize = 32 + 1984;
+            std::vector<uint8_t> payloadRule(header + matchSize + 40);
+            store(payloadRule, offsets, uint16_t(header + matchSize));
+            store(payloadRule, offsets + 2, uint16_t(payloadRule.size()));
+            store(payloadRule, header, uint16_t(matchSize));
+            std::memcpy(payloadRule.data() + header + 2, "u32", 3);
+            const auto body = header + 32;
+            for (unsigned test = 0; test < 2; ++test) {
+                const auto expression = body + test * 180;
+                store(payloadRule, expression, uint32_t(ipSize + 12));
+                store(payloadRule, expression + 8, uint32_t(26));
+                payloadRule[expression + 12] = 2; // >>
+                store(payloadRule, expression + 16, uint32_t(0x3c));
+                payloadRule[expression + 20] = 0; // &
+                store(payloadRule, expression + 24, uint32_t(ipSize + test * 4));
+                payloadRule[expression + 28] = 3; // @
+                const uint32_t word = test == 0 ? 0x16030000 : 0x12345678;
+                store(payloadRule, expression + 88, word);
+                store(payloadRule, expression + 92, word + (test == 0 ? 0xffff : 0));
+                payloadRule[expression + 176] = 4;
+                payloadRule[expression + 177] = 1;
+            }
+            payloadRule[body + 1980] = 2;
+            store(payloadRule, header + matchSize, uint16_t(40));
+            store(payloadRule, header + matchSize + 32, int32_t(-1));
+            store(update, 36, metadata[11] + 1);
+            store(update, 40, uint32_t(initial.size() + payloadRule.size()));
+            for (unsigned hook = 0; hook < 5; ++hook) {
+                const auto entry = metadata[1 + hook], policy = metadata[6 + hook];
+                store(update, 44 + hook * 4, uint32_t(entry + (entry > start ? payloadRule.size() : 0)));
+                store(update, 64 + hook * 4, uint32_t(policy + (policy >= start ? payloadRule.size() : 0)));
+            }
+            const auto installPayloadRule = [&](uint32_t previousCount) {
+                store(update, 84, previousCount);
+                old = initial;
+                old.insert(old.begin() + start, payloadRule.begin(), payloadRule.end());
+                assert(data.write(address, update) && data.write(address + update.size(), old));
+                data.cpu.x = {0, level, 64, address, update.size() + old.size()};
+                return firewall.set(data, ipv6);
+            };
+            assert(installPayloadRule(metadata[11] + 2) == 0);
+            packet.resize(ipSize + 32);
+            constexpr std::array<uint8_t, 8> payload{0x16, 3, 3, 1, 0x12, 0x34, 0x56, 0x78};
+            std::ranges::copy(payload, packet.begin() + ipSize + 24);
+            assert(!firewall.allows(packet, GuestFirewall::output, 65536, {}));
+            auto truncatedPacket = packet;
+            truncatedPacket.pop_back();
+            assert(firewall.allows(truncatedPacket, GuestFirewall::output, 65536, {}));
+            packet.back() = 0;
+            assert(firewall.allows(packet, GuestFirewall::output, 65536, {}));
+            payloadRule[body + 1981] = 1;
+            assert(installPayloadRule(metadata[11] + 1) == 0);
+            assert(!firewall.allows(truncatedPacket, GuestFirewall::output, 65536, {}));
+            store(payloadRule, body + 8, uint32_t(32));
+            assert(installPayloadRule(metadata[11] + 1) == uint64_t(-22));
+            assert(!firewall.allows(packet, GuestFirewall::output, 65536, {}));
         }
     }
     const auto put = [&](uint64_t address, const char* data) {
