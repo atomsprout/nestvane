@@ -5083,6 +5083,11 @@ bool ProbeLinux::syscall(Machine& machine) {
                 x[0] = uint64_t(-25);
                 break;
             }
+            if (x[1] == 0x40806685 || x[1] == 0xc0046686 || x[1] == 0xc0286687) {
+                // FS_IOC_{ENABLE,MEASURE,READ}_VERITY. The guest filesystems do not implement fs-verity.
+                x[0] = descriptor->second.pathOnly() ? uint64_t(-9) : uint64_t(-25);
+                break;
+            }
             if (x[1] == 0x80086601 && (descriptor->second.temporary ||
                                       descriptor->second.node == Node::directory)) { // FS_IOC_GETFLAGS
                 x[0] = descriptor->second.pathOnly() ? uint64_t(-9) :

@@ -1014,6 +1014,10 @@ int main() {
     assert(machine.store64(base + 520, 0x40000000));
     assert(call(29, {file, 0x80086601, base + 520}) == 0 && load(base + 520) == 0);
     assert(call(29, {file, 0x40086602, base + 520}) == uint64_t(-95));
+    assert(call(29, {file, 0x40806685, base + 520}) == uint64_t(-25)); // FS_IOC_ENABLE_VERITY
+    assert(call(29, {file, 0xc0046686, base + 520}) == uint64_t(-25)); // FS_IOC_MEASURE_VERITY
+    assert(call(29, {file, 0xc0286687, base + 520}) == uint64_t(-25)); // FS_IOC_READ_VERITY_METADATA
+    assert(load(base + 520) == 0);
     assert(call(233, {base, pageSize, UINT32_MAX}) == uint64_t(-22));
     assert(call(57, {file}) == 0);
     assert(call(39, {base + 16}) == uint64_t(-16));
