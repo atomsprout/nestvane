@@ -28,6 +28,8 @@ class BpfProgram;
 struct BpfMap;
 class BpfTypes;
 
+using GuestInodeTimes = std::array<int64_t, 6>; // atime, mtime and ctime, as seconds/nanoseconds pairs.
+
 struct ProbeLinux {
     explicit ProbeLinux(uint64_t pid = 1000, uint64_t uid = 1000, uint64_t memoryLimit = 64 * 1024 * 1024);
     ~ProbeLinux();
@@ -174,6 +176,7 @@ private:
         int16_t type;
     };
     struct WritableFile {
+        GuestInodeTimes times{};
         uint64_t inode;
         uint32_t mode;
         uint32_t uid, gid;
@@ -639,6 +642,7 @@ private:
     bool fileCall(Machine& machine);
     uint64_t makePipe(Machine& machine);
     bool securityCall(Machine& machine);
+    uint64_t updateTimes(Machine& machine);
     uint64_t map(Machine& machine);
     uint64_t randomMappingBase() const;
     struct Setting { unsigned value, minimum, maximum; };
@@ -713,6 +717,7 @@ private:
         uint32_t mode, uid = 0, gid = 0;
         std::string securityContext{};
         std::optional<uint8_t> restoreconInProgress{};
+        GuestInodeTimes times{};
     };
     struct BinderDevice : Directory {
         uint32_t minor;

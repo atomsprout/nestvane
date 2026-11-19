@@ -70,7 +70,9 @@ void ProbeLinux::mountData(const std::string& databasePath) {
         "CREATE TABLE IF NOT EXISTS entries (path TEXT PRIMARY KEY, kind INTEGER NOT NULL,"
         " mode INTEGER NOT NULL, uid INTEGER NOT NULL, gid INTEGER NOT NULL, inode INTEGER NOT NULL,"
         " bytes BLOB NOT NULL, label BLOB NOT NULL);"
-        "CREATE TABLE IF NOT EXISTS restorecon_progress (path TEXT PRIMARY KEY, value INTEGER NOT NULL); BEGIN;"))
+        "CREATE TABLE IF NOT EXISTS restorecon_progress (path TEXT PRIMARY KEY, value INTEGER NOT NULL);"
+        "CREATE TABLE IF NOT EXISTS inode_times (path TEXT PRIMARY KEY, a_sec INTEGER NOT NULL, a_ns INTEGER NOT NULL,"
+        " m_sec INTEGER NOT NULL, m_ns INTEGER NOT NULL, c_sec INTEGER NOT NULL, c_ns INTEGER NOT NULL); BEGIN;"))
         throw std::runtime_error("cannot open guest data database");
 
     auto version = prepare(raw, "SELECT generation FROM state WHERE singleton=1");
@@ -145,6 +147,27 @@ void ProbeLinux::mountData(const std::string& databasePath) {
         node->second.restoreconInProgress = uint8_t(value);
     }
     markers.reset();
+    if (result != SQLITE_DONE) throw std::runtime_error("cannot read guest restorecon entries");
+    auto inodeTimes = prepare(raw, "SELECT path,a_sec,a_ns,m_sec,m_ns,c_sec,c_ns FROM inode_times");
+    if (!inodeTimes) throw std::runtime_error("cannot read guest inode times");
+    while ((result = sqlite3_step(inodeTimes.get())) == SQLITE_ROW) {
+        const auto path = columnBytes(inodeTimes.get(), 0);
+        GuestInodeTimes times{};
+        for (unsigned i = 0; i < times.size(); ++i) {
+            if (sqlite3_column_type(inodeTimes.get(), i + 1) != SQLITE_INTEGER)
+                throw std::runtime_error("invalid guest inode timestamp");
+            times[i] = sqlite3_column_int64(inodeTimes.get(), i + 1);
+            if ((i & 1) && (times[i] < 0 || times[i] >= 1'000'000'000))
+                throw std::runtime_error("invalid guest inode timestamp");
+        }
+        if (const auto dir = loadedDirectories.find(path); dir != loadedDirectories.end())
+            dir->second.times = times;
+        else if (const auto file = loadedFiles.find(path); file != loadedFiles.end())
+            file->second->times = times;
+        else
+            throw std::runtime_error("timestamp for missing guest inode");
+    }
+    inodeTimes.reset();
     if (result != SQLITE_DONE || !execute(raw, "COMMIT") || directories.contains("/data") ||
         current->mountNamespace->mounts.contains("/data"))
         throw std::runtime_error("cannot mount guest data database");
@@ -172,10 +195,22 @@ bool ProbeLinux::syncData() {
             sqlite3_column_int64(check.get(), 0) != dataGeneration || dataGeneration == INT64_MAX - 1)
             return false;
         check.reset();
-        if (!execute(database, "DELETE FROM entries; DELETE FROM restorecon_progress;")) return false;
+        if (!execute(database, "DELETE FROM entries; DELETE FROM restorecon_progress; DELETE FROM inode_times;"))
+            return false;
         auto insert = prepare(database, "INSERT INTO entries VALUES(?,?,?,?,?,?,?,?)");
         auto marker = prepare(database, "INSERT INTO restorecon_progress VALUES(?,?)");
-        if (!insert || !marker) return false;
+        auto inodeTimes = prepare(database, "INSERT INTO inode_times VALUES(?,?,?,?,?,?,?)");
+        if (!insert || !marker || !inodeTimes) return false;
+        const auto writeTimes = [&](const std::string& path, const GuestInodeTimes& times) {
+            if (times == GuestInodeTimes{}) return true;
+            auto* cursor = inodeTimes.get();
+            if (sqlite3_reset(cursor) != SQLITE_OK ||
+                sqlite3_bind_text(cursor, 1, path.data(), int(path.size()), SQLITE_TRANSIENT) != SQLITE_OK)
+                return false;
+            for (unsigned i = 0; i < times.size(); ++i)
+                if (sqlite3_bind_int64(cursor, i + 2, times[i]) != SQLITE_OK) return false;
+            return sqlite3_step(cursor) == SQLITE_DONE;
+        };
         const auto row = [&](const std::string& path, int kind, uint32_t mode, uint32_t uid, uint32_t gid, uint64_t inode,
                              std::span<const uint8_t> bytes = {}, std::span<const uint8_t> label = {}) {
             auto* cursor = insert.get();
@@ -193,7 +228,8 @@ bool ProbeLinux::syncData() {
             if (!dataPath(path)) continue;
             const auto& context = directory.securityContext;
             if (!row(path, 0, directory.mode, directory.uid, directory.gid, 0, {},
-                     {reinterpret_cast<const uint8_t*>(context.data()), context.size()})) return false;
+                     {reinterpret_cast<const uint8_t*>(context.data()), context.size()}) ||
+                !writeTimes(path, directory.times)) return false;
             if (directory.restoreconInProgress &&
                 (sqlite3_reset(marker.get()) != SQLITE_OK ||
                  sqlite3_bind_text(marker.get(), 1, path.data(), int(path.size()), SQLITE_TRANSIENT) != SQLITE_OK ||
@@ -206,7 +242,8 @@ bool ProbeLinux::syncData() {
             const auto label = attribute == file->attributes.end() ? std::span<const uint8_t>{} :
                                std::span<const uint8_t>(attribute->second);
             if (!row(path, 1, file->mode, file->uid, file->gid, file->inode,
-                     std::span(file->storage->pages).first(file->storage->size), label)) return false;
+                     std::span(file->storage->pages).first(file->storage->size), label) ||
+                !writeTimes(path, file->times)) return false;
         }
         for (const auto& [path, target] : links) {
             if (dataPath(path) && !row(path, 2, 0, 0, 0, 0,

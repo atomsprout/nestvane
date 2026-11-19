@@ -4443,6 +4443,18 @@ int main() {
         const auto saved = invoke(writer, 56, {atCwd, firstPath, 0xc2, 0600});
         assert(saved < 256 && machine.store64(payload, 0xdecafbad12345678ULL));
         assert(invoke(writer, 64, {saved, payload, 8}) == 8);
+        constexpr auto fileTimes = base + 0x5a0, fileStat = base + 0x600;
+        assert(machine.store64(fileTimes, 1'700'000'000) && machine.store64(fileTimes + 8, 234));
+        assert(machine.store64(fileTimes + 16, 1'700'001'000) && machine.store64(fileTimes + 24, 545));
+        assert(invoke(writer, 88, {saved, 0, fileTimes, 0}) == 0);
+        assert(invoke(writer, 80, {saved, fileStat}) == 0);
+        assert(load(fileStat + 72) == 1'700'000'000 && load(fileStat + 80) == 234);
+        assert(load(fileStat + 88) == 1'700'001'000 && load(fileStat + 96) == 545);
+        assert(machine.store64(fileTimes + 8, 0x3ffffffe));
+        assert(machine.store64(fileTimes + 24, 555));
+        assert(invoke(writer, 88, {atCwd, firstPath, fileTimes, 0}) == 0);
+        assert(machine.store64(fileTimes + 24, 0x3ffffffe));
+        assert(invoke(writer, 88, {atCwd, 0xbad, fileTimes, 0}) == 0);
         assert(invoke(writer, 38, {atCwd, firstPath, atCwd, secondPath}) == 0);
         put(firstPath, "/data/private");
         const auto activeDirectory = invoke(writer, 56, {atCwd, firstPath, 0x4000});
@@ -4475,6 +4487,9 @@ int main() {
         assert(invoke(reopened, 56, {atCwd, firstPath, 0}) == uint64_t(-2));
         const auto restored = invoke(reopened, 56, {atCwd, secondPath, 0});
         assert(restored < 256 && invoke(reopened, 63, {restored, payload, 8}) == 8);
+        assert(invoke(reopened, 80, {restored, fileStat}) == 0);
+        assert(load(fileStat + 72) == 1'700'000'000 && load(fileStat + 80) == 234);
+        assert(load(fileStat + 88) == 1'700'001'000 && load(fileStat + 96) == 555);
         assert(load(payload) == 0xdecafbad12345678ULL);
         assert(invoke(reopened, 35, {atCwd, secondPath, 0}) == 0);
         assert(invoke(reopened, 82, {restored}) == 0);

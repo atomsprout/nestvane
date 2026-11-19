@@ -332,7 +332,8 @@ bool writeGuest(Machine& machine, uint64_t address, const T& data) {
     return machine.write(address, {reinterpret_cast<const uint8_t*>(&data), sizeof(data)});
 }
 
-uint64_t statFile(Machine& machine, uint64_t address, uint64_t size, uint64_t inode, uint32_t mode, uint32_t uid = 0, uint32_t gid = 0, uint64_t device = 0) {
+uint64_t statFile(Machine& machine, uint64_t address, uint64_t size, uint64_t inode, uint32_t mode, uint32_t uid = 0, uint32_t gid = 0, uint64_t device = 0,
+                  const GuestInodeTimes& times = {}) {
     // Linux asm-generic stat layout, shared by Android arm64.
     std::array<uint64_t, 16> stat{};
     stat[0] = 1;
@@ -343,6 +344,7 @@ uint64_t statFile(Machine& machine, uint64_t address, uint64_t size, uint64_t in
     stat[6] = size;
     stat[7] = pageSize;
     stat[8] = (size + 511) / 512;
+    std::copy(times.begin(), times.end(), stat.begin() + 9);
     return writeGuest(machine, address, stat) ? 0 : uint64_t(-14);
 }
 
@@ -891,7 +893,7 @@ uint64_t ProbeLinux::stat(Machine& machine, uint64_t address, const Descriptor& 
     if (fd.node == Node::ashmem) return statFile(machine, address, 0, 69'999, 0020666, 0, 0, 0x100a03);
     if (fd.temporary) {
         const auto& file = *fd.temporary;
-        return statFile(machine, address, file.storage->size, file.inode, 0100000 | file.mode, file.uid, file.gid);
+        return statFile(machine, address, file.storage->size, file.inode, 0100000 | file.mode, file.uid, file.gid, 0, file.times);
     }
     if (fd.node == Node::kernelSetting || fd.node == Node::ueventTrigger)
         return statFile(machine, address, 0, std::hash<std::string>{}(fd.path) | 1, 0100644);
@@ -922,7 +924,7 @@ uint64_t ProbeLinux::stat(Machine& machine, uint64_t address, const Descriptor& 
         const auto pos = directories.find(fd.path);
         const auto node = pos != directories.end() ? pos->second : Directory{0755};
         return statFile(machine, address, pageSize, std::hash<std::string>{}(fd.path) | 1,
-                        0040000 | node.mode, node.uid, node.gid);
+                        0040000 | node.mode, node.uid, node.gid, 0, node.times);
     }
     if (fd.mountNamespace)
         return statFile(machine, address, 0, fd.mountNamespace->id, 0100444);
@@ -4180,6 +4182,9 @@ bool ProbeLinux::fileCall(Machine& machine) {
             x[0] = 0;
             break;
         }
+        case 88: // utimensat
+            x[0] = updateTimes(machine);
+            break;
         case 80: // fstat
             x[0] = descriptor == descriptors().end() ? uint64_t(-9) : stat(machine, x[1], descriptor->second);
             break;
@@ -5168,6 +5173,83 @@ bool ProbeLinux::loadAccessClass(std::string_view manifest, std::string_view nam
     std::memcpy(status.data(), header, sizeof(header));
     kernelFiles.emplace("/sys/fs/selinux/status", std::move(status));
     return true;
+}
+
+uint64_t ProbeLinux::updateTimes(Machine& machine) {
+    using namespace std::chrono;
+    const auto& x = machine.cpu.x;
+    constexpr int64_t now = (1 << 30) - 1, omit = now - 1;
+    constexpr uint64_t atEmptyPath = 0x1000, noFollow = 0x100;
+    std::array<int64_t, 4> requested{0, now, 0, now};
+    if (x[2]) {
+        const auto* bytes = machine.read(x[2], sizeof(requested), 4);
+        if (!bytes) return uint64_t(-14);
+        std::memcpy(requested.data(), bytes, sizeof(requested));
+        if (requested[1] == omit && requested[3] == omit) return 0;
+    }
+    if (x[3] & ~(atEmptyPath | noFollow)) return invalid;
+    if (!x[1] && (x[3] || uint32_t(x[0]) == uint32_t(-100))) return x[3] ? invalid : uint64_t(-14);
+    const auto descriptor = descriptors().find(uint32_t(x[0]));
+    std::optional<Descriptor> entry;
+    if (!x[1]) {
+        if (descriptor == descriptors().end()) return uint64_t(-9);
+        entry = descriptor->second;
+    } else {
+        const auto path = readPath(machine, x[1]);
+        if (!path) return uint64_t(-14);
+        if (path->empty()) {
+            if (!(x[3] & atEmptyPath)) return uint64_t(-2);
+            if (descriptor != descriptors().end()) entry = descriptor->second;
+            else if (uint32_t(x[0]) == uint32_t(-100)) entry = find("/", 0);
+            else return uint64_t(-9);
+        } else {
+            auto absolute = *path;
+            if (!absolute.starts_with('/')) {
+                if (uint32_t(x[0]) == uint32_t(-100)) absolute = "/" + absolute;
+                else {
+                    if (descriptor == descriptors().end()) return uint64_t(-9);
+                    if (descriptor->second.node != Node::directory) return uint64_t(-20);
+                    const auto& parent = descriptor->second;
+                    absolute = (parent.visiblePath.empty() ? parent.path : parent.visiblePath) + "/" + absolute;
+                }
+            }
+            const auto logical = followLinks(normalizePath(absolute), !(x[3] & noFollow));
+            if (!logical) return uint64_t(-40);
+            const auto backing = backingPath(*logical);
+            if (dataPath(backing) && !canAccessParent(backing, false)) return uint64_t(-13);
+            entry = find(backing, 0);
+            if (entry) entry->visiblePath = *logical;
+            else if (links.contains(backing)) return uint64_t(-95);
+        }
+    }
+    if (!entry) return uint64_t(-2);
+    for (const auto ns : {requested[1], requested[3]})
+        if (ns < 0 || (ns >= 1'000'000'000 && ns != now && ns != omit)) return invalid;
+
+    const auto& visible = entry->visiblePath.empty() ? entry->path : entry->visiblePath;
+    if (!writablePath(visible)) return uint64_t(-30);
+    const auto directory = directories.find(entry->path);
+    const auto update = [&](auto& node) -> uint64_t {
+        const bool touch = requested[1] == now && requested[3] == now;
+        if (userId() != 0 && userId() != node.uid) {
+            if (!touch) return uint64_t(-1);
+            if (!(node.mode >> permissionShift(node.uid, node.gid) & 2)) return uint64_t(-13);
+        }
+        const auto currentTime = realtimeAt(steady_clock::now());
+        const auto whole = floor<seconds>(currentTime);
+        for (unsigned i = 0; i < requested.size(); i += 2) {
+            if (requested[i + 1] == omit) continue;
+            node.times[i] = requested[i + 1] == now ? whole.count() : requested[i];
+            node.times[i + 1] = requested[i + 1] == now ? (currentTime - whole).count() : requested[i + 1];
+        }
+        node.times[4] = whole.count();
+        node.times[5] = (currentTime - whole).count();
+        fileEvent(entry->path, fileAttributes);
+        return 0;
+    };
+    if (entry->temporary) return update(*entry->temporary);
+    if (entry->node == Node::directory && directory != directories.end()) return update(directory->second);
+    return uint64_t(-95);
 }
 
 bool ProbeLinux::securityCall(Machine& machine) {
