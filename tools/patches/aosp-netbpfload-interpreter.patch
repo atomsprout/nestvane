@@ -1,0 +1,103 @@
+diff --git a/bpf/loader/Android.bp b/bpf/loader/Android.bp
+index 345e92b..715e864 100644
+--- a/bpf/loader/Android.bp
++++ b/bpf/loader/Android.bp
+@@ -45,6 +45,7 @@ cc_binary {
+         "libbpf",
+     ],
+     srcs: ["NetBpfLoad.cpp"],
++    cflags: ["-DNESTVANE_INTERPRETED_BPF"],
+     apex_available: [
+         "com.android.tethering",
+         "//apex_available:platform",
+diff --git a/bpf/loader/NetBpfLoad.cpp b/bpf/loader/NetBpfLoad.cpp
+index 74c37c4..aeb39f6 100644
+--- a/bpf/loader/NetBpfLoad.cpp
++++ b/bpf/loader/NetBpfLoad.cpp
+@@ -27,10 +27,12 @@
+ #include <fstream>
+ #include <inttypes.h>
+ #include <iostream>
++#include <linux/bpf.h>
+ #include <linux/unistd.h>
+ #include <log/log.h>
+ #include <net/if.h>
+ #include <optional>
++#include <stddef.h>
+ #include <stdint.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+@@ -85,6 +87,47 @@ using std::vector;
+ namespace android {
+ namespace bpf {
+ 
++#if defined(NESTVANE_INTERPRETED_BPF)
++static constexpr bool kNestvaneInterpretedBpf = true;
++#else
++static constexpr bool kNestvaneInterpretedBpf = false;
++#endif
++
++static int verifyInterpretedBpf() {
++    // Read the first IPv6 byte through the same skb ABI as tethering classifiers.
++    const bpf_insn instructions[] = {
++        {BPF_LDX | BPF_MEM | BPF_W, BPF_REG_2, BPF_REG_1, offsetof(__sk_buff, data), 0},
++        {BPF_LDX | BPF_MEM | BPF_W, BPF_REG_3, BPF_REG_1, offsetof(__sk_buff, data_end), 0},
++        {BPF_ALU64 | BPF_MOV | BPF_X, BPF_REG_4, BPF_REG_2, 0, 0},
++        {BPF_ALU64 | BPF_ADD | BPF_K, BPF_REG_4, 0, 0, 15},
++        {BPF_ALU64 | BPF_MOV | BPF_K, BPF_REG_0, 0, 0, 0},
++        {BPF_JMP | BPF_JGT | BPF_X, BPF_REG_4, BPF_REG_3, 1, 0},
++        {BPF_LDX | BPF_MEM | BPF_B, BPF_REG_0, BPF_REG_2, 14, 0},
++        {BPF_JMP | BPF_EXIT, 0, 0, 0, 0},
++    };
++    const char license[] = "Apache 2.0";
++    union bpf_attr load = {};
++    load.prog_type = BPF_PROG_TYPE_SCHED_CLS;
++    load.insn_cnt = sizeof(instructions) / sizeof(instructions[0]);
++    load.insns = reinterpret_cast<uintptr_t>(instructions);
++    load.license = reinterpret_cast<uintptr_t>(license);
++    unique_fd program(syscall(__NR_bpf, BPF_PROG_LOAD, &load, sizeof(load)));
++    if (!program.ok()) return -errno;
++
++    uint8_t frame[54] = {};
++    frame[12] = 0x86;
++    frame[13] = 0xdd;
++    frame[14] = 0x60;
++    frame[20] = 59;  // No next header.
++    frame[21] = 64;
++    union bpf_attr run = {};
++    run.test.prog_fd = program.get();
++    run.test.data_size_in = sizeof(frame);
++    run.test.data_in = reinterpret_cast<uintptr_t>(frame);
++    if (syscall(__NR_bpf, BPF_PROG_TEST_RUN, &run, sizeof(run)) < 0) return -errno;
++    return run.test.retval == 0x60 ? 0 : -EIO;
++}
++
+ // Bpf programs may specify per-program & per-map selinux_context and pin_subdir.
+ //
+ // The BpfLoader needs to convert these bpf.o specified strings into an enum
+@@ -1340,7 +1383,8 @@ static int loadCodeSections(const char* elfPath, vector<codeSection>& cs, const
+             }
+             ALOGI("prog %s id %d len jit:%d xlat:%d", progPinLoc.c_str(), progId, jitLen, xlatLen);
+ 
+-            if (!jitLen && bpfloader_ver >= BPFLOADER_MAINLINE_25Q2_VERSION) {
++            if (!jitLen && bpfloader_ver >= BPFLOADER_MAINLINE_25Q2_VERSION &&
++                (!kNestvaneInterpretedBpf || xlatLen <= 0)) {
+                 ALOGE("Kernel eBPF JIT failure for %s", progPinLoc.c_str());
+                 return -ENOTSUP;
+             }
+@@ -1855,7 +1899,14 @@ static int doLoad(char** argv, char * const envp[]) {
+             isAtLeastKernelVersion(5, 13, 0)) return 1;
+     }
+ 
+-    if (isAtLeastU) {
++    if (kNestvaneInterpretedBpf) {
++        const int result = verifyInterpretedBpf();
++        if (result) {
++            ALOGE("Nestvane packet interpreter self-test failed: %s", strerror(-result));
++            return 1;
++        }
++        ALOGI("Nestvane packet interpreter self-test passed");
++    } else if (isAtLeastU) {
+         // Note: writing these proc files requires CAP_NET_ADMIN
+         // and sepolicy which is only present on U+,
+         // on Android T and earlier versions they're written from the 'load_bpf_programs'
