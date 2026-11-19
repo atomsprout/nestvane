@@ -45,6 +45,18 @@ int main() {
         assert(executeStartupInstruction(permute, 0x7ea3d422)); // fabd s2, s1, s3
         const std::array<float, 4> absoluteDifference{3.0f, 0, 0, 0};
         assert(std::memcmp(permute.cpu.v[2].data(), absoluteDifference.data(), sizeof(absoluteDifference)) == 0);
+        const float positiveZero = 0.0f;
+        std::memcpy(permute.cpu.v[4].data(), &positiveZero, sizeof(positiveZero));
+        permute.cpu.v[6].fill(0xff);
+        assert(executeStartupInstruction(permute, 0x1e248866)); // fnmul s6, s3, s4
+        const std::array<float, 4> negativeZero{-0.0f, 0, 0, 0};
+        assert(std::memcmp(permute.cpu.v[6].data(), negativeZero.data(), sizeof(negativeZero)) == 0);
+        const double factor = -3.25;
+        std::memcpy(permute.cpu.v[7].data(), &factor, sizeof(factor));
+        permute.cpu.v[17].fill(0xff);
+        assert(executeStartupInstruction(permute, 0x1e6788f1)); // fnmul d17, d7, d7
+        const std::array<double, 2> negativeProduct{-10.5625, 0};
+        assert(std::memcmp(permute.cpu.v[17].data(), negativeProduct.data(), sizeof(negativeProduct)) == 0);
         const double half = -2.5, beyondSignedMax = 0x1p63;
         std::memcpy(permute.cpu.v[5].data(), &half, sizeof(half));
         assert(executeStartupInstruction(permute, 0x9e6400a9)); // fcvtas x9, d5

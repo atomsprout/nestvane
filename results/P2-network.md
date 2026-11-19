@@ -96,3 +96,5 @@
 - iPhone 11 第 7129 号进程的实时日志确认原版 PowerManager 启动完成，耗时 1,018 ms。为后续显示启动验证，采集器已纳入原版 Lights HAL、SurfaceFlinger、ELF 依赖与 SELinux 进程转换。Android 17 参考采集共 1,155 个文件，重建的离线镜像为 799,348,572 字节，低于加载上限。显示服务与包管理待运行验证。
 
 - Mac 离线复测进入 LightsService，并记录 `setsockopt(SOL_SOCKET, SO_SNDTIMEO_OLD)`。客体已支持两种 ARM64 发送超时选项，以及阻塞发送、写入和连接在队列不可用时的期限。宿主回归覆盖期限到达、队列重新可用及非阻塞调用，ASan/UBSan 通过。带发送超时和原版显示组件的签名构建已在 iPhone 11 启动，进程号 7150。[Linux Unix socket 实现](https://raw.githubusercontent.com/torvalds/linux/master/net/unix/af_unix.c)
+
+- Mac 复测中，原版 Lights HAL 响应支持灯光查询，LightsService 完成启动（63 ms），随后进入 DisplayManager。框架在 `fnmul d17, d7, d7` 停止，SurfaceFlinger 同时报告缺少 EGL 实现。运行时已实现单精度与双精度 FNMUL，宿主回归和 ASan/UBSan 覆盖本次指令编码、负零和目标寄存器高位清零。[Arm 指令参考](https://documentation-service.arm.com/static/67e40f3398aa3c3b6eea6a85)

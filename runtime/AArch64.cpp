@@ -835,6 +835,8 @@ bool floatInstruction(CPU& cpu, uint32_t word) {
         const bool subtract = word & 0x8000;
         const auto left = get(rn), addend = get((word >> 10) & 31);
         store(std::fma(negate != subtract ? -left : left, get(rm), negate ? -addend : addend));
+    } else if (binary == 0x1e208800) { // FNMUL.
+        store(-(get(rn) * get(rm)));
     } else if (binary == 0x1e200800 || binary == 0x1e201800 ||
                binary == 0x1e202800 || binary == 0x1e203800) {
         const auto left = get(rn), right = get(rm);
