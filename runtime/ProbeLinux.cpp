@@ -2194,9 +2194,58 @@ uint64_t ProbeLinux::receiveKernelNetlink(Machine& machine, SocketState& endpoin
     return copied;
 }
 
+uint64_t ProbeLinux::receiveKernelNetlinkFrom(Machine& machine, SocketState& endpoint) {
+    const auto& x = machine.cpu.x;
+    constexpr uint64_t peek = 2, trunc = 0x20, dontwait = 0x40;
+    if (x[3] & ~(peek | trunc | dontwait)) return invalid;
+    if (endpoint.inbox.empty()) return uint64_t(-11);
+    const auto& packet = endpoint.inbox.front();
+    const auto bytes = std::min<uint64_t>(packet.size(), x[2]);
+    if (bytes && !machine.write(x[1], std::span(packet).first(bytes))) return uint64_t(-14);
+    if (x[4]) {
+        uint32_t capacity = 0;
+        if (!machine.readInto(x[5], {reinterpret_cast<uint8_t*>(&capacity), sizeof(capacity)}))
+            return uint64_t(-14);
+        if (capacity > INT32_MAX) return invalid;
+        const std::array<uint32_t, 3> address{16, 0, endpoint.protocol == 15 ? 1U : 0U};
+        const size_t written = std::min<size_t>(capacity, sizeof(address));
+        if ((written && !machine.write(x[4], {reinterpret_cast<const uint8_t*>(address.data()), written})) ||
+            !writeGuest(machine, x[5], uint32_t(sizeof(address)))) return uint64_t(-14);
+    }
+    const auto result = x[3] & trunc ? packet.size() : bytes;
+    if (!(x[3] & peek)) {
+        endpoint.queuedBytes -= packet.size();
+        endpoint.inbox.pop_front();
+        wakePollers();
+    }
+    return result;
+}
+
 namespace {
 constexpr uint16_t netfilterLogPacket = 4 << 8, netfilterLogConfig = netfilterLogPacket | 1;
 constexpr size_t netfilterHeader = sizeof(NetlinkHeader) + 4;
+constexpr uint16_t xfrmGetState = 0x12, xfrmGetPolicy = 0x15, xfrmFlushState = 0x1c, xfrmFlushPolicy = 0x1d;
+
+bool isXfrmDump(const NetlinkHeader& request) {
+    return (request.flags & netlinkDump) == netlinkDump &&
+           (request.type == xfrmGetState || request.type == xfrmGetPolicy);
+}
+
+int32_t handleGuestXfrm(const NetlinkHeader& request, std::span<const uint8_t> payload, bool admin, auto&& reply) {
+    if (!admin) return -1;
+    // The guest has no IPsec transform data plane. Its policy and SA tables are always empty.
+    if (isXfrmDump(request)) {
+        if (!payload.empty()) return -95;
+        reply(netlinkDone, netlinkMulti, std::vector<uint8_t>(sizeof(int32_t)));
+        return 0;
+    }
+    if (request.type == xfrmFlushState) {
+        if (payload.empty()) return -22;
+        return payload.size() <= 4 ? 0 : -95;
+    }
+    if (request.type == xfrmFlushPolicy) return payload.empty() ? 0 : -95;
+    return -95;
+}
 
 std::array<uint8_t, 4> netlinkNetwork32(uint32_t value) {
     return {uint8_t(value >> 24), uint8_t(value >> 16), uint8_t(value >> 8), uint8_t(value)};
@@ -2238,9 +2287,9 @@ void ProbeLinux::queueNetlink(SocketState& endpoint, std::vector<uint8_t> packet
 
 uint64_t ProbeLinux::sendKernelNetlink(Machine& machine, const std::shared_ptr<SocketState>& endpoint,
     std::span<const SocketVector> vectors, uint64_t address, uint64_t length) {
-    const bool route = endpoint->protocol == 0;
+    const bool route = endpoint->protocol == 0, xfrm = endpoint->protocol == 6;
     const bool admin = current->process->effectiveCaps & (1ULL << 12);
-    if (!route && !admin) return uint64_t(-1);
+    if (!route && !xfrm && !admin) return uint64_t(-1);
     if (address) {
         std::array<uint32_t, 3> destination{};
         if (length != sizeof(destination)) return invalid;
@@ -2326,11 +2375,17 @@ uint64_t ProbeLinux::sendKernelNetlink(Machine& machine, const std::shared_ptr<S
                     std::ranges::copy(payload, packet.begin() + sizeof(header));
                     queueNetlink(*endpoint, std::move(packet));
                 };
-                const int32_t status = route
-                    ? guestRoutes.process(request, remaining.subspan(sizeof(request), request.length - sizeof(request)),
-                                        admin, inetLoopbackUp, guestLoopbackIndex, guestLoopbackMtu, reply)
-                    : request.type == netfilterLogConfig ? configure(remaining.first(request.length)) : -95;
-                const bool dump = route && GuestRoute::isDump(request.type, request.flags);
+                const auto payload = remaining.subspan(sizeof(request), request.length - sizeof(request));
+                int32_t status = -95;
+                if (route)
+                    status = guestRoutes.process(request, payload, admin, inetLoopbackUp,
+                                                 guestLoopbackIndex, guestLoopbackMtu, reply);
+                else if (xfrm)
+                    status = handleGuestXfrm(request, payload, admin, reply);
+                else if (request.type == netfilterLogConfig)
+                    status = configure(remaining.first(request.length));
+                const bool dump = (route && GuestRoute::isDump(request.type, request.flags)) ||
+                                  (xfrm && isXfrmDump(request));
                 if (status || (!dump && (request.flags & netlinkAck))) {
                     const auto echoed = status ? request.length : sizeof(request);
                     std::vector<uint8_t> ack(sizeof(NetlinkHeader) + sizeof(status) + echoed);
@@ -2433,8 +2488,9 @@ bool ProbeLinux::socketCall(Machine& machine) {
             const bool uevent = kernelNetlink && x[2] == 15; // NETLINK_KOBJECT_UEVENT
             const bool netfilter = kernelNetlink && x[2] == 12; // NETLINK_NETFILTER
             const bool route = kernelNetlink && x[2] == 0; // NETLINK_ROUTE
+            const bool xfrm = kernelNetlink && x[2] == 6; // NETLINK_XFRM
             const bool inet = x[8] == 198 && (x[0] == 2 || x[0] == 10);
-            if (x[0] != 1 && !uevent && !netfilter && !route && !inet) { x[0] = uint64_t(-97); break; }
+            if (x[0] != 1 && !uevent && !netfilter && !route && !xfrm && !inet) { x[0] = uint64_t(-97); break; }
             const uint32_t type = x[1] & 15;
             constexpr uint32_t flags = 0x80000 | 0x800;
             const bool firewallSocket = inet && type == 3 && x[2] == 255;
@@ -2445,7 +2501,7 @@ bool ProbeLinux::socketCall(Machine& machine) {
             const uint32_t inetProtocol = firewallSocket ? 255 : type == 1 ? 6 : 17;
             if (inet && x[2] && x[2] != inetProtocol) { x[0] = uint64_t(-93); break; }
             if (x[1] & ~(uint64_t(flags) | 15) ||
-                (!inet && (uevent ? type != 2 : (netfilter || route) ? (type != 2 && type != 3) :
+                (!inet && (uevent ? type != 2 : kernelNetlink ? (type != 2 && type != 3) :
                            (type != 1 && type != 2 && type != 5) || x[2]))) {
                 x[0] = uint64_t(-22);
                 break;
@@ -2658,6 +2714,14 @@ bool ProbeLinux::socketCall(Machine& machine) {
                 if (x[3] & ~0x4040ULL) { x[0] = invalid; break; }
                 const SocketVector vector{x[1], x[2]};
                 x[0] = sendKernelNetlink(machine, socket, std::span(&vector, 1), x[4], x[5]);
+                break;
+            }
+            if (!send && socket->netlink) {
+                const auto result = receiveKernelNetlinkFrom(machine, *socket);
+                if (result == uint64_t(-11) && !(x[3] & 0x40) && !(fd->second.effectiveFlags() & 0x800) &&
+                    waitForSocketTimeout(socket->receiveTimeout)) return true;
+                current->deadline.reset();
+                x[0] = result;
                 break;
             }
             if (socket->inetDatagram()) {

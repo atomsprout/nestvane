@@ -1141,7 +1141,7 @@ int main() {
         const auto write = [&](uint64_t where, const auto& data) {
             return guest.write(where, {reinterpret_cast<const uint8_t*>(&data), sizeof(data)});
         };
-        const auto route = syscall(198, {16, 0x802, 0});
+        auto route = syscall(198, {16, 0x802, 0});
         assert(route < 256 && write(kernel, std::array<uint32_t, 3>{16, 0, 0}));
         assert(syscall(203, {route, kernel, 12}) == 0);
         assert(syscall(207, {route, output, 256}) == uint64_t(-11));
@@ -1195,7 +1195,19 @@ int main() {
         dumpRules(2, std::array<uint32_t, 3>{0, 32766, 32767});
         dumpRules(10, std::array<uint32_t, 2>{0, 32766});
         request(GuestRoute::getLink, netlinkRequest | netlinkDump, std::array<uint8_t, 16>{});
+        constexpr auto source = base + 1840, sourceLength = base + 1856;
+        assert(write(sourceLength, uint32_t(8)) && write(source, std::array<uint32_t, 3>{99, 99, 99}));
+        const auto peeked = syscall(207, {route, output, 16, 0x22, source, sourceLength});
+        assert(peeked > 16 && peeked <= 256);
+        const auto read32 = [&](uint64_t where) {
+            uint32_t value = 0;
+            assert(guest.readInto(where, {reinterpret_cast<uint8_t*>(&value), sizeof(value)}));
+            return value;
+        };
+        assert(read32(sourceLength) == 12 && read32(source) == 16 &&
+               read32(source + 4) == 0 && read32(source + 8) == 99);
         const auto link = receive(GuestRoute::newLink, netlinkMulti);
+        assert(peeked == link.size());
         assert(readNetlink<uint32_t>(link, 20) == 1 && readNetlink<uint32_t>(link, 24) & 9);
         assert(std::memcmp(link.data() + 36, "lo", 3) == 0);
         receive(netlinkDone, netlinkMulti);
@@ -1219,6 +1231,20 @@ int main() {
         acknowledge(GuestRoute::newRule, 0x600, local, 0);
         assert(syscall(203, {client, address, 16}) == 0);
         assert(syscall(57, {client}) == 0 && syscall(57, {route}) == 0);
+
+        route = syscall(198, {16, 0x802, 6}); // NETLINK_XFRM
+        assert(route < 256 && syscall(203, {route, kernel, 12}) == 0);
+        acknowledge(0x1c, 0, std::array<uint8_t, 4>{255}, 0); // Flush all SAs.
+        acknowledge(0x1d, 0, {}, 0); // Flush policies.
+        acknowledge(0x1c, 0, {}, -22);
+        acknowledge(0x10, 0, {}, -95); // Installing a transform requires the data plane.
+        for (const uint16_t type : {0x12, 0x15}) {
+            request(type, netlinkRequest | netlinkDump, {});
+            assert(readNetlink<int32_t>(receive(netlinkDone, netlinkMulti), 16) == 0);
+        }
+        assert(syscall(146, {1000}) == 0);
+        acknowledge(0x1d, 0, {}, -1);
+        assert(syscall(57, {route}) == 0);
     }
     {
         struct CameraFixture final : GuestCameraSource {

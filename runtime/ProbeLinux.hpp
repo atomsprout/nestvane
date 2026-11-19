@@ -187,7 +187,7 @@ private:
         InetAddress localInetAddress{}, peerInetAddress{};
         uint32_t tcpCallbackFlags = 0, tcpSequence = 0;
         bool inetV6Only = false;
-        bool inetStream() const { return protocol == 6; }
+        bool inetStream() const { return (family == 2 || family == 10) && protocol == 6; }
         struct Datagram {
             InetAddress source;
             std::vector<uint8_t> payload;
@@ -559,6 +559,7 @@ private:
     uint64_t socketWrite(Machine& machine, const Descriptor& fd, std::span<const SocketVector> vectors);
     bool socketCall(Machine& machine);
     uint64_t receiveKernelNetlink(Machine& machine, SocketState& endpoint);
+    uint64_t receiveKernelNetlinkFrom(Machine& machine, SocketState& endpoint);
     uint64_t sendKernelNetlink(Machine& machine, const std::shared_ptr<SocketState>& endpoint,
         std::span<const std::array<uint64_t, 2>> vectors, uint64_t address = 0, uint64_t length = 0);
     uint64_t bindNetlink(const std::shared_ptr<SocketState>& endpoint, uint32_t pid, uint32_t groups);
