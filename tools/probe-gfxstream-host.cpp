@@ -11,6 +11,7 @@
 #include <cstring>
 #include <cstdio>
 #include <dlfcn.h>
+#include <vector>
 
 namespace {
 void writeFence(void*, stream_renderer_fence*) {}
@@ -128,6 +129,33 @@ bool runSdkVersionProbe(void* module, const RendererTransfer& transfer, const ch
 }
 }
 
+namespace {
+bool validatePostedDisplay(void* module, uint32_t handle, uint32_t side, std::span<const uint8_t> expected) {
+    const auto read = load<uint64_t (*)(uint64_t, uint8_t*, size_t, uint32_t*)>(
+        module, "gfxstream_guest_display_read");
+    if (!read) return true; // The unmodified SDK library has no Nestvane display ABI.
+    const auto flush = load<void (*)(uint32_t)>(module, "stream_renderer_flush");
+    if (!flush) return false;
+
+    std::vector<uint8_t> pixels(expected.size());
+    uint32_t dimensions[2]{};
+    if (read(0, pixels.data(), pixels.size(), dimensions)) return false;
+
+    flush(handle);
+    if (read(0, pixels.data(), pixels.size() - 1, dimensions)) return false;
+    const uint64_t frame = read(0, pixels.data(), pixels.size(), dimensions);
+    const bool matched = frame && dimensions[0] == side && dimensions[1] == side &&
+        std::ranges::equal(pixels, expected);
+    const bool consumed = !read(frame, pixels.data(), pixels.size(), dimensions);
+    flush(handle);
+    const bool reused = read(frame, pixels.data(), pixels.size(), dimensions) > frame;
+    std::printf("Primary display post: frame=%llu, %ux%u, matching RGBA8=%s, new post to same buffer=%s\n",
+                static_cast<unsigned long long>(frame), dimensions[0], dimensions[1],
+                matched ? "yes" : "no", reused ? "yes" : "no");
+    return matched && consumed && reused;
+}
+} // namespace
+
 int main(int argc, char** argv) {
     const bool boot = (argc == 4 || argc == 5) && std::string_view(argv[2]) == "--init";
     if (argc != 2 && argc != 3 && !boot) {
@@ -226,7 +254,8 @@ int main(int argc, char** argv) {
     const bool matched = !wrote && !read && backing == expected;
     std::printf("RGBA8 upload: %d, readback: %d, matching bytes: %s (%u bytes)\n",
                 wrote, read, matched ? "yes" : "no", bytes);
+    const bool displayed = matched && validatePostedDisplay(module, resource.handle, side, expected);
     unref(resource.handle);
     destroy();
-    return matched ? 0 : 1;
+    return displayed ? 0 : 1;
 }

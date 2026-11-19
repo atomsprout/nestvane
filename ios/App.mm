@@ -1,8 +1,72 @@
+#import <CoreGraphics/CoreGraphics.h>
 #import <UIKit/UIKit.h>
 
 #include "DynamicProbe.hpp"
 #include "GfxstreamSession.hpp"
 #include "Validation.hpp"
+
+#include <chrono>
+#include <cstring>
+#include <thread>
+#include <vector>
+
+namespace {
+constexpr uint32_t guestWidth = 640;
+constexpr uint32_t guestHeight = 960;
+
+UIImage* GuestDisplayImage(std::span<const uint8_t> pixels, uint32_t width, uint32_t height) {
+    const size_t stride = size_t(width) * 4;
+    const size_t bytes = stride * height;
+    if (!width || !height || width > 4096 || height > 4096 || bytes > pixels.size()) return nil;
+
+    NSMutableData* upright = [NSMutableData dataWithLength:bytes];
+    auto* output = static_cast<uint8_t*>(upright.mutableBytes);
+    if (!output) return nil;
+    for (uint32_t y = 0; y < height; ++y)
+        std::memcpy(output + y * stride, pixels.data() + (height - y - 1) * stride, stride);
+
+    CGDataProviderRef provider = CGDataProviderCreateWithCFData((__bridge CFDataRef)upright);
+    CGColorSpaceRef color = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    const CGBitmapInfo bitmap = kCGBitmapByteOrder32Big | CGBitmapInfo(kCGImageAlphaNoneSkipLast);
+    CGImageRef frame = provider && color
+        ? CGImageCreate(width, height, 8, 32, stride, color, bitmap, provider, nullptr, false,
+                        kCGRenderingIntentDefault)
+        : nullptr;
+    UIImage* image = frame ? [UIImage imageWithCGImage:frame] : nil;
+    if (frame) CGImageRelease(frame);
+    if (color) CGColorSpaceRelease(color);
+    if (provider) CGDataProviderRelease(provider);
+    return image;
+}
+
+std::jthread StartDisplayReader(const nestvane::GfxstreamSession& renderer, void (^present)(UIImage*)) {
+    if (!renderer.hasDisplayReadback()) return {};
+    return std::jthread([&renderer, present](std::stop_token stop) {
+        std::vector<uint8_t> pixels(size_t(guestWidth) * guestHeight * 4);
+        const auto slot = dispatch_semaphore_create(1);
+        uint64_t lastFrame = 0;
+        while (!stop.stop_requested()) {
+            @autoreleasepool {
+                if (dispatch_semaphore_wait(slot, DISPATCH_TIME_NOW) == 0) {
+                    uint32_t dimensions[2]{};
+                    const auto frame = renderer.readDisplay(lastFrame, pixels, dimensions);
+                    UIImage* image = frame ? GuestDisplayImage(pixels, dimensions[0], dimensions[1]) : nil;
+                    if (image) {
+                        lastFrame = frame;
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            present(image);
+                            dispatch_semaphore_signal(slot);
+                        });
+                    } else {
+                        dispatch_semaphore_signal(slot);
+                    }
+                }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(33));
+        }
+    });
+}
+} // namespace
 
 static NSString* ThermalState() {
     switch (NSProcessInfo.processInfo.thermalState) {
@@ -17,6 +81,7 @@ static NSString* ThermalState() {
 @interface ValidationViewController : UIViewController
 @property(nonatomic, strong) UILabel* status;
 @property(nonatomic, strong) UITextView* details;
+@property(nonatomic, strong) UIImageView* display;
 @property(nonatomic, strong) UIButton* run;
 @end
 
@@ -41,11 +106,22 @@ static NSString* ThermalState() {
     self.details.backgroundColor = UIColor.secondarySystemBackgroundColor;
     self.details.textContainerInset = UIEdgeInsetsMake(12, 12, 12, 12);
 
+    self.display = [UIImageView new];
+    self.display.contentMode = UIViewContentModeScaleAspectFit;
+    self.display.backgroundColor = UIColor.blackColor;
+    self.display.hidden = YES;
+    self.display.accessibilityLabel = @"Android display";
+    self.display.isAccessibilityElement = YES;
+    [self.display setContentCompressionResistancePriority:UILayoutPriorityDefaultLow
+                                                  forAxis:UILayoutConstraintAxisVertical];
+    [self.display setContentCompressionResistancePriority:UILayoutPriorityDefaultLow
+                                                  forAxis:UILayoutConstraintAxisHorizontal];
+
     self.run = [UIButton buttonWithType:UIButtonTypeSystem];
     [self.run setTitle:@"Run validation" forState:UIControlStateNormal];
     [self.run addTarget:self action:@selector(runValidation) forControlEvents:UIControlEventTouchUpInside];
 
-    UIStackView* layout = [[UIStackView alloc] initWithArrangedSubviews:@[title, self.status, self.details, self.run]];
+    UIStackView* layout = [[UIStackView alloc] initWithArrangedSubviews:@[title, self.status, self.details, self.display, self.run]];
     layout.axis = UILayoutConstraintAxisVertical;
     layout.spacing = 12;
     layout.translatesAutoresizingMaskIntoConstraints = NO;
@@ -63,6 +139,10 @@ static NSString* ThermalState() {
 
 - (void)runValidation {
     self.run.enabled = NO;
+    self.display.image = nil;
+    self.display.hidden = YES;
+    self.details.hidden = NO;
+    self.details.text = nil;
     UIApplication.sharedApplication.idleTimerDisabled = YES;
     self.status.text = @"Running ARM64 ELF validation…";
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
@@ -141,9 +221,19 @@ static NSString* ThermalState() {
                 }
 
                 progress("Initializing local Android renderer");
-                nestvane::GfxstreamSession renderer(rendererPath.fileSystemRepresentation, 640, 960);
+                nestvane::GfxstreamSession renderer(rendererPath.fileSystemRepresentation, guestWidth, guestHeight);
                 if (!renderer) return {false, renderer.error() + "\n"};
                 progress("Local Android renderer initialized");
+                auto displayReader = StartDisplayReader(renderer, ^(UIImage* frame) {
+                    if (self.display.hidden) {
+                        NSLog(@"Presented the first Android display frame (%.0f × %.0f pixels)",
+                              frame.size.width, frame.size.height);
+                        self.status.text = @"Android 17 display";
+                        self.details.hidden = YES;
+                        self.display.hidden = NO;
+                    }
+                    self.display.image = frame;
+                });
                 auto boot = nestvane::probeInit(initRoot.fileSystemRepresentation, database.fileSystemRepresentation,
                                                 progress, renderer.pipeFactory());
                 boot.report.insert(0, "Local Android renderer initialized\n");

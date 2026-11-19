@@ -18,6 +18,7 @@ public:
 
         const auto start = reinterpret_cast<int (*)(uint32_t, uint32_t)>(dlsym(module, "gfxstream_guest_renderer_start"));
         shutdown = reinterpret_cast<void (*)()>(dlsym(module, "stream_renderer_teardown"));
+        displayRead = reinterpret_cast<DisplayRead>(dlsym(module, "gfxstream_guest_display_read"));
         pipes = loadGfxstreamPipeFactory(module);
         if (!start || !shutdown || !pipes) {
             failure = "gfxstream is missing the Nestvane renderer interfaces";
@@ -43,7 +44,14 @@ public:
     const std::string& error() const { return failure; }
     GraphicsPipeFactory pipeFactory() const { return started ? pipes : GraphicsPipeFactory{}; }
 
+    bool hasDisplayReadback() const { return started && displayRead; }
+    uint64_t readDisplay(uint64_t after, std::span<uint8_t> pixels, uint32_t (&dimensions)[2]) const {
+        return hasDisplayReadback() ? displayRead(after, pixels.data(), pixels.size(), dimensions) : 0;
+    }
+
 private:
+    using DisplayRead = uint64_t (*)(uint64_t, uint8_t*, size_t, uint32_t*);
+    DisplayRead displayRead = nullptr;
     void* module = nullptr;
     void (*shutdown)() = nullptr;
     GraphicsPipeFactory pipes;

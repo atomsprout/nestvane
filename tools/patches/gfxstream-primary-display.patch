@@ -1,0 +1,110 @@
+diff --git a/host/frame_buffer.cpp b/host/frame_buffer.cpp
+index cb989a6f92886342f0bd7d5ee0c2cb0ef8157e1f..02077239f4b7233b2cb4f95331f7f83d8c1567dd 100644
+--- a/host/frame_buffer.cpp
++++ b/host/frame_buffer.cpp
+@@ -31,6 +31,7 @@
+ #include <variant>
+ 
+ #if GFXSTREAM_ENABLE_HOST_GLES
++#include "host/gl/color_buffer_gl.h"
+ #include "host/gl/gles_version_detector.h"
+ #include "OpenGLESDispatch/DispatchTables.h"
+ #include "OpenGLESDispatch/EGLDispatch.h"
+@@ -612,6 +613,7 @@ class FrameBuffer::Impl : public gfxstream::base::EventNotificationSupport<Frame
+     int setDisplayPowerMode(uint32_t displayId, uint32_t powerMode);
+     void getCombinedDisplaySize(int* w, int* h);
+ 
++    uint64_t readGuestDisplay(uint64_t after, uint8_t* rgba, size_t capacity, uint32_t* dimensions);
+     HandleType getLastPostedColorBuffer() { return m_lastPostedColorBuffer; }
+     void asyncWaitForGpuVulkanWithCb(uint64_t deviceHandle, uint64_t fenceHandle,
+                                      FenceCompletionCallback cb);
+@@ -913,6 +915,7 @@ class FrameBuffer::Impl : public gfxstream::base::EventNotificationSupport<Frame
+     ColorBufferDelayedClose m_colorBufferDelayedCloseList;
+ 
+     EGLNativeWindowType m_subWin = {};
++    uint64_t m_guestDisplaySequence = 0;
+     HandleType m_lastPostedColorBuffer = 0;
+     float m_zRot = 0;
+     float m_px = 0;
+@@ -2818,6 +2821,7 @@ AsyncResult FrameBuffer::Impl::postImpl(HandleType p_colorbuffer, Post::Completi
+     }
+     AsyncResult ret = AsyncResult::FAIL_AND_CALLBACK_NOT_SCHEDULED;
+ 
++    if (!repaint) ++m_guestDisplaySequence;
+     m_lastPostedColorBuffer = p_colorbuffer;
+ 
+     colorBuffer->touch();
+@@ -3018,6 +3022,32 @@ static void loadProcOwnedCollection(Stream* stream, Collection* c) {
+     });
+ }
+ 
++uint64_t FrameBuffer::Impl::readGuestDisplay(uint64_t after, uint8_t* rgba, size_t capacity, uint32_t* dimensions) {
++#if GFXSTREAM_ENABLE_HOST_GLES
++    AutoLock lock(m_lock);
++    if (after >= m_guestDisplaySequence || !rgba || !dimensions) return 0;
++
++    auto colorBuffer = findColorBuffer(m_lastPostedColorBuffer);
++    if (!colorBuffer) return 0;
++    const uint32_t width = colorBuffer->getWidth();
++    const uint32_t height = colorBuffer->getHeight();
++    if (!width || !height || width > 4096 || height > 4096) return 0;
++    const uint32_t bytes = width * height * 4;
++    if (capacity < bytes) return 0;
++
++    colorBuffer->touch();
++    auto* gl = colorBuffer->getColorBufferGl();
++    if (!gl || !gl->readPixels(0, 0, width, height, GfxstreamFormat::R8G8B8A8_UNORM, rgba, bytes)) {
++        return 0;
++    }
++    dimensions[0] = width;
++    dimensions[1] = height;
++    return m_guestDisplaySequence;
++#else
++    return 0;
++#endif
++}
++
+ int FrameBuffer::Impl::getScreenshot(unsigned int nChannels, unsigned int* width,
+                                      unsigned int* height, uint8_t* pixels, size_t* cPixels,
+                                      int displayId, int desiredWidth, int desiredHeight,
+@@ -5137,6 +5167,10 @@ int FrameBuffer::setDisplayPowerMode(uint32_t displayId, uint32_t powerMode) {
+ }
+ 
+ 
++uint64_t FrameBuffer::readGuestDisplay(uint64_t after, uint8_t* rgba, size_t capacity, uint32_t* dimensions) {
++    return mImpl->readGuestDisplay(after, rgba, capacity, dimensions);
++}
++
+ HandleType FrameBuffer::getLastPostedColorBuffer() { return mImpl->getLastPostedColorBuffer(); }
+ 
+ void FrameBuffer::asyncWaitForGpuVulkanWithCb(uint64_t deviceHandle, uint64_t fenceHandle,
+diff --git a/host/frame_buffer.h b/host/frame_buffer.h
+index b845f07cbd7ca25b688bbab83e525d2450f0ee05..275c65e32a753ab78e98165cdbdea4c8d9cce567 100644
+--- a/host/frame_buffer.h
++++ b/host/frame_buffer.h
+@@ -423,6 +423,7 @@ class FrameBuffer : public gfxstream::base::EventNotificationSupport<FrameBuffer
+     static const uint32_t s_invalidIdMultiDisplay = 0xFFFFFFAB;
+     static const uint32_t s_maxNumMultiDisplay = 11;
+ 
++    uint64_t readGuestDisplay(uint64_t after, uint8_t* rgba, size_t capacity, uint32_t* dimensions);
+     HandleType getLastPostedColorBuffer();
+     void asyncWaitForGpuVulkanWithCb(uint64_t deviceHandle, uint64_t fenceHandle, FenceCompletionCallback cb);
+     void asyncWaitForGpuVulkanQsriWithCb(uint64_t image, FenceCompletionCallback cb);
+diff --git a/host/virtio_gpu_gfxstream_renderer.cpp b/host/virtio_gpu_gfxstream_renderer.cpp
+index 193a2372cdd4beedcffcfacf6afac75d169ef7ba..c7faff320e00f9999a730cc9e49816aa27af35a2 100644
+--- a/host/virtio_gpu_gfxstream_renderer.cpp
++++ b/host/virtio_gpu_gfxstream_renderer.cpp
+@@ -362,6 +362,13 @@ VG_EXPORT int gfxstream_guest_renderer_start(uint32_t width, uint32_t height) {
+     return stream_renderer_init(parameters, sizeof(parameters) / sizeof(parameters[0]));
+ }
+ 
++// Copy the latest posted primary frame as tightly packed, bottom-up RGBA8.
++// Zero means there is no newer readable frame. Other values are frame sequences.
++VG_EXPORT uint64_t gfxstream_guest_display_read(uint64_t after, uint8_t* rgba, size_t capacity, uint32_t* dimensions) {
++    auto* fb = gfxstream::host::FrameBuffer::getFB();
++    return fb ? fb->readGuestDisplay(after, rgba, capacity, dimensions) : 0;
++}
++
+ // One nonblocking byte stream for a Goldfish opengles connection.
+ VG_EXPORT void* gfxstream_guest_pipe_open() {
+     auto channel = sFrontend()->openGuestRenderChannel();

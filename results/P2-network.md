@@ -145,3 +145,6 @@
 - Android 17 SDK 参考模拟器中，两个独立 Goldfish 描述符映射同一共享显存块，读回了彼此的写入。客体现在支持 Goldfish 分配、声明、释放和共享映射。共享分配按参考值 16 KiB 对齐。常规块使用同一边界并返回实际分配尺寸。宿主 ABI 回归、ASan/UBSan 与 iOS 签名构建通过。Mac 接入真实 Gfxstream 后，原版 Ranchu HWC 初始化 640×960 主显示配置并启动 VSync 线程，之后在 `cmeq d0, d1, d0` 停止。待验证 Android 帧的合成和真机呈现。[Goldfish 设备 ABI](https://android.googlesource.com/kernel/goldfish-modules/+/f1eb0fa28a745663513be2f426e8c8106f5630fc/uapi/goldfish_address_space.h)
 
 - iPhone 11 第 7389 号进程的最终报告确认原版 SurfaceFlinger 完成 EGL 1.4 初始化，获得 OpenGL ES 3.0，渲染器为 ANGLE Metal Apple A13 GPU，最大纹理尺寸 16,384。原版 Zygote 完成预加载，`system_server` 在约 420 秒进入，LightsService 启动后进入 DisplayManager。此轮构建尚未包含共享显存实现，Ranchu Mapper 打开设备失败，运行到达 720 秒诊断时限。随后共享显存代码和标量 `CMEQ` 修复分别通过宿主回归与 iOS 签名构建。
+
+- [主显示读取补丁](../tools/patches/gfxstream-primary-display.patch) 在通道补丁之后应用，用同一 Gfxstream 后端读取真正提交到主显示的 RGBA8 帧。Mac 诊断用例对比 64×64 帧的全部 16,384 字节，覆盖首帧前读取、缓冲区不足、重复读取、同一缓冲区再次提交。iPhoneOS 后端和带 UIKit 呈现的签名 App 均已构建。
+- Mac 用原版 Android 17 越过标量 `CMEQ` 后，Ranchu HWC 到达 640×960 主显示交换链分配。原版 Allocator 打开 `pipe:refcount` 返回 `ENOENT`，随后以 `NO_RESOURCES` 结束申请。SurfaceFlinger 因无法创建 Composer 客户端退出，DisplayManager 在查询合成色彩空间时阻塞。主显示真实客体帧仍待验证。
