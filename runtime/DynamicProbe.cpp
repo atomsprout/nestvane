@@ -71,7 +71,7 @@ uint64_t initLimit(const char* name, uint64_t fallback, uint64_t maximum) {
 }
 
 DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, std::string_view expectedGate = "true\n",
-                       std::stop_token stop = {}) {
+                       std::stop_token stop = {}, const BootProgress& liveSnapshot = {}) {
     const bool init = kind == ProbeKind::init;
     std::ostringstream report;
     switch (kind) {
@@ -125,6 +125,11 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
     const auto start = std::chrono::steady_clock::now();
     bool idle = false, timedOut = false;
     const auto deadline = wallTime.count() ? start + wallTime : std::chrono::steady_clock::time_point::max();
+    using namespace std::chrono;
+    const auto snapshotInterval = seconds(init && liveSnapshot
+        ? initLimit("NESTVANE_INIT_SNAPSHOT_SECONDS", 0, UINT32_MAX) : 0);
+    auto nextSnapshot = snapshotInterval.count() ? start + snapshotInterval : steady_clock::time_point::max();
+    auto scheduleDeadline = std::min(deadline, nextSnapshot);
     while (cpu.retired < instructionLimit) {
         if (cpu.stop == Stop::fault) {
             const auto pc = cpu.pc, address = cpu.faultAddress, lr = cpu.x[30], sp = cpu.sp;
@@ -146,13 +151,26 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
         } else if (cpu.stop != Stop::running) break;
         if (init && (linux.blocked() || !(cpu.retired & 4095))) {
             if (stop.stop_requested()) break;
-            if (std::chrono::steady_clock::now() >= deadline) {
+            const auto now = steady_clock::now();
+            if (now >= deadline) {
                 timedOut = true;
                 break;
             }
+            if (now >= nextSnapshot) {
+                std::ostringstream snapshot;
+                snapshot << "Android init at " << duration_cast<milliseconds>(now - start).count()
+                         << " ms, " << cpu.retired << " guest instructions, "
+                         << syscallCount << " guest syscalls\n";
+                snapshot << linux.workerReport(machine, linux.processId());
+                liveSnapshot(snapshot.str());
+                nextSnapshot = now + snapshotInterval;
+                scheduleDeadline = std::min(deadline, nextSnapshot);
+            }
         }
-        if (!linux.schedule(machine, deadline, stop)) {
-            timedOut = std::chrono::steady_clock::now() >= deadline;
+        if (!linux.schedule(machine, scheduleDeadline, stop)) {
+            const auto now = steady_clock::now();
+            if (now >= nextSnapshot && now < deadline && !stop.stop_requested()) continue;
+            timedOut = now >= deadline;
             idle = !timedOut;
             break;
         }
@@ -439,7 +457,7 @@ DynamicReport probeArt(const std::string& directory) {
 DynamicReport probeInit(const std::string& directory, const std::string& databasePath, const BootProgress& progress,
                         GraphicsPipeFactory graphics, std::shared_ptr<GuestTouch> touch,
                         std::shared_ptr<GuestCameraSource> camera, std::shared_ptr<GuestApkInbox> apkInbox,
-                        std::stop_token stop, const BootProgress& watchdog) {
+                        std::stop_token stop, const BootProgress& watchdog, const BootProgress& liveSnapshot) {
     try {
         if (progress) progress("Starting Android 17 init");
         namespace fs = std::filesystem;
@@ -683,7 +701,7 @@ service nestvane-smoke-launch /system/bin/cmd activity start -W -S -n dev.nestva
         linux.alias("/system/system_ext/etc/compatconfig", "/system_ext/etc/compatconfig");
         linux.alias("/proc/self/exe", filename);
         linux.alias("/system/bin/ueventd", "/system/bin/init");
-        auto result = runProbe(image, linux, ProbeKind::init, "true\n", stop);
+        auto result = runProbe(image, linux, ProbeKind::init, "true\n", stop, liveSnapshot);
         if (const auto reference = files.find("/nestvane-metadata/reference-classpath.txt"); reference != files.end()) {
             const auto expected = reference->second.bytes();
             const auto actual = linux.bootGuestFile("/data/system/environ/classpath");

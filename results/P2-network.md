@@ -364,3 +364,4 @@
 - Mac 冷启动完成默认显示和 Android 包管理器初始化，原版包管理器用约 485 秒初始化并处理用户 0 的 16 个包。此轮在系统内容提供程序安装阶段达到 1,000 秒诊断时限，未读到启动完成属性。同期 iPhone 11 进程 8616 的最新进度仍在 DisplayManagerService，未导出本轮 Watchdog 快照。
 - 原版 Android netd 使用带 MSG_NOSIGNAL、MSG_TRUNC 和 MSG_CTRUNC 的 Unix 流 recvmsg。参考 Android 17 确认这些输入位不影响描述符传递。修复后，Mac 来宾中的原版 netd 收到 INET 描述符并成功设置 SO_MARK。同轮 ARM64 Bionic 测试经原版 connect 和 accept4 建立 TCP 回环，验证了 SO_LINGER 继承及关闭后复位，测试服务退出 0。[Linux Unix 流接收实现](https://codebrowser.dev/linux/linux/net/unix/af_unix.c.html)
 - 来宾支持 ART 诊断用的进程级屏蔽 SIGQUIT。参考 Android 17 与 Mac 来宾用同一 ARM64 Bionic 程序验证 sigwaitinfo 收到 SI_USER 与发送进程信息、合并重复信号，以及 fork 子进程不继承已排队信号。宿主回归和 iPhoneOS Release 编译通过，开发签名已验证。[Linux 进程挂起信号实现](https://codebrowser.dev/linux/linux/kernel/signal.c.html)
+- 开发包可通过 `NESTVANE_INIT_SNAPSHOT_SECONDS` 定期把运行中的 Android 线程状态保存到 `Documents/guest-live.txt`。记录包含本轮进程号、启动耗时、客体指令和系统调用计数，以及 system_server 和图形链关键线程的状态。Mac 的 ARM64 休眠探针在同一来宾线程睡眠时连续记录三次，随后按时唤醒并退出 0。宿主回归、iPhoneOS Release 编译与开发签名验证通过。

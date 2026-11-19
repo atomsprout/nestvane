@@ -11,6 +11,8 @@ int main(int argc, char** argv) {
     if ((argc == 3 || argc == 4) && std::string_view(argv[1]) == "--init") {
         auto result = nestvane::probeInit(argv[2], argc == 4 ? argv[3] : "", [](std::string_view event) {
             std::cerr << "[Android boot] " << event << '\n';
+        }, {}, {}, {}, {}, {}, {}, [](std::string_view snapshot) {
+            std::cerr << "[Android snapshot] " << snapshot << '\n';
         });
         std::cout << result.report;
         return result.passed ? 0 : 1;

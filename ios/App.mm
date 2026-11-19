@@ -376,6 +376,10 @@ static NSString* ThermalState() {
             const auto exportWatchdog = [&](std::string_view threads) {
                 exportReport(watchdogURL, std::string(threads));
             };
+            NSURL* liveURL = [documents URLByAppendingPathComponent:@"guest-live.txt"];
+            const auto exportLiveSnapshot = [&](std::string_view threads) {
+                exportReport(liveURL, std::string(threads));
+            };
             const auto runAndroid = [&]() -> nestvane::DynamicReport {
                 if (!ready) {
                     NSLog(@"Unable to create guest data directory: %@", directoryError);
@@ -386,7 +390,7 @@ static NSString* ThermalState() {
                     stringByAppendingPathComponent:@"NestvaneGfxstream.framework/NestvaneGfxstream"];
                 if (![manager fileExistsAtPath:rendererPath]) {
                     return nestvane::probeInit(initRoot.fileSystemRepresentation, database.fileSystemRepresentation,
-                                               progress, {}, touch, {}, apkInbox, stop, exportWatchdog);
+                                               progress, {}, touch, {}, apkInbox, stop, exportWatchdog, exportLiveSnapshot);
                 }
 
                 progress("Initializing local Android renderer");
@@ -435,7 +439,7 @@ static NSString* ThermalState() {
                 });
                 auto boot = nestvane::probeInit(initRoot.fileSystemRepresentation, database.fileSystemRepresentation,
                                                 progress, renderer.pipeFactory(), touch, nestvane::makeIOSCamera(),
-                                                apkInbox, stop, exportWatchdog);
+                                                apkInbox, stop, exportWatchdog, exportLiveSnapshot);
                 boot.report.insert(0, "Local Android renderer initialized\n");
                 return boot;
             };

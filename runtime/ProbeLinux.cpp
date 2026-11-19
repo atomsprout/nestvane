@@ -5813,7 +5813,7 @@ std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedPr
         if (process.id != observedProcess && process.executable != "/system/bin/bootanimation" &&
             process.executable != "/system/bin/surfaceflinger" &&
             !process.executable.starts_with("/vendor/bin/hw/android.hardware.graphics.") &&
-            process.programName != "system_server") continue;
+            process.programName != "system_server" && process.context != "u:r:system_server:s0") continue;
         const auto& cpu = tid == currentTid ? machine.cpu : thread.saved;
         const auto end = std::find(thread.name.begin(), thread.name.end(), uint8_t{0});
         const std::string_view name(reinterpret_cast<const char*>(thread.name.data()), end - thread.name.begin());
