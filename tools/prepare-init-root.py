@@ -407,6 +407,24 @@ def collect(serial, readelf, destination, small_art_heap):
         manifest = root / "nestvane-metadata" / "selinux-process-transition.txt"
         manifest.parent.mkdir(parents=True)
         manifest.write_text("".join(transitions))
+        # Connectivity checks these APEX and bpffs labels before it starts.
+        clat = "/apex/com.android.tethering/bin/for-system"
+        bpf = "/sys/fs/bpf"
+        shared = bpf + "/net_shared"
+        clat_files = (clat, clat + "/clatd", bpf, shared, *(
+            shared + "/" + name for name in (
+                "map_clatd_clat_egress4_map", "map_clatd_clat_ingress6_map",
+                "prog_clatd_schedcls_egress4_clat_rawip", "prog_clatd_schedcls_ingress6_clat_ether",
+                "prog_clatd_schedcls_ingress6_clat_rawip",
+            )
+        ))
+        file_labels = []
+        for path in clat_files:
+            label = shell("ls", "-Zd", path).split()[0]
+            if not re.fullmatch(r"u:object_r:[a-z0-9_]+:s0", label):
+                raise SystemExit(f"Unexpected Android file context for {path}: {label!r}")
+            file_labels.append(f"{path} {label}\n")
+        (manifest.parent / "selinux-file-labels.txt").write_text("".join(file_labels))
         seapp = root / "system/etc/selinux/plat_seapp_contexts"
         system_domains = re.findall(r"^isSystemServer=true\s+domain=([a-z0-9_]+)$", seapp.read_text(), re.MULTILINE)
         if len(system_domains) != 1:

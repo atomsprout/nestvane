@@ -67,6 +67,7 @@ struct ProbeLinux {
     void setBootContext(std::string context);
     void setCommandLine(const Startup& startup);
     bool loadBootTransition(std::string_view manifest);
+    bool loadBootFileLabels(std::string_view manifest);
     bool loadCurrentContextPolicy(std::string_view manifest);
     bool loadPropertyPolicy(std::string_view manifest);
     bool loadServicePolicy(std::string_view manifest, bool hardware);
@@ -726,6 +727,7 @@ private:
     std::vector<std::weak_ptr<BinderConnection>> binderDeathSubscribers;
     bool refreshBinderDeaths();
     std::string binderTrace;
+    std::map<std::string, std::string, std::less<>> bootFileLabels;
     std::map<std::string, BinderDevice, std::less<>> binderDevices;
     uint32_t nextBinderMinor = 0;
     std::map<std::string, Directory, std::less<>> directories{{"/dev", {0755}}};

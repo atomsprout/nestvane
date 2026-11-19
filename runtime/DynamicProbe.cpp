@@ -584,6 +584,11 @@ service nestvane-apk-install /system/bin/nestvane-apk-install
         for (const auto& [path, file] : files) linux.mount(path, file.bytes());
         if (const auto bootconfig = files.find("/nestvane-metadata/bootconfig"); bootconfig != files.end())
             linux.mount("/proc/bootconfig", bootconfig->second.bytes());
+        if (auto profile = files.find("/nestvane-metadata/selinux-file-labels.txt"); profile != files.end()) {
+            const auto bytes = profile->second.bytes();
+            if (!linux.loadBootFileLabels({reinterpret_cast<const char*>(bytes.data()), bytes.size()}))
+                throw std::runtime_error("invalid guest file-label manifest");
+        }
         if (auto profile = files.find("/nestvane-metadata/selinux-process-transition.txt"); profile != files.end()) {
             const auto bytes = profile->second.bytes();
             if (!linux.loadBootTransition({reinterpret_cast<const char*>(bytes.data()), bytes.size()}))

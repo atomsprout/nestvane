@@ -594,7 +594,7 @@ uint64_t ProbeLinux::mountFilesystem(Machine& machine) {
     if (x[3] & ~15ULL) return uint64_t(-95);
     if (mounts.contains(path)) return uint64_t(-16);
     if (mounts.size() >= 128) return uint64_t(-28);
-    uint32_t mode = bpf ? 0777 : 01777;
+    uint32_t mode = 01777;
     auto remaining = std::string_view(*options);
     while (!remaining.empty()) {
         const auto comma = remaining.find(',');
@@ -3730,7 +3730,7 @@ bool ProbeLinux::fileCall(Machine& machine) {
                 else if (!canAccessParent(backing, true)) x[0] = uint64_t(-13);
                 else if (directories.size() - ext4DirectoryCount >= maxGuestDirectories) x[0] = uint64_t(-28);
                 else {
-                    directories.emplace(backing, Directory{uint32_t(x[2] & 0777 & ~current->process->umask),
+                    directories.emplace(backing, Directory{uint32_t(x[2] & 01777 & ~current->process->umask),
                                                            userId(), groupId(), newFileContext(backing)});
                     if (const auto* view = mountFor(path); view && view->device == "cgroup2") {
                         cgroupFiles.emplace(backing + std::string(cgroupProcs),
@@ -4873,6 +4873,27 @@ bool ProbeLinux::forkProcess(Machine& machine) {
     return true;
 }
 
+bool ProbeLinux::loadBootFileLabels(std::string_view manifest) {
+    if (manifest.empty() || manifest.size() > 8192 || !bootFileLabels.empty()) return false;
+    std::istringstream lines{std::string(manifest)};
+    decltype(bootFileLabels) labels;
+    for (std::string line; std::getline(lines, line);) {
+        std::istringstream fields(line);
+        std::string path, label, trailing;
+        if (!(fields >> path >> label) || (fields >> trailing) ||
+            (!path.starts_with("/apex/com.android.") && path != "/sys/fs/bpf" &&
+             !inside(path, "/sys/fs/bpf")) || normalizePath(path) != path ||
+            label.size() <= 14 || !label.starts_with("u:object_r:") || !label.ends_with(":s0")) return false;
+        const auto type = std::string_view(label).substr(11, label.size() - 14);
+        if (type.empty() || !std::ranges::all_of(type, [](char ch) {
+                return (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_';
+            }) || !labels.emplace(std::move(path), std::move(label)).second) return false;
+    }
+    if (labels.empty()) return false;
+    bootFileLabels = std::move(labels);
+    return true;
+}
+
 bool ProbeLinux::loadBootTransition(std::string_view manifest) {
     if (manifest.size() > 8192 || !bootTransitions.empty()) return false;
     std::istringstream lines{std::string(manifest)};
@@ -5303,6 +5324,10 @@ bool ProbeLinux::securityCall(Machine& machine) {
         // context so libselinux can compute and apply the real restorecon label.
         if (value.empty() && dataPath(fd->path) && (fd->temporary || directories.contains(fd->path)))
             value = {reinterpret_cast<const uint8_t*>(unlabeledFile), sizeof unlabeledFile};
+        if (const auto captured = bootFileLabels.find(logical); captured != bootFileLabels.end()) {
+            const auto& label = captured->second;
+            value = {reinterpret_cast<const uint8_t*>(label.c_str()), label.size() + 1};
+        }
         if (const auto transition = bootTransitions.find(logical); transition != bootTransitions.end()) {
             const auto& label = transition->second.file;
             value = {reinterpret_cast<const uint8_t*>(label.c_str()), label.size() + 1};
