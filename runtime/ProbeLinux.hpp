@@ -206,10 +206,12 @@ private:
         std::vector<uint8_t> values;
         std::map<std::vector<uint8_t>, std::vector<uint8_t>> hash;
     };
-    std::vector<std::weak_ptr<BpfMap>> bpfMaps;
+    std::map<uint32_t, std::weak_ptr<BpfMap>> bpfMaps;
+    std::map<uint32_t, std::weak_ptr<const BpfSocketFilter>> bpfFilters;
+    uint32_t nextBpfMapId = 1, nextBpfProgramId = 1;
     uint64_t bpfMapCall(Machine& machine);
     uint64_t loadBpfSocketFilter(Machine& machine);
-    std::vector<std::weak_ptr<const BpfSocketFilter>> bpfFilters;
+    uint64_t bpfObjectIdCall(Machine& machine);
     struct Descriptor;
     struct GraphicsRegion {
         uint64_t offset = 0;

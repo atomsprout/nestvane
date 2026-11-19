@@ -713,6 +713,12 @@ int main() {
         };
         const auto fd = create(2);
         assert(fd < 256 && call(25, {fd, 1}) == 1);
+        assert(machine.store64(attr, 0) && machine.store64(attr + 8, 0));
+        assert(call(280, {12, attr, 12}) == 0);
+        const uint32_t mapId = load(attr) >> 32;
+        assert(mapId && machine.store64(attr, mapId) && machine.store64(attr + 8, 8));
+        const auto reopenedById = call(280, {14, attr, 12});
+        assert(reopenedById < 256 && reopenedById != fd);
         const auto invoke = [&](uint64_t command, uint64_t descriptor, uint64_t index,
                                 uint64_t value, uint64_t flags = 0) {
             assert(machine.store64(attr, descriptor) && machine.store64(attr + 8, index));
@@ -737,6 +743,14 @@ int main() {
         assert(invoke(2, dup, key, data, 2) == uint64_t(-7));
         assert(invoke(4, dup, key, output) == 0 && (load(output) & UINT32_MAX) == 0);
         assert(call(57, {dup}) == 0);
+        assert(machine.store64(key, 1));
+        assert(invoke(1, reopenedById, key, output) == 0 && load(output) == expected);
+        assert(invoke(2, reopenedById, key, data) == uint64_t(-1));
+        assert(call(57, {reopenedById}) == 0);
+        assert(machine.store64(attr, mapId) && machine.store64(attr + 8, 0));
+        assert(call(280, {14, attr, 12}) == uint64_t(-2));
+        assert(machine.store64(attr, 0));
+        assert(call(280, {12, attr, 12}) == uint64_t(-2));
         assert(machine.store64(key, 0));
         const auto readOnly = create(2, 8);
         assert(readOnly < 256 && invoke(1, readOnly, key, output) == 0);
@@ -843,9 +857,17 @@ int main() {
         put(base, "/dev/loop-control");
         const auto control = call(56, {uint32_t(-100), base, 2});
         assert(control < 256);
+        uint32_t previousProgramId = 0;
         for (const uint64_t limit : {0, 16}) {
             const auto loaded = program(0xb7 | (limit << 32)); // MOV64 r0, immediate
-            assert(loaded < 256 && machine.store64(attr, pinned));
+            assert(loaded < 256 && machine.store64(attr, previousProgramId) && machine.store64(attr + 8, 0));
+            assert(call(280, {11, attr, 12}) == 0);
+            const uint32_t programId = load(attr) >> 32;
+            assert(programId > previousProgramId && machine.store64(attr, programId));
+            previousProgramId = programId;
+            const auto reopenedById = call(280, {13, attr, 12});
+            assert(reopenedById < 256 && reopenedById != loaded && call(25, {reopenedById, 1}) == 1);
+            assert(call(57, {reopenedById}) == 0 && machine.store64(attr, pinned));
             assert(machine.store64(attr + 8, loaded) && machine.store64(attr + 16, 0));
             assert(call(280, {6, attr, 24}) == 0 && call(57, {loaded}) == 0); // BPF_OBJ_PIN
             assert(machine.store64(attr + 8, 8ULL << 32)); // BPF_F_RDONLY
@@ -861,6 +883,8 @@ int main() {
             assert(call(212, {uevent, message, 0}) == (limit ? limit : uint64_t(-11)));
         }
         assert(call(57, {control}) == 0 && call(57, {uevent}) == 0);
+        assert(machine.store64(attr, 0) && machine.store64(attr + 8, 0));
+        assert(call(280, {11, attr, 12}) == uint64_t(-2));
         assert(call(39, {mountpoint, 0}) == 0);
     }
     {

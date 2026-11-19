@@ -5175,11 +5175,12 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
         const size_t bytes = entryBytes * entries;
         const auto newFd = freeDescriptor();
         if (newFd == descriptorCapacity) return uint64_t(-24);
-        std::erase_if(bpfMaps, [](const auto& entry) { return entry.expired(); });
+        std::erase_if(bpfMaps, [](const auto& entry) { return entry.second.expired(); });
         size_t allocated = 0;
         for (const auto& entry : bpfMaps)
-            if (const auto map = entry.lock()) allocated += map->budgetBytes;
+            if (const auto map = entry.second.lock()) allocated += map->budgetBytes;
         if (allocated > mapBudget - bytes || bpfMaps.size() >= 256) return uint64_t(-12);
+        if (nextBpfMapId >= INT32_MAX) return uint64_t(-28);
         try {
             auto map = std::make_shared<BpfMap>();
             map->entryCount = entries;
@@ -5191,7 +5192,7 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
             const uint32_t access = flags & readOnly ? 0 : flags & writeOnly ? 1 : 2;
             Descriptor result{"anon_inode:bpf-map", {}, 0x80000 | access, Node::bpfMap};
             result.bpfMap = map;
-            bpfMaps.emplace_back(map);
+            bpfMaps.emplace(nextBpfMapId++, map);
             descriptors().emplace(newFd, std::move(result));
             return newFd;
         } catch (const std::bad_alloc&) {
@@ -5292,8 +5293,9 @@ uint64_t ProbeLinux::loadBpfSocketFilter(Machine& machine) {
     if (!readPath(machine, license)) return uint64_t(-14);
     const auto fd = freeDescriptor();
     if (fd == descriptorCapacity) return uint64_t(-24);
-    std::erase_if(bpfFilters, [](const auto& filter) { return filter.expired(); });
+    std::erase_if(bpfFilters, [](const auto& filter) { return filter.second.expired(); });
     if (bpfFilters.size() >= 256) return noMemory;
+    if (nextBpfProgramId >= INT32_MAX) return uint64_t(-28);
     try {
         std::vector<uint8_t> bytecode(count * 8);
         if (!machine.readInto(source, bytecode)) return uint64_t(-14);
@@ -5301,12 +5303,63 @@ uint64_t ProbeLinux::loadBpfSocketFilter(Machine& machine) {
         if (!filter->load(bytecode)) return invalid;
         Descriptor result{"anon_inode:bpf-prog", {}, 0x80002, Node::bpfProgram};
         result.bpfFilter = filter;
-        bpfFilters.emplace_back(filter);
+        bpfFilters.emplace(nextBpfProgramId++, filter);
         descriptors().emplace(fd, std::move(result));
         return fd;
     } catch (const std::bad_alloc&) {
         return noMemory;
     }
+}
+
+uint64_t ProbeLinux::bpfObjectIdCall(Machine& machine) {
+    constexpr uint64_t nextProgram = 11, nextMap = 12, openProgram = 13, openMap = 14;
+    constexpr uint32_t readOnly = 1 << 3, writeOnly = 1 << 4;
+    const auto& x = machine.cpu.x;
+    const bool enumerate = x[0] == nextProgram || x[0] == nextMap;
+    const bool program = x[0] == nextProgram || x[0] == openProgram;
+    if (x[2] > pageSize) return uint64_t(-7);
+    std::array<uint8_t, pageSize> attr{};
+    if (!machine.readInto(x[1], std::span(attr).first(x[2]))) return uint64_t(-14);
+    const size_t used = enumerate ? 8 : program ? 4 : 12;
+    if (std::any_of(attr.begin() + used, attr.end(), [](auto byte) { return byte != 0; })) return invalid;
+
+    uint32_t id = 0, flags = 0;
+    std::memcpy(&id, attr.data(), sizeof(id));
+    if (x[0] == openMap) std::memcpy(&flags, attr.data() + 8, sizeof(flags));
+    if ((enumerate && id >= INT32_MAX) || (flags & ~(readOnly | writeOnly)) || flags == (readOnly | writeOnly))
+        return invalid;
+    if (!(current->process->effectiveCaps & (1ULL << 21))) return uint64_t(-1); // CAP_SYS_ADMIN
+
+    if (enumerate) {
+        const auto nextId = [id](const auto& objects) -> uint32_t {
+            for (auto it = objects.upper_bound(id); it != objects.end(); ++it)
+                if (!it->second.expired()) return it->first;
+            return 0;
+        };
+        const auto next = program ? nextId(bpfFilters) : nextId(bpfMaps);
+        if (!next) return uint64_t(-2);
+        return writeGuest(machine, x[1] + 4, next) ? 0 : uint64_t(-14);
+    }
+
+    std::shared_ptr<const BpfSocketFilter> filter;
+    std::shared_ptr<BpfMap> map;
+    if (program) {
+        const auto found = bpfFilters.find(id);
+        if (found != bpfFilters.end()) filter = found->second.lock();
+    } else {
+        const auto found = bpfMaps.find(id);
+        if (found != bpfMaps.end()) map = found->second.lock();
+    }
+    if (!filter && !map) return uint64_t(-2);
+    const auto fd = freeDescriptor();
+    if (fd == descriptorCapacity) return uint64_t(-24);
+    const uint32_t access = flags & readOnly ? 0 : flags & writeOnly ? 1 : 2;
+    Descriptor entry{program ? "anon_inode:bpf-prog" : "anon_inode:bpf-map", {},
+        0x80000 | access, program ? Node::bpfProgram : Node::bpfMap};
+    entry.bpfMap = std::move(map);
+    entry.bpfFilter = std::move(filter);
+    descriptors().emplace(fd, std::move(entry));
+    return fd;
 }
 
 bool ProbeLinux::syscall(Machine& machine) {
@@ -5321,6 +5374,7 @@ bool ProbeLinux::syscall(Machine& machine) {
         case 280: { // bpf
             if (x[0] <= 4) { x[0] = bpfMapCall(machine); break; }
             if (x[0] == 5) { x[0] = loadBpfSocketFilter(machine); break; }
+            if (x[0] >= 11 && x[0] <= 14) { x[0] = bpfObjectIdCall(machine); break; }
             const bool pin = x[0] == 6; // BPF_OBJ_PIN
             if (!pin && x[0] != 7) return false; // BPF_OBJ_GET
             if (x[2] > pageSize) { x[0] = uint64_t(-7); break; }

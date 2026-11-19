@@ -239,3 +239,6 @@
 - iPhone 11 第 8205 号进程报告首次系统包扫描耗时 534.122 秒，时间戳为宿主启动后 1,352,481 ms。
 - 第 8205 号 iPhone 11 进程到达 1,800 秒时限。最终报告确认原版 PackageManager 扫描发现 74 个系统应用条目，系统应用扫描用时 531,864 ms，并重复记录原版 HealthLoop 等待 `bpf.progs_loaded`。仍未通过完整启动属性。已备份上一轮报告并安装原版 BPF 过滤器验收构建。第 8210 号进程在 141 ms 进入原版 Android 17 init，短程真机验收正在运行。
 - 客体支持 `BPF_MAP_TYPE_PERCPU_HASH` 和 `BPF_MAP_TYPE_PERCPU_ARRAY`。来宾 CPU 拓扑和调度器均暴露一个可能 CPU，值按内核 ABI 以 8 字节对齐，并保留调用者写入的填充字节。对同一个 ARM64 Bionic 程序，Android 17 参考内核报告 4 个 CPU，Nestvane 报告 1 个；两者分别完成两种 map 的查找、写入和步幅验证。
+- iPhone 11 第 8210 号进程的最终报告确认，独立 Bionic 夹具在原版 Android init 下装载 SDK Health 过滤器、重新打开并附着，成功丢弃实际的 block uevent；init 记录退出 0。已归档该真机报告，完整系统启动仍待验收。
+- 客体支持按 ID 枚举和重新打开 BPF map 与程序，只有仍有 FD、固定名称或附着引用的对象会出现。相同 ARM64 Bionic 夹具在 Android 17 参考内核和 Nestvane 中通过，覆盖 CLOEXEC 及新 FD 的只读限制。包含 ID 和 per-CPU map 探针的 iPhoneOS 签名包已验证。
+- 两份隔离 Mac 诊断仅用临时 JIT sysctl 值观测原版加载器下一步。首轮定位到 `BPF_PROG_GET_NEXT_ID`，补齐 ID 后原版开始处理 Tethering APEX 的 `offload.o`，下一项请求为 `BPF_BTF_LOAD`。原版的完成判定保持有效。[Android BPF 内核接口](https://android.googlesource.com/kernel/common/+/16c71c51132847fb260e6b7e741bf6d241a8b9df/kernel/bpf/syscall.c)
