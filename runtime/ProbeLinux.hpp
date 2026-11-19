@@ -111,6 +111,7 @@ private:
     };
     enum class Wait { none, poll, futex, signal, sleep, exited, suspended };
     struct Process;
+    using PendingSignals = std::map<uint32_t, std::array<uint32_t, 32>>;
     struct BinderConnection;
     struct SeccompFilter {
         struct Instruction { uint16_t code; uint8_t yes, no; uint32_t value; };
@@ -137,7 +138,7 @@ private:
         uint64_t signalMask = 0;
         uint64_t signalWaitMask = 0;
         std::string fsCreateContext, socketCreateContext;
-        std::map<uint32_t, std::array<uint32_t, 32>> pendingSignals;
+        PendingSignals pendingSignals;
         std::array<uint8_t, 16> name{};
         std::array<uint64_t, 3> alternateStack{0, 2, 0};
     };
@@ -689,6 +690,7 @@ private:
         std::map<uint32_t, Descriptor> descriptors;
         std::vector<Segment> segments;
         std::array<std::array<uint64_t, 4>, 65> signalActions{};
+        PendingSignals pendingSignals;
         uint64_t signalTrampoline = 0;
         struct ChildSignal { uint32_t pid, uid, status, code; };
         std::optional<ChildSignal> childSignal;

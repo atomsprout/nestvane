@@ -2270,7 +2270,10 @@ uint64_t ProbeLinux::receiveUnixStreamMessage(Machine& machine, SocketState& end
     const auto& x = machine.cpu.x;
     constexpr uint64_t peek = 0x2, dontWait = 0x40, closeOnExec = 0x40000000;
     constexpr uint32_t controlTruncated = 0x8;
-    if (endpoint.passCredentials || (x[2] & ~(peek | dontWait | closeOnExec))) return uint64_t(-95);
+    // Linux ignores MSG_CTRUNC, MSG_TRUNC and MSG_NOSIGNAL on UNIX stream reads.
+    constexpr uint64_t ignoredReceiveFlags = 0x8 | 0x20 | 0x4000;
+    if (endpoint.passCredentials || (x[2] & ~(peek | dontWait | closeOnExec | ignoredReceiveFlags)))
+        return uint64_t(-95);
     SocketMessage message{};
     std::vector<SocketVector> vectors;
     if (const auto error = readSocketMessage(machine, x[1], message, vectors)) return error;
@@ -4758,6 +4761,7 @@ bool ProbeLinux::forkProcess(Machine& machine) {
     child.process = std::make_shared<Process>(*current->process);
     if (child.process->mdwe & mdweNoInherit) child.process->mdwe = 0;
     child.process->childSignal.reset();
+    child.process->pendingSignals.clear();
     child.process->segments = machine.segments;
     std::erase_if(child.process->segments, [](const Segment& segment) { return segment.omitOnFork; });
     std::map<const AnonymousPages*, std::shared_ptr<AnonymousPages>> privateCopies;
@@ -9100,7 +9104,9 @@ bool ProbeLinux::syscall(Machine& machine) {
             const auto found = std::find_if(threads.begin(), threads.end(),
                                            [&](const auto& task) { return matches(task.second); });
             if (found == threads.end()) { x[0] = uint64_t(-3); break; }
-            if (signal && signal != 9 && signal != 15) return false;
+            // ART blocks SIGQUIT in its thread group and consumes it on Signal Catcher.
+            constexpr uint32_t quit = 3;
+            if (signal && signal != quit && signal != 9 && signal != 15) return false;
             const auto allowed = [&](const auto& task) {
                 const auto& sender = current->process->userIds;
                 const auto& receiver = task.process->userIds;
@@ -9116,6 +9122,35 @@ bool ProbeLinux::syscall(Machine& machine) {
                 permitted = true;
                 if (signal && task.process->id != pid)
                     victims.try_emplace(task.process->id, task.process);
+            }
+            if (signal == quit) {
+                constexpr uint64_t mask = 1ULL << (quit - 1);
+                const auto waiting = [&](const Thread& task) {
+                    return task.wait == Wait::signal && (task.signalWaitMask & mask);
+                };
+                // An unmasked recipient would need an asynchronous signal delivery.
+                for (const auto& [id, victim] : victims) {
+                    if (std::ranges::any_of(threads, [&](const auto& item) {
+                            const auto& task = item.second;
+                            return task.process == victim && task.wait != Wait::exited &&
+                                !(task.signalMask & mask) && !waiting(task);
+                        })) return false;
+                }
+                std::array<uint32_t, 32> info{};
+                info[0] = quit;
+                info[4] = uint32_t(processId()); // SI_USER
+                info[5] = current->process->userIds[0];
+                for (const auto& [id, victim] : victims) {
+                    if (!victim->pendingSignals.try_emplace(quit, info).second) continue;
+                    for (auto& [tid, task] : threads) {
+                        if (task.process != victim || !waiting(task)) continue;
+                        task.wait = Wait::none;
+                        task.deadline.reset();
+                        break;
+                    }
+                }
+                x[0] = permitted ? 0 : uint64_t(-1);
+                break;
             }
             if (signal == 15) {
                 // The boot probe supports the default and ignored SIGTERM dispositions.
@@ -9191,16 +9226,20 @@ bool ProbeLinux::syscall(Machine& machine) {
                     ? nanoseconds::max() : seconds(values[0]) + nanoseconds(values[1]);
             }
             current->signalWaitMask = 0;
-            auto& pending = current->pendingSignals;
-            const auto found = std::find_if(pending.begin(), pending.end(), [&](const auto& entry) {
-                return requested & (1ULL << (entry.first - 1));
-            });
-            if (found != pending.end()) {
-                if (x[1] && !writeGuest(machine, x[1], found->second)) { x[0] = uint64_t(-14); break; }
-                x[0] = found->first;
-                pending.erase(found);
-                break;
-            }
+            const auto consume = [&](PendingSignals& pending) {
+                const auto found = std::ranges::find_if(pending, [&](const auto& entry) {
+                    return requested & (1ULL << (entry.first - 1));
+                });
+                if (found == pending.end()) return false;
+                if (x[1] && !writeGuest(machine, x[1], found->second)) {
+                    x[0] = uint64_t(-14);
+                } else {
+                    x[0] = found->first;
+                    pending.erase(found);
+                }
+                return true;
+            };
+            if (consume(current->pendingSignals) || consume(current->process->pendingSignals)) break;
             if (timeout && timeout->count() == 0) { x[0] = uint64_t(-11); break; }
             if (timeout) {
                 const auto now = steady_clock::now();

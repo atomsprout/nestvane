@@ -3599,6 +3599,18 @@ int main() {
     prepareLock(1, 8, 4);
     assert(call(25, {viaBind, 6, lockAddress}) == 0);
 
+    constexpr uint64_t quit = 3, quitMask = 1ULL << (quit - 1);
+    assert(machine.store64(base + 0x820, quitMask));
+    assert(call(135, {0, base + 0x820, 0, 8}) == 0);
+    call(137, {base + 0x820, base + 0xe00, 0, 8});
+    assert(linux.blocked() && linux.schedule(machine) && linux.processId() == 1);
+    assert(call(129, {child, quit}) == 0 && call(129, {child, quit}) == 0);
+    machine.cpu.retired += 4096;
+    assert(linux.schedule(machine) && linux.processId() == child);
+    assert(call(137, {base + 0x820, base + 0xe00, 0, 8}) == quit);
+    assert(load(base + 0xe00) == quit && load(base + 0xe08) == 0 && load(base + 0xe10) == 1);
+    assert(call(137, {base + 0x820, 0, base + 0x8c0, 8}) == uint64_t(-11));
+
     assert(machine.store64(base + 0x840, 99));
     assert(call(57, {original}) == 0);
     call(94, {23});
@@ -4457,7 +4469,7 @@ int main() {
         prepare(8, 24, 0xdead);
         assert(call(212, {receiver, msg, 0}) == uint64_t(-14));
         prepare(8, 24);
-        assert(call(212, {receiver, msg, 0x40000002}) == 4);
+        assert(call(212, {receiver, msg, 0x4000402a}) == 4); // CLOEXEC, PEEK and three ignored flags.
         const auto peeked = uint32_t(load(control + 16));
         assert((load(payload) & 0xffffffff) == 0x59586261 && load(control) == 20 && load(msg + 40) == 24);
         assert(uint32_t(load(msg + 48)) == 0x40000000);
