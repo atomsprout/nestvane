@@ -68,3 +68,5 @@
 - iPhone 11 复测确认常规预加载成功加载 `libcompiler_rt.so` 和 HTTP 引擎，读取 334 条兼容规则。真机运行约 372 秒后停在 `USUBL`。宿主回归和 Mac 启动测试已越过该指令，随后停在向量按元素乘法。新增 CLI 实时启动日志和 iOS `boot-progress.txt`，可以在完整报告写出前查看启动位置。iOS Release 签名构建已通过，真机复测待进行。[运行记录](p2-zygote-eager.txt)
 
 - Mac 的常规预加载已越过按元素向量乘法，推进到 `SMLAL`。已实现有符号和无符号向量扩宽乘法及累加、累减，宿主回归和 ASan/UBSan 通过。iPhone 11 已从 `boot-progress.txt` 实时读到原版 Zygote 类预加载日志。[运行记录](p2-zygote-eager.txt)
+
+- iPhone 11 复测已越过 `USUBL`，随后和 Mac 一样到达按元素向量乘法。包含两批乘法修复的签名构建已在同一台真机启动。Mac 已越过扩宽乘法，随后在读取 `NZCV` 时停下。其读写已实现并通过宿主回归和 ASan/UBSan。[运行记录](p2-zygote-eager.txt)

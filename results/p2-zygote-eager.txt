@@ -130,3 +130,15 @@ Indexed and widening integer multiply unit coverage: host suite and ASan/UBSan p
 iPhone 11 live boot-progress.txt with widening add/subtract support
 iOS device 26.0.1 | process 6947 | thermal nominal → serious
 Zygote: Preloading classes...
+
+iPhone 11 finished the widening add/subtract verification
+iOS device 26.0.1 | process 6947 | thermal nominal → serious
+Zygote: ...preloaded 18596 classes in 229089ms.
+  unsupported instruction at PC=0xa1f1b2afc word=0x4f858210
+  guest execution wall time: 378024 ms
+
+Mac with indexed and widening integer multiplication
+  unsupported instruction at PC=0x131430ea78 word=0xd53b4213
+llvm-mc: mrs x19, NZCV
+  guest execution wall time: 171375 ms
+NZCV read, write and zero-register behavior: host suite and ASan/UBSan passed

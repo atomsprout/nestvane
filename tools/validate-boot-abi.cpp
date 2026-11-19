@@ -199,6 +199,17 @@ int main() {
         const std::array<uint8_t, 16> nonzeroBytes{0, 255, 255, 0, 0, 255, 0, 255, 0, 0, 0, 0, 255, 0, 0, 255};
         assert(executeStartupInstruction(permute, 0x4e238c67)); // cmtst v7.16b, v3.16b, v3.16b
         assert(permute.cpu.v[7] == nonzeroBytes);
+        permute.cpu.nzcv = 0xa;
+        assert(executeStartupInstruction(permute, 0xd53b4213)); // mrs x19, NZCV
+        assert(permute.cpu.x[19] == 0xa0000000 && permute.cpu.nzcv == 0xa);
+        permute.cpu.x[4] = 0xffffffff5000000f;
+        assert(executeStartupInstruction(permute, 0xd51b4204)); // msr NZCV, x4
+        assert(permute.cpu.nzcv == 5);
+        const auto stack = permute.cpu.sp;
+        assert(executeStartupInstruction(permute, 0xd53b421f)); // mrs xzr, NZCV
+        assert(permute.cpu.sp == stack && permute.cpu.nzcv == 5);
+        assert(executeStartupInstruction(permute, 0xd51b421f)); // msr NZCV, xzr
+        assert(permute.cpu.nzcv == 0);
     }
     {
         constexpr uint64_t boundary = base + pageSize;

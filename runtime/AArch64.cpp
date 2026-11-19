@@ -1199,6 +1199,10 @@ bool values(CPU& cpu, uint32_t word) {
         put(cpu, rd, bits == 64 ? __builtin_bswap64(a) : __builtin_bswap32(uint32_t(a)), bits);
     } else if ((word & 0xffffffe0) == 0xd53b00e0) {
         put(cpu, rd, 16); // DCZID_EL0.DZP. This profile does not offer DC ZVA.
+    } else if ((word & 0xffffffe0) == 0xd53b4200) { // MRS <Xt>, NZCV.
+        put(cpu, rd, uint64_t(cpu.nzcv) << 28);
+    } else if ((word & 0xffffffe0) == 0xd51b4200) { // MSR NZCV, <Xt>.
+        cpu.nzcv = (reg(cpu, rd) >> 28) & 15;
     } else if ((word & 0xffffffe0) == 0xd53b4400) {
         put(cpu, rd, 0); // FPCR for the default guest floating-point environment.
     } else if ((word & 0xffffffe0) == 0xd51b4400) {
