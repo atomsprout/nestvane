@@ -46,6 +46,9 @@ constexpr uint64_t receiveTimeoutOld = 20, receiveTimeoutNew = 66;
 constexpr uint64_t sendTimeoutOld = 21, sendTimeoutNew = 67;
 constexpr std::string_view touchDevicePath = "/dev/input/event0";
 constexpr std::string_view graphicsDevice = "/dev/goldfish_pipe_dprctd";
+constexpr std::string_view cameraHalContext = "u:r:hal_camera_default:s0";
+constexpr uint16_t addressFamilyVsock = 40;
+constexpr uint32_t emulatorHostCid = 2, emulatorDataPort = 5000;
 constexpr std::string_view graphicsAddressDevice = "/dev/goldfish_address_space";
 constexpr uint64_t graphicsAddressBase = 0x800000000ULL, graphicsAlignment = 16 * 1024;
 constexpr uint64_t goldfishHostMemory = 5, goldfishSharedSlots = 6;
@@ -880,6 +883,7 @@ bool ProbeLinux::exportExt4Mount(ProbeLinux& reader, std::string_view path) cons
 uint64_t ProbeLinux::stat(Machine& machine, uint64_t address, const Descriptor& fd) const {
     if (fd.node == Node::touchDevice) return statFile(machine, address, 0, 70'265, 0020660, 0, 1004, 0x0d40);
     if (fd.node == Node::graphicsAddressSpace) return statFile(machine, address, 0, 70'266, 0020666, 1000, 1000, 0x100a0a);
+    if (fd.graphics && fd.graphics->cameraVsock) return statFile(machine, address, 0, 70'269, 0140777);
     if (fd.node == Node::graphicsPipe) return statFile(machine, address, 0, 70'267, 0020666, 1000, 1000, 0x100a0b);
     if (fd.node == Node::ashmem) return statFile(machine, address, 0, 69'999, 0020666, 0, 0, 0x100a03);
     if (fd.temporary) {
@@ -2024,6 +2028,7 @@ uint64_t ProbeLinux::touchIoctl(Machine& machine, const Descriptor& fd) {
 }
 
 uint16_t ProbeLinux::GraphicsPipeState::pollEvents() const {
+    if (cameraVsock && !connected) return 0x10;
     constexpr uint16_t readable = 1, writable = 4, hangup = 16;
     if (failed) return hangup;
     if (!backend) return writable;
@@ -2031,7 +2036,9 @@ uint16_t ProbeLinux::GraphicsPipeState::pollEvents() const {
 }
 
 uint64_t ProbeLinux::readGraphics(Machine& machine, GraphicsPipeState& pipe, uint64_t address, uint64_t size) {
-    if (pipe.cameraChannel && current->process->context != "u:r:hal_camera_default:s0") return uint64_t(-13);
+    if ((pipe.cameraChannel || pipe.cameraVsock) && current->process->context != cameraHalContext)
+        return uint64_t(-13);
+    if (pipe.cameraVsock && !pipe.connected) return uint64_t(-107);
     if (!size) return 0;
     if (pipe.failed) return uint64_t(-5);
     if (!pipe.backend) return uint64_t(-11);
@@ -2068,7 +2075,9 @@ bool ProbeLinux::writeCameraFrame(uint64_t offset, GuestCameraSource::Format for
 }
 
 uint64_t ProbeLinux::writeGraphics(const Machine& machine, GraphicsPipeState& pipe, uint64_t address, uint64_t size) {
-    if (pipe.cameraChannel && current->process->context != "u:r:hal_camera_default:s0") return uint64_t(-13);
+    if ((pipe.cameraChannel || pipe.cameraVsock) && current->process->context != cameraHalContext)
+        return uint64_t(-13);
+    if (pipe.cameraVsock && !pipe.connected) return uint64_t(-107);
     if (!size) return 0;
     if (pipe.failed) return uint64_t(-5);
     if (!pipe.backend) {
@@ -2085,12 +2094,12 @@ uint64_t ProbeLinux::writeGraphics(const Machine& machine, GraphicsPipeState& pi
         const auto service = std::string_view(pipe.serviceHeader);
         if (delimiter != bytes.end() && service.starts_with("pipe:")) {
             const auto name = service.substr(5);
-            if (camera && current->process->context == "u:r:hal_camera_default:s0" &&
+            if (camera && current->process->context == cameraHalContext &&
                 (name == GuestCameraPipe::catalog || name == GuestCameraPipe::rear)) {
                 pipe.cameraChannel = true;
                 pipe.backend = std::make_unique<GuestCameraPipe>(camera, name == GuestCameraPipe::catalog,
                     [this](auto offset, auto format) { return writeCameraFrame(offset, format); });
-            } else if (graphicsPipeFactory &&
+            } else if (!pipe.cameraVsock && graphicsPipeFactory &&
                        (name == "opengles" || name == "GLProcessPipe" || name == "refcount")) {
                 pipe.backend = graphicsPipeFactory(name);
             }
@@ -2534,9 +2543,12 @@ bool ProbeLinux::socketCall(Machine& machine) {
             const bool route = kernelNetlink && x[2] == 0; // NETLINK_ROUTE
             const bool xfrm = kernelNetlink && x[2] == 6; // NETLINK_XFRM
             const bool inet = x[8] == 198 && (x[0] == 2 || x[0] == 10);
-            if (x[0] != 1 && !uevent && !netfilter && !route && !xfrm && !inet) { x[0] = uint64_t(-97); break; }
+            const bool cameraVsock = x[8] == 198 && x[0] == addressFamilyVsock &&
+                camera && current->process->context == cameraHalContext;
+            if (x[0] != 1 && !uevent && !netfilter && !route && !xfrm && !inet && !cameraVsock) { x[0] = uint64_t(-97); break; }
             const uint32_t type = x[1] & 15;
             constexpr uint32_t flags = 0x80000 | 0x800;
+            if (cameraVsock && (type != 1 || x[2])) { x[0] = uint64_t(-94); break; }
             const bool firewallSocket = inet && type == 3 && x[2] == 255;
             if (inet && !firewallSocket && (type != 1 && type != 2)) { x[0] = uint64_t(-94); break; }
             if (firewallSocket && !(current->process->effectiveCaps & (1ULL << 13))) {
@@ -2552,6 +2564,14 @@ bool ProbeLinux::socketCall(Machine& machine) {
             }
             const auto first = freeDescriptor();
             if (first == descriptorCapacity) { x[0] = uint64_t(-24); break; }
+            if (cameraVsock) {
+                Descriptor entry{"socket:[vsock]", {}, uint32_t(x[1] & flags) | 2, Node::graphicsPipe};
+                entry.graphics = std::make_shared<GraphicsPipeState>();
+                entry.graphics->cameraVsock = true;
+                descriptors().emplace(first, std::move(entry));
+                x[0] = first;
+                break;
+            }
             auto endpoint = std::make_shared<SocketState>(type);
             endpoint->context = current->socketCreateContext.empty()
                 ? current->process->context : current->socketCreateContext;
@@ -2585,6 +2605,35 @@ bool ProbeLinux::socketCall(Machine& machine) {
         }
         case 200: case 203: { // bind, connect
             if (fd == descriptors().end()) { x[0] = uint64_t(-9); break; }
+            if (auto pipe = fd->second.graphics; pipe && pipe->cameraVsock) {
+                if (current->process->context != cameraHalContext) { x[0] = uint64_t(-13); break; }
+                if (x[8] != 203) { x[0] = uint64_t(-95); break; }
+                if (pipe->connected) { x[0] = uint64_t(-106); break; }
+                // Linux sockaddr_vm is 16 bytes and stores its port and CID in native byte order.
+                struct Address {
+                    uint16_t family, reserved;
+                    uint32_t port, cid;
+                    std::array<uint8_t, 4> flagsAndPadding;
+                } address{};
+                if (x[2] != sizeof(address)) { x[0] = invalid; break; }
+                if (!machine.readInto(x[1], {reinterpret_cast<uint8_t*>(&address), sizeof(address)})) {
+                    x[0] = uint64_t(-14);
+                    break;
+                }
+                if (address.family != addressFamilyVsock) { x[0] = uint64_t(-97); break; }
+                if (address.reserved || !std::ranges::all_of(address.flagsAndPadding, [](auto byte) { return !byte; })) {
+                    x[0] = invalid;
+                    break;
+                }
+                if (address.cid != emulatorHostCid || address.port != emulatorDataPort) {
+                    x[0] = uint64_t(-111);
+                    break;
+                }
+                pipe->connected = true;
+                wakePollers();
+                x[0] = 0;
+                break;
+            }
             if (!fd->second.socket) { x[0] = uint64_t(-88); break; }
             if (fd->second.socket->firewallSocket()) { x[0] = uint64_t(-95); break; }
             if (fd->second.socket->family == 2 || fd->second.socket->family == 10) {

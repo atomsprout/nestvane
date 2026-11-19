@@ -247,6 +247,7 @@ private:
         std::vector<uint8_t> unread;
         size_t offset = 0;
         bool failed = false, cameraChannel = false;
+        bool cameraVsock = false, connected = false;
 
         uint16_t pollEvents() const;
     };
