@@ -5460,6 +5460,7 @@ uint64_t ProbeLinux::testBpfProgram(Machine& machine) {
             packet.packetType = 3; // PACKET_OTHERHOST
         }
         packet.ifindex = guestLoopbackIndex;
+        packet.networkOffset = 14;
         const auto repetitions = std::max(1U, test.repeat);
         const auto start = std::chrono::steady_clock::now();
         for (uint32_t run = 0; run < repetitions; ++run) {

@@ -60,7 +60,8 @@ public:
 
     struct Packet {
         std::vector<uint8_t> bytes;
-        uint32_t protocol = 0, packetType = 0, ingressIfindex = 0, ifindex = 0;
+        uint32_t protocol = 0, packetType = 0, ingressIfindex = 0, ifindex = 0, mark = 0;
+        size_t networkOffset = 0;
     };
 
     bool load(uint32_t type, std::span<const uint8_t> bytes, const MapResolver& resolve) {
@@ -89,7 +90,7 @@ public:
                 if (i.registers || i.offset) return false;
                 switch (i.immediate) {
                     case 26: break; // skb_load_bytes
-                    case 1: case 9: case 10: case 11: case 23: case 39: case 40: case 43: case 125:
+                    case 1: case 9: case 10: case 11: case 23: case 31: case 39: case 40: case 43: case 50: case 125:
                         if (type != classifier) return false;
                         break;
                     default: return false;
@@ -252,6 +253,50 @@ private:
         return 0;
     }
 
+    // Protocol values follow __sk_buff.protocol, which is in network byte order.
+    static constexpr uint16_t ipv4 = 0x0008, ipv6 = 0xdd86;
+
+    static uint64_t changeProtocol(Packet& packet, uint16_t protocol, uint64_t flags) {
+        constexpr size_t extension = 20; // sizeof(ipv6hdr) - sizeof(iphdr)
+        if (flags) return uint64_t(-22);
+        const auto layer3 = packet.networkOffset;
+        const auto size = packet.bytes.size();
+        if (layer3 > size) return uint64_t(-22);
+        if (packet.protocol == ipv4 && protocol == ipv6) {
+            if (extension > maxPacketBytes - size) return uint64_t(-12);
+            packet.bytes.insert(packet.bytes.begin() + layer3, extension, 0);
+        } else if (packet.protocol == ipv6 && protocol == ipv4) {
+            if (extension > size - layer3) return uint64_t(-12);
+            packet.bytes.erase(packet.bytes.begin() + layer3, packet.bytes.begin() + layer3 + extension);
+        } else {
+            return uint64_t(-524);
+        }
+        // eBPF rewrites the actual L2 and L3 headers after this helper has resized the packet.
+        packet.protocol = protocol;
+        return 0;
+    }
+
+    static uint64_t adjustRoom(Packet& packet, int32_t adjustment, uint32_t mode, uint64_t flags) {
+        constexpr uint64_t fixedGso = 1, noChecksumReset = 1 << 5;
+        if (flags & ~(fixedGso | noChecksumReset)) return uint64_t(-95); // No tunnel or offload metadata.
+        if (adjustment < -4095 || adjustment > 4095) return uint64_t(-14);
+        if (mode > 1 || (packet.protocol != ipv4 && packet.protocol != ipv6)) return uint64_t(-524);
+        const size_t header = packet.protocol == ipv4 ? 20 : 40;
+        const size_t size = packet.bytes.size(), layer3 = packet.networkOffset;
+        if (layer3 > size) return uint64_t(-22);
+        const size_t offset = layer3 + (mode == 0 ? header : 0); // NET or MAC
+        if (offset > size) return uint64_t(-12);
+        if (adjustment < 0) {
+            const size_t remove = -adjustment;
+            if (remove > size - layer3 || size - layer3 - remove < header) return uint64_t(-524);
+            packet.bytes.erase(packet.bytes.begin() + offset, packet.bytes.begin() + offset + remove);
+        } else {
+            if (size_t(adjustment) > maxPacketBytes - size) return uint64_t(-524);
+            packet.bytes.insert(packet.bytes.begin() + offset, adjustment, 0);
+        }
+        return 0;
+    }
+
     struct Region {
         std::span<uint8_t> bytes;
         bool writable;
@@ -311,6 +356,7 @@ private:
             if (!classifierPacket) return std::nullopt;
             switch (offset) {
                 case 4: return classifierPacket->packetType;
+                case 8: return classifierPacket->mark;
                 case 16: return classifierPacket->protocol;
                 case 36: return classifierPacket->ingressIfindex;
                 case 40: return classifierPacket->ifindex;
@@ -375,6 +421,11 @@ private:
                             }
                             break;
                         }
+                        case 31: // bpf_skb_change_proto
+                            if (r1 != context) return std::nullopt;
+                            result = changeProtocol(*classifierPacket, uint16_t(r2), r3);
+                            packet = classifierPacket->bytes;
+                            break;
                         case 39: // The guest packet is already linear.
                             if (r1 != context) return std::nullopt;
                             if (uint32_t(r2) > packet.size()) result = uint64_t(-12);
@@ -390,10 +441,16 @@ private:
                                 result = uint64_t(-22);
                             } else {
                                 classifierPacket->bytes.insert(classifierPacket->bytes.begin(), headroom, 0);
+                                classifierPacket->networkOffset += headroom;
                                 packet = classifierPacket->bytes;
                             }
                             break;
                         }
+                        case 50: // bpf_skb_adjust_room
+                            if (r1 != context) return std::nullopt;
+                            result = adjustRoom(*classifierPacket, int32_t(r2), uint32_t(r3), registers[4]);
+                            packet = classifierPacket->bytes;
+                            break;
                         case 125: // bpf_ktime_get_boot_ns uses the guest's CLOCK_BOOTTIME clock.
                             result = std::chrono::duration_cast<std::chrono::nanoseconds>(
                                 std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -411,7 +468,7 @@ private:
             switch (i.kind()) {
                 case 1: {
                     const auto address = src + i.offset;
-                    if (i.width() == 4 && address >= context && address < context + 84) {
+                    if (i.width() == 4 && address >= context && address < context + 180) {
                         const auto field = skbField(address - context);
                         if (!field) return std::nullopt;
                         dst = *field;
@@ -425,6 +482,10 @@ private:
                 }
                 case 3: {
                     const auto address = dst + i.offset;
+                    if (classifierPacket && i.code == 0x63 && address == context + 8) {
+                        classifierPacket->mark = uint32_t(src);
+                        break;
+                    }
                     const auto to = bytes(address, i.width(), true);
                     if (to.empty()) return std::nullopt;
                     uint64_t value = src;

@@ -1006,6 +1006,36 @@ int main() {
         assert(write(packet, checksumFrame) && replaceChecksum(11, 14, 0x22) == 0);
         assert((load(output + 8) >> 48) == 0); // UDP zero checksum remains disabled.
         assert(replaceChecksum(10, 15, 2) == uint32_t(-14)); // Misaligned checksum offset.
+        constexpr auto address = base + 0x600;
+        const std::array<uint64_t, 10> translate{
+            encode(0xbf, 0x16),                         // Preserve the skb context in r6.
+            encode(0xb7, 0x02, 0, 0x0008),              // ETH_P_IP in network byte order.
+            encode(0xb7, 0x03, 0, 0),
+            encode(0x85, 0, 0, 31),                     // skb_change_proto
+            encode(0xbf, 0x61),
+            encode(0xb7, 0x02, 0, -8),
+            encode(0xb7, 0x03, 0, 0),                   // BPF_ADJ_ROOM_NET
+            encode(0xb7, 0x04, 0, 0),
+            encode(0x85, 0, 0, 50),                     // skb_adjust_room
+            encode(0x95, 0),
+        };
+        const std::array<uint64_t, 8> loadTranslation{3 | (uint64_t(translate.size()) << 32), code, license};
+        assert(write(code, translate) && write(attr, loadTranslation));
+        const auto translation = call(280, {5, attr, sizeof(loadTranslation)});
+        assert(translation < 256);
+        std::array<uint8_t, 66> ipv6{};
+        ipv6[12] = 0x86; ipv6[13] = 0xdd;
+        ipv6[34] = 0x23; ipv6[53] = 0x45; // Remaining header bytes after the first resize.
+        ipv6[54] = 0x56; // Removed 8-byte fragment header.
+        ipv6[62] = 0x67; ipv6[65] = 0x78; // Payload.
+        assert(write(packet, ipv6));
+        const std::array<uint64_t, 5> invokeTranslation{translation, 128ULL << 32 | ipv6.size(), packet, address, 1};
+        assert(write(attr, invokeTranslation) && call(280, {10, attr, sizeof(invokeTranslation)}) == 0);
+        assert(load(attr) >> 32 == 0 && load(attr + 8) >> 32 == 38);
+        auto* translated = machine.read(address, 38, 4);
+        assert(translated && translated[14] == 0x23 && translated[33] == 0x45 &&
+               translated[34] == 0x67 && translated[37] == 0x78);
+        assert(call(57, {translation}) == 0);
 
     }
     {
