@@ -175,6 +175,12 @@ int main() {
         std::memcpy(permute.cpu.v[4].data(), roundedInput.data(), sizeof(roundedInput));
         assert(executeStartupInstruction(permute, 0x6f182485)); // urshr v5.8h, v4.8h, #8
         assert(std::memcmp(permute.cpu.v[5].data(), roundedShift.data(), sizeof(roundedShift)) == 0);
+        assert(executeStartupInstruction(permute, 0x2e254082)); // raddhn v2.8b, v4.8h, v5.8h
+        const std::array<uint8_t, 16> narrowedSum{0, 0, 1, 1, 1, 2, 2, 1};
+        assert(permute.cpu.v[2] == narrowedSum);
+        assert(executeStartupInstruction(permute, 0x6e254082)); // raddhn2 v2.16b, v4.8h, v5.8h
+        const std::array<uint8_t, 16> duplicatedSum{0, 0, 1, 1, 1, 2, 2, 1, 0, 0, 1, 1, 1, 2, 2, 1};
+        assert(permute.cpu.v[2] == duplicatedSum);
         const double half = -2.5, beyondSignedMax = 0x1p63;
         std::memcpy(permute.cpu.v[5].data(), &half, sizeof(half));
         assert(executeStartupInstruction(permute, 0x9e6400a9)); // fcvtas x9, d5

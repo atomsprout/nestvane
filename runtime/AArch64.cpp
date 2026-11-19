@@ -834,6 +834,17 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
             if (count < 0 && unsigned(-count) < bits) value = a >> -count;
             setLane(result, i, size, value);
         }
+    } else if ((word & 0xbf20fc00) == 0x2e204000) { // RADDHN / RADDHN2.
+        if (size == 8) return false;
+        const unsigned count = 8 / size;
+        const unsigned start = width == 16 ? count : 0;
+        const unsigned bits = size * 8;
+        const uint64_t rounding = uint64_t{1} << (bits - 1);
+        if (start) result = cpu.v[rd];
+        for (unsigned i = 0; i < count; ++i) {
+            const auto sum = lane(source, i, size * 2) + lane(other, i, size * 2) + rounding;
+            setLane(result, start + i, size, sum >> bits);
+        }
     } else if ((word & 0xbf3ffc00) == 0x0e212800) { // XTN / XTN2.
         if (size == 8) return false;
         const unsigned count = 8 / size;
