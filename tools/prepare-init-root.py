@@ -79,15 +79,21 @@ def collect(serial, readelf, destination, small_art_heap):
     print("Android build:", shell("getprop", "ro.build.id"), flush=True)
     classpath = shell("cat", "/data/system/environ/classpath")
     framework, packages = reference_boot_inputs(classpath, shell("cat", "/apex/apex-info-list.xml"))
-    system_server_pid = shell("pidof", "system_server")
-    if not system_server_pid.isdecimal():
-        raise SystemExit("Expected one running system_server in the reference")
-    system_server_maps = shell("cat", f"/proc/{system_server_pid}/maps")
-    system_server_libraries = set(re.findall(
-        r"[ \t](/(?:system|system_ext)/lib64/[A-Za-z0-9_.+-]+\.so)$",
-        system_server_maps, re.MULTILINE))
-    if not system_server_libraries:
-        raise SystemExit("No platform libraries found in the reference system_server mappings")
+    def mapped_libraries(process, pattern):
+        pid = shell("pidof", process)
+        if not pid.isdecimal():
+            raise SystemExit(f"Expected one running {process} in the reference")
+        paths = set(re.findall(r"[ \t](" + pattern + r")$", shell("cat", f"/proc/{pid}/maps"), re.MULTILINE))
+        if not paths:
+            raise SystemExit(f"No platform libraries found in {process} reference mappings")
+        return paths
+
+    library_name = r"[A-Za-z0-9_.@+-]+\.so"
+    system_library = r"/(?:system|system_ext)/lib64/" + library_name
+    system_server_libraries = mapped_libraries("system_server", system_library)
+    audioserver_libraries = mapped_libraries("audioserver", system_library)
+    audio_hal_libraries = mapped_libraries("android.hardware.audio.service",
+                                          r"/vendor/lib64/(?:[A-Za-z0-9_.+-]+/)*" + library_name)
     available = {}
     for directory in search:
         for name in shell("ls", "-1", directory).splitlines():
@@ -141,6 +147,7 @@ def collect(serial, readelf, destination, small_art_heap):
         surfaceflinger = "/system/bin/surfaceflinger"
         bootanimation = "/system/bin/bootanimation"
         cameraserver = "/system/bin/cameraserver"
+        audioserver = "/system/bin/audioserver"
         aconfigd = "/system/bin/aconfigd-system"
         bpfloader = "/system/bin/bpfloader"
         netd = "/system/bin/netd"
@@ -164,10 +171,12 @@ def collect(serial, readelf, destination, small_art_heap):
         composer = "/vendor/bin/hw/android.hardware.graphics.composer3-service.ranchu"
         allocator = "/vendor/bin/hw/android.hardware.graphics.allocator-service.ranchu"
         camera_provider = "/vendor/bin/hw/android.hardware.camera.provider.ranchu"
+        audio_hal = "/vendor/bin/hw/android.hardware.audio.service"
         for programs, search_paths in (
             ((vold, service, cmd, vdc, keystore, casefold, vold_prepare, odsign, bpfloader, iptables), ("/system/lib64",)),
-            ((zygote, installd, system_suspend, surfaceflinger, bootanimation, aconfigd, netd, cameraserver), ("/system/lib64", "/system_ext/lib64")),
-            ((keymint, lights, health, sensors, composer, allocator, camera_provider),
+            ((zygote, installd, system_suspend, surfaceflinger, bootanimation, aconfigd, netd, cameraserver, audioserver),
+             ("/system/lib64", "/system_ext/lib64")),
+            ((keymint, lights, health, sensors, composer, allocator, camera_provider, audio_hal),
              ("/vendor/lib64", "/system/lib64")),
         ):
             dependencies = {}
@@ -185,7 +194,7 @@ def collect(serial, readelf, destination, small_art_heap):
                 pending.extend(("/system/lib64/heapprofd_client_api.so", "/system/lib64/libartpalette-system.so"))
             if zygote in programs:
                 # Preloaded libraries and APEX-to-system imports are not in app_process64's DT_NEEDED.
-                pending.extend(sorted(system_server_libraries))
+                pending.extend(sorted(system_server_libraries | audioserver_libraries))
                 pending.extend(("/system/lib64/libincident.so", "/system/lib64/libadbd_fs.so",
                                 "/system/lib64/libadbd_auth.so", "/system/lib64/libandroid_servers.so",
                                 "/system/lib64/libdrmframework_jni.so", "/system/lib64/libmedia_jni.so",
@@ -199,6 +208,9 @@ def collect(serial, readelf, destination, small_art_heap):
                     if name not in dependencies:
                         raise SystemExit(f"Public preload library {name} absent from platform and packaged APEX")
                     pending.append(dependencies[name])
+            if audio_hal in programs:
+                # HIDL uses runtime-loaded primary, effects, Bluetooth and submix modules.
+                pending.extend(sorted(audio_hal_libraries))
             if sensors in programs:
                 # Multi-HAL opens these modules from hals.conf, outside DT_NEEDED.
                 pending.extend(sensor_modules)
@@ -234,7 +246,14 @@ def collect(serial, readelf, destination, small_art_heap):
         subprocess.run(adb + ["pull", guest, str(root / guest.lstrip("/"))], check=True)
         copied.add(guest)
 
-        for guest in ("/vendor/etc/fstab.ranchu", sensor_config):
+        audio_configuration = (
+            "/system/etc/audio_effects.xml",
+            "/vendor/etc/audio_effects.xml", "/vendor/etc/audio_policy_configuration.xml",
+            "/vendor/etc/audio_policy_volumes.xml", "/vendor/etc/default_volume_tables.xml",
+            "/vendor/etc/bluetooth_audio_policy_configuration_7_0.xml",
+            "/vendor/etc/primary_audio_policy_configuration.xml", "/vendor/etc/r_submix_audio_policy_configuration.xml",
+        )
+        for guest in ("/vendor/etc/fstab.ranchu", sensor_config, *audio_configuration):
             local = root / guest.lstrip("/")
             local.parent.mkdir(parents=True, exist_ok=True)
             subprocess.run(adb + ["pull", guest, str(local)], check=True)
@@ -376,7 +395,7 @@ def collect(serial, readelf, destination, small_art_heap):
         sdkext = "/apex/com.android.sdkext/bin"
         programs = ("/system/bin/apexd", system_self_test, vendor_self_test, vold, vdc, keystore, keymint,
                     casefold, vold_prepare, odsign, zygote, installd, system_suspend, lights, health, sensors, surfaceflinger,
-                    bootanimation, composer, allocator, aconfigd, netd, iptables, cameraserver, camera_provider,
+                    bootanimation, composer, allocator, aconfigd, netd, iptables, cameraserver, camera_provider, audioserver, audio_hal,
                     f"{sdkext}/derive_sdk", f"{sdkext}/derive_classpath",
                     "/apex/com.android.art/bin/art_boot", "/apex/com.android.art/bin/artd",
                     "/apex/com.android.art/bin/odrefresh",
