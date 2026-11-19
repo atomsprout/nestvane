@@ -166,6 +166,10 @@ int main() {
         permute.cpu.v[2][15] = 0x80;
         assert(executeStartupInstruction(permute, 0x0e1f2c49)); // smov w9, v2.b[15]
         assert(permute.cpu.x[9] == 0xffffff80);
+        const std::array<float, 4> ceilSingles{-0.5f, 2.1f, 17, 42}, ceilSinglesResult{-0.0f, 3, 0, 0};
+        std::memcpy(permute.cpu.v[1].data(), ceilSingles.data(), sizeof(ceilSingles));
+        assert(executeStartupInstruction(permute, 0x0ea18821)); // frintp v1.2s, v1.2s
+        assert(std::memcmp(permute.cpu.v[1].data(), ceilSinglesResult.data(), sizeof(ceilSinglesResult)) == 0);
         const double half = -2.5, beyondSignedMax = 0x1p63;
         std::memcpy(permute.cpu.v[5].data(), &half, sizeof(half));
         assert(executeStartupInstruction(permute, 0x9e6400a9)); // fcvtas x9, d5

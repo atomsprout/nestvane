@@ -522,9 +522,12 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
             setLane(result, i, size, match ? UINT64_MAX : 0);
         }
     } else if (const auto rounding = word & 0xbfbffc00;
-               rounding == 0x0e219800 || rounding == 0x2e218800) { // FRINTM, FRINTA (vector).
+               rounding == 0x0e219800 || rounding == 0x2e218800 ||
+               rounding == 0x0ea18800) { // FRINTM, FRINTA, FRINTP (vector).
         const auto roundToIntegral = [rounding](auto value) {
-            return rounding == 0x0e219800 ? std::floor(value) : std::round(value);
+            if (rounding == 0x0e219800) return std::floor(value);
+            if (rounding == 0x0ea18800) return std::ceil(value);
+            return std::round(value);
         };
         const bool wide = word & 0x400000;
         if (wide && width == 8) return false;
