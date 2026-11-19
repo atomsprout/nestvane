@@ -179,9 +179,9 @@ struct BpfMap {
 
 class BpfProgram {
 public:
-    static constexpr uint32_t socketFilter = 1, classifier = 3, trafficAction = 4, cgroupPacket = 8, cgroupSocket = 9, socketOperations = 13, socketAddress = 18;
+    static constexpr uint32_t socketFilter = 1, classifier = 3, trafficAction = 4, cgroupPacket = 8, cgroupSocket = 9, socketOperations = 13, socketAddress = 18, socketOption = 25;
     static constexpr uint32_t cgroupInetCreate = 2, cgroupSocketOperations = 3, cgroupInetRelease = 34;
-    static constexpr uint32_t bind4 = 8, bind6 = 9;
+    static constexpr uint32_t bind4 = 8, bind6 = 9, getOption = 21, setOption = 22;
     static bool inetAddressAttach(uint32_t type) {
         return (type >= bind4 && type <= 11) || type == 14 || type == 15 || type == 19 || type == 20;
     }
@@ -257,6 +257,13 @@ public:
         }
     };
 
+    struct SocketOption {
+        bool setting;
+        int32_t level, name, length, retval;
+        std::span<uint8_t> bytes;
+        int32_t error = -1;
+    };
+
     struct SocketContext {
         std::shared_ptr<void> socket;
         uint64_t cookie;
@@ -264,13 +271,14 @@ public:
         std::function<bool(size_t)> canAllocateStorage;
         uint32_t pid = 0, tid = 0, port = 0;
         std::array<uint32_t, 4> address{};
+        SocketOption* option = nullptr;
     };
 
     static bool trafficControl(uint32_t type) { return type == classifier || type == trafficAction; }
     static bool packetProgram(uint32_t type) { return trafficControl(type) || type == cgroupPacket; }
     static bool supports(uint32_t type) {
         return type == socketFilter || packetProgram(type) || type == cgroupSocket ||
-            type == socketOperations || type == socketAddress;
+            type == socketOperations || type == socketAddress || type == socketOption;
     }
 
     bool load(uint32_t type, std::span<const uint8_t> bytes, const MapResolver& resolve) {
@@ -312,20 +320,23 @@ public:
                 if (i.registers || i.offset) return false;
                 switch (i.immediate) {
                     case 26: // skb_load_bytes
-                        if (type == socketOperations || type == cgroupSocket || type == socketAddress) return false;
+                        if (type == socketOperations || type == cgroupSocket || type == socketAddress || type == socketOption) return false;
                         break;
                     case 1: break; // bpf_map_lookup_elem
                     case 2: case 47:
-                        if (type == socketOperations || type == cgroupSocket || type == socketAddress) return false;
+                        if (type == socketOperations || type == cgroupSocket || type == socketAddress || type == socketOption) return false;
                         break;
                     case 3: // bpf_map_delete_elem
                         if (type == socketOperations) return false;
                         break;
                     case 14: case 15: // Current PID/TID and UID/GID.
-                        if (type != cgroupSocket && type != socketAddress) return false;
+                        if (type != cgroupSocket && type != socketAddress && type != socketOption) return false;
                         break;
                     case 46: // bpf_get_socket_cookie
                         if (type == socketOperations) return false;
+                        break;
+                    case 187: // bpf_set_retval
+                        if (type != socketOption) return false;
                         break;
                     case 107:
                         if (type == socketFilter) return false;
@@ -415,7 +426,8 @@ public:
     }
 
     std::optional<uint32_t> runSocketContext(const SocketContext& socket) const {
-        if ((programType != cgroupSocket && programType != socketAddress) || !socket.socket) return std::nullopt;
+        if ((programType != cgroupSocket && programType != socketAddress && programType != socketOption) ||
+            !socket.socket || (programType == socketOption && !socket.option)) return std::nullopt;
         return execute({}, nullptr, nullptr, &socket);
     }
 
@@ -587,6 +599,7 @@ private:
         constexpr size_t maxDepth = 8;
         constexpr uint64_t stackBase = 0x1000, stackStride = 0x1000, context = 0xf000, packetBase = 0x10000;
         constexpr uint64_t socketHandle = 0xe000;
+        auto* option = socketContext ? socketContext->option : nullptr;
         constexpr uint64_t callbackBase = 1ULL << 29, keyBase = 1ULL << 30;
         constexpr uint64_t mapHandleBase = 1ULL << 31, mapValueBase = 1ULL << 32, mapStride = 1ULL << 26;
         std::array<std::array<uint8_t, 512>, maxDepth> stacks{};
@@ -620,6 +633,7 @@ private:
                 if (index >= values.size() || (write && !values[index].writable)) return {};
                 return slice(values[index].bytes, mapValueBase + index * mapStride, address, size);
             }
+            if (address >= packetBase && option) return slice(option->bytes, packetBase, address, size);
             if (address >= packetBase && classifierPacket)
                 return slice(std::span<uint8_t>(classifierPacket->bytes).subspan(dataOffset), packetBase, address, size);
             if (address < stackBase) return {};
@@ -938,6 +952,9 @@ private:
                                 sockOps->callbackFlags = uint32_t(r2) & SocketOperations::allCallbackFlags;
                                 result = uint32_t(r2) & ~SocketOperations::allCallbackFlags;
                                 break;
+                            case 187: // bpf_set_retval
+                                option->error = int32_t(r1);
+                                break;
                             case 107: { // bpf_sk_storage_get
                                 auto* map = mapFor(r1);
                                 const auto flags = registers[4];
@@ -1069,6 +1086,33 @@ private:
                 switch (i.kind()) {
                     case 1: {
                         const auto address = src + i.offset;
+                        if (option && address >= context && address < context + 40) {
+                            const auto offset = address - context;
+                            if (i.width() == 8) {
+                                if (offset == 0) dst = socketHandle;
+                                else if (offset == 8) dst = packetBase;
+                                else if (offset == 16) dst = packetBase + option->bytes.size();
+                                else return std::nullopt;
+                            } else if (i.width() == 4) {
+                                if (offset == 24) dst = uint32_t(option->level);
+                                else if (offset == 28) dst = uint32_t(option->name);
+                                else if (offset == 32) dst = uint32_t(option->length);
+                                else if (offset == 36 && !option->setting) dst = uint32_t(option->retval);
+                                else return std::nullopt;
+                            } else return std::nullopt;
+                            break;
+                        }
+                        if (socketContext && hasSocket && i.width() == 4 && address >= socketHandle &&
+                            address < socketHandle + 24) {
+                            switch (address - socketHandle) {
+                                case 0: case 16: case 20: dst = 0; break;
+                                case 4: dst = socketContext->family; break;
+                                case 8: dst = socketContext->type; break;
+                                case 12: dst = socketContext->protocol; break;
+                                default: return std::nullopt;
+                            }
+                            break;
+                        }
                         if (socketContext && programType == socketAddress && address >= context && address < context + 72) {
                             const auto offset = address - context;
                             if (i.width() == 8 && offset == 64) dst = socketHandle;
@@ -1126,6 +1170,17 @@ private:
                     }
                     case 3: {
                         const auto address = dst + i.offset;
+                        if (option && address >= context && address < context + 40) {
+                            if (i.code != 0x63) return std::nullopt;
+                            switch (address - context) {
+                                case 24: if (!option->setting) return std::nullopt; option->level = int32_t(src); break;
+                                case 28: if (!option->setting) return std::nullopt; option->name = int32_t(src); break;
+                                case 32: option->length = int32_t(src); break;
+                                case 36: if (option->setting) return std::nullopt; option->retval = int32_t(src); break;
+                                default: return std::nullopt;
+                            }
+                            break;
+                        }
                         if (classifierPacket && i.code == 0x63 && address == context + 8) {
                             classifierPacket->mark = uint32_t(src);
                             break;

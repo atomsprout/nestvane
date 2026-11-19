@@ -168,6 +168,24 @@ int main() {
         BpfProgram::Packet packet;
         assert(program.classify(packet) == 42 && map->hash.find(key)->second.bytes[0] == 77);
     }
+    {
+        const auto encode = [](uint8_t op, uint8_t registers, int16_t offset = 0, int32_t immediate = 0) {
+            return op | (uint64_t(registers) << 8) | (uint64_t(uint16_t(offset)) << 16) |
+                   (uint64_t(uint32_t(immediate)) << 32);
+        };
+        const std::array code{encode(0x79, 0x12, 8), encode(0xb7, 3, 0, 42), encode(0x73, 0x32),
+            encode(0xb7, 3, 0, 1), encode(0x63, 0x31, 32), encode(0xb7, 0, 0, 1), encode(0x95, 0)};
+        const auto bytes = std::span(reinterpret_cast<const uint8_t*>(code.data()), sizeof(code));
+        BpfProgram program({}, {});
+        assert(program.load(BpfProgram::socketOption, bytes, {}));
+        std::array<uint8_t, 2> output{};
+        BpfProgram::SocketOption request{false, 1, 2, 2, 0, output};
+        BpfProgram::SocketContext socket{std::make_shared<int>(0), 1, 0, 0, 2, 1, 6, {}};
+        socket.option = &request;
+        assert(program.runSocketContext(socket) == 1 && request.length == 1 && output[0] == 42 && !output[1]);
+        request.bytes = {};
+        assert(!program.runSocketContext(socket)); // The zero-length buffer cannot be written.
+    }
     constexpr uint64_t base = 0x2000;
     Machine machine(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
     {

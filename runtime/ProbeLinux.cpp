@@ -2434,6 +2434,10 @@ bool ProbeLinux::socketCall(Machine& machine) {
         case 209: { // getsockopt on AF_UNIX.
             if (fd == descriptors().end()) { x[0] = uint64_t(-9); break; }
             if (!fd->second.socket) { x[0] = uint64_t(-88); break; }
+            if (fd->second.socket->storageIdentity) {
+                x[0] = getInetSocketOption(machine, *fd->second.socket);
+                break;
+            }
             if (x[1] != 1) return false;
             uint32_t size = 0;
             const auto* pointer = machine.read(x[4], sizeof(size), 4);
@@ -2495,13 +2499,32 @@ bool ProbeLinux::socketCall(Machine& machine) {
             if (fd == descriptors().end()) { x[0] = uint64_t(-9); break; }
             if (!fd->second.socket) { x[0] = uint64_t(-88); break; }
             auto& endpoint = *fd->second.socket;
-            if (x[1] != 1) return false;
-            const bool sendTimeout = x[2] == sendTimeoutOld || x[2] == sendTimeoutNew;
-            if (sendTimeout || x[2] == receiveTimeoutOld || x[2] == receiveTimeoutNew) {
+            int32_t level = x[1], name = x[2];
+            uint32_t size = x[4];
+            std::vector<uint8_t> buffer;
+            if (endpoint.storageIdentity) {
+                if (const auto result = setInetSocketOption(machine, endpoint, level, name, size, buffer)) {
+                    x[0] = *result;
+                    break;
+                }
+            }
+            const auto readOption = [&](std::span<uint8_t> output) {
+                if (buffer.empty()) return machine.readInto(x[3], output);
+                if (output.size() > buffer.size()) return false;
+                std::ranges::copy(std::span(buffer).first(output.size()), output.begin());
+                return true;
+            };
+            if (level != 1) {
+                if (!endpoint.storageIdentity) return false;
+                x[0] = uint64_t(-92);
+                break;
+            }
+            const bool sendTimeout = name == sendTimeoutOld || name == sendTimeoutNew;
+            if (sendTimeout || name == receiveTimeoutOld || name == receiveTimeoutNew) {
                 std::array<int64_t, 2> timeout{};
-                if (x[4] < sizeof timeout) { x[0] = invalid; break; }
+                if (size < sizeof timeout) { x[0] = invalid; break; }
                 auto bytes = std::span(reinterpret_cast<uint8_t*>(timeout.data()), sizeof timeout);
-                if (!machine.readInto(x[3], bytes)) { x[0] = uint64_t(-14); break; }
+                if (!readOption(bytes)) { x[0] = uint64_t(-14); break; }
                 const auto [sec, usec] = timeout;
                 if (usec < 0 || usec >= 1'000'000) { x[0] = uint64_t(-33); break; }
                 constexpr auto largest = std::chrono::microseconds::max().count();
@@ -2528,19 +2551,19 @@ bool ProbeLinux::socketCall(Machine& machine) {
                 x[0] = 0;
                 break;
             }
-            if (x[2] != 2 && x[2] != 16 && x[2] != 7 && x[2] != 8 &&
-                (x[2] != 33 || !endpoint.uevent))
-                return false;
-            if (x[4] < 4) { x[0] = invalid; break; }
-            const auto* value = machine.read(x[3], 4, 4);
-            if (!value) { x[0] = uint64_t(-14); break; }
+            if (name != 2 && name != 16 && name != 7 && name != 8 && (name != 33 || !endpoint.uevent)) {
+                if (!endpoint.storageIdentity) return false;
+                x[0] = uint64_t(-92);
+                break;
+            }
+            if (size < 4) { x[0] = invalid; break; }
             uint32_t enabled = 0;
-            std::memcpy(&enabled, value, sizeof(enabled));
-            if (x[2] == 2) {
+            if (!readOption({reinterpret_cast<uint8_t*>(&enabled), sizeof(enabled)})) { x[0] = uint64_t(-14); break; }
+            if (name == 2) {
                 endpoint.reuseAddress = enabled != 0;
-            } else if (x[2] == 16) {
+            } else if (name == 16) {
                 endpoint.passCredentials = enabled != 0;
-            } else if (x[2] == 7) {
+            } else if (name == 7) {
                 endpoint.sendBuffer = 2 * std::clamp<uint32_t>(enabled, 1024, 131072);
                 wakePollers();
             } else if (endpoint.uevent) {
@@ -2847,6 +2870,8 @@ bool ProbeLinux::fileCall(Machine& machine) {
                         inetReleasePrograms->erase(backing);
                         inet4BindPrograms.erase(backing);
                         inet6BindPrograms.erase(backing);
+                        inetGetOptionPrograms.erase(backing);
+                        inetSetOptionPrograms.erase(backing);
                         x[0] = directories.erase(backing) ? 0 : uint64_t(-2);
                     } else {
                         x[0] = directories.erase(backing) ? 0 : uint64_t(-2);
@@ -5239,24 +5264,24 @@ bool ProbeLinux::openInetSocket(const std::shared_ptr<SocketState>& socket) {
     if (!runInetPrograms(inetCreatePrograms, group, context, [](const auto&, size_t) { return true; }))
         return false;
     if (group.empty()) return true;
-    std::vector<std::weak_ptr<Directory>> ancestry;
+    socket->inetCgroup = group;
     for (auto path = std::string_view(group); path == cgroupRoot || inside(path, cgroupRoot);
          path = path.substr(0, path.rfind('/'))) {
         const auto identity = cgroupFiles.find(std::string(path) + std::string(cgroupProcs));
-        ancestry.emplace_back(identity == cgroupFiles.end() ? nullptr : identity->second);
+        socket->inetAncestry.emplace_back(identity == cgroupFiles.end() ? nullptr : identity->second);
         if (path == cgroupRoot) break;
     }
-    socket->onClose = [hooks = std::weak_ptr(inetReleasePrograms), group, ancestry = std::move(ancestry)](
-                          const SocketState& endpoint) {
+    socket->onClose = [hooks = std::weak_ptr(inetReleasePrograms)](const SocketState& endpoint) {
         if (const auto programs = hooks.lock(); programs && !programs->empty()) {
             constexpr std::owner_less<void> order{};
             const auto isCurrent = [&](const auto& attached, size_t depth) {
+                const auto& ancestry = endpoint.inetAncestry;
                 return depth < ancestry.size() && !order(attached, ancestry[depth]) && !order(ancestry[depth], attached);
             };
             try {
                 const BpfProgram::SocketContext release{endpoint.storageIdentity, endpoint.cookie, endpoint.credentials[1],
                     endpoint.credentials[2], endpoint.family, endpoint.type, endpoint.protocol, {}};
-                runInetPrograms(*programs, group, release, isCurrent);
+                runInetPrograms(*programs, endpoint.inetCgroup, release, isCurrent);
             } catch (const std::bad_alloc&) {
                 // Socket teardown still releases the descriptor and its storage identity.
             }
@@ -5310,6 +5335,100 @@ uint64_t ProbeLinux::bindInetSocket(Machine& machine, const std::shared_ptr<Sock
     return 0;
 }
 
+static bool runInetOption(const auto& programs, const auto& socket, uint32_t uid, uint32_t gid,
+                          uint32_t pid, uint32_t tid, BpfProgram::SocketOption& option) {
+    BpfProgram::SocketContext context{socket.storageIdentity, socket.cookie, uid, gid,
+        socket.family, socket.type, socket.protocol, {}, pid, tid};
+    context.option = &option;
+    constexpr std::owner_less<void> order{};
+    const auto isCurrent = [&](const auto& attached, size_t depth) {
+        const auto& ancestry = socket.inetAncestry;
+        return depth < ancestry.size() && !order(attached, ancestry[depth]) && !order(ancestry[depth], attached);
+    };
+    return runInetPrograms(programs, socket.inetCgroup, context, isCurrent);
+}
+
+uint64_t ProbeLinux::getInetSocketOption(Machine& machine, SocketState& socket) {
+    const auto& x = machine.cpu.x;
+    uint32_t capacity = 0;
+    if (!machine.readInto(x[4], {reinterpret_cast<uint8_t*>(&capacity), sizeof(capacity)})) return uint64_t(-14);
+    if (capacity > INT32_MAX) return invalid;
+    std::array<uint8_t, 16> original{};
+    uint32_t size = 0;
+    int32_t status = -92; // ENOPROTOOPT
+    const auto store = [&](auto value) {
+        size = std::min<uint32_t>(capacity, sizeof(value));
+        std::memcpy(original.data(), &value, size);
+        status = 0;
+    };
+    if (x[1] == 1) {
+        switch (x[2]) {
+            case 2: store(uint32_t(socket.reuseAddress)); break;
+            case 3: store(socket.type); break;
+            case 4: store(uint32_t(0)); break; // No asynchronous socket error has been queued.
+            case 7: store(socket.sendBuffer); break;
+            case 8: store(socket.receiveBuffer); break;
+            case 38: store(socket.protocol); break;
+            case 39: store(socket.family); break;
+            case 57:
+                if (capacity < sizeof(socket.cookie)) status = -22;
+                else store(socket.cookie);
+                break;
+            case sendTimeoutOld: case sendTimeoutNew: case receiveTimeoutOld: case receiveTimeoutNew: {
+                const auto delay = x[2] == sendTimeoutOld || x[2] == sendTimeoutNew
+                    ? socket.sendTimeout : socket.receiveTimeout;
+                const auto usec = std::max<int64_t>(0, delay.count());
+                store(std::array<int64_t, 2>{usec / 1'000'000, usec % 1'000'000});
+                break;
+            }
+        }
+    }
+    const auto result = [&](int32_t error, std::span<const uint8_t> data) -> uint64_t {
+        if (error) return uint64_t(error);
+        return (data.empty() || machine.write(x[3], data)) && writeGuest(machine, x[4], uint32_t(data.size()))
+            ? 0 : uint64_t(-14);
+    };
+    if (!inetGetOptionPrograms.empty()) {
+        std::array<uint8_t, pageSize> bytes{};
+        auto optionData = std::span(bytes).first(std::min<size_t>(capacity, bytes.size()));
+        std::ranges::copy(std::span(original).first(size), optionData.begin());
+        const auto originalLength = int32_t(status ? capacity : size);
+        BpfProgram::SocketOption option{false, int32_t(x[1]), int32_t(x[2]), originalLength, status, optionData};
+        if (!runInetOption(inetGetOptionPrograms, socket, userId(), groupId(), processId(), currentTid, option))
+            return uint64_t(option.error < 0 && option.error >= -4095 ? option.error : -1);
+        if (option.length < 0) return uint64_t(-14);
+        if (size_t(option.length) > optionData.size()) {
+            if (option.length != originalLength) return uint64_t(-14);
+        } else if (option.length) {
+            return result(option.retval, optionData.first(option.length));
+        }
+    }
+    return result(status, std::span(original).first(size));
+}
+
+std::optional<uint64_t> ProbeLinux::setInetSocketOption(Machine& machine, SocketState& socket,
+    int32_t& level, int32_t& name, uint32_t& size, std::vector<uint8_t>& buffer) {
+    if (size > INT32_MAX) return invalid;
+    if (inetSetOptionPrograms.empty()) return {};
+    buffer.resize(std::min<size_t>(size, pageSize));
+    if (!machine.readInto(machine.cpu.x[3], buffer)) return uint64_t(-14);
+    BpfProgram::SocketOption option{true, level, name, int32_t(size), 0, buffer};
+    if (!runInetOption(inetSetOptionPrograms, socket, userId(), groupId(), processId(), currentTid, option))
+        return uint64_t(option.error < 0 && option.error >= -4095 ? option.error : -1);
+    if (option.length == -1) return 0;
+    if (option.length < -1 || (option.length != int32_t(size) && size_t(option.length) > buffer.size()))
+        return uint64_t(-14);
+    if (!option.length || size_t(option.length) > buffer.size()) {
+        buffer.clear();
+        return {};
+    }
+    level = option.level;
+    name = option.name;
+    size = option.length;
+    buffer.resize(size);
+    return {};
+}
+
 uint64_t ProbeLinux::changeBpfCgroupAttachment(Machine& machine) {
     constexpr uint32_t allowOverride = 1, multi = 2;
     const auto& x = machine.cpu.x;
@@ -5322,9 +5441,11 @@ uint64_t ProbeLinux::changeBpfCgroupAttachment(Machine& machine) {
     const auto [targetFd, programFd, type, flags] = fields;
     const bool attach = x[0] == 8;
     const bool address = type == BpfProgram::bind4 || type == BpfProgram::bind6;
-    if (!address && type != BpfProgram::cgroupInetCreate && type != BpfProgram::cgroupInetRelease)
+    const bool option = type == BpfProgram::getOption || type == BpfProgram::setOption;
+    if (!address && !option && type != BpfProgram::cgroupInetCreate && type != BpfProgram::cgroupInetRelease)
         return uint64_t(-95);
     auto& hooks = type == BpfProgram::bind4 ? inet4BindPrograms : type == BpfProgram::bind6 ? inet6BindPrograms :
+                  type == BpfProgram::getOption ? inetGetOptionPrograms : type == BpfProgram::setOption ? inetSetOptionPrograms :
                   type == BpfProgram::cgroupInetCreate ? inetCreatePrograms : *inetReleasePrograms;
     if (flags > multi || (!attach && flags) ||
         std::ranges::any_of(std::span(input).subspan(sizeof(fields)), [](auto byte) { return byte != 0; }))
@@ -5351,7 +5472,8 @@ uint64_t ProbeLinux::changeBpfCgroupAttachment(Machine& machine) {
         return 0;
     }
     if (!program) return source == descriptors().end() ? uint64_t(-9) : invalid;
-    const auto programType = address ? BpfProgram::socketAddress : BpfProgram::cgroupSocket;
+    const auto programType = address ? BpfProgram::socketAddress :
+        option ? BpfProgram::socketOption : BpfProgram::cgroupSocket;
     if (program->type() != programType || program->info().attachType != type) return invalid;
     for (const auto& [path, item] : hooks) {
         if (inside(target.path, path) && !(item.flags & (multi | allowOverride))) return uint64_t(-1);
@@ -5645,6 +5767,7 @@ uint64_t ProbeLinux::loadBpfProgram(Machine& machine) {
         type == BpfProgram::cgroupSocket ? BpfProgram::cgroupInetCreate : 0;
     const bool validAttach = type == BpfProgram::cgroupPacket ? attachType <= 1 :
         type == BpfProgram::socketAddress ? BpfProgram::inetAddressAttach(attachType) :
+        type == BpfProgram::socketOption ? attachType == BpfProgram::getOption || attachType == BpfProgram::setOption :
         !attachType || attachType == expected ||
         (type == BpfProgram::cgroupSocket && attachType == BpfProgram::cgroupInetRelease);
     if ((flags & ~3U) || flags == 3 || ifindex || !validAttach ||
