@@ -121,3 +121,15 @@
 - iPhone 11 第 7167 号进程的实时记录复现了 Mac 的图形停点。init 开始后 55,782 ms，原版图形模块打开 `/dev/goldfish_pipe_dprctd` 收到 `ENOENT`。SurfaceFlinger 启动后再次尝试，64,653 ms 时记录 `eglInitialize` 失败。此时真机温度为 nominal。
 
 - 客体代码执行 `openat → write → read → close`，从 Mac 的真实 gfxstream 收到 `rcGetRendererVersion` 响应 `1` 并退出 0。宿主 ABI 测试覆盖描述符复制、分段握手、短写、坏地址后保留读取数据及等待可读。宿主常规与 ASan/UBSan 回归和 iOS 签名构建均通过。Mac 集成测试的适配器只处理该版本查询，iOS App 尚待接入完整渲染器。
+
+- iPhone 11 第 7167 号进程完成 FNMUL 修复后的复测，`DisplayManagerService` 等待 `SurfaceControl.nativeGetCompositionDataspaces`，与 Mac 上的 `SurfaceFlingerAIDL` 等待一致。运行达到 720 秒诊断时限，仍待客体图形后端。
+
+- Gfxstream `79c2174f9133fa004c1c9c70ecd50970f42fa53b` 现可用 [iPhoneOS 补丁](../tools/patches/gfxstream-iphoneos.patch) 构建。补丁把 iOS 窗口实现接到 UIKit/CAMetalLayer，保留原版 EGL 转发，macOS 的 CGL 视频路径仅在 macOS 使用。已从干净源码重新应用、编译和链接。Mach-O 平台为 iOS ARM64，最低版本 16.0，链接依赖中包含 UIKit、QuartzCore 和 IOSurface。ANGLE Metal 库与 App 集成待验证。
+
+  ```sh
+  git -C "$GFXSTREAM_SOURCE" apply "$PWD/tools/patches/gfxstream-iphoneos.patch"
+  cmake -S "$GFXSTREAM_SOURCE" -B /tmp/nestvane-gfxstream-ios -G Ninja \
+    -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_ARCHITECTURES=arm64 \
+    -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0 -DDEPENDENCY_RESOLUTION=SYSTEM
+  cmake --build /tmp/nestvane-gfxstream-ios --target gfxstream_backend
+  ```

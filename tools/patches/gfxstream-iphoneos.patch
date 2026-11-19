@@ -1,0 +1,333 @@
+diff --git a/common/base/CMakeLists.txt b/common/base/CMakeLists.txt
+index 8c0d25c73459ed865d9b75125b3d0c81f7bbdced..ce729a81bf09167be6af3f86f83994ae3b30d80f 100644
+--- a/common/base/CMakeLists.txt
++++ b/common/base/CMakeLists.txt
+@@ -110,6 +110,8 @@ elseif(LINUX)
+     set(gfxstream_common_base_platform_deps
+         dl
+         rt)
++elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
++    set(gfxstream_common_base_platform_deps "-framework Foundation")
+ elseif(APPLE)
+     set(gfxstream_common_base_platform_deps
+         "-framework Foundation"
+diff --git a/common/base/System.cpp b/common/base/System.cpp
+index c174c5e97c5c2b477d91397ae476644299c42b41..cfe1788b7d3600c224c616b7d4654dd72d25eb52 100644
+--- a/common/base/System.cpp
++++ b/common/base/System.cpp
+@@ -33,7 +33,12 @@
+ #endif
+ 
+ #ifdef __APPLE__
++#include <TargetConditionals.h>
++#if TARGET_OS_OSX
+ #include <libproc.h>
++#else
++#include <mach-o/dyld.h>
++#endif
+ #include <mach/clock.h>
+ #include <mach/mach.h>
+ #endif  // __APPLE__
+@@ -341,8 +346,13 @@ static std::string getProgramDirectoryFromPlatform() {
+     }
+ #elif defined(__APPLE__)
+     char s[PATH_MAX];
++#if TARGET_OS_OSX
+     auto pid = getpid();
+     proc_pidpath(pid, s, sizeof(s));
++#else
++    uint32_t size = sizeof(s);
++    if (_NSGetExecutablePath(s, &size) != 0) return "<unknown-application-dir>";
++#endif
+     char* x = ::strrchr(s, '/');
+     if (x) {
+         // skip all slashes - there might be more than one
+diff --git a/common/base/system-native-mac.mm b/common/base/system-native-mac.mm
+index 47d5c389243ae8c0ca596c1752ace4c9d50c548e..224759e02f8dc2582eced08a7534f29496a075fd 100644
+--- a/common/base/system-native-mac.mm
++++ b/common/base/system-native-mac.mm
+@@ -16,6 +16,9 @@
+ #include "gfxstream/system/Memory.h"
+ #include "gfxstream/system/System.h"
+ 
++#include <TargetConditionals.h>
++
++#if TARGET_OS_OSX
+ #include <CoreFoundation/CoreFoundation.h>
+ #include <IOKit/IOBSD.h>
+ #include <IOKit/IOKitLib.h>
+@@ -23,6 +26,7 @@
+ 
+ #include <IOKit/kext/KextManager.h>
+ #include <IOKit/storage/IOBlockStorageDevice.h>
++#endif
+ 
+ #import <Foundation/Foundation.h>
+ #import <Foundation/NSProcessInfo.h>
+@@ -37,6 +41,7 @@
+ namespace gfxstream {
+ namespace base {
+ 
++#if TARGET_OS_OSX
+ // From:
+ // https://stackoverflow.com/questions/49677034/thread-sleeps-too-long-on-os-x-when-in-background
+ void disableAppNap_macImpl(void) {
+@@ -48,6 +53,8 @@ void disableAppNap_macImpl(void) {
+    }
+ }
+ 
++#endif
++
+ // based on https://stackoverflow.com/questions/13893134/get-current-pthread-cpu-usage-mac-os-x
+ void cpuUsageCurrentThread_macImpl(
+     uint64_t* user,
+@@ -81,6 +88,7 @@ void cpuUsageCurrentThread_macImpl(
+     mach_port_deallocate(mach_task_self(), thread);
+ }
+ 
++#if TARGET_OS_OSX
+ Optional<DiskKind> nativeDiskKind(int st_dev) {
+     const char* devName = devname(st_dev, S_IFBLK);
+     if (!devName) {
+@@ -164,5 +172,7 @@ void hideDockIcon_macImpl(void) {
+ 
+ }
+ 
++#endif
++
+ }  // namespace base
+ }  // namespace gfxstream
+diff --git a/host/CMakeLists.txt b/host/CMakeLists.txt
+index 473b5055af3a046796b65cb4ed6c4b4a884d2860..6826f5a30ba2c1efb0fb4c6a991244619ae90f8e 100644
+--- a/host/CMakeLists.txt
++++ b/host/CMakeLists.txt
+@@ -152,7 +152,9 @@ target_include_directories(
+         ${GFXSTREAM_REPO_ROOT}/host/vulkan/cereal/common
+         )
+ 
+-if (APPLE)
++if (CMAKE_SYSTEM_NAME STREQUAL "iOS")
++    target_link_libraries(gfxstream_backend_static PUBLIC "-framework UIKit" "-framework QuartzCore" "-framework IOSurface")
++elseif (APPLE)
+     target_link_libraries(gfxstream_backend_static PUBLIC "-framework AppKit -framework QuartzCore -framework IOSurface")
+ endif()
+ if (WIN32)
+@@ -194,7 +196,7 @@ target_link_libraries(
+     PRIVATE
+     )
+ 
+-if (APPLE)
++if (APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+     set_target_properties(gfxstream_backend
+         PROPERTIES
+         LINK_FLAGS  "-undefined dynamic_lookup -flat_namespace")
+diff --git a/host/gl/emulation_gl.cpp b/host/gl/emulation_gl.cpp
+index c4a3f6571767d5d172f6948b774836915eb6c84e..a3cfb10bdb5aa441a437b0e1c8a8b3b31f45a5f6 100644
+--- a/host/gl/emulation_gl.cpp
++++ b/host/gl/emulation_gl.cpp
+@@ -14,6 +14,10 @@
+ 
+ #include "emulation_gl.h"
+ 
++#ifdef __APPLE__
++#include <TargetConditionals.h>
++#endif
++
+ #include <algorithm>
+ #include <cstring>
+ #include <optional>
+@@ -1646,7 +1650,7 @@ void EmulationGl::updateYUVTextures(uint32_t type, uint32_t* textures, void* pri
+         gtextures[2] = s_gles2.glGetGlobalTexName(textures[2]);
+     }
+ 
+-#ifdef __APPLE__
++#if defined(__APPLE__) && TARGET_OS_OSX
+     EGLContext prevContext = s_egl.eglGetCurrentContext();
+     auto mydisp = EglGlobalInfo::getInstance()->getDisplayFromDisplayType(EGL_DEFAULT_DISPLAY);
+     void* nativecontext = mydisp->getLowLevelContext(prevContext);
+diff --git a/host/gl/glestranslator/egl/CMakeLists.txt b/host/gl/glestranslator/egl/CMakeLists.txt
+index 103b18e50f85299c14092e276efc9e8d0a6b7131..f55af20014d755f613c08d4cb5762e9eea8b749a 100644
+--- a/host/gl/glestranslator/egl/CMakeLists.txt
++++ b/host/gl/glestranslator/egl/CMakeLists.txt
+@@ -54,6 +54,11 @@ if (WIN32)
+         EGL_translator_static
+         ${egl-translator-common-sources}
+         ${egl-translator-windows-sources})
++elseif (CMAKE_SYSTEM_NAME STREQUAL "iOS")
++    add_library(EGL_translator_static
++        ${egl-translator-common-sources}
++        egl_os_api_egl.cpp
++        egl_os_api_ios.mm)
+ elseif (APPLE)
+     add_library(
+         EGL_translator_static
+@@ -94,6 +99,8 @@ if (APPLE)
+ endif()
+ 
+ if (WIN32)
++elseif (CMAKE_SYSTEM_NAME STREQUAL "iOS")
++    target_link_libraries(EGL_translator_static PUBLIC "-framework UIKit" "-framework QuartzCore" "-framework IOSurface")
+ elseif (APPLE)
+     target_link_libraries(EGL_translator_static PUBLIC "-framework AppKit -framework IOSurface")
+ elseif (QNX)
+diff --git a/host/gl/glestranslator/egl/egl_os_api_egl.cpp b/host/gl/glestranslator/egl/egl_os_api_egl.cpp
+index 19505b60e71d68b2f069fcc9fcca1841874803a7..663b512b4a158c29a21f11571614da80bfb08a0e 100644
+--- a/host/gl/glestranslator/egl/egl_os_api_egl.cpp
++++ b/host/gl/glestranslator/egl/egl_os_api_egl.cpp
+@@ -94,7 +94,14 @@ static const char* kGLES2LibName = "libGLESv2.so";
+ 
+ #else // __APPLE__
+ 
++#include <TargetConditionals.h>
++#if TARGET_OS_IOS
++bool nsGetWinDims(void* window, unsigned int* width, unsigned int* height);
++bool nsCheckColor(void* window, int colorSize);
++void* nsGetLayer(void* window);
++#else
+ #include "mac_native.h"
++#endif
+ 
+ static const char* kEGLLibName = "libEGL.dylib";
+ static const char* kGLES2LibName = "libGLESv2.dylib";
+@@ -814,18 +821,23 @@ Surface* EglOsEglDisplay::createWindowSurface(PixelFormat* pf,
+ #endif
+     }
+     surface_attribs.push_back(EGL_NONE);
++    auto eglWindow = win;
+ #ifdef __APPLE__
+-    win = nsGetLayer(win);
++    eglWindow = nsGetLayer(win);
+ #endif
+     EGLSurface surface = mDispatcher.eglCreateWindowSurface(
+-            mDisplay, ((EglOsEglPixelFormat*)pf)->mConfigId, win, surface_attribs.data()
++            mDisplay, ((EglOsEglPixelFormat*)pf)->mConfigId, eglWindow, surface_attribs.data()
+     );
+     CHECK_EGL_ERR
+     if (surface == EGL_NO_SURFACE) {
+         D("create window surface failed\n");
+         return nullptr;
+     }
++#if defined(__APPLE__) && TARGET_OS_IOS
+     return new EglOsEglSurface(EglOS::Surface::WINDOW, surface, win);
++#else
++    return new EglOsEglSurface(EglOS::Surface::WINDOW, surface, eglWindow);
++#endif
+ }
+ 
+ bool EglOsEglDisplay::releasePbuffer(Surface* pb) {
+diff --git a/host/gl/glestranslator/egl/egl_os_api_ios.mm b/host/gl/glestranslator/egl/egl_os_api_ios.mm
+new file mode 100644
+index 0000000000000000000000000000000000000000..25effdfd4f5981886595af019ccd12f51630186b
+--- /dev/null
++++ b/host/gl/glestranslator/egl/egl_os_api_ios.mm
+@@ -0,0 +1,28 @@
++#include "egl_os_api.h"
++
++#import <QuartzCore/CAMetalLayer.h>
++#import <UIKit/UIKit.h>
++
++EglOS::Engine* EglOS::Engine::createHostInstance() {
++    return getEgl2EglHostInstance(false);
++}
++
++void* nsGetLayer(void* window) {
++    UIView* view = (__bridge UIView*)window;
++    return (__bridge void*)view.layer;
++}
++
++bool nsGetWinDims(void* window, unsigned int* width, unsigned int* height) {
++    UIView* view = (__bridge UIView*)window;
++    if (!view) return false;
++    *width = view.bounds.size.width;
++    *height = view.bounds.size.height;
++    return *width && *height;
++}
++
++bool nsCheckColor(void* window, int colorSize) {
++    CAMetalLayer* layer = (__bridge CAMetalLayer*)nsGetLayer(window);
++    if (![layer isKindOfClass:CAMetalLayer.class]) return false;
++    const int rgbBits = layer.pixelFormat == MTLPixelFormatRGB10A2Unorm ? 30 : 24;
++    return colorSize <= rgbBits;
++}
+diff --git a/host/native_window/CMakeLists.txt b/host/native_window/CMakeLists.txt
+index c31cab60318427c5c293057d7b7fe65ef4df25ab..514d7dcfd3f159468c9dc9fc709e930244b946dd 100644
+--- a/host/native_window/CMakeLists.txt
++++ b/host/native_window/CMakeLists.txt
+@@ -1,6 +1,8 @@
+ 
+ 
+-if (APPLE)
++if (CMAKE_SYSTEM_NAME STREQUAL "iOS")
++    set(gfxstream_host_native_window_platform_sources native_sub_window_ios.mm)
++elseif (APPLE)
+     set(gfxstream_host_native_window_platform_sources
+         native_sub_window_cocoa.mm)
+ elseif (WIN32)
+@@ -33,3 +35,7 @@ target_link_libraries(
+     gfxstream_backend_headers
+     gfxstream_host_decoder_common
+     )
++
++if (CMAKE_SYSTEM_NAME STREQUAL "iOS")
++    target_link_libraries(gfxstream_host_native_window PUBLIC "-framework UIKit" "-framework QuartzCore" gfxstream_opengl_headers)
++endif()
+diff --git a/host/native_window/native_sub_window_ios.mm b/host/native_window/native_sub_window_ios.mm
+new file mode 100644
+index 0000000000000000000000000000000000000000..eee1b48f11100e97416f5680aa1772cdae38b8ce
+--- /dev/null
++++ b/host/native_window/native_sub_window_ios.mm
+@@ -0,0 +1,54 @@
++#import <QuartzCore/CAMetalLayer.h>
++#import <UIKit/UIKit.h>
++
++#include "gfxstream/host/native_sub_window.h"
++
++@interface GfxstreamMetalView : UIView
++@end
++
++@implementation GfxstreamMetalView
+++ (Class)layerClass { return CAMetalLayer.class; }
++@end
++
++EGLNativeWindowType createSubWindow(FBNativeWindowType parent, int x, int y, int width,
++                                    int height, float scale, SubWindowRepaintCallback,
++                                    void*, int hidden) {
++    if (!parent || width <= 0 || height <= 0 || scale <= 0 || !NSThread.isMainThread) return nullptr;
++
++    UIView* container = (__bridge UIView*)parent;
++    GfxstreamMetalView* view = [[GfxstreamMetalView alloc] initWithFrame:CGRectMake(x, y, width, height)];
++    view.hidden = hidden;
++    view.contentScaleFactor = scale;
++    [container addSubview:view];
++    return (__bridge void*)view;
++}
++
++void destroySubWindow(EGLNativeWindowType window) {
++    UIView* view = (__bridge UIView*)window;
++    if (NSThread.isMainThread) {
++        [view removeFromSuperview];
++        [view release];
++    } else {
++        dispatch_async(dispatch_get_main_queue(), ^{
++            [view removeFromSuperview];
++            [view release];
++        });
++    }
++}
++
++int moveSubWindow(FBNativeWindowType parent, EGLNativeWindowType window, int x, int y,
++                  int width, int height, float scale) {
++    if (!parent || !window || width <= 0 || height <= 0 || scale <= 0 || !NSThread.isMainThread) return 0;
++
++    UIView* view = (__bridge UIView*)window;
++    view.frame = CGRectMake(x, y, width, height);
++    view.contentScaleFactor = scale;
++    return 1;
++}
++
++void* getNativeDisplay() { return nullptr; }
++
++void* getMetalLayerFromView(void* window) {
++    UIView* view = (__bridge UIView*)window;
++    return (__bridge void*)view.layer;
++}
