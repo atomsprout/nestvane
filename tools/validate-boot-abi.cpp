@@ -75,6 +75,10 @@ int main() {
         std::memcpy(permute.cpu.v[5].data(), floorDoubles.data(), sizeof(floorDoubles));
         assert(executeStartupInstruction(permute, 0x4e6198a4)); // frintm v4.2d, v5.2d
         assert(std::memcmp(permute.cpu.v[4].data(), floorDoublesResult.data(), sizeof(floorDoublesResult)) == 0);
+        const std::array<float, 4> roundSingles{-0.5f, 1.5f, 17, 42}, roundSinglesResult{-1, 2, 0, 0};
+        std::memcpy(permute.cpu.v[0].data(), roundSingles.data(), sizeof(roundSingles));
+        assert(executeStartupInstruction(permute, 0x2e218800)); // frinta v0.2s, v0.2s
+        assert(std::memcmp(permute.cpu.v[0].data(), roundSinglesResult.data(), sizeof(roundSinglesResult)) == 0);
         const double half = -2.5, beyondSignedMax = 0x1p63;
         std::memcpy(permute.cpu.v[5].data(), &half, sizeof(half));
         assert(executeStartupInstruction(permute, 0x9e6400a9)); // fcvtas x9, d5
