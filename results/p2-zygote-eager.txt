@@ -176,3 +176,24 @@ Collected 1130 Android files using the SDK Android 17 reference.
 Added /system/lib64/libwebviewchromium_loader.so, 51456 bytes.
 Guest root file bytes: 784434576
 Image includes the original nonencrypted action and now queues it after the boot trigger.
+
+iPhone 11 with NZCV register transfers and guest meminfo
+iOS device 26.0.1 | process 6950 | thermal serious → serious
+Zygote: ...preloaded 18596 classes in 233414ms.
+Zygote: end preload
+SystemServer: Entered the Android system server!
+SystemServerTiming: StartActivityManager
+Installer: installd not found; trying again
+AndroidRuntime: *** FATAL EXCEPTION IN SYSTEM PROCESS: watchdog
+java.lang.ArithmeticException: divide by zero
+    at com.android.internal.os.ProcessCpuTracker.<init>(ProcessCpuTracker.java:322)
+  guest execution wall time: 481039 ms
+
+Mac with clock ticks and the original main-class startup trigger
+<6>init: Command 'class_start main' action=nonencrypted (/system/etc/init/hw/init.rc:1229) took 325ms and succeeded
+  guest PID 152 entered /system/bin/installd (guest context u:r:installd:s0)
+nativeloader: Load libwebviewchromium_loader.so using system ns (caller=/system/framework/framework.jar!classes4.dex): ok
+  syscall 60 ... x0=0x80000700 ... [unimplemented in guest PID 152, suspended]
+  no runnable guest threads
+  guest execution wall time: 171843 ms
+Guest quotactl coverage for unavailable and invalid devices: host suite and ASan/UBSan passed.

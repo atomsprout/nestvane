@@ -1009,7 +1009,12 @@ int main() {
     put(base + 240, "/dev/block/loop0");
     put(base + 280, "/system/apex/test.apex");
     const auto control = call(56, {uint32_t(-100), base + 200, 2});
+    constexpr uint64_t getUserQuota = 0x80000700;
+    assert(call(60, {getUserQuota, base + 240, 0, base + 512}) == uint64_t(-2));
+    assert(call(60, {getUserQuota, 0xdead, 0, base + 512}) == uint64_t(-14));
+    assert(call(60, {getUserQuota | 3, base + 240, 0, base + 512}) == uint64_t(-22));
     assert(call(29, {control, 0x4c82}) == 0);
+    assert(call(60, {getUserQuota, base + 240, 0, base + 512}) == uint64_t(-19));
     const auto block = call(56, {uint32_t(-100), base + 240, 2});
     const auto backing = call(56, {uint32_t(-100), base + 280, 0x10000});
     assert(control < 256 && block < 256 && backing < 256);

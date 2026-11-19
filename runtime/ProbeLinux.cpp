@@ -2356,6 +2356,24 @@ bool ProbeLinux::fileCall(Machine& machine) {
         case 59: // pipe2
             x[0] = makePipe(machine);
             break;
+        case 60: { // quotactl: query quota availability on a guest block filesystem.
+            constexpr uint32_t getQuota = 0x800007;
+            if (uint32_t(x[0]) >> 8 != getQuota || (x[0] & 255) > 2) { x[0] = invalid; break; }
+            const auto source = readPath(machine, x[1]);
+            if (!source) { x[0] = uint64_t(-14); break; }
+            if (source->empty()) { x[0] = uint64_t(-2); break; }
+            const auto target = followLinks(normalizePath(*source));
+            if (!target) { x[0] = uint64_t(-40); break; }
+            const auto device = backingPath(*target);
+            if (!loopDevices.contains(device)) { x[0] = uint64_t(-2); break; }
+            const bool mounted = std::any_of(current->mountNamespace->mounts.begin(),
+                current->mountNamespace->mounts.end(), [&](const auto& entry) {
+                    return entry.second.ext4 && entry.second.device == device;
+                });
+            // The read-only guest Ext4 implementation has no quota operations.
+            x[0] = uint64_t(mounted ? -38 : -19);
+            break;
+        }
         case 63: case 67: { // read, pread64
             if (descriptor == descriptors().end() || descriptor->second.pathOnly()) { x[0] = uint64_t(-9); break; }
             auto& fd = descriptor->second;

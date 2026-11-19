@@ -187,7 +187,7 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
                             if (machine.load64(cpu.x[1], name)) report << " path=" << pathArgument(machine, name);
                         }
                         break;
-                    case 33: case 34: case 35: case 48: case 53: case 54: case 56: case 78: case 79:
+                    case 33: case 34: case 35: case 48: case 53: case 54: case 56: case 60: case 78: case 79:
                         report << " path=" << pathArgument(machine, cpu.x[1]);
                         break;
                     case 200: case 203:
