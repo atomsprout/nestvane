@@ -1,21 +1,21 @@
 diff --git a/bpf/loader/Android.bp b/bpf/loader/Android.bp
-index 345e92b..715e864 100644
+index bee2681..5b8b831 100644
 --- a/bpf/loader/Android.bp
 +++ b/bpf/loader/Android.bp
-@@ -45,6 +45,7 @@ cc_binary {
-         "libbpf",
+@@ -49,6 +49,7 @@ cc_binary {
+ 
+     defaults: ["bpf_cc_defaults"],
+     cflags: [
++        "-DNESTVANE_INTERPRETED_BPF",
+         "-Wformat",
+         "-Wformat-signedness",
      ],
-     srcs: ["NetBpfLoad.cpp"],
-+    cflags: ["-DNESTVANE_INTERPRETED_BPF"],
-     apex_available: [
-         "com.android.tethering",
-         "//apex_available:platform",
 diff --git a/bpf/loader/NetBpfLoad.cpp b/bpf/loader/NetBpfLoad.cpp
-index 74c37c4..aeb39f6 100644
+index 7ba3247..f4ba600 100644
 --- a/bpf/loader/NetBpfLoad.cpp
 +++ b/bpf/loader/NetBpfLoad.cpp
-@@ -27,10 +27,12 @@
- #include <fstream>
+@@ -27,11 +27,13 @@
+ #include <fcntl.h>
  #include <inttypes.h>
  #include <iostream>
 +#include <linux/bpf.h>
@@ -23,11 +23,12 @@ index 74c37c4..aeb39f6 100644
  #include <log/log.h>
  #include <net/if.h>
  #include <optional>
+ #include <span>
 +#include <stddef.h>
  #include <stdint.h>
  #include <stdio.h>
  #include <stdlib.h>
-@@ -85,6 +87,47 @@ using std::vector;
+@@ -85,6 +87,47 @@ using std::chrono::steady_clock;
  namespace android {
  namespace bpf {
  
@@ -72,21 +73,21 @@ index 74c37c4..aeb39f6 100644
 +    return run.test.retval == 0x60 ? 0 : -EIO;
 +}
 +
- // Bpf programs may specify per-program & per-map selinux_context and pin_subdir.
- //
- // The BpfLoader needs to convert these bpf.o specified strings into an enum
-@@ -1340,7 +1383,8 @@ static int loadCodeSections(const char* elfPath, vector<codeSection>& cs, const
-             }
-             ALOGI("prog %s id %d len jit:%d xlat:%d", progPinLoc.c_str(), progId, jitLen, xlatLen);
+ // This verifies the macro and the C++ api are in sync, and that they're compile time known.
+ constexpr auto useLibBpf = COM_ANDROID_TETHERING_READONLY_FLAGS_USE_LIBBPF;
+ static_assert(std::is_same<decltype(useLibBpf), const bool>::value, "useLibBpf must be a boolean.");
+@@ -1002,7 +1045,8 @@ static int validateProg(const borrowed_fd& fd, const char* const progPinLoc) {
+     }
+     if (!isUser) ALOGD("prog %s id %d len jit:%d xlat:%d", progPinLoc, progId, jitLen, xlatLen);
  
--            if (!jitLen && bpfloader_ver >= BPFLOADER_MAINLINE_25Q2_VERSION) {
-+            if (!jitLen && bpfloader_ver >= BPFLOADER_MAINLINE_25Q2_VERSION &&
-+                (!kNestvaneInterpretedBpf || xlatLen <= 0)) {
-                 ALOGE("Kernel eBPF JIT failure for %s", progPinLoc.c_str());
-                 return -ENOTSUP;
-             }
-@@ -1855,7 +1899,14 @@ static int doLoad(char** argv, char * const envp[]) {
-             isAtLeastKernelVersion(5, 13, 0)) return 1;
+-    if (!jitLen && api_level_full >= NETBPFLOAD_25Q2_VER) {
++    if (!jitLen && api_level_full >= NETBPFLOAD_25Q2_VER &&
++        (!kNestvaneInterpretedBpf || xlatLen <= 0)) {
+         ALOGE("Kernel eBPF JIT failure for %s", progPinLoc);
+         return -ENOTSUP;
+     }
+@@ -1742,7 +1786,14 @@ static int doLoad(char** argv, char * const envp[]) {
+             isAtLeastKernelVersion(5, 13)) return 23;
      }
  
 -    if (isAtLeastU) {
@@ -94,7 +95,7 @@ index 74c37c4..aeb39f6 100644
 +        const int result = verifyInterpretedBpf();
 +        if (result) {
 +            ALOGE("Nestvane packet interpreter self-test failed: %s", strerror(-result));
-+            return 1;
++            return 24;
 +        }
 +        ALOGI("Nestvane packet interpreter self-test passed");
 +    } else if (isAtLeastU) {
