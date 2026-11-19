@@ -413,10 +413,12 @@ int main() {
         assert(machine.read(view + pageSize, 1, 4) == contents.data() + pageSize * 2);
         assert(call(226, {view, pageSize, 3}) == uint64_t(-13));
         assert(!machine.store64(view, 0));
-        const auto tail = call(222, {0, pageSize, 1, 1, file, pageSize * 3});
-        assert(*machine.read(tail, 1, 4) == 0x2a && *machine.read(tail + 32, 1, 4) == 0);
+        const auto tail = call(222, {0, pageSize * 3, 1, 1, file, pageSize * 2});
+        assert(machine.read(tail, 1, 4) == contents.data() + pageSize * 2);
+        assert(*machine.read(tail + pageSize, 1, 4) == 0x2a && *machine.read(tail + pageSize + 32, 1, 4) == 0);
+        assert(!machine.read(tail + pageSize * 2, 1, 4));
         assert(call(57, {file}) == 0 && machine.read(view, 1, 4) == contents.data() + pageSize);
-        assert(call(215, {view, pageSize * 2}) == 0 && call(215, {tail, pageSize}) == 0);
+        assert(call(215, {view, pageSize * 2}) == 0 && call(215, {tail, pageSize * 3}) == 0);
     }
     {
         using namespace std::chrono;

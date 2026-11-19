@@ -3229,7 +3229,7 @@ uint64_t ProbeLinux::map(Machine& machine) {
     if (atAddress && !(x[3] & fixedNoReplace) && start >= mappingFloor && end > nextMapping) return noMemory;
     std::span<const uint8_t> bytes;
     uint64_t backedLength = length;
-    bool immutableRoot = false;
+    uint64_t imageLength = 0;
     if (anon) {
         if (x[5]) return invalid;
     } else {
@@ -3302,29 +3302,34 @@ uint64_t ProbeLinux::map(Machine& machine) {
             ? std::span<const uint8_t>(fd.temporary->storage->pages).first(fd.temporary->storage->size) : fd.contents();
         if (x[5] < raw.size()) bytes = raw.subspan(x[5], std::min<uint64_t>(length, raw.size() - x[5]));
         backedLength = pageAlignedLength(bytes.size());
-        // Full pages from the read-only root are already mapped in the host image.
-        immutableRoot = sharing == 1 && !(x[2] & 2) && !fd.ext4File &&
-                        !fd.temporary && bytes.size() == length && files.contains(fd.path);
+        // The root loader and retained read-only APEX mounts own these bytes throughout the boot.
+        if (sharing == 1 && !(x[2] & 2) && !fd.temporary && files.contains(fd.path))
+            imageLength = bytes.size() & ~(pageSize - 1);
     }
     const bool sparse = anon && !x[2];
     const bool lazy = anon && !sparse && sharing == 2 && length >= lazyAnonymousThreshold;
-    if (!sparse && !lazy && !immutableRoot && (backedLength > memoryLimit / 2 ||
-        !allowsBacking(machine, start, end, backedLength, memoryLimit))) return noMemory;
-    Segment segment{start, {}, guestFlags(x[2]), sparse || lazy || immutableRoot ? length : 0,
+    const auto copiedLength = backedLength - imageLength;
+    if (!sparse && !lazy && copiedLength && (copiedLength > memoryLimit / 2 ||
+        !allowsBacking(machine, start, end, copiedLength, memoryLimit))) return noMemory;
+    const auto flags = guestFlags(x[2]);
+    Segment segment{start + imageLength, {}, flags, sparse || lazy ? length : 0,
                     false, {}, 0, anon, !anon && sharing == 1, false, !anon};
     segment.sharedAnonymous = anon && sharing == 1;
-    if (immutableRoot) {
-        segment.imageView = bytes.data();
-    } else if (lazy) {
+    if (lazy) {
         segment.anonymousPages = AnonymousPages::allocate(length, anonymousBudget);
         if (!segment.anonymousPages) return noMemory;
-    } else if (!sparse) {
-        segment.bytes.resize(backedLength);
-        std::copy(bytes.begin(), bytes.end(), segment.bytes.begin());
+    } else if (!sparse && copiedLength) {
+        segment.bytes.resize(copiedLength);
+        std::copy(bytes.begin() + imageLength, bytes.end(), segment.bytes.begin());
     }
     if (atAddress) changeRange(machine, start, end, {});
     if (!atAddress || (x[3] & fixedNoReplace)) nextMapping = std::max(nextMapping, end);
-    if (sparse || backedLength) machine.insertSegment(std::move(segment));
+    if (imageLength) {
+        Segment view{start, {}, flags, imageLength, false, {}, 0, false, true, false, true};
+        view.imageView = bytes.data();
+        machine.insertSegment(std::move(view));
+    }
+    if (sparse || copiedLength) machine.insertSegment(std::move(segment));
     if (backedLength < length) {
         // Linux accepts the mapping. Access to pages entirely beyond EOF faults.
         machine.insertSegment({start + backedLength, {}, 0, length - backedLength, true, {}, 0, false, false, false, true});
@@ -5746,7 +5751,8 @@ bool ProbeLinux::syscall(Machine& machine) {
                 const auto file = descriptors().find(uint32_t(x[4]));
                 if (file != descriptors().end() && file->second.path.ends_with(".apk")) {
                     std::ostringstream event;
-                    event << "mmap APK: " << file->second.path << " failed with errno=" << -int64_t(result)
+                    const auto& path = file->second.visiblePath.empty() ? file->second.path : file->second.visiblePath;
+                    event << "mmap APK: " << path << " failed with errno=" << -int64_t(result)
                           << std::hex << " length=0x" << x[1] << " prot=0x" << x[2]
                           << " flags=0x" << x[3] << " offset=0x" << x[5];
                     const auto message = event.str();
