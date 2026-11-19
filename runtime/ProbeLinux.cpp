@@ -30,6 +30,7 @@ constexpr uint32_t sealSeal = 1, sealShrink = 2, sealGrow = 4, sealWrite = 8, se
 constexpr unsigned sigChild = 17;
 constexpr uint64_t receiveTimeoutOld = 20, receiveTimeoutNew = 66;
 constexpr uint64_t sendTimeoutOld = 21, sendTimeoutNew = 67;
+constexpr std::string_view touchDevicePath = "/dev/input/event0";
 constexpr std::string_view graphicsDevice = "/dev/goldfish_pipe_dprctd";
 constexpr std::string_view graphicsAddressDevice = "/dev/goldfish_address_space";
 constexpr uint64_t graphicsAddressBase = 0x800000000ULL, graphicsAlignment = 16 * 1024;
@@ -383,6 +384,11 @@ std::optional<std::string> ProbeLinux::followLinks(std::string path, bool follow
 
 void ProbeLinux::addDirectory(std::string path, uint32_t mode) {
     directories.emplace(std::move(path), Directory{mode & 0777});
+}
+
+void ProbeLinux::setGuestTouch(std::shared_ptr<GuestTouch> touch) {
+    guestTouch = std::move(touch);
+    if (guestTouch) addDirectory("/dev/input", 0755);
 }
 
 void ProbeLinux::addBootTmpfs(std::string path, uint32_t mode, uint32_t gid, uint64_t flags) {
@@ -807,6 +813,7 @@ bool ProbeLinux::exportExt4Mount(ProbeLinux& reader, std::string_view path) cons
 }
 
 uint64_t ProbeLinux::stat(Machine& machine, uint64_t address, const Descriptor& fd) const {
+    if (fd.node == Node::touchDevice) return statFile(machine, address, 0, 70'265, 0020660, 0, 1004, 0x0d40);
     if (fd.node == Node::graphicsAddressSpace) return statFile(machine, address, 0, 70'266, 0020666, 1000, 1000, 0x100a0a);
     if (fd.node == Node::graphicsPipe) return statFile(machine, address, 0, 70'267, 0020666, 1000, 1000, 0x100a0b);
     if (fd.node == Node::ashmem) return statFile(machine, address, 0, 69'999, 0020666, 0, 0, 0x100a03);
@@ -1008,6 +1015,8 @@ std::optional<ProbeLinux::Descriptor> ProbeLinux::find(std::string_view path, ui
     if (path == "/dev/loop-control") return Descriptor{std::string(path), {}, flags, Node::loopControl};
     if (binderDevices.contains(path)) return Descriptor{std::string(path), {}, flags, Node::binder};
     if (loopDevices.contains(path)) return Descriptor{std::string(path), {}, flags, Node::loopDevice};
+    if (guestTouch && path == touchDevicePath)
+        return Descriptor{std::string(path), {}, flags, Node::touchDevice};
     if (graphicsPipeFactory && path == graphicsAddressDevice)
         return Descriptor{std::string(path), {}, flags, Node::graphicsAddressSpace};
     if (graphicsPipeFactory && path == graphicsDevice)
@@ -1344,6 +1353,13 @@ uint64_t ProbeLinux::open(const Machine& machine, const std::string& path, uint3
         fileEvent(pathname, fileCreated);
         entry = find(pathname, flags);
     }
+    if (!entry->pathOnly() && entry->node == Node::touchDevice) {
+        if (userId() && permissionShift(0, 1004) == 0) return uint64_t(-13);
+        if (!guestTouchReader.expired()) return uint64_t(-16);
+        entry->touchReader = std::make_shared<int>();
+        guestTouchReader = entry->touchReader;
+        entry->touch = guestTouch;
+    }
     if (!entry->pathOnly() && entry->node == Node::graphicsAddressSpace)
         entry->graphicsAddress = std::make_shared<GraphicsAddressSpace>();
     if (!entry->pathOnly() && entry->node == Node::graphicsPipe) entry->graphics = std::make_shared<GraphicsPipeState>();
@@ -1483,7 +1499,7 @@ bool ProbeLinux::eventCall(Machine& machine) {
             if (descriptor == descriptors().end() || target == descriptors().end()) { x[0] = uint64_t(-9); break; }
             if (descriptor->second.node != Node::poller) { x[0] = invalid; break; }
             if (!target->second.socket && !target->second.binder && !target->second.graphics &&
-                !target->second.pipe && (!target->second.event || target->second.node == Node::poller)) {
+                !target->second.pipe && !target->second.touch && (!target->second.event || target->second.node == Node::poller)) {
                 x[0] = uint64_t(-1);
                 break;
             }
@@ -1491,7 +1507,7 @@ bool ProbeLinux::eventCall(Machine& machine) {
             const auto fd = uint32_t(x[2]);
             if (const auto stale = watches.find(fd); stale != watches.end() && stale->second.source.expired() &&
                 stale->second.socket.expired() && stale->second.binder.expired() && stale->second.graphics.expired() &&
-                stale->second.pipeEnd.expired()) {
+                stale->second.pipeEnd.expired() && stale->second.touchReader.expired()) {
                 watches.erase(stale);
             }
             const bool registered = watches.contains(fd);
@@ -1504,10 +1520,12 @@ bool ProbeLinux::eventCall(Machine& machine) {
             if (!data) { x[0] = uint64_t(-14); break; }
             std::memcpy(event.data(), data, sizeof(event));
             const auto mask = uint32_t(event[0]);
-            if (mask & ~0x1fU) return false;
+            // EPOLLWAKEUP requires no power-management action while the guest is scheduled.
+            if (mask & ~0x2000201fU) return false;
             watches.insert_or_assign(fd, Watch{mask, event[1], target->second.event, target->second.socket,
                                               target->second.node == Node::event, target->second.binder, target->second.graphics,
-                                              target->second.pipe, target->second.pipeEnd, target->second.node == Node::pipeRead});
+                                              target->second.pipe, target->second.pipeEnd, target->second.node == Node::pipeRead,
+                                              target->second.touch, target->second.touchReader});
             x[0] = 0;
             break;
         }
@@ -1521,7 +1539,7 @@ bool ProbeLinux::eventCall(Machine& machine) {
             if (!timers.empty()) refreshTimers(std::chrono::steady_clock::now());
             std::vector<std::array<uint64_t, 2>> ready;
             std::vector<std::shared_ptr<EventState>> readNotifications;
-            bool watchesGraphics = false;
+            bool watchesHostEvents = false;
             for (const auto& [fd, watch] : descriptor->second.event->watches) {
                 const auto state = watch.source.lock();
                 const auto endpoint = watch.socket.lock();
@@ -1529,13 +1547,15 @@ bool ProbeLinux::eventCall(Machine& machine) {
                 const bool childReady = state && (state->signalMask & sigChildMask) && current->process->childSignal;
                 const auto binder = watch.binder.lock();
                 const auto graphics = watch.graphics.lock();
-                watchesGraphics |= bool(graphics);
+                const auto touch = watch.touchReader.expired() ? nullptr : watch.touch.lock();
+                watchesHostEvents |= bool(graphics) || bool(touch);
                 const auto graphicsEvents = graphics ? graphics->pollEvents() : 0;
                 const auto pipe = watch.pipeEnd.expired() ? nullptr : watch.pipe.lock();
                 const auto pipeEvents = pipe ? pipe->pollEvents(watch.pipeReader) : 0;
                 const bool receiveEnded = endpoint && (endpoint->receiveShutdown ||
                     (endpoint->connected && (!peer || peer->sendShutdown)));
                 const bool readable = (state && state->counter) || childReady || (binder && binderReadable(*binder)) ||
+                    (touch && touch->ready()) ||
                     (endpoint && (!endpoint->inbox.empty() || !endpoint->pending.empty() || (peer && receiveEnded)));
                 const bool writable = (state && watch.eventCounter && state->counter < UINT64_MAX - 1) ||
                     (peer && !endpoint->sendShutdown && !peer->receiveShutdown &&
@@ -1552,7 +1572,7 @@ bool ProbeLinux::eventCall(Machine& machine) {
                 }
             }
             if (ready.empty()) {
-                const auto wait = [&] { return watchesGraphics ? waitForGraphics() : waitForEvents(); };
+                const auto wait = [&] { return watchesHostEvents ? waitForHostEvents() : waitForEvents(); };
                 if (uint32_t(x[3]) == UINT32_MAX) {
                     if (currentTid != pid) {
                         for (const auto& [path, bound] : socketPaths) {
@@ -1770,6 +1790,54 @@ uint64_t ProbeLinux::graphicsAddressIoctl(Machine& machine, const Descriptor& fd
         }
         default: return uint64_t(-25);
     }
+}
+
+uint64_t ProbeLinux::touchIoctl(Machine& machine, const Descriptor& fd) {
+    if (!fd.touch) return uint64_t(-9);
+    const auto& x = machine.cpu.x;
+    const auto code = uint32_t(x[1]);
+    const auto output = [&](const auto& value) {
+        return writeGuest(machine, x[2], value) ? uint64_t{0} : uint64_t(-14);
+    };
+    if (code == 0x80044501) return output(uint32_t{0x010001}); // EVIOCGVERSION
+    if (code == 0x80084502) return output(std::array<uint16_t, 4>{0x19, 0, 0, 1}); // EVIOCGID, BUS_HOST
+    if (code == 0x400445a0) { // EVIOCSCLOCKID
+        uint32_t clock = 0;
+        if (!machine.readInto(x[2], {reinterpret_cast<uint8_t*>(&clock), sizeof(clock)})) return uint64_t(-14);
+        return clock == 1 || clock == 7 ? 0 : invalid;
+    }
+    const auto size = (code >> 16) & 0x3fffU;
+    const auto op = code & 0xffU;
+    if ((code & 0xc000ff00U) != 0x80004500U) return uint64_t(-25);
+    if (op == 0x40 || op == 0x41) { // EVIOCGABS
+        if (size != 24) return invalid;
+        const auto position = fd.touch->state();
+        return output(std::array<int32_t, 6>{op == 0x40 ? position.x : position.y, 0,
+                                           GuestTouch::maximumAxis, 0, 0, 0});
+    }
+    if (op == 0x06) { // EVIOCGNAME
+        constexpr std::string_view name = "Nestvane Touchscreen";
+        const auto count = std::min<uint64_t>(size, name.size() + 1);
+        return machine.write(x[2], {reinterpret_cast<const uint8_t*>(name.data()), count}) ? count : uint64_t(-14);
+    }
+    if (op == 0x07 || op == 0x08) return uint64_t(-2); // No hardware physical path or serial.
+    if (op != 0x09 && op != 0x18 && op != 0x1b && (op < 0x20 || op > 0x3f))
+        return uint64_t(-25);
+    std::array<uint8_t, 96> bits{};
+    switch (op) {
+        case 0x09: bits[0] = 1 << 1; break; // INPUT_PROP_DIRECT
+        case 0x18:
+            if (fd.touch->state().down) bits[GuestTouch::touchKey / 8] = 1 << (GuestTouch::touchKey % 8);
+            break;
+        case 0x20: bits[0] = (1 << 0) | (1 << 1) | (1 << 3); break; // EV_SYN, EV_KEY, EV_ABS
+        case 0x21:
+            bits[GuestTouch::touchKey / 8] = 1 << (GuestTouch::touchKey % 8);
+            break;
+        case 0x23: bits[0] = 3; break; // ABS_X, ABS_Y
+        default: break;
+    }
+    const auto count = std::min<size_t>(size, bits.size());
+    return machine.write(x[2], std::span(bits).first(count)) ? count : uint64_t(-14);
 }
 
 uint16_t ProbeLinux::GraphicsPipeState::pollEvents() const {
@@ -2412,6 +2480,7 @@ uint64_t ProbeLinux::readDirectory(Machine& machine, const Descriptor& fd) const
                 entries.emplace(std::to_string(pty->number), 2);
         entries.emplace("kmsg", 2);
     }
+    if (fd.path == "/dev/input" && guestTouch) entries.emplace("event0", 2); // DT_CHR
     uint64_t index = *fd.offset;
     if (index >= entries.size()) return 0;
     auto item = std::next(entries.begin(), index);
@@ -2869,10 +2938,19 @@ bool ProbeLinux::fileCall(Machine& machine) {
             auto& fd = descriptor->second;
             if ((fd.flags & 3) == 1) { x[0] = uint64_t(-9); break; }
             if (fd.node == Node::inotify) return readInotify(machine, fd);
+            if (fd.touch) {
+                if (x[8] == 67) { x[0] = uint64_t(-29); break; }
+                if (x[2] < sizeof(GuestTouch::Event)) { x[0] = x[2] ? invalid : 0; break; }
+                const auto count = fd.touch->read(x[2] / sizeof(GuestTouch::Event),
+                    [&](auto bytes) { return machine.write(x[1], bytes); });
+                if (count == uint64_t(-11) && !(fd.effectiveFlags() & 0x800)) return waitForHostEvents();
+                x[0] = count;
+                break;
+            }
             if (fd.graphics) {
                 if (x[8] == 67) { x[0] = uint64_t(-29); break; }
                 const auto result = readGraphics(machine, *fd.graphics, x[1], x[2]);
-                if (result == uint64_t(-11) && !(fd.effectiveFlags() & 0x800)) return waitForGraphics();
+                if (result == uint64_t(-11) && !(fd.effectiveFlags() & 0x800)) return waitForHostEvents();
                 x[0] = result;
                 break;
             }
@@ -3524,12 +3602,12 @@ bool ProbeLinux::switchThread(Machine& machine, std::chrono::steady_clock::time_
         nextDeadline = refreshTimers(now);
         for (auto& [tid, thread] : threads) {
             const auto wait = thread.wait;
-            if (wait == Wait::poll && thread.graphicsRetry) {
-                if (*thread.graphicsRetry <= now) {
-                    thread.graphicsRetry.reset();
+            if (wait == Wait::poll && thread.hostEventRetry) {
+                if (*thread.hostEventRetry <= now) {
+                    thread.hostEventRetry.reset();
                     thread.wait = Wait::none;
-                } else if (!nextDeadline || *thread.graphicsRetry < *nextDeadline) {
-                    nextDeadline = thread.graphicsRetry;
+                } else if (!nextDeadline || *thread.hostEventRetry < *nextDeadline) {
+                    nextDeadline = thread.hostEventRetry;
                 }
             }
             if ((wait == Wait::poll || wait == Wait::sleep || wait == Wait::futex || wait == Wait::signal) && thread.deadline) {
@@ -4224,8 +4302,8 @@ bool ProbeLinux::waitForEvents() {
     return true;
 }
 
-bool ProbeLinux::waitForGraphics() {
-    current->graphicsRetry = std::chrono::steady_clock::now() + std::chrono::milliseconds(2);
+bool ProbeLinux::waitForHostEvents() {
+    current->hostEventRetry = std::chrono::steady_clock::now() + std::chrono::milliseconds(2);
     return waitForEvents();
 }
 
@@ -4445,7 +4523,7 @@ bool ProbeLinux::poll(Machine& machine) {
         std::memcpy(entries.data(), input, length);
     }
     unsigned ready = 0;
-    bool watchesGraphics = false;
+    bool watchesHostEvents = false;
     for (auto& entry : entries) {
         entry.returned = 0;
         if (entry.fd < 0) continue;
@@ -4457,8 +4535,11 @@ bool ProbeLinux::poll(Machine& machine) {
             if (!processAlive(target))
                 entry.returned = (entry.events & 0x41) | (childExits.contains(target) ? 0 : 16);
         } else if (const auto& graphics = descriptor->second.graphics) {
-            watchesGraphics = true;
+            watchesHostEvents = true;
             entry.returned = graphics->pollEvents() & (entry.events | 0x18);
+        } else if (const auto& touch = descriptor->second.touch) {
+            watchesHostEvents = true;
+            entry.returned = touch->ready() ? entry.events & 1 : 0;
         } else if (descriptor->second.pty) {
             const auto events = ptyPoll(descriptor->second);
             entry.returned = (events & entry.events) | (events & 16);
@@ -4495,7 +4576,7 @@ bool ProbeLinux::poll(Machine& machine) {
         ready += entry.returned != 0;
     }
     if (!ready && (!current->deadline || *current->deadline > steady_clock::now()))
-        return watchesGraphics ? waitForGraphics() : waitForEvents();
+        return watchesHostEvents ? waitForHostEvents() : waitForEvents();
     const auto bytes = std::span(reinterpret_cast<const uint8_t*>(entries.data()), length);
     return complete(!length || machine.write(x[0], bytes) ? ready : uint64_t(-14));
 }
@@ -4962,7 +5043,7 @@ bool ProbeLinux::enforceSeccomp(Machine& machine) {
 bool ProbeLinux::syscall(Machine& machine) {
     auto& x = machine.cpu.x;
     const uint64_t number = x[8];
-    current->graphicsRetry.reset();
+    current->hostEventRetry.reset();
     if (enforceSeccomp(machine)) return true;
     if (number == 139) return restoreSignalContext(machine); // rt_sigreturn
     if (securityCall(machine) || socketCall(machine) || eventCall(machine) || fileCall(machine)) return true;
@@ -5107,7 +5188,8 @@ bool ProbeLinux::syscall(Machine& machine) {
                     writeGuest(machine, x[2], uint32_t(size - *fd.offset)) ? 0 : uint64_t(-14);
                 break;
             }
-            if (descriptor->second.pty) x[0] = ptyIoctl(machine, descriptor->second);
+            if (descriptor->second.node == Node::touchDevice) x[0] = touchIoctl(machine, descriptor->second);
+            else if (descriptor->second.pty) x[0] = ptyIoctl(machine, descriptor->second);
             else if (descriptor->second.node == Node::ashmem) x[0] = ashmemIoctl(machine, descriptor->second);
             else if (descriptor->second.node == Node::graphicsAddressSpace) x[0] = graphicsAddressIoctl(machine, descriptor->second);
             else if (x[1] == 0x5401) x[0] = uint64_t(-25); // TCGETS on a non-terminal.
@@ -5571,7 +5653,7 @@ bool ProbeLinux::syscall(Machine& machine) {
             const auto result = descriptor == descriptors().end() ? uint64_t(-9) :
                 writeDescriptor(machine, descriptor->second, x[1], x[2], position);
             if (result == uint64_t(-11) && descriptor->second.graphics &&
-                !(descriptor->second.effectiveFlags() & 0x800)) return waitForGraphics();
+                !(descriptor->second.effectiveFlags() & 0x800)) return waitForHostEvents();
             if (descriptor != descriptors().end() && descriptor->second.socket) {
                 const auto& fd = descriptor->second;
                 if (result == uint64_t(-11) && !(fd.effectiveFlags() & 0x800) &&
@@ -5634,7 +5716,7 @@ bool ProbeLinux::syscall(Machine& machine) {
             }
             const auto& fd = descriptor->second;
             if (!written && result == uint64_t(-11) && fd.graphics &&
-                !(fd.effectiveFlags() & 0x800)) return waitForGraphics();
+                !(fd.effectiveFlags() & 0x800)) return waitForHostEvents();
             if (fd.socket) {
                 if (!written && result == uint64_t(-11) && !(fd.effectiveFlags() & 0x800) &&
                     waitForSocketTimeout(fd.socket->sendTimeout)) return true;

@@ -1048,6 +1048,48 @@ int main() {
     assert(call(63, {timer, base + 512, 8}) == 8 && load(base + 512) == 1);
     assert(call(22, {poll, base + 512, 1}) == 0);
     assert(call(57, {timer}) == 0);
+    {
+        const auto touch = std::make_shared<GuestTouch>();
+        linux.setGuestTouch(touch);
+        put(base + 704, "/dev/input");
+        const auto directory = call(56, {uint32_t(-100), base + 704, 0x4000});
+        assert(directory < 256);
+        const auto listing = call(61, {directory, base + 768, 192});
+        const auto* entries = machine.read(base + 768, listing, 4);
+        assert(entries && std::string_view(reinterpret_cast<const char*>(entries), listing).find("event0") != std::string_view::npos);
+        assert(call(57, {directory}) == 0);
+        put(base + 704, "/dev/input/event0");
+        const auto input = call(56, {uint32_t(-100), base + 704, 0x80802});
+        assert(input < 256 && call(56, {uint32_t(-100), base + 704, 0x802}) == uint64_t(-16));
+        assert(call(29, {input, 0x80044501, base + 760}) == 0 && (load(base + 760) & UINT32_MAX) == 0x010001);
+        assert(call(29, {input, 0x80604521, base + 768}) == 96);
+        assert(*machine.read(base + 768 + GuestTouch::touchKey / 8, 1, 4) == 1 << (GuestTouch::touchKey % 8));
+        assert(machine.store64(base + 688, 0x20000001) && machine.store64(base + 696, 42));
+        assert(call(21, {poll, 1, input, base + 688}) == 0);
+        assert(call(63, {input, base + 768, 96}) == uint64_t(-11));
+        assert(call(22, {poll, base + 512, 1}) == 0);
+        touch->submit(123, 456, true);
+        assert(call(22, {poll, base + 512, 1}) == 1 && load(base + 512) == 1 && load(base + 520) == 42);
+        assert(call(63, {input, 0, 96}) == uint64_t(-14));
+        assert(call(63, {input, base + 768, 96}) == 96);
+        const auto event = [&](size_t index) {
+            GuestTouch::Event data{};
+            const auto* bytes = machine.read(base + 768 + index * sizeof(data), sizeof(data), 4);
+            assert(bytes);
+            std::memcpy(&data, bytes, sizeof(data));
+            return data;
+        };
+        assert(event(0).type == 3 && event(0).code == 0 && event(0).value == 123);
+        assert(event(1).type == 3 && event(1).code == 1 && event(1).value == 456);
+        assert(event(2).type == 1 && event(2).code == GuestTouch::touchKey && event(2).value == 1);
+        assert(event(3).type == 0 && event(3).code == 0);
+        assert(call(22, {poll, base + 512, 1}) == 0);
+        touch->submit(800, 920, false);
+        assert(call(63, {input, base + 768, 96}) == 96);
+        assert(event(2).code == GuestTouch::touchKey && event(2).value == 0);
+        assert(call(57, {input}) == 0);
+        linux.setGuestTouch({});
+    }
 
     assert(call(199, {1, 5 | 0x800, 0, base + 512}) == 0);
     auto sockets = load(base + 512);

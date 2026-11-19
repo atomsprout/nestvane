@@ -1,6 +1,7 @@
 #pragma once
 
 #include "GraphicsPipe.hpp"
+#include "GuestTouch.hpp"
 #include "Runtime.hpp"
 #include "Ext4.hpp"
 
@@ -29,6 +30,7 @@ struct ProbeLinux {
     void alias(std::string path, std::string target);
     void mountData(const std::string& databasePath);
     void setGraphicsPipeFactory(GraphicsPipeFactory factory) { graphicsPipeFactory = std::move(factory); }
+    void setGuestTouch(std::shared_ptr<GuestTouch> touch);
     bool syncData();
     Machine createMachine(const Image& image) const { return Machine(image, anonymousBudget); }
     uint64_t dirtyAnonymousBytes() const { return anonymousBudget->dirty; }
@@ -112,7 +114,7 @@ private:
         uint32_t futexMask = 0, ioPriority = 0;
         int nice = 0;
         std::optional<std::chrono::steady_clock::time_point> deadline;
-        std::optional<std::chrono::steady_clock::time_point> graphicsRetry;
+        std::optional<std::chrono::steady_clock::time_point> hostEventRetry;
         uint64_t signalMask = 0;
         uint64_t signalWaitMask = 0;
         std::string fsCreateContext, socketCreateContext;
@@ -130,7 +132,7 @@ private:
                        const std::shared_ptr<SharedFileBytes>& backing = {});
     void wakePollers();
     bool waitForEvents();
-    bool waitForGraphics();
+    bool waitForHostEvents();
     bool poll(Machine& machine);
     bool exitThread(Machine& machine);
     void finishProcess(Process& process, uint32_t status, bool killed);
@@ -141,7 +143,7 @@ private:
     uint64_t installSeccomp(Machine& machine, uint64_t address);
     bool enforceSeccomp(Machine& machine);
 
-    enum class Node { regular, temporary, directory, input, output, error, null, entropy, kernelLog, poller, event, inotify, signal, socket, mountNamespace, pipeRead, pipeWrite, execLabel, fsCreateLabel, socketCreateLabel, securityInfo, securityCreate, securityAccess, securityValidate, loopControl, loopDevice, timer, ptyMaster, ptySlave, ueventTrigger, kernelSetting, binder, processHandle, cgroupProcs, ashmem, graphicsPipe, graphicsAddressSpace };
+    enum class Node { regular, temporary, directory, input, output, error, null, entropy, kernelLog, poller, event, inotify, signal, socket, mountNamespace, pipeRead, pipeWrite, execLabel, fsCreateLabel, socketCreateLabel, securityInfo, securityCreate, securityAccess, securityValidate, loopControl, loopDevice, timer, ptyMaster, ptySlave, ueventTrigger, kernelSetting, binder, processHandle, cgroupProcs, ashmem, graphicsPipe, graphicsAddressSpace, touchDevice };
     struct RecordLock {
         uint64_t owner, start, end;
         int16_t type;
@@ -213,6 +215,9 @@ private:
     std::shared_ptr<GraphicsRegion> allocateGraphicsRegion(uint64_t requested);
     uint64_t graphicsAddressIoctl(Machine& machine, const Descriptor& fd);
     GraphicsPipeFactory graphicsPipeFactory;
+    std::shared_ptr<GuestTouch> guestTouch;
+    std::weak_ptr<int> guestTouchReader;
+    uint64_t touchIoctl(Machine& machine, const Descriptor& fd);
     struct EventState;
     struct Pipe;
     struct Watch {
@@ -226,6 +231,8 @@ private:
         std::weak_ptr<Pipe> pipe{};
         std::weak_ptr<int> pipeEnd{};
         bool pipeReader = false;
+        std::weak_ptr<GuestTouch> touch{};
+        std::weak_ptr<int> touchReader{};
     };
     struct EventState {
         struct Timer {
@@ -365,6 +372,8 @@ private:
         std::shared_ptr<Ashmem> ashmem{};
         std::shared_ptr<GraphicsPipeState> graphics{};
         std::shared_ptr<GraphicsAddressSpace> graphicsAddress{};
+        std::shared_ptr<GuestTouch> touch{};
+        std::shared_ptr<int> touchReader{};
         std::span<const uint8_t> contents() const { return ext4File ? ext4File->bytes() : bytes; }
         uint64_t contentSize() const { return ext4File ? ext4File->size : bytes.size(); }
         static constexpr uint32_t mutableStatus = 0xc00; // O_APPEND and O_NONBLOCK

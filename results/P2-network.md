@@ -199,3 +199,6 @@
 
 - 带 13 个系统 APK 的镜像已成功打成约 971 MiB 的 iPhone 开发签名包，确认 Launcher3 和 PackageInstaller 在 App 包内。第 7962 号进程在 iPhone 11 初始化本地渲染器并进入真实 Android 17 启动。
 - Mac 终端堆栈显示，原版 PackageManager 因 `/system/etc/selinux/plat_mac_permissions.xml` 返回 ENOENT 而终止。采集工具补齐了参考镜像的五个分区策略，要求平台策略存在。五份原版 XML 均已取回并通过结构解析，平台文件含六条签名策略，vendor 文件含一条。带这些文件的镜像开始下一轮启动验证。[Android 应用标签策略加载](https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/services/core/java/com/android/server/pm/SELinuxMMAC.java)
+
+- UIKit 的 Android 显示视图已将单指按下、移动、释放和取消送入客体 `/dev/input/event0`。坐标以实际画面区域为准。客体设备实现了单指 evdev 能力、轴范围、事件读取与 epoll 唤醒，支持 EventHub 使用的 `EPOLLWAKEUP` 标志。宿主回归验证设备枚举、触点状态、按下与释放、读出故障后的重试。iPhoneOS 签名构建通过。Android 原版 InputReader 接收、应用响应与输入延迟尚待真机验收。
+- 带原版应用标签策略的 Mac 启动已越过原停点，完成包管理的 `loadFallbacks`、读取用户设置和 `setFirstBoot`。后续初始化出现新的 system_server 异常，正在收集完整堆栈。

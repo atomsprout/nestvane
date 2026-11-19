@@ -1,6 +1,9 @@
 #pragma once
 
 #include "GraphicsPipe.hpp"
+#include "GuestTouch.hpp"
+
+#include <memory>
 
 #include <functional>
 #include <string>
@@ -17,6 +20,6 @@ DynamicReport probeArt(const std::string& directory);
 DynamicReport probeDynamic(const std::string& directory);
 using BootProgress = std::function<void(std::string_view)>;
 DynamicReport probeInit(const std::string& directory, const std::string& databasePath = {}, const BootProgress& progress = {},
-                        GraphicsPipeFactory graphics = {});
+                        GraphicsPipeFactory graphics = {}, std::shared_ptr<GuestTouch> touch = {});
 
 } // namespace nestvane

@@ -79,10 +79,64 @@ static NSString* ThermalState() {
     return @"unknown";
 }
 
+@interface GuestDisplayView : UIImageView
+- (void)setTouchDevice:(std::shared_ptr<nestvane::GuestTouch>)device;
+@end
+
+@implementation GuestDisplayView {
+    std::shared_ptr<nestvane::GuestTouch> _touchDevice;
+    UITouch* _activeTouch;
+}
+
+- (void)setTouchDevice:(std::shared_ptr<nestvane::GuestTouch>)device {
+    if (_activeTouch) [self sendTouch:_activeTouch down:NO];
+    _activeTouch = nil;
+    _touchDevice = std::move(device);
+}
+
+- (BOOL)sendTouch:(UITouch*)touch down:(BOOL)down {
+    const CGSize imageSize = self.image.size;
+    const CGRect bounds = self.bounds;
+    if (!_touchDevice || imageSize.width <= 0 || imageSize.height <= 0 ||
+        bounds.size.width <= 0 || bounds.size.height <= 0) return NO;
+    const CGFloat scale = std::min(bounds.size.width / imageSize.width, bounds.size.height / imageSize.height);
+    const CGSize size = CGSizeMake(imageSize.width * scale, imageSize.height * scale);
+    const CGPoint location = [touch locationInView:self];
+    const CGFloat x = (location.x - CGRectGetMidX(bounds) + size.width / 2) / size.width;
+    const CGFloat y = (location.y - CGRectGetMidY(bounds) + size.height / 2) / size.height;
+    if (!_activeTouch && (x < 0 || x > 1 || y < 0 || y > 1)) return NO;
+    const auto axis = [](CGFloat location) {
+        return int32_t(std::clamp(location, CGFloat(0), CGFloat(1)) * nestvane::GuestTouch::maximumAxis + 0.5);
+    };
+    _touchDevice->submit(axis(x), axis(y), down);
+    return YES;
+}
+
+- (void)touchesBegan:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)event {
+    if (_activeTouch) return;
+    UITouch* touch = touches.anyObject;
+    if ([self sendTouch:touch down:YES]) _activeTouch = touch;
+}
+
+- (void)touchesMoved:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)event {
+    if (_activeTouch && [touches containsObject:_activeTouch]) [self sendTouch:_activeTouch down:YES];
+}
+
+- (void)touchesEnded:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)event {
+    if (!_activeTouch || ![touches containsObject:_activeTouch]) return;
+    [self sendTouch:_activeTouch down:NO];
+    _activeTouch = nil;
+}
+
+- (void)touchesCancelled:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)event {
+    [self touchesEnded:touches withEvent:event];
+}
+@end
+
 @interface ValidationViewController : UIViewController
 @property(nonatomic, strong) UILabel* status;
 @property(nonatomic, strong) UITextView* details;
-@property(nonatomic, strong) UIImageView* display;
+@property(nonatomic, strong) GuestDisplayView* display;
 @property(nonatomic, strong) UIButton* run;
 @end
 
@@ -107,7 +161,8 @@ static NSString* ThermalState() {
     self.details.backgroundColor = UIColor.secondarySystemBackgroundColor;
     self.details.textContainerInset = UIEdgeInsetsMake(12, 12, 12, 12);
 
-    self.display = [UIImageView new];
+    self.display = [GuestDisplayView new];
+    self.display.userInteractionEnabled = YES;
     self.display.contentMode = UIViewContentModeScaleAspectFit;
     self.display.backgroundColor = UIColor.blackColor;
     self.display.hidden = YES;
@@ -140,6 +195,8 @@ static NSString* ThermalState() {
 
 - (void)runValidation {
     self.run.enabled = NO;
+    auto touch = std::make_shared<nestvane::GuestTouch>();
+    [self.display setTouchDevice:touch];
     self.display.image = nil;
     self.display.hidden = YES;
     self.details.hidden = NO;
@@ -266,7 +323,7 @@ static NSString* ThermalState() {
                     }
                 });
                 auto boot = nestvane::probeInit(initRoot.fileSystemRepresentation, database.fileSystemRepresentation,
-                                                progress, renderer.pipeFactory());
+                                                progress, renderer.pipeFactory(), touch);
                 boot.report.insert(0, "Local Android renderer initialized\n");
                 return boot;
             };
@@ -284,6 +341,7 @@ static NSString* ThermalState() {
 
         dispatch_async(dispatch_get_main_queue(), ^{
             self.status.text = status;
+            [self.display setTouchDevice:std::shared_ptr<nestvane::GuestTouch>{}];
             self.details.text = report;
             self.run.enabled = YES;
             UIApplication.sharedApplication.idleTimerDisabled = NO;

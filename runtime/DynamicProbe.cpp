@@ -410,7 +410,7 @@ DynamicReport probeArt(const std::string& directory) {
 }
 
 DynamicReport probeInit(const std::string& directory, const std::string& databasePath, const BootProgress& progress,
-                        GraphicsPipeFactory graphics) {
+                        GraphicsPipeFactory graphics, std::shared_ptr<GuestTouch> touch) {
     try {
         if (progress) progress("Starting Android 17 init");
         namespace fs = std::filesystem;
@@ -447,11 +447,12 @@ DynamicReport probeInit(const std::string& directory, const std::string& databas
                                           interpreter, {"second_stage"}, 0);
         ProbeLinux linux(1, 0, 512 * 1024 * 1024);
         linux.setGraphicsPipeFactory(std::move(graphics));
+        linux.setGuestTouch(std::move(touch));
         linux.captureAndroidLogs = true;
         if (progress) linux.androidLogObserver = [&progress](std::string_view message) {
             constexpr std::string_view milestones[] = {
                 "Zygote: Preloading classes", "Zygote: ...preloaded", "Zygote: end preload",
-                "Zygote: System zygote died", "Resources: Preloading resources",
+                "Resources: Preloading resources",
                 "nativeloader: Load libperfetto_framework_jni.so", "nativeloader: Load libcompiler_rt.so",
                 "SystemServer: Entered the Android system server", "SystemServerTiming: StartActivityManager",
                 "SystemServerTiming: StartPowerManager", "SystemServerTiming: StartThermalManager",
@@ -468,6 +469,10 @@ DynamicReport probeInit(const std::string& directory, const std::string& databas
                 "libEGL: couldn't find an OpenGL ES implementation", "libEGL: eglInitialize(",
                 "Watchdog: *** WATCHDOG KILLING SYSTEM PROCESS"
             };
+            if (message.starts_with("Zygote: System zygote died")) {
+                progress(message.substr(0, 2048));
+                return;
+            }
             const bool graphicsTransportFailure = message.starts_with("GFXSTREAM: ") &&
                 (message.find("Failed to connect to host") != std::string_view::npos ||
                  message.find("Could not open '/dev/goldfish") != std::string_view::npos);
