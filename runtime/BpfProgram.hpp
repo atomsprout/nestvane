@@ -40,6 +40,15 @@ public:
     static constexpr size_t maxInstructions = 4096, maxPacketBytes = 65535;
     using MapResolver = std::function<std::shared_ptr<BpfMap>(uint32_t)>;
 
+    struct Identity {
+        uint32_t id = 0, uid = 0;
+        uint64_t loadTime = 0;
+        std::array<char, 16> name{};
+        bool gplCompatible = false;
+    };
+
+    explicit BpfProgram(Identity identity) : identity(identity) {}
+
     struct Packet {
         std::vector<uint8_t> bytes;
         uint32_t protocol = 0, packetType = 0, ingressIfindex = 0, ifindex = 0;
@@ -64,6 +73,7 @@ public:
                     auto map = resolve(uint32_t(i.immediate)); // BPF_PSEUDO_MAP_FD
                     if (!map || map->type == 25) return false; // Device maps have a distinct helper ABI.
                     maps.emplace(pc, std::move(map));
+                    decoded[pc].immediate = 0; // Descriptor numbers have no meaning after relocation.
                 }
                 ++pc;
             } else if (i.code == 0x85) {
@@ -107,6 +117,16 @@ public:
     }
 
     uint32_t type() const { return programType; }
+    const Identity& info() const { return identity; }
+    std::span<const uint8_t> bytecode() const {
+        return {reinterpret_cast<const uint8_t*>(instructions.data()), instructions.size() * sizeof(Instruction)};
+    }
+    std::vector<uint32_t> mapIds() const {
+        std::vector<uint32_t> ids;
+        for (const auto& [slot, map] : referencedMaps)
+            if (std::ranges::find(ids, map->id) == ids.end()) ids.push_back(map->id);
+        return ids;
+    }
 
     size_t accept(std::span<const uint8_t> packet) const {
         if (programType != socketFilter) return 0;
@@ -338,6 +358,7 @@ private:
         return std::nullopt;
     }
 
+    Identity identity;
     uint32_t programType = 0;
     std::vector<Instruction> instructions;
     std::map<size_t, std::shared_ptr<BpfMap>> referencedMaps;

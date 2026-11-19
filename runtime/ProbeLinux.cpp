@@ -3,6 +3,8 @@
 #include "BpfProgram.hpp"
 #include "BpfTypes.hpp"
 
+#include <CommonCrypto/CommonDigest.h>
+
 #include <algorithm>
 #include <atomic>
 #include <charconv>
@@ -5335,7 +5337,8 @@ uint64_t ProbeLinux::loadBpfProgram(Machine& machine) {
     if ((flags & ~3U) || flags == 3 || std::any_of(input.begin() + 64, input.end(), [](auto b) { return b != 0; }))
         return uint64_t(-95);
     if (!count || count > BpfProgram::maxInstructions) return uint64_t(-7);
-    if (!readPath(machine, license)) return uint64_t(-14);
+    const auto licenseText = readPath(machine, license);
+    if (!licenseText) return uint64_t(-14);
     const auto fd = freeDescriptor();
     if (fd == descriptorCapacity) return uint64_t(-24);
     std::erase_if(bpfPrograms, [](const auto& filter) { return filter.second.expired(); });
@@ -5344,7 +5347,16 @@ uint64_t ProbeLinux::loadBpfProgram(Machine& machine) {
     try {
         std::vector<uint8_t> bytecode(count * 8);
         if (!machine.readInto(source, bytecode)) return uint64_t(-14);
-        auto program = std::make_shared<BpfProgram>();
+        constexpr std::array<std::string_view, 6> gplLicenses{
+            "GPL", "GPL v2", "GPL and additional rights", "Dual BSD/GPL", "Dual MIT/GPL", "Dual MPL/GPL"};
+        BpfProgram::Identity identity{};
+        identity.id = nextBpfProgramId;
+        identity.uid = current->process->userIds[1];
+        identity.loadTime = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        identity.gplCompatible = std::ranges::find(gplLicenses, *licenseText) != gplLicenses.end();
+        std::memcpy(identity.name.data(), input.data() + 48, identity.name.size() - 1);
+        auto program = std::make_shared<BpfProgram>(identity);
         if (!program->load(type, bytecode, [&](uint32_t mapFd) -> std::shared_ptr<BpfMap> {
                 const auto found = descriptors().find(mapFd);
                 return found == descriptors().end() ? nullptr : found->second.bpfMap;
@@ -5553,6 +5565,52 @@ uint64_t ProbeLinux::bpfObjectInfo(Machine& machine) {
         return machine.write(address, output) && writeGuest(machine, x[1] + 4, size) ? 0 : uint64_t(-14);
     };
 
+    if (const auto program = descriptor->second.bpfProgram) {
+        struct Info {
+            uint32_t type, id;
+            std::array<uint8_t, 8> tag;
+            uint32_t jitLength, translatedLength;
+            uint64_t jitBytes, translatedBytes, loadTime;
+            uint32_t uid, mapCount;
+            uint64_t mapIds;
+            std::array<char, 16> name;
+            uint32_t ifindex, gplCompatible;
+        };
+        static_assert(sizeof(Info) == 88 && offsetof(Info, mapIds) == 56);
+        if (!validTail(sizeof(Info))) return uint64_t(-95);
+        Info info{};
+        std::memcpy(&info, request.data(), std::min<size_t>(length, sizeof(info)));
+        if (info.jitBytes || info.translatedBytes) return uint64_t(-95);
+        try {
+            const auto ids = program->mapIds();
+            const auto size = std::min<size_t>(info.mapCount, ids.size()) * sizeof(uint32_t);
+            if (size && !machine.write(info.mapIds, {reinterpret_cast<const uint8_t*>(ids.data()), size}))
+                return uint64_t(-14);
+            const auto& identity = program->info();
+            info.type = program->type();
+            info.id = identity.id;
+            const auto code = program->bytecode();
+            std::array<uint8_t, CC_SHA1_DIGEST_LENGTH> digest{};
+            // This is the Linux 6.12 program tag format, a bytecode fingerprint.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+            CC_SHA1(code.data(), static_cast<CC_LONG>(code.size()), digest.data());
+#pragma clang diagnostic pop
+            std::copy_n(digest.begin(), info.tag.size(), info.tag.begin());
+            info.jitLength = 0;
+            constexpr uint64_t bpfCapabilities = (1ULL << 39) | (1ULL << 21);
+            info.translatedLength = current->process->effectiveCaps & bpfCapabilities ? code.size() : 0;
+            info.loadTime = identity.loadTime;
+            info.uid = identity.uid;
+            info.mapCount = ids.size();
+            info.name = identity.name;
+            info.ifindex = 0;
+            info.gplCompatible = identity.gplCompatible;
+            return writeInfo(info);
+        } catch (const std::bad_alloc&) {
+            return noMemory;
+        }
+    }
     if (const auto map = descriptor->second.bpfMap) {
         struct Info {
             uint32_t type, id, key, value, entries, flags;

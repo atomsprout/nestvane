@@ -942,6 +942,22 @@ int main() {
         assert(loadProgram(1) == uint64_t(-22)); // A socket filter cannot load this program.
         const auto program = loadProgram(3);
         assert(program < 256);
+        const auto info = base + 0x500, ids = base + 0x580;
+        std::array<uint64_t, 11> programInfo{};
+        const std::array<uint64_t, 2> shortInfo{program | (8ULL << 32), info};
+        assert(write(attr, shortInfo) && call(280, {15, attr, sizeof(shortInfo)}) == 0);
+        const auto identity = load(info);
+        assert((identity & UINT32_MAX) == 3 && identity >> 32);
+        programInfo[6] = 1ULL << 32; // Request one map ID.
+        programInfo[7] = ids;
+        const std::array<uint64_t, 2> fullInfo{program | (sizeof(programInfo) << 32), info};
+        assert(write(info, programInfo) && write(attr, fullInfo));
+        assert(call(280, {15, attr, sizeof(fullInfo)}) == 0 && load(info) == identity);
+        assert(load(info + 8) && load(info + 16) == (uint64_t(sizeof(instructions)) << 32));
+        assert(load(info + 48) >> 32 == 1 && load(info + 80) == (1ULL << 32));
+        const std::array<uint64_t, 2> mapInfo{counter | (8ULL << 32), info};
+        assert(write(attr, mapInfo) && call(280, {15, attr, sizeof(mapInfo)}) == 0);
+        assert(uint32_t(load(ids)) == load(info) >> 32);
         const auto socket = call(198, {16, 2 | 0x80800, 15});
         assert(socket < 256 && machine.store64(output, program));
         assert(call(208, {socket, 1, 50, output, 4}) == uint64_t(-22));
