@@ -56,7 +56,8 @@ public:
             const auto name = string(std::span(revision).first(29));
             const bool match = option == (ipv6 ? 68 : 66);
             const auto version = revision.back();
-            if (match && name == "connmark") return version == 1 ? 0 : uint64_t(-93);
+            if (match && (name == "connmark" || name == "mark")) return version == 1 ? 0 : uint64_t(-93);
+            if (!match && name == "MARK") return version == 2 ? 0 : uint64_t(-93);
             if (!match && name == "CONNMARK") return (version == 1 || version == 2) ? 0 : uint64_t(-93);
             const bool known = match ? name == "comment" || name == "tcp" || name == "udp" || name == "u32" || name == "state" : name == "TCPMSS" || name == "REJECT" || name == "NFLOG";
             return !known ? missing : version ? uint64_t(-93) : 0;
@@ -353,10 +354,10 @@ private:
                 const auto length = load<uint16_t>(extension, 0);
                 if (length < targetHeader || length % 8 || length > extension.size()) return invalid;
                 const auto matchName = string(extension.subspan(2, 29));
-                if (matchName == "connmark") {
+                if (matchName == "connmark" || matchName == "mark") {
                     if (extension[31] != 1) return unsupported;
                     if (length != 48 || extension[40] > 1) return invalid;
-                    table.usesConnectionTracking = true;
+                    table.usesConnectionTracking |= matchName == "connmark";
                     match += length;
                     continue;
                 }
@@ -406,6 +407,8 @@ private:
                     if (!rejection.error || (rejection.reset && (protocol != 6 ||
                         (entry[layout.inversions] & 0x40) || (layout.ipv6 && !(entry[layout.flags] & 1)))))
                         return invalid;
+                } else if (targetName == "MARK") {
+                    if (length != 40 || target[31] != 2) return invalid;
                 } else if (targetName == "CONNMARK") {
                     if (length != 48 || (target[31] != 1 && target[31] != 2)) return invalid;
                     const bool shift = target[31] == 2;
@@ -463,9 +466,10 @@ private:
             const auto extension = entry.subspan(match);
             const auto type = string(extension.subspan(2, 29));
             const auto body = extension.subspan(targetHeader);
-            if (type == "connmark") {
-                if (!state.connectionMark) return false;
-                const bool same = (*state.connectionMark & load<uint32_t>(body, 4)) == load<uint32_t>(body, 0);
+            if (type == "connmark" || type == "mark") {
+                const auto* mark = type == "connmark" ? state.connectionMark : state.mark;
+                if (type == "connmark" && !mark) return false;
+                const bool same = ((mark ? *mark : 0) & load<uint32_t>(body, 4)) == load<uint32_t>(body, 0);
                 if (same == bool(body[8])) return false;
             } else if (type == "state") {
                 if (!(load<uint32_t>(body, 0) & state.connection)) return false;
@@ -618,6 +622,9 @@ private:
                         (*state.logger)({load<uint16_t>(parameters, 4), limit, string(parameters.subspan(12, 64)),
                                          hook, packet, state.mark ? *state.mark : 0});
                     }
+                } else if (type == "MARK") {
+                    if (state.mark)
+                        *state.mark = (*state.mark & ~load<uint32_t>(parameters, 4)) ^ load<uint32_t>(parameters, 0);
                 } else if (type == "CONNMARK") {
                     applyConnectionMark(parameters, entry[target + 31], state);
                 } else if (type != "TCPMSS" || !applyMss(packet, layout.ipv6, load<uint16_t>(parameters, 0), mtu)) {

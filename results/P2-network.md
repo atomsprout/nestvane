@@ -325,3 +325,4 @@
 - 客体支持 IPv4/IPv6 规则的 REJECT 修订 0，并把本地拒绝结果送到 TCP/UDP 套接字。宿主回归覆盖 INPUT/OUTPUT、无效规则、UDP 的可读错误和非阻塞 TCP 的 poll 与 SO_ERROR。测试值与 Android 17 参考内核一致。Mac 冷启动的原版工具已越过 REJECT，仍停在 NFLOG。
 - iPhone 11 进程 8461 的 IPv4/IPv6 规则表和 REJECT 修订号查询探针均退出 0。原版工具越过 REJECT，仍缺 NFLOG，尚未完整启动。
 - 支持 xtables NFLOG 与客体 NETLINK_NETFILTER 日志组。按组绑定、设置复制模式和长度、限制其他套接字访问同组，并通过真实 UDP 数据路径交付客体日志。当前记录逐条交付。宿主 ABI 回归与参考 Android 17 隔离网络测试均验证 IPv4/IPv6 报文前缀、挂钩、限定后的载荷及组所有权。Mac 原版 netd 进入子链创建，出现 mark/MARK 与规则列表读取问题，尚未达到 sys.boot_completed=1。[Linux NFLOG](https://codebrowser.dev/linux/linux/net/netfilter/nfnetlink_log.c.html)
+- 支持 IPv4/IPv6 的报文标记匹配修订 1 与 MARK 目标修订 2。宿主回归确认仅修改匹配报文的掩码位，并保留其余位。Android 17 参考镜像的原版恢复工具接受同一条掩码规则。[Linux 报文标记](https://codebrowser.dev/linux/linux/net/netfilter/xt_mark.c.html)

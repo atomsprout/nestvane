@@ -945,6 +945,17 @@ int main() {
             version.back() = 1;
             assert(data.write(address, version) && firewall.get(data, ipv6) == 0);
 
+            const auto testMarkVersion = [&](uint32_t option, const char* name, uint8_t revision) {
+                std::array<uint8_t, 30> request{};
+                std::memcpy(request.data(), name, std::strlen(name));
+                data.cpu.x[2] = option;
+                assert(data.write(address, request) && firewall.get(data, ipv6) == uint64_t(-93));
+                request.back() = revision;
+                assert(data.write(address, request) && firewall.get(data, ipv6) == 0);
+            };
+            testMarkVersion(ipv6 ? 69 : 67, "MARK", 2);
+            testMarkVersion(ipv6 ? 68 : 66, "mark", 1);
+
             version.fill(0);
             std::memcpy(version.data(), "u32", 3);
             assert(data.write(address, version) && firewall.get(data, ipv6) == 0);
@@ -1006,6 +1017,34 @@ int main() {
             store(payloadRule, body + 8, uint32_t(32));
             assert(installPayloadRule(metadata[11] + 1) == uint64_t(-22));
             assert(!firewall.allows(packet, GuestFirewall::output, 65536, {}));
+
+            // Only the matching packet's selected mark bits change.
+            payloadRule.assign(header + 48 + 40, 0);
+            store(payloadRule, offsets, uint16_t(header + 48));
+            store(payloadRule, offsets + 2, uint16_t(payloadRule.size()));
+            store(payloadRule, header, uint16_t(48));
+            std::memcpy(payloadRule.data() + header + 2, "mark", 4);
+            payloadRule[header + 31] = 1;
+            store(payloadRule, header + 32, uint32_t(0x34));
+            store(payloadRule, header + 36, uint32_t(0xff));
+            store(payloadRule, header + 48, uint16_t(40));
+            std::memcpy(payloadRule.data() + header + 50, "MARK", 4);
+            payloadRule[header + 79] = 2;
+            store(payloadRule, header + 80, uint32_t(0x11));
+            store(payloadRule, header + 84, uint32_t(0xff));
+            store(update, 40, uint32_t(initial.size() + payloadRule.size()));
+            for (unsigned hook = 0; hook < 5; ++hook) {
+                const auto entry = metadata[1 + hook], policy = metadata[6 + hook];
+                store(update, 44 + hook * 4, uint32_t(entry + (entry > start ? payloadRule.size() : 0)));
+                store(update, 64 + hook * 4, uint32_t(policy + (policy >= start ? payloadRule.size() : 0)));
+            }
+            assert(installPayloadRule(metadata[11] + 1) == 0 && !firewall.tracksConnections());
+            packetMark = 0x6f34;
+            assert(firewall.allows(packet, GuestFirewall::output, 65536, {&packetMark}));
+            assert(packetMark == 0x6f11);
+            packetMark = 0x6f35;
+            assert(firewall.allows(packet, GuestFirewall::output, 65536, {&packetMark}));
+            assert(packetMark == 0x6f35);
         }
     }
     const auto put = [&](uint64_t address, const char* data) {
