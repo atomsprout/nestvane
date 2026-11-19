@@ -4593,7 +4593,7 @@ void ProbeLinux::setRealtime(std::chrono::nanoseconds value) {
     if (offset == realtimeOffset) return;
     realtimeOffset = offset;
     for (auto& [_, task] : threads) {
-        if (task.wait != Wait::futex || !task.realtimeFutexDeadline) continue;
+        if ((task.wait != Wait::futex && task.wait != Wait::futexPi) || !task.realtimeFutexDeadline) continue;
         const auto delay = std::max(nanoseconds{}, *task.realtimeFutexDeadline - value);
         task.deadline = now + std::min(delay, duration_cast<nanoseconds>(steady_clock::time_point::max() - now));
     }
@@ -4659,13 +4659,14 @@ bool ProbeLinux::switchThread(Machine& machine, std::chrono::steady_clock::time_
                     nextDeadline = thread.hostEventRetry;
                 }
             }
-            if ((wait == Wait::poll || wait == Wait::sleep || wait == Wait::futex || wait == Wait::signal) && thread.deadline) {
+            const bool futexWait = wait == Wait::futex || wait == Wait::futexPi;
+            if ((wait == Wait::poll || wait == Wait::sleep || futexWait || wait == Wait::signal) && thread.deadline) {
                 if (*thread.deadline <= now) {
                     thread.wait = Wait::none;
-                    if (wait == Wait::futex || wait == Wait::signal) {
+                    if (futexWait || wait == Wait::signal) {
                         auto& state = tid == currentTid ? machine.cpu : thread.saved;
                         state.pc += 4;
-                        state.x[0] = uint64_t(wait == Wait::futex ? -110 : -11);
+                        state.x[0] = uint64_t(futexWait ? -110 : -11);
                         thread.signalWaitMask = 0;
                         thread.deadline.reset();
                         thread.futexBacking.reset();
@@ -5336,14 +5337,95 @@ unsigned ProbeLinux::wakeFutex(uint64_t address, unsigned count, uint32_t mask,
     return woken;
 }
 
+bool ProbeLinux::futexPi(Machine& machine, uint64_t op, uint64_t address,
+                         std::shared_ptr<SharedFileBytes> backing, uint32_t value) {
+    using namespace std::chrono;
+    constexpr uint32_t waiters = 0x80000000, ownerDied = 0x40000000, tidMask = 0x3fffffff;
+    auto& x = machine.cpu.x;
+    const auto owner = value & tidMask;
+    const bool unlock = op == 7;
+    const bool tryLock = op == 8;
+    const bool wallClock = op == 6 || (x[1] & 256);
+    std::optional<nanoseconds> timeout;
+    if (!unlock && !tryLock && x[3]) {
+        std::array<int64_t, 2> fields{};
+        const auto* bytes = machine.read(x[3], sizeof(fields), 4);
+        if (!bytes) { x[0] = uint64_t(-14); return true; }
+        std::memcpy(fields.data(), bytes, sizeof(fields));
+        if (fields[0] < 0 || fields[1] < 0 || fields[1] >= 1'000'000'000) {
+            x[0] = invalid;
+            return true;
+        }
+        timeout = fields[0] > (INT64_MAX - fields[1]) / 1'000'000'000
+            ? nanoseconds::max() : nanoseconds(fields[0] * 1'000'000'000 + fields[1]);
+    }
+    if (unlock ? owner != currentTid : owner == currentTid) {
+        x[0] = uint64_t(unlock ? -1 : -35);
+        return true;
+    }
+    Thread* next = nullptr;
+    uint32_t nextOwner = 0;
+    for (auto& [tid, thread] : threads) {
+        if ((thread.wait != Wait::futexPi && thread.wait != Wait::futex) ||
+            thread.futexAddress != address || thread.futexBacking != backing ||
+            (!backing && thread.futexAddressSpace != current->process)) continue;
+        if (thread.wait == Wait::futex) { x[0] = invalid; return true; }
+        if (!next || thread.futexPiOrder < next->futexPiOrder) {
+            next = &thread;
+            nextOwner = uint32_t(tid);
+        }
+    }
+    if (unlock || !owner) {
+        const uint32_t replacement = unlock ? (next ? waiters | nextOwner : 0)
+                                            : (value & ownerDied) | uint32_t(currentTid);
+        if (!writeGuest(machine, x[0], replacement)) { x[0] = uint64_t(-14); return true; }
+        if (unlock && next) {
+            next->wait = Wait::none;
+            next->futexBacking.reset();
+            next->futexAddressSpace.reset();
+            next->deadline.reset();
+            next->realtimeFutexDeadline.reset();
+            next->saved.pc += 4;
+            next->saved.x[0] = 0;
+        }
+        x[0] = 0;
+        return true;
+    }
+    if (!writeGuest(machine, x[0], value | waiters)) { x[0] = uint64_t(-14); return true; }
+    const auto task = threads.find(owner);
+    if (task == threads.end() || task->second.wait == Wait::exited) {
+        x[0] = uint64_t(-3);
+        return true;
+    }
+    if (tryLock) { x[0] = uint64_t(-11); return true; }
+    current->deadline.reset();
+    current->realtimeFutexDeadline.reset();
+    if (timeout) {
+        const auto now = steady_clock::now();
+        const auto epoch = wallClock ? realtimeAt(now) : duration_cast<nanoseconds>(now.time_since_epoch());
+        if (*timeout <= epoch) { x[0] = uint64_t(-110); return true; }
+        const auto delay = std::min(*timeout - epoch, duration_cast<nanoseconds>(steady_clock::time_point::max() - now));
+        current->deadline = now + duration_cast<steady_clock::duration>(delay);
+        if (wallClock) current->realtimeFutexDeadline = *timeout;
+    }
+    current->wait = Wait::futexPi;
+    current->futexAddress = address;
+    current->futexAddressSpace = backing ? nullptr : current->process;
+    current->futexBacking = std::move(backing);
+    current->futexPiOrder = nextFutexPiOrder++;
+    sliceEnd = 0;
+    return true;
+}
+
 bool ProbeLinux::futex(Machine& machine) {
     auto& x = machine.cpu.x;
     constexpr uint64_t realtime = 256, privateFlag = 128;
     const auto op = x[1] & ~(privateFlag | realtime);
-    if ((x[1] & realtime) && op != 9) return false;
+    if ((x[1] & realtime) && op != 9 && op != 13) return false;
     const bool requeue = op == 3 || op == 4;
-    if (op != 0 && op != 1 && !requeue && op != 9 && op != 10) return false;
-    const uint32_t mask = op >= 9 ? uint32_t(x[5]) : UINT32_MAX;
+    const bool pi = op == 6 || op == 7 || op == 8 || op == 13;
+    if (op != 0 && op != 1 && !requeue && !pi && op != 9 && op != 10) return false;
+    const uint32_t mask = op == 9 || op == 10 ? uint32_t(x[5]) : UINT32_MAX;
     if (x[0] % 4 || !mask) { x[0] = invalid; return true; }
     const auto* bytes = machine.read(x[0], 4, 4);
     if (!bytes) { x[0] = uint64_t(-14); return true; }
@@ -5362,6 +5444,11 @@ bool ProbeLinux::futex(Machine& machine) {
         return std::pair{address, std::move(backing)};
     };
     auto [address, backing] = keyFor(x[0]);
+    if (pi) {
+        uint32_t value;
+        std::memcpy(&value, bytes, sizeof(value));
+        return futexPi(machine, op, address, std::move(backing), value);
+    }
     if (requeue) {
         if (int32_t(x[2]) < 0 || int32_t(x[3]) < 0 || x[4] % 4) { x[0] = invalid; return true; }
         if (!machine.read(x[4], 4, 4)) { x[0] = uint64_t(-14); return true; }
@@ -5875,6 +5962,7 @@ std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedPr
                 }
                 break;
             }
+            case Wait::futexPi:
             case Wait::futex: tasks << " futex=0x" << std::hex << thread.futexAddress << std::dec; break;
             case Wait::signal: tasks << " signal"; break;
             case Wait::sleep: tasks << " sleeping"; break;

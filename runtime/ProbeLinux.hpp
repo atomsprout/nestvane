@@ -109,7 +109,7 @@ private:
         uint64_t generation = 0;
         std::map<std::string, MountView, std::less<>> mounts{{"/dev", {6, 0755, 0, 0, "/dev"}}};
     };
-    enum class Wait { none, poll, futex, signal, sleep, exited, suspended };
+    enum class Wait { none, poll, futex, futexPi, signal, sleep, exited, suspended };
     struct Process;
     using PendingSignals = std::map<uint32_t, std::array<uint32_t, 32>>;
     struct BinderConnection;
@@ -129,7 +129,7 @@ private:
         uint32_t waitingBinderFd = 0;
         bool noNewPrivileges = false;
         Wait wait = Wait::none;
-        uint64_t clearTid = 0, futexAddress = 0;
+        uint64_t clearTid = 0, futexAddress = 0, futexPiOrder = 0;
         std::shared_ptr<SharedFileBytes> futexBacking;
         std::shared_ptr<Process> futexAddressSpace;
         uint32_t futexMask = 0, ioPriority = 0;
@@ -151,6 +151,8 @@ private:
     bool forkProcess(Machine& machine);
     bool execProcess(Machine& machine);
     bool futex(Machine& machine);
+    bool futexPi(Machine& machine, uint64_t op, uint64_t address,
+                 std::shared_ptr<SharedFileBytes> backing, uint32_t value);
     unsigned wakeFutex(uint64_t address, unsigned count, uint32_t mask,
                        const std::shared_ptr<SharedFileBytes>& backing = {});
     void wakePollers();
@@ -749,6 +751,7 @@ private:
     uint64_t nextNamespace = 2;
     uint64_t nextMountBacking = 1;
     uint64_t nextInode = 65536;
+    uint64_t nextFutexPiOrder = 1;
     uint32_t userId() const { return current->process->userIds[1]; }
     uint32_t groupId() const { return current->process->groupIds[1]; }
     unsigned permissionShift(uint32_t uid, uint32_t gid) const;

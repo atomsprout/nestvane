@@ -3520,6 +3520,35 @@ int main() {
     assert(linux.schedule(machine) && linux.threadId() == 2 && machine.cpu.x[0] == 0);
     assert(machine.cpu.pc == base + 8);
 
+    constexpr uint64_t piWord = base + 0x838, piTimeout = base + 0x848;
+    constexpr uint64_t privateFutex = 128, lockPi2 = 13, unlockPi = 7, trylockPi = 8;
+    constexpr uint64_t piWaiters = 0x80000000, piOwnerDied = 0x40000000;
+    assert(machine.store64(piWord, 0));
+    assert(machine.store64(piTimeout, 0) && machine.store64(piTimeout + 8, 0));
+    assert(call(98, {piWord, privateFutex | lockPi2, 0, piTimeout}) == 0);
+    assert(load(piWord) == childTid);
+    assert(call(98, {piWord, privateFutex | lockPi2}) == uint64_t(-35));
+    machine.cpu.retired += 4096;
+    assert(linux.schedule(machine) && linux.threadId() == 1);
+    assert(call(98, {piWord, privateFutex | unlockPi}) == uint64_t(-1));
+    assert(call(98, {piWord, privateFutex | trylockPi}) == uint64_t(-11));
+    assert(load(piWord) == (piWaiters | childTid));
+    assert(call(98, {piWord, privateFutex | lockPi2, 0, piTimeout}) == uint64_t(-110));
+
+    machine.cpu.pc = base + 0x24;
+    call(98, {piWord, privateFutex | lockPi2});
+    assert(linux.blocked() && linux.schedule(machine) && linux.threadId() == childTid);
+    assert(call(98, {piWord, privateFutex | unlockPi}) == 0 && load(piWord) == (piWaiters | 1));
+    machine.cpu.retired += 4096;
+    assert(linux.schedule(machine) && linux.threadId() == 1);
+    assert(machine.cpu.pc == base + 0x28 && machine.cpu.x[0] == 0);
+    assert(call(98, {piWord, privateFutex | unlockPi}) == 0 && load(piWord) == 0);
+    assert(machine.store64(piWord, piWaiters | piOwnerDied));
+    assert(call(98, {piWord, privateFutex | trylockPi}) == 0 && load(piWord) == (piOwnerDied | 1));
+    assert(call(98, {piWord, privateFutex | unlockPi}) == 0 && load(piWord) == 0);
+    machine.cpu.retired += 4096;
+    assert(linux.schedule(machine) && linux.threadId() == childTid);
+
     constexpr uint64_t userSignal = 10, signalMask = 1ULL << (userSignal - 1);
     assert(machine.store64(base + 0x820, signalMask));
     assert(machine.store64(base + 0x8c0, 0) && machine.store64(base + 0x8c8, 0));
