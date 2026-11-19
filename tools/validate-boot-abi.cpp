@@ -1504,6 +1504,11 @@ int main() {
         assert(call(63, {duplicate, 0, 2}) == uint64_t(-14));
         assert(call(63, {duplicate, buffer, 1}) == 1 && *machine.read(buffer, 1, 4) == 1);
         assert(call(63, {channel, buffer, 1}) == 1 && *machine.read(buffer, 1, 4) == 2);
+        assert(call(63, {duplicate, buffer, 524288}) == uint64_t(-11));
+        assert(call(63, {duplicate, buffer, 524288}) == uint64_t(-11) && !linux.blocked());
+        assert(call(22, {poll, event, 1, 0}) == 0);
+        assert(call(64, {channel, buffer + 9, 2}) == 2);
+        assert(call(63, {channel, buffer, 524288}) == 2 && uint16_t(load(buffer)) == 0x0201);
         assert(call(63, {duplicate, buffer, 1}) == uint64_t(-11));
         assert(call(57, {duplicate}) == 0 && call(57, {channel}) == 0 && call(57, {poll}) == 0);
         const auto other = call(56, {cwd, path, 0x802});

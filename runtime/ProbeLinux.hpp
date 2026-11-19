@@ -262,8 +262,8 @@ private:
     struct GraphicsPipeState {
         std::string serviceHeader;
         std::unique_ptr<GraphicsPipe> backend;
-        std::vector<uint8_t> unread;
-        size_t offset = 0;
+        std::vector<uint8_t> readBuffer;
+        size_t readOffset = 0, readSize = 0;
         bool failed = false, cameraChannel = false;
         bool cameraVsock = false, connected = false;
 

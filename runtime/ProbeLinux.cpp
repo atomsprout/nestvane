@@ -2045,7 +2045,7 @@ uint16_t ProbeLinux::GraphicsPipeState::pollEvents() const {
     constexpr uint16_t readable = 1, writable = 4, hangup = 16;
     if (failed) return hangup;
     if (!backend) return writable;
-    return backend->pollEvents() | (unread.empty() ? 0 : readable);
+    return backend->pollEvents() | (readOffset < readSize ? readable : 0);
 }
 
 uint64_t ProbeLinux::readGraphics(Machine& machine, GraphicsPipeState& pipe, uint64_t address, uint64_t size) {
@@ -2055,24 +2055,19 @@ uint64_t ProbeLinux::readGraphics(Machine& machine, GraphicsPipeState& pipe, uin
     if (!size) return 0;
     if (pipe.failed) return uint64_t(-5);
     if (!pipe.backend) return uint64_t(-11);
-    if (pipe.unread.empty()) {
-        auto& buffer = pipe.unread;
-        buffer.resize(std::min<uint64_t>(size, maxGraphicsTransfer));
-        const auto received = pipe.backend->read(buffer);
-        if (received <= 0 || uint64_t(received) > buffer.size()) {
-            buffer.clear();
+    if (pipe.readOffset == pipe.readSize) {
+        const auto request = std::min<uint64_t>(size, maxGraphicsTransfer);
+        if (pipe.readBuffer.size() < request) pipe.readBuffer.resize(request);
+        const auto received = pipe.backend->read(std::span(pipe.readBuffer).first(request));
+        if (received <= 0 || uint64_t(received) > request)
             return received <= 0 ? uint64_t(received) : uint64_t(-5);
-        }
-        buffer.resize(size_t(received));
+        pipe.readOffset = 0;
+        pipe.readSize = size_t(received);
     }
-    const auto bytes = std::span(pipe.unread).subspan(pipe.offset);
+    const auto bytes = std::span(pipe.readBuffer).first(pipe.readSize).subspan(pipe.readOffset);
     const auto count = std::min<uint64_t>(size, bytes.size());
     if (!machine.write(address, bytes.first(count))) return uint64_t(-14);
-    pipe.offset += count;
-    if (pipe.offset == pipe.unread.size()) {
-        pipe.unread.clear();
-        pipe.offset = 0;
-    }
+    pipe.readOffset += count;
     return count;
 }
 
