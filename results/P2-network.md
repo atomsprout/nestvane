@@ -312,3 +312,5 @@
 - iPhone 11 进程 8399 的双栈探针正常退出。原版 `netd1shot` 以 0 退出，常驻 netd 报告 `libnetd_updatable_init success`。真机 Zygote 输出 `begin preload`，尚未满足 `sys.boot_completed=1`。
 - 补齐参考镜像的原版 `iptables` 多调用程序和 `iptables-restore`、`ip6tables-restore` 两个名称。完整重采集得到 1232 个文件，程序字节、链接与 SELinux 域均已核对。Mac 冷启动日志确认两个原版命令在 `u:r:netd:s0` 中执行，后续工具子进程退出，常驻 netd 重试。防火墙内核接口与完整启动仍待验证。
 - 参考镜像预装了零字节的只读分区文件 `/system/etc/xtables.lock`，重新采集确认客体打包中保留。加入客体 `flock` 后，宿主回归验证独立打开间竞争、重复 FD 共享锁、升级竞争和末次关闭释放；Android 17 参考内核的独立 Bionic 夹具通过相同竞争序列。Mac 上原版防火墙工具越过锁文件，开始初始化 `filter`、`raw` 与 `mangle` 规则表，该内核 ABI 仍待补齐。[AOSP 锁文件变更](https://android.googlesource.com/platform/external/iptables.git/+/2bf769bb24c2ecf2ffac37773c1656cc15b654dd%5E%21/)
+- iPhone 11 进程 8406 的独立文件锁测试退出 0，原版 IPv4 和 IPv6 防火墙程序都越过文件锁，并进入规则表查询。
+- 客体实现 IPv4/IPv6 原版 xtables 规则表的查询、基本规则替换、计数器和回环数据路径执行。参考 Android 17 与 Mac 的同一 Bionic 夹具验证标准表、挂钩和结构尺寸，参考镜像无 IPv6 NAT 表。宿主回归用两个地址族的真实 UDP 路径确认 OUTPUT 丢弃与放行、无效替换保留原规则、旧计数器可读。Mac 的 Android 启动已越过规则表初始化，原版工具开始请求 `tcp`、`TCPMSS`、`connmark` 与 `CONNMARK` 扩展。完整启动尚未通过。[Linux xtables 规则表 ABI](https://codebrowser.dev/linux/linux/net/ipv4/netfilter/ip_tables.c.html)

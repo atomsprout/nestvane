@@ -2194,8 +2194,12 @@ bool ProbeLinux::socketCall(Machine& machine) {
             if (x[0] != 1 && !uevent && !inet) { x[0] = uint64_t(-97); break; }
             const uint32_t type = x[1] & 15;
             constexpr uint32_t flags = 0x80000 | 0x800;
-            if (inet && (type != 1 && type != 2)) { x[0] = uint64_t(-94); break; }
-            const uint32_t inetProtocol = type == 1 ? 6 : 17;
+            const bool firewallSocket = inet && type == 3 && x[2] == 255;
+            if (inet && !firewallSocket && (type != 1 && type != 2)) { x[0] = uint64_t(-94); break; }
+            if (firewallSocket && !(current->process->effectiveCaps & (1ULL << 13))) {
+                x[0] = uint64_t(-1); break; // CAP_NET_RAW
+            }
+            const uint32_t inetProtocol = firewallSocket ? 255 : type == 1 ? 6 : 17;
             if (inet && x[2] && x[2] != inetProtocol) { x[0] = uint64_t(-93); break; }
             if (x[1] & ~(uint64_t(flags) | 15) ||
                 (!inet && (uevent ? type != 2 : (type != 1 && type != 2 && type != 5) || x[2]))) {
@@ -2238,6 +2242,7 @@ bool ProbeLinux::socketCall(Machine& machine) {
         case 200: case 203: { // bind, connect
             if (fd == descriptors().end()) { x[0] = uint64_t(-9); break; }
             if (!fd->second.socket) { x[0] = uint64_t(-88); break; }
+            if (fd->second.socket->firewallSocket()) { x[0] = uint64_t(-95); break; }
             if (fd->second.socket->family == 2 || fd->second.socket->family == 10) {
                 const auto status = x[8] == 200 ? bindInetSocket(machine, fd->second.socket) :
                     connectInetSocket(machine, fd->second.socket);
@@ -2535,6 +2540,16 @@ bool ProbeLinux::socketCall(Machine& machine) {
         case 209: { // getsockopt on AF_UNIX.
             if (fd == descriptors().end()) { x[0] = uint64_t(-9); break; }
             if (!fd->second.socket) { x[0] = uint64_t(-88); break; }
+            const auto& endpoint = *fd->second.socket;
+            if (endpoint.firewallSocket() && x[1] == (endpoint.family == 10 ? 41 : 0)) {
+                if (!(current->process->effectiveCaps & (1ULL << 12))) { x[0] = uint64_t(-1); break; }
+                try {
+                    x[0] = firewall.get(machine, endpoint.family == 10);
+                } catch (const std::bad_alloc&) {
+                    x[0] = noMemory;
+                }
+                break;
+            }
             if (fd->second.socket->storageIdentity) {
                 x[0] = getInetSocketOption(machine, *fd->second.socket);
                 break;
@@ -2544,7 +2559,6 @@ bool ProbeLinux::socketCall(Machine& machine) {
             const auto* pointer = machine.read(x[4], sizeof(size), 4);
             if (!pointer) { x[0] = uint64_t(-14); break; }
             std::memcpy(&size, pointer, sizeof(size));
-            const auto& endpoint = *fd->second.socket;
             const bool sendTimeout = x[2] == sendTimeoutOld || x[2] == sendTimeoutNew;
             if (sendTimeout || x[2] == receiveTimeoutOld || x[2] == receiveTimeoutNew) {
                 const auto delay = sendTimeout ? endpoint.sendTimeout : endpoint.receiveTimeout;
@@ -2600,6 +2614,15 @@ bool ProbeLinux::socketCall(Machine& machine) {
             if (fd == descriptors().end()) { x[0] = uint64_t(-9); break; }
             if (!fd->second.socket) { x[0] = uint64_t(-88); break; }
             auto& endpoint = *fd->second.socket;
+            if (endpoint.firewallSocket() && x[1] == (endpoint.family == 10 ? 41 : 0)) {
+                if (!(current->process->effectiveCaps & (1ULL << 12))) { x[0] = uint64_t(-1); break; }
+                try {
+                    x[0] = firewall.set(machine, endpoint.family == 10);
+                } catch (const std::bad_alloc&) {
+                    x[0] = noMemory;
+                }
+                break;
+            }
             int32_t level = x[1], name = x[2];
             uint32_t size = x[4];
             std::vector<uint8_t> buffer;
@@ -5715,7 +5738,7 @@ bool ProbeLinux::transmitInetStream(SocketState& from, SocketState& to, std::spa
     constexpr uint32_t syn = 2, fin = 1, ack = 16;
     const auto advance = [&] { from.tcpSequence += uint32_t(payload.size()) + bool(flags & (syn | fin)); };
     const bool optionsEnabled = (from.tcpCallbackFlags & 0x40) && !inetSocketOperationPrograms.empty();
-    if (!optionsEnabled && inetEgressPrograms.empty() && inetIngressPrograms.empty()) {
+    if (!optionsEnabled && inetEgressPrograms.empty() && inetIngressPrograms.empty() && firewall.empty()) {
         advance();
         return true;
     }
@@ -5761,7 +5784,10 @@ bool ProbeLinux::transmitInetStream(SocketState& from, SocketState& to, std::spa
     };
     const bool sent = filterInetPacket(inetEgressPrograms, from, packet, true);
     if (packet.ringNotification) wakePollers();
-    if (!sent) return false;
+    if (!sent || !firewall.allows(packet.bytes, GuestFirewall::output) ||
+        !firewall.allows(packet.bytes, GuestFirewall::postrouting) ||
+        !firewall.allows(packet.bytes, GuestFirewall::prerouting) ||
+        !firewall.allows(packet.bytes, GuestFirewall::input)) return false;
     packet.ingressIfindex = guestLoopbackIndex;
     const bool received = filterInetPacket(inetIngressPrograms, to, packet, false);
     if (packet.ringNotification) wakePollers();
@@ -5876,12 +5902,15 @@ uint64_t ProbeLinux::sendInetDatagram(Machine& machine, const std::shared_ptr<So
         };
         const bool sent = filterInetPacket(inetEgressPrograms, *socket, packet, true);
         if (packet.ringNotification) wakePollers();
-        if (!sent) return uint64_t(-1);
+        if (!sent || !firewall.allows(packet.bytes, GuestFirewall::output) ||
+            !firewall.allows(packet.bytes, GuestFirewall::postrouting)) return uint64_t(-1);
 
         const auto peer = findInetDestination(socket->protocol, destination);
         if (!peer || peer->receiveShutdown) return size;
         const auto reportedSource = socket->family == peer->family ? source : asMappedIpv4(source);
         if (peer->connected && !matchInetPeer(peer->peerInetAddress, reportedSource)) return size;
+        if (!firewall.allows(packet.bytes, GuestFirewall::prerouting) ||
+            !firewall.allows(packet.bytes, GuestFirewall::input)) return size;
         packet.ingressIfindex = guestLoopbackIndex;
         const bool received = filterInetPacket(inetIngressPrograms, *peer, packet, false);
         if (packet.ringNotification) wakePollers();

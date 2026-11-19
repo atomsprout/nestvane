@@ -582,6 +582,75 @@ int main() {
         assert(pathOnly < 256 && call(32, {pathOnly, 6}) == uint64_t(-9));
         assert(call(57, {second}) == 0 && call(57, {pathOnly}) == 0);
     }
+    {
+        struct Info {
+            std::array<char, 32> name;
+            uint32_t hooks, starts[5], policies[5], count, bytes;
+        };
+        struct Replace {
+            std::array<char, 32> name;
+            uint32_t hooks, count, bytes, starts[5], policies[5], previousCount;
+            uint64_t previous;
+        };
+        static_assert(sizeof(Info) == 84 && sizeof(Replace) == 96);
+        constexpr auto input = base + 256, oldCounters = base + 1280, length = base + 1440;
+        constexpr auto address = base + 1472, payload = base + 1512;
+        const auto write = [&](uint64_t offset, const auto& data) {
+            return machine.write(offset, {reinterpret_cast<const uint8_t*>(&data), sizeof(data)});
+        };
+        for (uint32_t family : {2, 10}) {
+            const bool ipv6 = family == 10;
+            const uint32_t level = ipv6 ? 41 : 0;
+            const size_t entrySize = ipv6 ? 168 : 112;
+            const auto control = call(198, {family, 3, 255}), reader = call(198, {family, 0x802, 0});
+            const auto writer = call(198, {family, 0x802, 0});
+            assert(control < 256 && reader < 256 && writer < 256);
+            if (ipv6) {
+                const Info nat{{'n','a','t'}, 0, {}, {}, 0, 0};
+                assert(write(input, nat) && write(length, uint32_t(sizeof(Info))));
+                assert(call(209, {control, level, 64, input, length}) == uint64_t(-2));
+            }
+            const Info blank{{'f','i','l','t','e','r'}, 0, {}, {}, 0, 0};
+            assert(write(input, blank) && write(length, uint32_t(sizeof(Info))));
+            assert(call(209, {control, level, 64, input, length}) == 0);
+            Info actual{};
+            assert(machine.readInto(input, {reinterpret_cast<uint8_t*>(&actual), sizeof(actual)}));
+            assert(actual.hooks == 0x0e && actual.count == 4 && actual.starts[3] == 2 * (entrySize + 40));
+            assert(actual.policies[3] == actual.starts[3]);
+            assert(write(input + 32, actual.bytes) && write(length, actual.bytes + 40));
+            assert(call(209, {control, level, 65, input, length}) == 0);
+            std::vector<uint8_t> rules(actual.bytes);
+            assert(machine.readInto(input + 40, rules));
+            Replace request{actual.name, actual.hooks, actual.count, actual.bytes, {}, {}, actual.count, oldCounters};
+            std::ranges::copy(actual.starts, request.starts);
+            std::ranges::copy(actual.policies, request.policies);
+            assert(write(input, request));
+            const uint32_t action = actual.starts[3] + entrySize + 32;
+            auto setRules = [&](int32_t verdict) {
+                std::memcpy(rules.data() + action, &verdict, sizeof(verdict));
+                assert(machine.write(input + sizeof(request), rules));
+                return call(208, {control, level, 64, input, sizeof(request) + rules.size()});
+            };
+            std::array<uint8_t, 28> local{};
+            local[0] = family;
+            if (!ipv6) local[4] = 127;
+            local[ipv6 ? 23 : 7] = 1;
+            const uint32_t addressSize = ipv6 ? 28 : 16;
+            assert(write(address, local) && call(200, {reader, address, addressSize}) == 0);
+            assert(write(length, addressSize) && call(204, {reader, address, length}) == 0);
+            assert(write(payload, uint64_t(0x10203040)));
+            assert(setRules(-1) == 0);
+            const auto send = [&] { return call(206, {writer, payload, 8, 0, address, addressSize}); };
+            assert(send() == uint64_t(-1) && call(207, {reader, payload, 8}) == uint64_t(-11));
+            assert(setRules(12) == uint64_t(-22)); // Invalid jump leaves the previous policy active.
+            assert(send() == uint64_t(-1));
+            assert(setRules(-2) == 0);
+            uint64_t dropped = 0;
+            assert(machine.load64(oldCounters + 2 * 16, dropped) && dropped == 2);
+            assert(send() == 8 && call(207, {reader, payload, 8}) == 8);
+            assert(call(57, {reader}) == 0 && call(57, {writer}) == 0 && call(57, {control}) == 0);
+        }
+    }
     const auto put = [&](uint64_t address, const char* data) {
         assert(machine.write(address, {reinterpret_cast<const uint8_t*>(data), std::strlen(data) + 1}));
     };

@@ -3,6 +3,7 @@
 #include "GraphicsPipe.hpp"
 #include "GuestTouch.hpp"
 #include "Runtime.hpp"
+#include "GuestFirewall.hpp"
 #include "Ext4.hpp"
 
 #include <chrono>
@@ -186,6 +187,7 @@ private:
         };
         std::deque<Datagram> datagrams;
         bool inetDatagram() const { return protocol == 17; }
+        bool firewallSocket() const { return type == 3 && protocol == 255; }
         bool hasInput() const { return !inbox.empty() || !datagrams.empty(); }
         std::function<void(const SocketState&)> onClose;
         ~SocketState() { if (onClose) onClose(*this); }
@@ -260,6 +262,7 @@ private:
     std::map<std::tuple<uint32_t, uint32_t, uint16_t>, std::weak_ptr<SocketState>> inetBindings;
     uint16_t nextEphemeralPort = 32768;
     bool inetLoopbackUp = true;
+    GuestFirewall firewall;
     std::shared_ptr<CgroupSocketHooks> inetReleasePrograms = std::make_shared<CgroupSocketHooks>();
     uint64_t bpfMapCall(Machine& machine);
     uint64_t loadBpfProgram(Machine& machine);
