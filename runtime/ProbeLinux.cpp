@@ -5378,16 +5378,20 @@ uint64_t ProbeLinux::loadBpfProgram(Machine& machine) {
             if (btf == descriptors().end()) return uint64_t(-9);
             if (!btf->second.btf) return invalid;
             debug.types = btf->second.btf;
-            // This interpreter supports a single entry point. libbpf passes one function record
-            // and a strictly ordered table of source lines, indexed by instruction slot.
             if (metadata.functionCount) {
-                if (metadata.functionCount != 1 || metadata.functionSize != sizeof(BpfProgram::FunctionInfo))
+                if (metadata.functionCount > count || metadata.functionSize != sizeof(BpfProgram::FunctionInfo))
                     return invalid;
-                BpfProgram::FunctionInfo function{};
-                if (!machine.readInto(metadata.functions, {reinterpret_cast<uint8_t*>(&function), sizeof(function)}))
-                    return uint64_t(-14);
-                if (function[0] || !debug.types->isFunction(function[1])) return invalid;
-                debug.functions.push_back(function);
+                debug.functions.resize(metadata.functionCount);
+                auto bytes = std::span(reinterpret_cast<uint8_t*>(debug.functions.data()),
+                                       metadata.functionCount * metadata.functionSize);
+                if (!machine.readInto(metadata.functions, bytes)) return uint64_t(-14);
+                if (debug.functions.front()[0]) return invalid;
+                uint32_t minimum = 0;
+                for (const auto& [slot, function] : debug.functions) {
+                    if (slot >= count || slot < minimum || !bytecode[size_t(slot) * 8] ||
+                        !debug.types->isFunction(function)) return invalid;
+                    minimum = slot + 1;
+                }
             }
             if (metadata.lineCount) {
                 if (metadata.lineCount > count || metadata.lineSize != sizeof(BpfProgram::LineInfo)) return invalid;
@@ -5461,6 +5465,7 @@ uint64_t ProbeLinux::testBpfProgram(Machine& machine) {
         }
         packet.ifindex = guestLoopbackIndex;
         packet.networkOffset = 14;
+        packet.socketCookie = nextBpfTestCookie++;
         const auto repetitions = std::max(1U, test.repeat);
         const auto start = std::chrono::steady_clock::now();
         for (uint32_t run = 0; run < repetitions; ++run) {

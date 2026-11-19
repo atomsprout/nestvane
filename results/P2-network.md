@@ -263,3 +263,5 @@
 - 保留原客体数据库的 iPhone 11 进程 8292 越过目录创建失败，源码版加载器自检通过，并加载及固定 `offload.o` 的全部八个分类程序，再完成 `test.o`。真机随后与 Mac 一样停在 `clatd.o`。Mac 诊断确认首个 CLAT 程序的一个 BTF 函数和 88 条行记录已通过校验，下一处是第 183 个指令槽调用的 helper 31（`bpf_skb_change_proto`）。本轮验证使用隔离客体文件视图提供源码构建的加载器，完整 Tethering APEX 重建与 Android 完整启动仍待验证。
 
 - 实现线性客体包的 IPv4/IPv6 协议切换和包头空间调整。Android 17 参考内核和 Nestvane Mac 执行同一 ARM64 探针中的原版 `schedcls/ingress6_clat_ether$4_14`，确认无规则时保持原帧，命中时正确转换 IPv6 UDP 以及带 IPv6 分片头的 UDP 帧，且输出 IPv4 和 UDP 校验和、映射计数均正确。宿主 ABI 和 iPhoneOS 编译签名通过。源码版加载器在 Mac 完成 `clatd.o` 加载，随后停在 `dscpPolicy@funcs.o` 的首个程序。[Linux 协议转换和包头调整](https://codebrowser.dev/linux/linux/net/core/filter.c.html)
+- iPhone 11 进程 8295 的原版 CLAT 探针耗时 0.228 秒，正常退出。源码版加载器随后成功加载 `clatd.o`，推进到 DSCP 策略。
+- 客体支持带 BTF 函数表的 eBPF 回调与 `bpf_for_each_map_elem`。在 Android 17 参考内核和 Nestvane Mac 中执行同一 ARM64 探针里的原版 DSCP 分类器。两端均选中覆盖更窄目标端口范围的规则，保留 ECN 并验证重写后的 IP 校验和。宿主回归验证回调读取映射键、写入调用方栈和按返回值提前停止。源码版加载器在 Mac 完成 `dscpPolicy@funcs.o` 加载，随后创建 `netd@funcs.o` 的 `blocked_ports_map` 时遇到可映射数组标志。[Linux 映射回调 ABI](https://codebrowser.dev/linux/linux/include/uapi/linux/bpf.h.html)

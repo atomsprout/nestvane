@@ -9,6 +9,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <span>
 #include <unordered_map>
 #include <utility>
@@ -62,6 +63,7 @@ public:
         std::vector<uint8_t> bytes;
         uint32_t protocol = 0, packetType = 0, ingressIfindex = 0, ifindex = 0, mark = 0;
         size_t networkOffset = 0;
+        uint64_t socketCookie = 0;
     };
 
     bool load(uint32_t type, std::span<const uint8_t> bytes, const MapResolver& resolve) {
@@ -71,6 +73,7 @@ public:
         std::vector<Instruction> decoded(bytes.size() / sizeof(Instruction));
         std::memcpy(decoded.data(), bytes.data(), bytes.size());
         std::map<size_t, std::shared_ptr<BpfMap>> maps;
+        std::set<size_t> entries{0};
         for (size_t pc = 0; pc < decoded.size(); ++pc) {
             const auto& i = decoded[pc];
             if (i.destination() > 10 || i.source() > 10) return false;
@@ -78,19 +81,26 @@ public:
                 if (i.destination() == 10 || i.offset || pc + 1 >= decoded.size()) return false;
                 const auto& upper = decoded[pc + 1];
                 if (upper.code || upper.registers || upper.offset) return false;
-                if (i.source()) {
-                    if (type != classifier || i.source() != 1 || upper.immediate) return false;
-                    auto map = resolve(uint32_t(i.immediate)); // BPF_PSEUDO_MAP_FD
-                    if (!map || map->type == 25) return false; // Device maps have a distinct helper ABI.
+                if (i.source() == 1) { // BPF_PSEUDO_MAP_FD
+                    if (type != classifier || upper.immediate) return false;
+                    auto map = resolve(uint32_t(i.immediate));
+                    if (!map || map->type == 25) return false;
                     maps.emplace(pc, std::move(map));
-                    decoded[pc].immediate = 0; // Descriptor numbers have no meaning after relocation.
+                    decoded[pc].immediate = 0;
+                } else if (i.source() == 4) { // BPF_PSEUDO_FUNC
+                    const auto target = int64_t(pc) + 1 + i.immediate;
+                    if (type != classifier || upper.immediate || target <= 0 ||
+                        uint64_t(target) >= decoded.size() || !decoded[target].code) return false;
+                    entries.emplace(target);
+                } else if (i.source()) {
+                    return false;
                 }
                 ++pc;
             } else if (i.code == 0x85) {
                 if (i.registers || i.offset) return false;
                 switch (i.immediate) {
                     case 26: break; // skb_load_bytes
-                    case 1: case 9: case 10: case 11: case 23: case 31: case 39: case 40: case 43: case 50: case 125:
+                    case 1: case 9: case 10: case 11: case 23: case 31: case 39: case 40: case 43: case 46: case 50: case 125: case 164:
                         if (type != classifier) return false;
                         break;
                     default: return false;
@@ -123,7 +133,12 @@ public:
         }
         if ((decoded.back().code != 0x95 && decoded.back().code != 0x05) ||
             std::none_of(decoded.begin(), decoded.end(), [](const auto& i) { return i.code == 0x95; })) return false;
+        if (entries.size() > 1 && debug.functions.empty()) return false;
+        if (!debug.functions.empty() &&
+            !std::ranges::equal(entries, debug.functions, {}, std::identity{}, [](const auto& info) { return info[0]; }))
+            return false;
         instructions = std::move(decoded);
+        functionEntries = std::move(entries);
         referencedMaps = std::move(maps);
         programType = type;
         return true;
@@ -305,35 +320,56 @@ private:
     std::optional<uint32_t> execute(std::span<const uint8_t> packet, Packet* classifierPacket) const {
         // Interpreter addresses identify bounded packet, stack and map regions. The guest never
         // receives host addresses. Guest execution is serialized, so an atomic ADD needs no lock.
-        constexpr uint64_t stackBase = 0x1000, context = 0x2000, packetBase = 0x10000;
+        constexpr size_t maxDepth = 8;
+        constexpr uint64_t stackBase = 0x1000, stackStride = 0x1000, context = 0xf000, packetBase = 0x10000;
+        constexpr uint64_t callbackBase = 1ULL << 29, keyBase = 1ULL << 30;
         constexpr uint64_t mapHandleBase = 1ULL << 31, mapValueBase = 1ULL << 32, mapStride = 1ULL << 26;
-        std::array<uint8_t, 512> stack{};
-        std::array<uint64_t, 11> registers{};
+        std::array<std::array<uint8_t, 512>, maxDepth> stacks{};
+        std::array<std::span<const uint8_t>, maxDepth> callbackKeys{};
         std::vector<Region> values;
         std::unordered_map<const uint8_t*, size_t> valueRegions;
-        registers[1] = context;
-        registers[10] = stackBase + stack.size();
-        auto bytes = [&](uint64_t address, uint64_t size, bool write) -> std::span<uint8_t> {
-            const auto region = [&](uint64_t base, std::span<uint8_t> memory) -> std::span<uint8_t> {
-                if (address < base || address - base > memory.size() || size > memory.size() - (address - base))
-                    return {};
-                return memory.subspan(address - base, size);
-            };
+        const auto slice = [](auto memory, uint64_t base, uint64_t address, uint64_t size) -> decltype(memory) {
+            if (address < base || address - base > memory.size() || size > memory.size() - (address - base))
+                return {};
+            return memory.subspan(address - base, size);
+        };
+        auto spanAt = [&](uint64_t address, uint64_t size, bool write, size_t depth) -> std::span<uint8_t> {
             if (address >= mapValueBase) {
                 const auto index = (address - mapValueBase) / mapStride;
                 if (index >= values.size() || (write && !values[index].writable)) return {};
-                return region(mapValueBase + index * mapStride, values[index].bytes);
+                return slice(values[index].bytes, mapValueBase + index * mapStride, address, size);
             }
-            if (address >= packetBase && classifierPacket) return region(packetBase, classifierPacket->bytes);
-            return region(stackBase, stack);
+            if (address >= packetBase && classifierPacket)
+                return slice(std::span<uint8_t>(classifierPacket->bytes), packetBase, address, size);
+            if (address < stackBase) return {};
+            const auto frame = (address - stackBase) / stackStride;
+            if (frame > depth) return {};
+            return slice(std::span<uint8_t>(stacks[frame]), stackBase + frame * stackStride, address, size);
+        };
+        const auto readAt = [&](uint64_t address, uint64_t size, size_t depth) -> std::span<const uint8_t> {
+            if (address >= keyBase && address < keyBase + maxDepth * mapStride) {
+                const auto index = (address - keyBase) / mapStride;
+                if (index >= depth) return {};
+                return slice(callbackKeys[index], keyBase + index * mapStride, address, size);
+            }
+            return spanAt(address, size, false, depth);
+        };
+        const auto mapFor = [&](uint64_t handle) -> BpfMap* {
+            if (handle < mapHandleBase || handle - mapHandleBase >= instructions.size()) return nullptr;
+            const auto entry = referencedMaps.find(handle - mapHandleBase);
+            return entry == referencedMaps.end() ? nullptr : entry->second.get();
+        };
+        const auto valueAddress = [&](const BpfMap& map, std::span<uint8_t> value) {
+            const auto [region, inserted] = valueRegions.try_emplace(value.data(), values.size());
+            if (inserted) values.push_back({value, !(map.flags & (1U << 7))});
+            return mapValueBase + region->second * mapStride;
         };
 
-        auto lookup = [&](uint64_t handle, uint64_t keyAddress) -> uint64_t {
-            if (handle < mapHandleBase || handle - mapHandleBase >= instructions.size()) return 0;
-            const auto entry = referencedMaps.find(handle - mapHandleBase);
-            if (entry == referencedMaps.end()) return 0;
-            auto& map = *entry->second;
-            const auto key = bytes(keyAddress, map.keySize, false);
+        auto lookup = [&](uint64_t handle, uint64_t keyAddress, size_t depth) -> uint64_t {
+            auto* foundMap = mapFor(handle);
+            if (!foundMap) return 0;
+            auto& map = *foundMap;
+            const auto key = readAt(keyAddress, map.keySize, depth);
             if (key.empty()) return 0;
             std::span<uint8_t> value;
             if (map.array) {
@@ -346,9 +382,7 @@ private:
                 if (found == map.hash.end()) return 0;
                 value = std::span(found->second).first(map.valueSize);
             }
-            const auto [region, inserted] = valueRegions.try_emplace(value.data(), values.size());
-            if (inserted) values.push_back({value, !(map.flags & (1U << 7))});
-            return mapValueBase + region->second * mapStride;
+            return valueAddress(map, value);
         };
 
         auto skbField = [&](uint64_t offset) -> std::optional<uint32_t> {
@@ -367,149 +401,202 @@ private:
             }
         };
 
-        size_t pc = 0;
-        for (size_t fuel = 0; fuel < 16384 && pc < instructions.size(); ++fuel) {
-            const auto& i = instructions[pc++];
-            auto& dst = registers[i.destination()];
-            const auto src = registers[i.source()];
-            const auto imm = uint64_t(int64_t(i.immediate));
-            const auto operand = i.fromRegister() ? src : imm;
-            switch (i.code) {
-                case 0xd4: case 0xdc:
-                    dst = changeByteOrder(dst, i.immediate, i.code == 0xdc);
-                    continue;
-                case 0x18:
-                    dst = i.source() ? mapHandleBase + pc - 1 :
-                        uint32_t(imm) | (uint64_t(uint32_t(instructions[pc].immediate)) << 32);
-                    ++pc;
-                    continue;
-                case 0x85: {
-                    const auto r1 = registers[1], r2 = registers[2], r3 = registers[3];
-                    uint64_t result = 0;
-                    switch (i.immediate) {
-                        case 1: result = lookup(r1, r2); break;
-                        case 9: { // bpf_skb_store_bytes
-                            if (r1 != context) return std::nullopt;
-                            const auto offset = uint32_t(r2), length = uint32_t(registers[4]);
-                            if (registers[5] & ~3ULL) { result = uint64_t(-22); break; }
-                            const auto source = bytes(r3, length, false);
-                            if (offset > packet.size() || length > packet.size() - offset || (length && source.empty())) {
-                                result = uint64_t(-14);
+        size_t fuel = classifierPacket ? 65536 : 16384;
+        auto run = [&](auto&& self, size_t start, size_t depth,
+                       std::array<uint64_t, 11> registers) -> std::optional<uint32_t> {
+            if (depth >= maxDepth) return std::nullopt;
+            auto& stack = stacks[depth];
+            stack.fill(0);
+            registers[10] = stackBase + depth * stackStride + stack.size();
+            const auto read = [&](uint64_t address, uint64_t size) { return readAt(address, size, depth); };
+            const auto write = [&](uint64_t address, uint64_t size) { return spanAt(address, size, true, depth); };
+            const auto next = functionEntries.upper_bound(start);
+            const auto end = next == functionEntries.end() ? instructions.size() : *next;
+            size_t pc = start;
+            while (fuel && pc >= start && pc < end) {
+                --fuel;
+                const auto& i = instructions[pc++];
+                auto& dst = registers[i.destination()];
+                const auto src = registers[i.source()];
+                const auto imm = uint64_t(int64_t(i.immediate));
+                const auto operand = i.fromRegister() ? src : imm;
+                switch (i.code) {
+                    case 0xd4: case 0xdc:
+                        dst = changeByteOrder(dst, i.immediate, i.code == 0xdc);
+                        continue;
+                    case 0x18:
+                        if (i.source() == 1) dst = mapHandleBase + pc - 1;
+                        else if (i.source() == 4) dst = callbackBase + pc + i.immediate;
+                        else dst = uint32_t(imm) | (uint64_t(uint32_t(instructions[pc].immediate)) << 32);
+                        ++pc;
+                        continue;
+                    case 0x85: {
+                        const auto r1 = registers[1], r2 = registers[2], r3 = registers[3];
+                        uint64_t result = 0;
+                        switch (i.immediate) {
+                            case 1: result = lookup(r1, r2, depth); break;
+                            case 9: { // bpf_skb_store_bytes
+                                if (r1 != context) return std::nullopt;
+                                const auto offset = uint32_t(r2), length = uint32_t(registers[4]);
+                                if (registers[5] & ~3ULL) { result = uint64_t(-22); break; }
+                                const auto source = read(r3, length);
+                                if (offset > packet.size() || length > packet.size() - offset || (length && source.empty())) {
+                                    result = uint64_t(-14);
+                                    break;
+                                }
+                                // This packet has no checksum-offload or cached hash metadata to update.
+                                if (length) std::memmove(classifierPacket->bytes.data() + offset, source.data(), length);
                                 break;
                             }
-                            // This packet has no checksum-offload or cached hash metadata to update.
-                            if (length) std::memmove(classifierPacket->bytes.data() + offset, source.data(), length);
-                            break;
-                        }
-                        case 10: case 11: // bpf_l3_csum_replace and bpf_l4_csum_replace
-                            if (r1 != context) return std::nullopt;
-                            result = replaceChecksum(classifierPacket->bytes, uint32_t(r2), r3, registers[4],
-                                                     registers[5], i.immediate == 11);
-                            break;
-                        case 23: // bpf_redirect returns a TC action; test-run never transmits the frame.
-                            result = r2 & ~1ULL ? 2 : 7; // TC_ACT_SHOT or TC_ACT_REDIRECT
-                            break;
-                        case 26: {
-                            const auto offset = uint32_t(r2), length = uint32_t(registers[4]);
-                            const auto to = bytes(r3, length, true);
-                            if (r1 != context || to.empty()) return std::nullopt;
-                            if (offset > packet.size() || length > packet.size() - offset) {
-                                std::ranges::fill(to, 0);
-                                result = uint64_t(-14);
-                            } else {
-                                std::memmove(to.data(), packet.data() + offset, length);
+                            case 10: case 11: // bpf_l3_csum_replace and bpf_l4_csum_replace
+                                if (r1 != context) return std::nullopt;
+                                result = replaceChecksum(classifierPacket->bytes, uint32_t(r2), r3, registers[4],
+                                                         registers[5], i.immediate == 11);
+                                break;
+                            case 23: // bpf_redirect returns a TC action; test-run never transmits the frame.
+                                result = r2 & ~1ULL ? 2 : 7; // TC_ACT_SHOT or TC_ACT_REDIRECT
+                                break;
+                            case 26: {
+                                const auto offset = uint32_t(r2), length = uint32_t(registers[4]);
+                                const auto to = write(r3, length);
+                                if (r1 != context || to.empty()) return std::nullopt;
+                                if (offset > packet.size() || length > packet.size() - offset) {
+                                    std::ranges::fill(to, 0);
+                                    result = uint64_t(-14);
+                                } else {
+                                    std::memmove(to.data(), packet.data() + offset, length);
+                                }
+                                break;
                             }
-                            break;
-                        }
-                        case 31: // bpf_skb_change_proto
-                            if (r1 != context) return std::nullopt;
-                            result = changeProtocol(*classifierPacket, uint16_t(r2), r3);
-                            packet = classifierPacket->bytes;
-                            break;
-                        case 39: // The guest packet is already linear.
-                            if (r1 != context) return std::nullopt;
-                            if (uint32_t(r2) > packet.size()) result = uint64_t(-12);
-                            break;
-                        case 40: // Test-run supplies a CHECKSUM_NONE packet.
-                            if (r1 != context) return std::nullopt;
-                            result = uint64_t(-524); // ENOTSUPP
-                            break;
-                        case 43: {
-                            if (r1 != context) return std::nullopt;
-                            const auto headroom = uint32_t(r2);
-                            if (r3 || headroom > maxPacketBytes - packet.size()) {
-                                result = uint64_t(-22);
-                            } else {
-                                classifierPacket->bytes.insert(classifierPacket->bytes.begin(), headroom, 0);
-                                classifierPacket->networkOffset += headroom;
+                            case 31: // bpf_skb_change_proto
+                                if (r1 != context) return std::nullopt;
+                                result = changeProtocol(*classifierPacket, uint16_t(r2), r3);
                                 packet = classifierPacket->bytes;
+                                break;
+                            case 39: // The guest packet is already linear.
+                                if (r1 != context) return std::nullopt;
+                                if (uint32_t(r2) > packet.size()) result = uint64_t(-12);
+                                break;
+                            case 40: // Test-run supplies a CHECKSUM_NONE packet.
+                                if (r1 != context) return std::nullopt;
+                                result = uint64_t(-524); // ENOTSUPP
+                                break;
+                            case 43: {
+                                if (r1 != context) return std::nullopt;
+                                const auto headroom = uint32_t(r2);
+                                if (r3 || headroom > maxPacketBytes - packet.size()) {
+                                    result = uint64_t(-22);
+                                } else {
+                                    classifierPacket->bytes.insert(classifierPacket->bytes.begin(), headroom, 0);
+                                    classifierPacket->networkOffset += headroom;
+                                    packet = classifierPacket->bytes;
+                                }
+                                break;
                             }
+                            case 46: // bpf_get_socket_cookie
+                                if (r1 != context) return std::nullopt;
+                                result = classifierPacket->socketCookie;
+                                break;
+                            case 50: // bpf_skb_adjust_room
+                                if (r1 != context) return std::nullopt;
+                                result = adjustRoom(*classifierPacket, int32_t(r2), uint32_t(r3), registers[4]);
+                                packet = classifierPacket->bytes;
+                                break;
+                            case 125: // bpf_ktime_get_boot_ns uses the guest's CLOCK_BOOTTIME clock.
+                                result = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                    std::chrono::steady_clock::now().time_since_epoch()).count();
+                                break;
+                            case 164: { // bpf_for_each_map_elem
+                                auto* map = mapFor(r1);
+                                if (registers[4]) { result = uint64_t(-22); break; }
+                                if (!map || r2 <= callbackBase || r2 - callbackBase >= instructions.size() ||
+                                    !functionEntries.contains(r2 - callbackBase)) return std::nullopt;
+                                auto invoke = [&](std::span<const uint8_t> key, std::span<uint8_t> value) {
+                                    callbackKeys[depth] = key;
+                                    auto action = self(self, r2 - callbackBase, depth + 1,
+                                                       {0, r1, keyBase + depth * mapStride,
+                                                        valueAddress(*map, value), r3});
+                                    callbackKeys[depth] = {};
+                                    ++result;
+                                    if (action && *action > 1) action.reset();
+                                    return action;
+                                };
+                                if (map->array) {
+                                    for (uint32_t index = 0; index < map->entryCount; ++index) {
+                                        const auto key = std::span(reinterpret_cast<const uint8_t*>(&index), sizeof(index));
+                                        const auto value = std::span(map->values).subspan(uint64_t(index) * map->valueStride,
+                                                                                         map->valueSize);
+                                        const auto action = invoke(key, value);
+                                        if (!action) return std::nullopt;
+                                        if (*action) break;
+                                    }
+                                } else {
+                                    for (auto& [key, value] : map->hash) {
+                                        const auto action = invoke(key, std::span(value).first(map->valueSize));
+                                        if (!action) return std::nullopt;
+                                        if (*action) break;
+                                    }
+                                }
+                                break;
+                            }
+                            default: return std::nullopt;
+                        }
+                        registers[0] = result;
+                        std::fill_n(registers.begin() + 1, 5, 0);
+                        continue;
+                    }
+                    case 0x95: return uint32_t(registers[0]);
+                    default: break;
+                }
+
+                switch (i.kind()) {
+                    case 1: {
+                        const auto address = src + i.offset;
+                        if (i.width() == 4 && address >= context && address < context + 180) {
+                            const auto field = skbField(address - context);
+                            if (!field) return std::nullopt;
+                            dst = *field;
                             break;
                         }
-                        case 50: // bpf_skb_adjust_room
-                            if (r1 != context) return std::nullopt;
-                            result = adjustRoom(*classifierPacket, int32_t(r2), uint32_t(r3), registers[4]);
-                            packet = classifierPacket->bytes;
-                            break;
-                        case 125: // bpf_ktime_get_boot_ns uses the guest's CLOCK_BOOTTIME clock.
-                            result = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                std::chrono::steady_clock::now().time_since_epoch()).count();
-                            break;
-                        default: return std::nullopt;
-                    }
-                    registers[0] = result;
-                    std::fill_n(registers.begin() + 1, 5, 0);
-                    continue;
-                }
-                case 0x95: return uint32_t(registers[0]);
-                default: break;
-            }
-
-            switch (i.kind()) {
-                case 1: {
-                    const auto address = src + i.offset;
-                    if (i.width() == 4 && address >= context && address < context + 180) {
-                        const auto field = skbField(address - context);
-                        if (!field) return std::nullopt;
-                        dst = *field;
+                        const auto from = read(address, i.width());
+                        if (from.empty()) return std::nullopt;
+                        dst = 0;
+                        std::memcpy(&dst, from.data(), from.size());
                         break;
                     }
-                    const auto from = bytes(address, i.width(), false);
-                    if (from.empty()) return std::nullopt;
-                    dst = 0;
-                    std::memcpy(&dst, from.data(), from.size());
-                    break;
-                }
-                case 3: {
-                    const auto address = dst + i.offset;
-                    if (classifierPacket && i.code == 0x63 && address == context + 8) {
-                        classifierPacket->mark = uint32_t(src);
+                    case 3: {
+                        const auto address = dst + i.offset;
+                        if (classifierPacket && i.code == 0x63 && address == context + 8) {
+                            classifierPacket->mark = uint32_t(src);
+                            break;
+                        }
+                        const auto to = write(address, i.width());
+                        if (to.empty()) return std::nullopt;
+                        uint64_t value = src;
+                        if (i.mode() == 0xc0) {
+                            if (address % to.size() || address < mapValueBase) return std::nullopt;
+                            uint64_t previous = 0;
+                            std::memcpy(&previous, to.data(), to.size());
+                            value += previous;
+                        }
+                        std::memcpy(to.data(), &value, to.size());
                         break;
                     }
-                    const auto to = bytes(address, i.width(), true);
-                    if (to.empty()) return std::nullopt;
-                    uint64_t value = src;
-                    if (i.mode() == 0xc0) {
-                        if (address % to.size() || address < mapValueBase) return std::nullopt;
-                        uint64_t previous = 0;
-                        std::memcpy(&previous, to.data(), to.size());
-                        value += previous;
-                    }
-                    std::memcpy(to.data(), &value, to.size());
-                    break;
+                    case 5: if (*jump(i.operation(), dst, operand)) pc += i.offset; break;
+                    case 7: dst = *arithmetic(i.operation(), dst, operand); break;
+                    default: return std::nullopt;
                 }
-                case 5: if (*jump(i.operation(), dst, operand)) pc += i.offset; break;
-                case 7: dst = *arithmetic(i.operation(), dst, operand); break;
-                default: return std::nullopt;
             }
-        }
-        return std::nullopt;
+            return std::nullopt;
+        };
+        return run(run, 0, 0, {0, context});
     }
 
     Identity identity;
     DebugInfo debug;
     uint32_t programType = 0;
     std::vector<Instruction> instructions;
+    std::set<size_t> functionEntries;
     std::map<size_t, std::shared_ptr<BpfMap>> referencedMaps;
 };
 

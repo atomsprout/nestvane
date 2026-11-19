@@ -1,4 +1,5 @@
 #include "AArch64.hpp"
+#include "BpfProgram.hpp"
 #include "GfxstreamPipe.hpp"
 #include "ProbeLinux.hpp"
 #include <algorithm>
@@ -15,6 +16,47 @@
 using namespace nestvane;
 
 int main() {
+    {
+        auto map = std::make_shared<BpfMap>();
+        map->id = 1;
+        map->array = true;
+        map->type = 2;
+        map->entryCount = 3;
+        map->keySize = 4;
+        map->valueSize = map->valueStride = 8;
+        const std::array<uint64_t, 3> values{2, 3, 100};
+        const auto initial = std::as_bytes(std::span(values));
+        map->values.resize(initial.size());
+        std::memcpy(map->values.data(), initial.data(), initial.size());
+        const auto encode = [](uint8_t code, uint8_t registers, int16_t offset = 0, int32_t immediate = 0) {
+            return uint64_t(code) | (uint64_t(registers) << 8) | (uint64_t(uint16_t(offset)) << 16) |
+                   (uint64_t(uint32_t(immediate)) << 32);
+        };
+        const std::array<uint64_t, 20> code{
+            encode(0xb7, 0, 0, 0), encode(0x7b, 0x0a, -8),
+            encode(0xbf, 0xa3), encode(0x07, 3, 0, -8), // Parent callback context points to the sum.
+            encode(0x18, 0x11, 0, 12), 0,              // r1 = map
+            encode(0x18, 0x42, 0, 4), 0,               // r2 = callback at slot 11
+            encode(0x85, 0, 0, 164),
+            encode(0x79, 0xa0, -8), encode(0x95, 0),
+            encode(0x61, 0x25), encode(0xb7, 0, 0, 1),
+            encode(0x25, 5, 5, 1),                    // Stop at the third key.
+            encode(0x79, 0x35), encode(0x79, 0x46),
+            encode(0x0f, 0x56), encode(0x7b, 0x64),
+            encode(0xb7, 0, 0, 0), encode(0x95, 0),
+        };
+        auto bytecode = std::span(reinterpret_cast<const uint8_t*>(code.data()), sizeof(code));
+        BpfProgram unsupported({}, {});
+        const auto fromFd = [&](uint32_t fd) { return fd == 12 ? map : nullptr; };
+        assert(!unsupported.load(BpfProgram::classifier, bytecode, fromFd));
+        // The callback stores into its parent's stack while leaving its own return register independent.
+        BpfProgram::DebugInfo debug{};
+        debug.functions = {{0, 1}, {11, 2}};
+        BpfProgram callback({}, std::move(debug));
+        assert(callback.load(BpfProgram::classifier, bytecode, fromFd));
+        BpfProgram::Packet packet;
+        assert(callback.classify(packet) == 5);
+    }
     constexpr uint64_t base = 0x2000;
     Machine machine(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
     {

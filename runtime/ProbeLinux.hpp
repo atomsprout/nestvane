@@ -203,6 +203,7 @@ private:
     std::map<uint32_t, std::weak_ptr<BpfMap>> bpfMaps;
     std::map<uint32_t, std::weak_ptr<const BpfProgram>> bpfPrograms;
     uint32_t nextBpfMapId = 1, nextBpfProgramId = 1, nextBpfTypeId = 1;
+    uint64_t nextBpfTestCookie = 1;
     uint64_t bpfMapCall(Machine& machine);
     uint64_t loadBpfProgram(Machine& machine);
     uint64_t testBpfProgram(Machine& machine);
