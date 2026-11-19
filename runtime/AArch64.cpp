@@ -596,6 +596,9 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
             else if (op == 0x2e208400) value = a - b;
             setLane(result, i, size, value);
         }
+    } else if ((word & 0xffe0fc00) == 0x7ee08c00) { // CMEQ Dd, Dn, Dm.
+        const bool matches = lane(source, 0, 8) == lane(other, 0, 8);
+        setLane(result, 0, 8, matches ? UINT64_MAX : 0);
     } else if (op == 0x0e208c00) { // CMTST: compare the lane's bitwise intersection with zero.
         if (size == 8 && width == 8) return false;
         for (unsigned i = 0; i < width / size; ++i) {

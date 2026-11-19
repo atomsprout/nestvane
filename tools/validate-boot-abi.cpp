@@ -57,6 +57,15 @@ int main() {
         assert(executeStartupInstruction(permute, 0x1e6788f1)); // fnmul d17, d7, d7
         const std::array<double, 2> negativeProduct{-10.5625, 0};
         assert(std::memcmp(permute.cpu.v[17].data(), negativeProduct.data(), sizeof(negativeProduct)) == 0);
+        const std::array<uint64_t, 2> compareLeft{0x8000000000000000, 3};
+        const std::array<uint64_t, 2> compareRight{0x8000000000000000, 5};
+        const std::array<uint64_t, 2> compareEqual{UINT64_MAX, 0}, compareUnequal{};
+        std::memcpy(permute.cpu.v[1].data(), compareLeft.data(), sizeof(compareLeft));
+        std::memcpy(permute.cpu.v[0].data(), compareRight.data(), sizeof(compareRight));
+        assert(executeStartupInstruction(permute, 0x7ee08c20)); // cmeq d0, d1, d0
+        assert(std::memcmp(permute.cpu.v[0].data(), compareEqual.data(), sizeof(compareEqual)) == 0);
+        assert(executeStartupInstruction(permute, 0x7ee08c20));
+        assert(std::memcmp(permute.cpu.v[0].data(), compareUnequal.data(), sizeof(compareUnequal)) == 0);
         const double half = -2.5, beyondSignedMax = 0x1p63;
         std::memcpy(permute.cpu.v[5].data(), &half, sizeof(half));
         assert(executeStartupInstruction(permute, 0x9e6400a9)); // fcvtas x9, d5
