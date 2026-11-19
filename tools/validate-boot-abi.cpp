@@ -245,6 +245,38 @@ int main() {
         return value;
     };
     {
+        put(base, "/proc/meminfo");
+        assert(call(48, {uint32_t(-100), base, 4}) == 0);
+        assert(call(79, {uint32_t(-100), base, base + 512, 0}) == 0);
+        assert(load(base + 512 + 48) == 0);
+        assert(call(56, {uint32_t(-100), base, 1}) == uint64_t(-30));
+        const auto readMemInfo = [&] {
+            const auto fd = call(56, {uint32_t(-100), base, 0x80000});
+            assert(fd < 256);
+            const auto length = call(63, {fd, base + 512, 512});
+            assert(length > 0 && length < 512);
+            const auto* bytes = machine.read(base + 512, length, 4);
+            assert(bytes && call(63, {fd, base + 512, 512}) == 0);
+            assert(call(57, {fd}) == 0);
+            return std::string(reinterpret_cast<const char*>(bytes), length);
+        };
+        assert(call(179, {base + 512}) == 0);
+        const auto total = load(base + 512 + 32);
+        const auto freeBefore = load(base + 512 + 40);
+        const auto initial = readMemInfo();
+        assert(initial.starts_with("MemTotal: " + std::to_string(total / 1024) + " kB\n"));
+        assert(initial.find("MemFree: " + std::to_string(freeBefore / 1024) + " kB\n") != std::string::npos);
+        const auto mapped = call(222, {0, pageSize, 3, 0x22, uint32_t(-1), 0});
+        assert(mapped != 0 && mapped < uint64_t(-4095) && machine.store64(mapped, 1));
+        assert(call(179, {base + 512}) == 0);
+        const auto freeAfter = load(base + 512 + 40);
+        assert(freeAfter < freeBefore);
+        const auto after = readMemInfo();
+        assert(after.find("MemFree: " + std::to_string(freeAfter / 1024) + " kB\n") != std::string::npos);
+        assert(after.find("SwapTotal: 0 kB\n") != std::string::npos);
+        assert(call(215, {mapped, pageSize}) == 0);
+    }
+    {
         static constexpr std::array<uint8_t, 2> input{'o', 'k'};
         linux.mount("/test/canonical/input", input);
         linux.alias("/test/linked", "/test/canonical");

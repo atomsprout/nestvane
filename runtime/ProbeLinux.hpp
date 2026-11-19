@@ -302,7 +302,7 @@ private:
     std::optional<std::string> followLinks(std::string path, bool followFinal = true) const;
     uint64_t writeDescriptor(Machine& machine, const Descriptor& fd, uint64_t address, uint64_t size,
                              std::optional<uint64_t> position = {});
-    uint64_t open(const std::string& path, uint32_t flags, uint32_t mode);
+    uint64_t open(const Machine& machine, const std::string& path, uint32_t flags, uint32_t mode);
     uint64_t stat(Machine& machine, uint64_t address, const Descriptor& fd) const;
     uint64_t resize(const WritableFile& file, uint64_t size);
     uint64_t ashmemIoctl(Machine& machine, const Descriptor& fd);
@@ -315,7 +315,8 @@ private:
     static constexpr uint64_t maxDataFileBytes = 64 * 1024 * 1024;
     static constexpr uint64_t maxWritableBytes = 128 * 1024 * 1024;
     std::vector<std::weak_ptr<SharedFileBytes>> memoryFiles;
-    std::optional<Descriptor> find(std::string_view path, uint32_t flags) const;
+    std::optional<Descriptor> find(std::string_view path, uint32_t flags, const Machine* machine = nullptr) const;
+    uint64_t freeMemory(const Machine& machine) const;
     std::string backingPath(std::string_view path) const;
     static std::string backingPath(std::string_view path, const MountNamespace& mountNamespace);
     const MountView* mountFor(std::string_view path) const;

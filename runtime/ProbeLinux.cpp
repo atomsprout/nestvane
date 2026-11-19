@@ -850,7 +850,32 @@ uint64_t ProbeLinux::stat(Machine& machine, uint64_t address, const Descriptor& 
     return statFile(machine, address, fd.bytes.size(), std::distance(files.begin(), file) + 8, mode);
 }
 
-std::optional<ProbeLinux::Descriptor> ProbeLinux::find(std::string_view path, uint32_t flags) const {
+uint64_t ProbeLinux::freeMemory(const Machine& machine) const {
+    uint64_t resident = anonymousBudget->dirty;
+    for (const auto& segment : machine.segments) resident += segment.bytes.size();
+    return memoryLimit - std::min(memoryLimit, resident);
+}
+
+std::optional<ProbeLinux::Descriptor> ProbeLinux::find(std::string_view path, uint32_t flags,
+                                                       const Machine* machine) const {
+    if (path == "/proc/meminfo") {
+        Descriptor entry{std::string(path), {}, flags, Node::regular};
+        entry.snapshot = std::make_shared<std::string>();
+        if (machine) {
+            constexpr uint64_t bytesPerKiB = 1024;
+            const auto available = freeMemory(*machine) / bytesPerKiB;
+            std::ostringstream info;
+            info << "MemTotal: " << memoryLimit / bytesPerKiB << " kB\n"
+                 << "MemFree: " << available << " kB\n"
+                 << "MemAvailable: " << available << " kB\n"
+                 << "AnonPages: " << anonymousBudget->dirty / bytesPerKiB << " kB\n"
+                 << "SwapTotal: 0 kB\n"
+                 << "SwapFree: 0 kB\n";
+            *entry.snapshot = std::move(info).str();
+            entry.bytes = {reinterpret_cast<const uint8_t*>(entry.snapshot->data()), entry.snapshot->size()};
+        }
+        return entry;
+    }
     const auto taskPath = "/proc/self/task/" + std::to_string(currentTid);
     if (const auto file = cgroupFiles.find(path); file != cgroupFiles.end()) {
         Descriptor entry{file->first, {}, flags, Node::cgroupProcs};
@@ -1209,7 +1234,7 @@ uint64_t ProbeLinux::renameFile(Machine& machine) {
     return 0;
 }
 
-uint64_t ProbeLinux::open(const std::string& path, uint32_t flags, uint32_t mode) {
+uint64_t ProbeLinux::open(const Machine& machine, const std::string& path, uint32_t flags, uint32_t mode) {
     constexpr uint32_t create = 0x40, exclusive = 0x80, truncate = 0x200;
     // The arm64 UAPI uses architecture-specific fcntl flag values.
     constexpr uint32_t directory = 0x4000, noFollow = 0x8000, direct = 0x10000, pathOnly = 0x200000;
@@ -1220,7 +1245,7 @@ uint64_t ProbeLinux::open(const std::string& path, uint32_t flags, uint32_t mode
     if (!logical || ((flags & noFollow) && resolve(*logical))) return uint64_t(-40);
     const auto pathname = backingPath(*logical);
     if (!canAccessParent(pathname, false)) return uint64_t(-13);
-    auto entry = find(pathname, flags);
+    auto entry = find(pathname, flags, &machine);
     if ((flags & (create | exclusive)) == (create | exclusive) && entry) return uint64_t(-17);
     if (!entry && !(flags & create)) return uint64_t(-2);
     // Immutable image data is already memory backed, with no guest page cache to bypass.
@@ -2159,7 +2184,7 @@ bool ProbeLinux::fileCall(Machine& machine) {
                     x[0] = fd;
                     break;
                 }
-                x[0] = open(path, uint32_t(x[2]), uint32_t(x[3]));
+                x[0] = open(machine, path, uint32_t(x[2]), uint32_t(x[3]));
                 break;
             }
             auto target = resolve(path);
@@ -4443,11 +4468,8 @@ bool ProbeLinux::syscall(Machine& machine) {
             static_assert(sizeof(SystemInfo) == 112);
             info.uptime = std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::steady_clock::now().time_since_epoch()).count();
-            uint64_t resident = 0;
-            for (const auto& segment : machine.segments) resident += segment.bytes.size();
-            resident += anonymousBudget->dirty;
             info.totalRam = memoryLimit;
-            info.freeRam = memoryLimit - std::min(memoryLimit, resident);
+            info.freeRam = freeMemory(machine);
             info.processes = threads.size() - std::count_if(threads.begin(), threads.end(), [](const auto& task) {
                 return task.second.wait == Wait::exited;
             });

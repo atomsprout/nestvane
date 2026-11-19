@@ -142,3 +142,18 @@ Mac with indexed and widening integer multiplication
 llvm-mc: mrs x19, NZCV
   guest execution wall time: 171375 ms
 NZCV read, write and zero-register behavior: host suite and ASan/UBSan passed
+
+iPhone 11 with both integer multiply fixes
+iOS device 26.0.1 | process 6949 | thermal serious → serious
+  unsupported instruction at PC=0x1163d08a78 word=0xd53b4213
+  guest execution wall time: 381754 ms
+
+Mac with NZCV register transfers
+[Android boot] Zygote: end preload
+[Android boot] SystemServer: Entered the Android system server!
+SystemServerTiming: StartActivityManager
+system_server: Failed to open file :/proc/meminfo: No such file or directory
+Caused by: java.lang.RuntimeException: SysMemInfo read failed
+  guest execution wall time: 194488 ms
+Guest meminfo coverage: access, stat, read-only open, EOF and updated memory accounting agree with guest sysinfo
+Host ABI suite, ASan/UBSan and iOS Release build: passed

@@ -70,3 +70,5 @@
 - Mac 的常规预加载已越过按元素向量乘法，推进到 `SMLAL`。已实现有符号和无符号向量扩宽乘法及累加、累减，宿主回归和 ASan/UBSan 通过。iPhone 11 已从 `boot-progress.txt` 实时读到原版 Zygote 类预加载日志。[运行记录](p2-zygote-eager.txt)
 
 - iPhone 11 复测已越过 `USUBL`，随后和 Mac 一样到达按元素向量乘法。包含两批乘法修复的签名构建已在同一台真机启动。Mac 已越过扩宽乘法，随后在读取 `NZCV` 时停下。其读写已实现并通过宿主回归和 ASan/UBSan。[运行记录](p2-zygote-eager.txt)
+
+- iPhone 11 已越过两次向量乘法停点，在 `NZCV` 复现 Mac 的旧停点。Mac 补齐 `NZCV` 后，常规 Zygote 完成全部预加载并进入原版 `SystemServer`，ActivityManager 启动时因找不到 `/proc/meminfo` 退出。新增内存信息快照，与客体 `sysinfo` 共用估算。已通过宿主回归、ASan/UBSan 和 iOS Release 构建，新一轮真机启动已开始。[运行记录](p2-zygote-eager.txt) · [Android SysMemInfo](https://android.googlesource.com/platform/system/memory/libmeminfo/+/refs/heads/main/sysmeminfo.cpp)
