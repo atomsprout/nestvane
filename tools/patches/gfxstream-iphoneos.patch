@@ -171,10 +171,10 @@ index 103b18e50f85299c14092e276efc9e8d0a6b7131..f55af20014d755f613c08d4cb5762e9e
      target_link_libraries(EGL_translator_static PUBLIC "-framework AppKit -framework IOSurface")
  elseif (QNX)
 diff --git a/host/gl/glestranslator/egl/egl_os_api_egl.cpp b/host/gl/glestranslator/egl/egl_os_api_egl.cpp
-index 19505b60e71d68b2f069fcc9fcca1841874803a7..663b512b4a158c29a21f11571614da80bfb08a0e 100644
+index 19505b60e71d68b2f069fcc9fcca1841874803a7..bc483d4422eb744422636f3f0ad72fd055e42755 100644
 --- a/host/gl/glestranslator/egl/egl_os_api_egl.cpp
 +++ b/host/gl/glestranslator/egl/egl_os_api_egl.cpp
-@@ -94,7 +94,14 @@ static const char* kGLES2LibName = "libGLESv2.so";
+@@ -94,10 +94,22 @@ static const char* kGLES2LibName = "libGLESv2.so";
  
  #else // __APPLE__
  
@@ -187,9 +187,17 @@ index 19505b60e71d68b2f069fcc9fcca1841874803a7..663b512b4a158c29a21f11571614da80
  #include "mac_native.h"
 +#endif
  
++#if TARGET_OS_IOS
++static const char* kEGLLibName = "@executable_path/Frameworks/libEGL.framework/libEGL";
++static const char* kGLES2LibName = "@executable_path/Frameworks/libGLESv2.framework/libGLESv2";
++#else
  static const char* kEGLLibName = "libEGL.dylib";
  static const char* kGLES2LibName = "libGLESv2.dylib";
-@@ -814,18 +821,23 @@ Surface* EglOsEglDisplay::createWindowSurface(PixelFormat* pf,
++#endif
+ 
+ #endif // __APPLE__
+ 
+@@ -814,18 +826,23 @@ Surface* EglOsEglDisplay::createWindowSurface(PixelFormat* pf,
  #endif
      }
      surface_attribs.push_back(EGL_NONE);

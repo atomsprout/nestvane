@@ -137,3 +137,5 @@
 - iPhone 11（iOS 26.0.1，第 7368 号进程）从开发签名包成功载入 gfxstream framework，并解析三个实际渲染入口。此项验证到动态加载为止。加入 [Goldfish 通道补丁](../tools/patches/gfxstream-guest-pipe.patch) 后，iPhoneOS 构建成功导出五个通道操作。Mac 使用同一补丁的构建通过 ARM64 客体版本查询，由原版 RenderChannel 异步响应。该补丁可在 iPhoneOS 补丁之后应用，也可单独用于 Mac 构建。
 
 - Mac 使用带非阻塞通道的本地 Gfxstream 构建运行原版 Android 17。原版 Composer3 和 Allocator 向服务管理器查询并登记各自的默认接口。SurfaceFlinger 完成 EGL 初始化，读到宿主 OpenGL ES 3.0 及最大纹理尺寸 16,384。随后 Ranchu Mapper 打开 Goldfish 共享显存设备失败，尚未验证默认显示。复现可在上述编译命令后，用带通道补丁的宿主库执行 `/tmp/nestvane-probe-gfxstream-host /path/to/patched-renderer.dylib --init guest-root-path guest.sqlite3`。宿主库应使用不同于 SDK 渲染库的文件名，确保 dyld 选择目标二进制。
+
+- ANGLE `64a0b11458e24cc3afa7e04a2fb534109f30f7ab` 用 [iPhoneOS GN 参数](../tools/angle-iphoneos.gn) 和 Chromium Clang 24 构建出 ARM64 `libEGL.framework` 与 `libGLESv2.framework`。Gfxstream 从 App 的 Frameworks 目录加载两者。iPhone 11 第 7381 号进程从签名安装包运行原版 gfxstream 与 ANGLE Metal，`stream_renderer_init` 返回 0，非阻塞渲染通道返回真实协议版本 1。此验证运行在真机上，Android 客体接入与显示帧验证仍待完成。ANGLE 使用默认的运行时 Metal 着色器编译配置。
