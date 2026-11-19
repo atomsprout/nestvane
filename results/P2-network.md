@@ -388,3 +388,5 @@
 - 镜像采集加入原版 audioserver、参考镜像的 Ranchu 音频 HAL、实际运行时加载的模块以及音量与效果 XML。重新采集得到 1,355 个 Android 文件，验证镜像中的服务及主要配置与源文件一致。两次 Mac 完整图形启动都到达后续 DockObserver，其中包含原版音频组件的一轮在 6.753 秒完成 StartAudioService，另一轮耗时 94.489 秒。iPhone 实体音频输出尚未验证。
 - 原版 DockObserver 因服务类型 `DockObserver_service` 含大写字母，未被早期采集器纳入决策表。采集与校验现在保留参考类型名的大小写，并采到实际的 DockObserver、IProxyService 和 ConfigStore 类型。原版 servicemanager 在 Mac 客体接受系统域的 DockObserver 注册，Java Binder 探针成功查回后退出 0。
 - 同一真机进程 8724 在约 1,295 秒完成原版系统包扫描，并通过上轮停住的应用数据整理和设置保存。PackageManager 在 1,565.426 秒完成启动，随后启动 UserManagerService 并完成 SetSystemProcess。这轮进程继续运行，Launcher 和应用验收仍待核对。
+- 原版 `gatekeeperd` 需要进入 `/data/misc/gatekeeper`。客体实现 `chdir`、`fchdir` 和进程工作目录，并让相对路径操作使用该目录。宿主 ABI 回归检查了目录切换、相对打开、`getcwd` 缓冲区长度、`/proc/self/cwd` 和普通文件的错误码。
+- 框架诊断镜像采集同版 Android 17 的原版 `gatekeeperd`、链接依赖和工厂 Gatekeeper HAL APEX。Mac 客体上原版 HAL 按 VINTF 注册，原版守护进程启动。独立 Bionic 进程在 `gatekeeperd` 域查到守护进程和 HAL 服务，在 `system_server` 域查到框架 Gatekeeper 服务。宿主回归和 iPhoneOS Release 构建通过，完整启动仍待真机验证。

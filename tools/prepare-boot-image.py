@@ -222,10 +222,13 @@ def main():
     }
     reference_files = set()
     if args.framework_diagnostic:
-        power_apex = "/vendor/apex/com.android.hardware.power.apex"
-        if active_modules.get("com.android.hardware.power") != power_apex or not (args.root / power_apex[1:]).is_file():
-            raise SystemExit("Recollect the init root with the matching factory Power HAL APEX")
-        reference_files.add(power_apex)
+        for module, path in (
+            ("com.android.hardware.power", "/vendor/apex/com.android.hardware.power.apex"),
+            ("com.android.hardware.gatekeeper", "/vendor/apex/com.android.hardware.gatekeeper.nonsecure.apex"),
+        ):
+            if active_modules.get(module) != path or not (args.root / path[1:]).is_file():
+                raise SystemExit(f"Recollect the init root with the matching factory APEX for {module}")
+            reference_files.add(path)
     if tethering_loader is not None:
         if active_modules.get("com.android.tethering") != TETHERING_APEX:
             raise SystemExit("Expected the factory Tethering APEX at " + TETHERING_APEX)

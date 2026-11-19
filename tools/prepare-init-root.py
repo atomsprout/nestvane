@@ -58,10 +58,13 @@ def reference_boot_inputs(classpath, apex_info):
         if not re.fullmatch(r"/system/apex/[A-Za-z0-9_.-]+\.apex", path):
             raise SystemExit(f"Expected an active factory system APEX file for {module}")
         packages.add(path)
-    power_apex = "/vendor/apex/com.android.hardware.power.apex"
-    if factory.get("com.android.hardware.power") != power_apex:
-        raise SystemExit(f"Expected an active factory Power HAL APEX at {power_apex}")
-    packages.add(power_apex)
+    for module, path in (
+        ("com.android.hardware.power", "/vendor/apex/com.android.hardware.power.apex"),
+        ("com.android.hardware.gatekeeper", "/vendor/apex/com.android.hardware.gatekeeper.nonsecure.apex"),
+    ):
+        if factory.get(module) != path:
+            raise SystemExit(f"Expected an active factory APEX for {module} at {path}")
+        packages.add(path)
     return platform, packages
 
 
@@ -148,6 +151,7 @@ def collect(serial, readelf, destination, small_art_heap):
         bootanimation = "/system/bin/bootanimation"
         cameraserver = "/system/bin/cameraserver"
         audioserver = "/system/bin/audioserver"
+        gatekeeperd = "/system/bin/gatekeeperd"
         aconfigd = "/system/bin/aconfigd-system"
         bpfloader = "/system/bin/bpfloader"
         netd = "/system/bin/netd"
@@ -174,7 +178,7 @@ def collect(serial, readelf, destination, small_art_heap):
         audio_hal = "/vendor/bin/hw/android.hardware.audio.service"
         for programs, search_paths in (
             ((vold, service, cmd, vdc, keystore, casefold, vold_prepare, odsign, bpfloader, iptables), ("/system/lib64",)),
-            ((zygote, installd, system_suspend, surfaceflinger, bootanimation, aconfigd, netd, cameraserver, audioserver),
+            ((zygote, installd, system_suspend, surfaceflinger, bootanimation, aconfigd, netd, cameraserver, audioserver, gatekeeperd),
              ("/system/lib64", "/system_ext/lib64")),
             ((keymint, lights, health, sensors, composer, allocator, camera_provider, audio_hal),
              ("/vendor/lib64", "/system/lib64")),
@@ -396,6 +400,8 @@ def collect(serial, readelf, destination, small_art_heap):
         programs = ("/system/bin/apexd", system_self_test, vendor_self_test, vold, vdc, keystore, keymint,
                     casefold, vold_prepare, odsign, zygote, installd, system_suspend, lights, health, sensors, surfaceflinger,
                     bootanimation, composer, allocator, aconfigd, netd, iptables, cameraserver, camera_provider, audioserver, audio_hal,
+                    gatekeeperd,
+                    "/apex/com.android.hardware.gatekeeper/bin/hw/android.hardware.gatekeeper-service.nonsecure",
                     f"{sdkext}/derive_sdk", f"{sdkext}/derive_classpath",
                     "/apex/com.android.art/bin/art_boot", "/apex/com.android.art/bin/artd",
                     "/apex/com.android.art/bin/odrefresh",

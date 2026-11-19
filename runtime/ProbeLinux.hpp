@@ -550,6 +550,9 @@ private:
         bool pathOnly() const { return flags & 0x200000; }
     };
     std::optional<std::string> resolve(std::string_view path) const;
+    std::string absolutePath(std::string_view path) const;
+    uint64_t resolveAtPath(uint32_t directory, std::string_view path, std::string& result) const;
+    uint64_t changeWorkingDirectory(std::string path);
     std::optional<std::string> followLinks(std::string path, bool followFinal = true) const;
     uint64_t writeDescriptor(Machine& machine, const Descriptor& fd, uint64_t address, uint64_t size,
                              std::optional<uint64_t> position = {});
@@ -686,6 +689,7 @@ private:
         uint64_t id;
         uint64_t parent = 0;
         std::string executable;
+        std::string workingDirectory = "/";
         std::string programName;
         std::string commandLine;
         std::string context, pendingContext;

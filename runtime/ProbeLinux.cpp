@@ -407,7 +407,50 @@ void ProbeLinux::alias(std::string path, std::string target) {
     links.emplace(std::move(path), std::move(target));
 }
 
+std::string ProbeLinux::absolutePath(std::string_view path) const {
+    if (path.starts_with('/')) return normalizePath(path);
+    auto absolute = current->process->workingDirectory;
+    absolute += '/';
+    absolute.append(path);
+    return normalizePath(absolute);
+}
+
+uint64_t ProbeLinux::resolveAtPath(uint32_t directory, std::string_view path, std::string& result) const {
+    if (path.starts_with('/') || directory == uint32_t(-100)) {
+        result = absolutePath(path);
+        return 0;
+    }
+    const auto parent = descriptors().find(directory);
+    if (parent == descriptors().end()) return uint64_t(-9);
+    const auto& descriptor = parent->second;
+    if (descriptor.node != Node::directory) return uint64_t(-20);
+    result = descriptor.visiblePath.empty() ? descriptor.path : descriptor.visiblePath;
+    result += '/';
+    result.append(path);
+    result = normalizePath(result);
+    return 0;
+}
+
+uint64_t ProbeLinux::changeWorkingDirectory(std::string path) {
+    const auto logical = followLinks(std::move(path));
+    if (!logical) return uint64_t(-40);
+    const auto backing = backingPath(*logical);
+    if (!canAccessParent(backing, false)) return uint64_t(-13);
+    const auto entry = find(backing, 0);
+    if (!entry) return uint64_t(-2);
+    if (entry->node != Node::directory) return uint64_t(-20);
+    if (userId()) {
+        if (const auto found = directories.find(backing); found != directories.end()) {
+            const auto& node = found->second;
+            if (!(node.mode >> permissionShift(node.uid, node.gid) & 1)) return uint64_t(-13);
+        }
+    }
+    current->process->workingDirectory = *logical;
+    return 0;
+}
+
 std::optional<std::string> ProbeLinux::resolve(std::string_view path) const {
+    if (path == "/proc/self/cwd") return current->process->workingDirectory;
     if (path == "/proc/self/exe" && !current->process->executable.empty())
         return current->process->executable;
     if (auto found = links.find(backingPath(path)); found != links.end()) return found->second;
@@ -555,14 +598,14 @@ uint64_t ProbeLinux::mountFilesystem(Machine& machine) {
     if (userId() != 0) return uint64_t(-1);
     const auto target = readPath(machine, x[1]);
     if (!target) return uint64_t(-14);
-    const auto path = normalizePath(*target);
+    const auto path = absolutePath(*target);
     auto& group = *current->mountNamespace;
     auto& mounts = group.mounts;
     if (x[3] & 0x1000) { // MS_BIND
         if (x[3] & ~0x5000ULL) return invalid;
         const auto source = readPath(machine, x[0]);
         if (!source) return uint64_t(-14);
-        return bindMount(normalizePath(*source), path, x[3] & 0x4000);
+        return bindMount(absolutePath(*source), path, x[3] & 0x4000);
     }
     const uint64_t propagation = x[3] & 0x1e0000; // MS_UNBINDABLE/PRIVATE/SLAVE/SHARED
     if (propagation) {
@@ -721,7 +764,7 @@ uint64_t ProbeLinux::unmountFilesystem(Machine& machine) {
     if (!path) return uint64_t(-14);
     if (x[1] & ~15ULL) return invalid;
     if (userId() != 0) return uint64_t(-1);
-    const auto visible = normalizePath(*path);
+    const auto visible = absolutePath(*path);
     const auto backing = backingPath(visible);
     if (!directoryExists(backing)) return uint64_t(-2);
     auto& mounts = current->mountNamespace->mounts;
@@ -1275,6 +1318,9 @@ uint64_t ProbeLinux::renameDirectory(const std::string& source, const std::strin
     for (const auto& [tid, thread] : threads) {
         if (blocksMove(*thread.mountNamespace)) return uint64_t(-16);
         if (!seen.insert(thread.process.get()).second) continue;
+        auto& cwd = thread.process->workingDirectory;
+        if (cwd == destination) return uint64_t(-16);
+        if (sameOrChild(cwd, source)) descriptorMoves.emplace_back(&cwd, destination + cwd.substr(source.size()));
         for (auto& [number, fd] : thread.process->descriptors) {
             if (fd.mountNamespace && blocksMove(*fd.mountNamespace)) return uint64_t(-16);
             if (fd.node == Node::directory && fd.path == destination) return uint64_t(-16);
@@ -1332,15 +1378,7 @@ uint64_t ProbeLinux::renameFile(Machine& machine) {
         const auto input = readPath(machine, pointer);
         if (!input) return uint64_t(-14);
         if (input->empty()) return uint64_t(-2);
-        if (input->starts_with('/') || uint32_t(fd) == uint32_t(-100)) {
-            path = normalizePath(*input);
-            return 0;
-        }
-        const auto directory = descriptors().find(uint32_t(fd));
-        if (directory == descriptors().end()) return uint64_t(-9);
-        if (directory->second.node != Node::directory) return uint64_t(-20);
-        path = normalizePath(directory->second.path + "/" + *input);
-        return 0;
+        return resolveAtPath(uint32_t(fd), *input, path);
     };
     std::string source, destination;
     if (const auto error = getPath(x[0], x[1], source); error) return error;
@@ -2832,7 +2870,7 @@ bool ProbeLinux::socketCall(Machine& machine) {
             const auto* nul = static_cast<const uint8_t*>(std::memchr(bytes + 2, 0, x[2] - 2));
             const size_t length = nul ? nul - bytes - 2 : x[2] - 2;
             const std::string_view name(reinterpret_cast<const char*>(bytes + 2), length);
-            const auto path = normalizePath(name);
+            const auto path = absolutePath(name);
             if (x[8] == 200) {
                 if (!fd->second.socket->localAddress.empty()) { x[0] = invalid; break; }
                 if (!directoryExists(path.substr(0, path.rfind('/')))) { x[0] = uint64_t(-2); break; }
@@ -3501,12 +3539,8 @@ bool ProbeLinux::fileCall(Machine& machine) {
             if (!target || !path) { x[0] = uint64_t(-14); break; }
             if (target->empty() || path->empty()) { x[0] = uint64_t(-2); break; }
             std::string logical;
-            if (path->starts_with('/') || uint32_t(x[1]) == uint32_t(-100)) logical = normalizePath(*path);
-            else if (auto directory = descriptors().find(uint32_t(x[1])); directory != descriptors().end()) {
-                if (directory->second.node != Node::directory) { x[0] = uint64_t(-20); break; }
-                logical = normalizePath(directory->second.path + "/" + *path);
-            } else {
-                x[0] = uint64_t(-9);
+            if (const auto error = resolveAtPath(uint32_t(x[1]), *path, logical)) {
+                x[0] = error;
                 break;
             }
             const auto backing = backingPath(logical);
@@ -3553,11 +3587,7 @@ bool ProbeLinux::fileCall(Machine& machine) {
                 break;
             }
             std::string path;
-            if (rawPath->starts_with('/')) path = normalizePath(*rawPath);
-            else if (uint32_t(x[0]) == uint32_t(-100)) path = normalizePath("/" + *rawPath);
-            else if (descriptor == descriptors().end()) { x[0] = uint64_t(-9); break; }
-            else if (descriptor->second.node != Node::directory) { x[0] = uint64_t(-20); break; }
-            else path = normalizePath(descriptor->second.path + "/" + *rawPath);
+            if (const auto error = resolveAtPath(uint32_t(x[0]), *rawPath, path)) { x[0] = error; break; }
             if (x[8] == 56) {
                 if (path == GuestApkInbox::device && apkInbox) {
                     if (userId() != 2000 || current->process->context != "u:r:shell:s0" ||
@@ -3849,7 +3879,7 @@ bool ProbeLinux::fileCall(Machine& machine) {
             const auto source = readPath(machine, x[1]);
             if (!source) { x[0] = uint64_t(-14); break; }
             if (source->empty()) { x[0] = uint64_t(-2); break; }
-            const auto target = followLinks(normalizePath(*source));
+            const auto target = followLinks(absolutePath(*source));
             if (!target) { x[0] = uint64_t(-40); break; }
             const auto device = backingPath(*target);
             if (!loopDevices.contains(device)) { x[0] = uint64_t(-2); break; }
@@ -4126,7 +4156,7 @@ bool ProbeLinux::fileCall(Machine& machine) {
                 const auto input = readPath(machine, x[0]);
                 if (!input) { x[0] = uint64_t(-14); break; }
                 if (input->empty()) { x[0] = uint64_t(-2); break; }
-                const auto logical = followLinks(normalizePath(*input), x[8] == 5 || x[8] == 14);
+                const auto logical = followLinks(absolutePath(*input), x[8] == 5 || x[8] == 14);
                 if (!logical) { x[0] = uint64_t(-40); break; }
                 const auto backing = backingPath(*logical);
                 if (dataPath(backing) && !canAccessParent(backing, false)) {
@@ -5242,20 +5272,12 @@ uint64_t ProbeLinux::updateTimes(Machine& machine) {
         if (path->empty()) {
             if (!(x[3] & atEmptyPath)) return uint64_t(-2);
             if (descriptor != descriptors().end()) entry = descriptor->second;
-            else if (uint32_t(x[0]) == uint32_t(-100)) entry = find("/", 0);
+            else if (uint32_t(x[0]) == uint32_t(-100)) entry = find(backingPath(current->process->workingDirectory), 0);
             else return uint64_t(-9);
         } else {
-            auto absolute = *path;
-            if (!absolute.starts_with('/')) {
-                if (uint32_t(x[0]) == uint32_t(-100)) absolute = "/" + absolute;
-                else {
-                    if (descriptor == descriptors().end()) return uint64_t(-9);
-                    if (descriptor->second.node != Node::directory) return uint64_t(-20);
-                    const auto& parent = descriptor->second;
-                    absolute = (parent.visiblePath.empty() ? parent.path : parent.visiblePath) + "/" + absolute;
-                }
-            }
-            const auto logical = followLinks(normalizePath(absolute), !(x[3] & noFollow));
+            std::string absolute;
+            if (const auto error = resolveAtPath(uint32_t(x[0]), *path, absolute)) return error;
+            const auto logical = followLinks(std::move(absolute), !(x[3] & noFollow));
             if (!logical) return uint64_t(-40);
             const auto backing = backingPath(*logical);
             if (dataPath(backing) && !canAccessParent(backing, false)) return uint64_t(-13);
@@ -5309,7 +5331,7 @@ bool ProbeLinux::securityCall(Machine& machine) {
     } else {
         const auto path = readPath(machine, x[0]);
         if (!path) { x[0] = uint64_t(-14); return true; }
-        const auto target = followLinks(normalizePath(*path), x[8] == 8);
+        const auto target = followLinks(absolutePath(*path), x[8] == 8);
         if (!target) { x[0] = uint64_t(-40); return true; }
         logical = *target;
         const auto backing = backingPath(logical);
@@ -5393,7 +5415,7 @@ bool ProbeLinux::execProcess(Machine& machine) {
         return entry.first != currentTid && entry.second.process == current->process && entry.second.wait != Wait::exited;
     });
     if (hasSiblings) return false;
-    const auto resolved = followLinks(normalizePath(*filename));
+    const auto resolved = followLinks(absolutePath(*filename));
     if (!resolved) { x[0] = uint64_t(-40); return true; }
     const auto& executablePath = *resolved;
     const auto file = find(backingPath(executablePath), 0);
@@ -5910,7 +5932,7 @@ bool ProbeLinux::inotify(Machine& machine) {
     const auto path = readPath(machine, x[1]);
     if (!path) { x[0] = uint64_t(-14); return true; }
     if (path->empty()) { x[0] = uint64_t(-2); return true; }
-    const auto logical = followLinks(normalizePath(*path), !(mask & noFollow));
+    const auto logical = followLinks(absolutePath(*path), !(mask & noFollow));
     if (!logical) { x[0] = uint64_t(-40); return true; }
     const auto watched = backingPath(*logical);
     const auto entry = find(watched, 0);
@@ -6871,7 +6893,7 @@ uint64_t ProbeLinux::resolveFirewallBpf(std::string_view path, int32_t fd,
         program = descriptor->second.bpfProgram;
         return program ? 0 : invalid;
     }
-    const auto target = followLinks(normalizePath(path), true);
+    const auto target = followLinks(absolutePath(path), true);
     if (!target) return uint64_t(-40);
     const auto backing = backingPath(*target);
     const auto entry = find(backing, 0);
@@ -8221,13 +8243,12 @@ bool ProbeLinux::syscall(Machine& machine) {
             if (!rawPath) { x[0] = uint64_t(-14); break; }
             if (rawPath->empty()) { x[0] = uint64_t(-2); break; }
             auto path = *rawPath;
-            if (!path.starts_with('/') && (flags & pathFd) && directory != -100) {
-                const auto dir = descriptors().find(uint32_t(directory));
-                if (dir == descriptors().end()) { x[0] = uint64_t(-9); break; }
-                if (dir->second.node != Node::directory) { x[0] = uint64_t(-20); break; }
-                path = dir->second.path + "/" + path;
+            std::string absolute;
+            if (const auto error = resolveAtPath(flags & pathFd ? uint32_t(directory) : uint32_t(-100), path, absolute)) {
+                x[0] = error;
+                break;
             }
-            path = normalizePath(path.starts_with('/') ? path : "/" + path);
+            path = std::move(absolute);
             const auto target = followLinks(std::move(path), !pin);
             if (!target) { x[0] = uint64_t(-40); break; }
             const auto backing = backingPath(*target);
@@ -8277,10 +8298,26 @@ bool ProbeLinux::syscall(Machine& machine) {
             x[0] = newFd;
             break;
         }
-        case 17: { // getcwd; the guest starts at the root directory.
-            constexpr std::array<uint8_t, 2> directory{'/', 0};
-            if (x[1] < directory.size()) { x[0] = uint64_t(-34); break; }
-            x[0] = machine.write(x[0], directory) ? directory.size() : uint64_t(-14);
+        case 17: { // getcwd
+            const auto& directory = current->process->workingDirectory;
+            if (!directoryExists(backingPath(directory))) { x[0] = uint64_t(-2); break; }
+            const auto size = directory.size() + 1;
+            if (x[1] < size) { x[0] = uint64_t(-34); break; }
+            const auto* bytes = reinterpret_cast<const uint8_t*>(directory.c_str());
+            x[0] = machine.write(x[0], {bytes, size}) ? size : uint64_t(-14);
+            break;
+        }
+        case 49: { // chdir
+            const auto path = readPath(machine, x[0]);
+            x[0] = !path ? uint64_t(-14) : path->empty() ? uint64_t(-2) :
+                changeWorkingDirectory(absolutePath(*path));
+            break;
+        }
+        case 50: { // fchdir
+            if (descriptor == descriptors().end()) { x[0] = uint64_t(-9); break; }
+            const auto& entry = descriptor->second;
+            x[0] = entry.node != Node::directory ? uint64_t(-20) :
+                changeWorkingDirectory(entry.visiblePath.empty() ? entry.path : entry.visiblePath);
             break;
         }
         case 270: { // process_vm_readv, restricted to the caller's guest address space.

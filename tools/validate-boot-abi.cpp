@@ -689,6 +689,39 @@ int main() {
         return machine.cpu.x[0];
     };
     {
+        constexpr uint64_t cwd = uint32_t(-100);
+        constexpr uint64_t path = base + 256, output = base + 512;
+        const auto writePath = [&](uint64_t address, const char* name) {
+            assert(machine.write(address, {reinterpret_cast<const uint8_t*>(name), std::strlen(name) + 1}));
+        };
+        const auto expectCwd = [&](std::string_view expected) {
+            assert(call(17, {output, expected.size()}) == uint64_t(-34));
+            assert(call(17, {output, expected.size() + 1}) == expected.size() + 1);
+            const auto* actual = machine.read(output, expected.size() + 1, 4);
+            assert(actual && std::memcmp(actual, expected.data(), expected.size()) == 0);
+            assert(actual[expected.size()] == 0);
+        };
+        expectCwd("/");
+        writePath(path, "/");
+        const auto root = call(56, {cwd, path, 0x4000}); // O_DIRECTORY
+        assert(root < 256);
+        writePath(path, "/test");
+        assert(call(49, {path}) == 0);
+        expectCwd("/test");
+        writePath(path, "../system/etc/xtables.lock");
+        const auto file = call(56, {cwd, path, 0});
+        assert(file < 256);
+        assert(call(49, {path}) == uint64_t(-20));
+        assert(call(50, {file}) == uint64_t(-20));
+        writePath(path, "/proc/self/cwd");
+        assert(call(78, {cwd, path, output, 64}) == 5);
+        const auto* link = machine.read(output, 5, 4);
+        assert(link && std::memcmp(link, "/test", 5) == 0);
+        assert(call(50, {root}) == 0);
+        expectCwd("/");
+        assert(call(57, {file}) == 0 && call(57, {root}) == 0);
+    }
+    {
         const std::string_view filename = "/system/etc/xtables.lock";
         assert(machine.write(base, {reinterpret_cast<const uint8_t*>(filename.data()), filename.size() + 1}));
         constexpr uint64_t cwd = uint32_t(-100);
