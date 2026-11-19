@@ -593,8 +593,8 @@ int main() {
             uint64_t previous;
         };
         static_assert(sizeof(Info) == 84 && sizeof(Replace) == 96);
-        constexpr auto input = base + 256, oldCounters = base + 1280, length = base + 1440;
-        constexpr auto address = base + 1472, payload = base + 1512;
+        constexpr auto input = base + 256, oldCounters = base + 1792, length = base + 1952;
+        constexpr auto address = base + 1984, payload = base + 2024;
         const auto write = [&](uint64_t offset, const auto& data) {
             return machine.write(offset, {reinterpret_cast<const uint8_t*>(&data), sizeof(data)});
         };
@@ -670,21 +670,23 @@ int main() {
             assert(call(208, {control, level, 64, input, sizeof(request) + rules.size()}) == 0);
             assert(send() == 8 && call(207, {reader, payload, 8}) == 8);
             assert(send() == 8 && call(207, {reader, payload, 8}) == 8);
-            constexpr auto replyAddress = base + 1552;
+            constexpr auto replyAddress = base + 2064;
             assert(write(length, addressSize) && call(204, {writer, replyAddress, length}) == 0);
             assert(call(206, {reader, payload, 8, 0, replyAddress, addressSize}) == uint64_t(-1));
             assert(send() == uint64_t(-1) && call(207, {reader, payload, 8}) == uint64_t(-11));
 
             rules.erase(rules.begin() + actual.starts[3], rules.begin() + actual.starts[3] + stateRule.size());
-            const auto installReject = [&](unsigned hook, uint16_t protocol, uint32_t reason) {
-                std::vector<uint8_t> rule(entrySize + 40);
+            const auto installTarget = [&](unsigned hook, uint16_t protocol, std::string_view name,
+                                           std::span<const uint8_t> parameters) {
+                const auto targetSize = (32 + parameters.size() + 7) & ~size_t(7);
+                std::vector<uint8_t> rule(entrySize + targetSize);
                 store(rule, ipv6 ? 128 : 80, protocol);
                 if (ipv6) rule[131] = 1;
                 store(rule, targetOffset, uint16_t(entrySize));
                 store(rule, targetOffset + 2, uint16_t(rule.size()));
-                store(rule, entrySize, uint16_t(40));
-                std::memcpy(rule.data() + entrySize + 2, "REJECT", 6);
-                store(rule, entrySize + 32, reason);
+                store(rule, entrySize, uint16_t(targetSize));
+                std::ranges::copy(name, rule.begin() + entrySize + 2);
+                std::ranges::copy(parameters, rule.begin() + entrySize + 32);
                 auto next = rules;
                 next.insert(next.begin() + actual.starts[hook], rule.begin(), rule.end());
                 request.bytes = next.size();
@@ -696,6 +698,10 @@ int main() {
                 assert(write(input, request) && machine.write(input + sizeof(request), next));
                 return call(208, {control, level, 64, input, sizeof(request) + next.size()});
             };
+            const auto installReject = [&](unsigned hook, uint16_t protocol, uint32_t reason) {
+                return installTarget(hook, protocol, "REJECT",
+                    {reinterpret_cast<const uint8_t*>(&reason), sizeof(reason)});
+            };
             const auto readError = [&](uint64_t socket) {
                 uint32_t error = 0;
                 assert(write(length, uint32_t(sizeof(error))));
@@ -704,7 +710,7 @@ int main() {
                 return error;
             };
             const auto pollSocket = [&](uint64_t socket, uint16_t events) {
-                constexpr auto timeout = base + 1600, pollfd = base + 1624;
+                constexpr auto timeout = base + 2112, pollfd = base + 2136;
                 assert(write(timeout, std::array<uint64_t, 2>{}));
                 assert(write(pollfd, uint64_t(socket) | (uint64_t(events) << 32)));
                 assert(call(73, {pollfd, 1, timeout}) == 1);
@@ -734,6 +740,70 @@ int main() {
                 assert(call(57, {tcpClient}) == 0);
             }
             assert(call(57, {tcpServer}) == 0);
+
+            const auto log = call(198, {16, 0x802, 12});
+            assert(log < 256);
+            constexpr auto nlAddress = base + 2200, config = base + 2260, packet = base + 2516;
+            const std::array<uint32_t, 3> kernel{16, 0, 0};
+            assert(write(nlAddress, kernel));
+            assert(call(200, {log, nlAddress, sizeof(kernel)}) == 0);
+            const auto requestLog = [&](uint64_t fd, uint16_t type, std::span<const uint8_t> value, int status) {
+                std::vector<uint8_t> message(24 + value.size());
+                store(message, 0, uint32_t(message.size()));
+                store(message, 4, uint16_t(0x401)); // NFULNL_MSG_CONFIG
+                store(message, 6, uint16_t(5)); // REQUEST | ACK
+                store(message, 8, uint32_t(42));
+                message[19] = 3;
+                store(message, 20, uint16_t(4 + value.size()));
+                store(message, 22, type);
+                std::ranges::copy(value, message.begin() + 24);
+                assert(machine.write(config, message));
+                assert(call(206, {fd, config, message.size(), 0, nlAddress, sizeof(kernel)}) == message.size());
+                assert(pollSocket(fd, 1) == 1);
+                assert(call(207, {fd, packet, 192}) >= 36);
+                uint64_t reply = 0;
+                assert(machine.load64(packet + 4, reply) && reply == (uint64_t(42) << 32 | 2)); // NLMSG_ERROR
+                assert(machine.load64(packet + 16, reply) && int32_t(reply) == status);
+            };
+            const std::array<uint8_t, 1> bindLog{1}, unbindLog{2};
+            requestLog(log, 1, bindLog, 0);
+            requestLog(log, 1, bindLog, -16);
+            const auto other = call(198, {16, 0x802, 12});
+            assert(other < 256);
+            requestLog(other, 1, bindLog, -1);
+            requestLog(other, 1, unbindLog, -1);
+            assert(call(57, {other}) == 0);
+            requestLog(log, 2, std::array<uint8_t, 6>{0, 0, 0, 80, 2, 0}, 0);
+
+            std::array<uint8_t, 80> parameters{};
+            const auto wireSize = uint32_t(ipv6 ? 48 : 28);
+            store(parameters, 0, wireSize + 2);
+            store(parameters, 4, uint16_t(3));
+            store(parameters, 8, uint16_t(1)); // Explicit payload copy limit.
+            std::memcpy(parameters.data() + 12, "loop", 4);
+            assert(installTarget(3, 17, "NFLOG", parameters) == 0);
+            assert(write(payload, uint64_t(0x12345678)));
+            assert(send() == 8 && call(207, {reader, payload, 8}) == 8);
+            assert(pollSocket(log, 1) == 1);
+            const auto logBytes = call(207, {log, packet, 192});
+            assert(logBytes <= 192 && logBytes > wireSize);
+            std::vector<uint8_t> record(logBytes);
+            assert(machine.readInto(packet, record));
+            assert(record[4] == 0 && record[5] == 4 && record[16] == family && record[19] == 3);
+            bool sawHeader = false, sawPayload = false, sawPrefix = false;
+            for (size_t pos = 20; pos + 4 <= record.size();) {
+                const uint16_t len = uint16_t(record[pos]) | uint16_t(record[pos + 1]) << 8;
+                const uint16_t kind = uint16_t(record[pos + 2]) | uint16_t(record[pos + 3]) << 8;
+                assert(len >= 4 && len <= record.size() - pos);
+                if (kind == 1) sawHeader = len == 8 && record[pos + 6] == 3; // NF_INET_LOCAL_OUT
+                if (kind == 9) sawPayload = len == wireSize + 6 && record[pos + 4 + wireSize] == 0x78;
+                if (kind == 10) sawPrefix = len == 9 && std::memcmp(record.data() + pos + 4, "loop", 5) == 0;
+                pos += (len + 3) & ~size_t(3);
+            }
+            assert(sawHeader && sawPayload && sawPrefix);
+            requestLog(log, 1, unbindLog, 0);
+            assert(send() == 8 && call(207, {log, packet, 192}) == uint64_t(-11));
+            assert(call(57, {log}) == 0);
             assert(call(57, {reader}) == 0 && call(57, {writer}) == 0 && call(57, {control}) == 0);
         }
     }

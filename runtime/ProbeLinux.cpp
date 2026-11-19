@@ -2067,6 +2067,7 @@ uint64_t ProbeLinux::socketWrite(Machine& machine, const Descriptor& fd, uint64_
 
 uint64_t ProbeLinux::socketWrite(Machine& machine, const Descriptor& fd, std::span<const SocketVector> vectors) {
     if (fd.socket->inetDatagram()) return sendInetDatagram(machine, fd.socket, vectors);
+    if (fd.socket->protocol == 12) return sendNetfilter(machine, fd.socket, vectors);
     if (fd.socket->inetStream() && !inetLoopbackUp) return uint64_t(-100);
     if (fd.socket->inetError) return uint64_t(-std::exchange(fd.socket->inetError, 0));
     constexpr uint64_t maxPacketBytes = 65536;
@@ -2116,7 +2117,7 @@ uint64_t ProbeLinux::socketWrite(Machine& machine, const Descriptor& fd, std::sp
     return size;
 }
 
-uint64_t ProbeLinux::recvUevent(Machine& machine, SocketState& endpoint) {
+uint64_t ProbeLinux::receiveKernelNetlink(Machine& machine, SocketState& endpoint) {
     const auto& x = machine.cpu.x;
     if (x[2] & ~0x40ULL) return invalid; // MSG_DONTWAIT
     if (endpoint.inbox.empty()) return uint64_t(-11);
@@ -2134,7 +2135,7 @@ uint64_t ProbeLinux::recvUevent(Machine& machine, SocketState& endpoint) {
     if (copied && !machine.write(vector[0], std::span(packet).first(copied))) return uint64_t(-14);
     message.flags = copied < packet.size() ? 0x20 : 0; // MSG_TRUNC
     if (message.name) {
-        const std::array<uint32_t, 3> address{16, 0, 1}; // AF_NETLINK, kernel port, multicast group
+        const std::array<uint32_t, 3> address{16, 0, endpoint.protocol == 15 ? 1U : 0U};
         const auto size = std::min<size_t>(sizeof(address), message.nameLength);
         if (size && !machine.write(message.name, {reinterpret_cast<const uint8_t*>(address.data()), size}))
             return uint64_t(-14);
@@ -2143,17 +2144,230 @@ uint64_t ProbeLinux::recvUevent(Machine& machine, SocketState& endpoint) {
         message.nameLength = 0;
     }
     const std::array<uint64_t, 4> credentials{28, (uint64_t{2} << 32) | 1, 0, 0}; // SCM_CREDENTIALS
-    if (endpoint.passCredentials && message.control && message.controlLength >= sizeof(credentials)) {
-        if (!writeGuest(machine, message.control, credentials)) return uint64_t(-14);
-        message.controlLength = sizeof(credentials);
-    } else {
-        if (endpoint.passCredentials) message.flags |= 0x8; // MSG_CTRUNC
-        message.controlLength = 0;
+    const auto available = message.control ? message.controlLength : 0;
+    message.controlLength = 0;
+    const auto control = [&](const auto& value) {
+        if (sizeof(value) > available - message.controlLength) {
+            message.flags |= 0x8; // MSG_CTRUNC
+            return true;
+        }
+        if (!writeGuest(machine, message.control + message.controlLength, value)) return false;
+        message.controlLength += sizeof(value);
+        return true;
+    };
+    if (endpoint.passCredentials && !control(credentials)) return uint64_t(-14);
+    if (endpoint.netlink->timestamp) {
+        const auto usec = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        const std::array<uint64_t, 4> timestamp{32, (uint64_t{29} << 32) | 1,
+                                            uint64_t(usec / 1000000), uint64_t(usec % 1000000)};
+        if (!control(timestamp)) return uint64_t(-14);
     }
     if (!writeGuest(machine, x[1], message)) return uint64_t(-14);
     endpoint.queuedBytes -= packet.size();
     endpoint.inbox.pop_front();
     return copied;
+}
+
+namespace {
+struct NetlinkHeader {
+    uint32_t length;
+    uint16_t type, flags;
+    uint32_t sequence, port;
+};
+static_assert(sizeof(NetlinkHeader) == 16);
+
+constexpr uint16_t netlinkError = 2, netlinkRequest = 1, netlinkAck = 4;
+constexpr uint16_t netfilterLogPacket = 4 << 8, netfilterLogConfig = netfilterLogPacket | 1;
+constexpr size_t netfilterHeader = sizeof(NetlinkHeader) + 4;
+
+template<class T>
+T readNetlink(std::span<const uint8_t> bytes, size_t offset) {
+    T value{};
+    std::memcpy(&value, bytes.data() + offset, sizeof(value));
+    return value;
+}
+
+size_t netlinkAlign(size_t bytes) { return (bytes + 3) & ~size_t(3); }
+
+void appendNetlinkAttribute(std::vector<uint8_t>& packet, uint16_t type, std::span<const uint8_t> data) {
+    const size_t start = packet.size();
+    const uint16_t length = data.size() + 4;
+    packet.resize(start + netlinkAlign(length));
+    std::memcpy(packet.data() + start, &length, sizeof(length));
+    std::memcpy(packet.data() + start + 2, &type, sizeof(type));
+    std::ranges::copy(data, packet.begin() + start + 4);
+}
+
+std::array<uint8_t, 4> netlinkNetwork32(uint32_t value) {
+    return {uint8_t(value >> 24), uint8_t(value >> 16), uint8_t(value >> 8), uint8_t(value)};
+}
+} // namespace
+
+uint64_t ProbeLinux::bindNetlink(const std::shared_ptr<SocketState>& endpoint, uint32_t port, uint32_t groups) {
+    auto& socket = *endpoint->netlink;
+    if (socket.pid) return invalid;
+    if (endpoint->protocol == 15) {
+        if (groups && userId() != 0) return uint64_t(-1);
+        socket.pid = port ? port : uint32_t(processId());
+        socket.groups = groups;
+        if (groups & 1) ueventListeners.push_back(endpoint);
+        return 0;
+    }
+    if (groups) return uint64_t(-95);
+    std::erase_if(netfilterPorts, [](const auto& item) { return item.second.expired(); });
+    if (netfilterPorts.size() >= descriptorCapacity) return uint64_t(-28);
+    if (port && netfilterPorts.contains(port)) return uint64_t(-98);
+    if (!port) {
+        port = processId();
+        while (!port || netfilterPorts.contains(port)) port = nextNetfilterPort++;
+    }
+    netfilterPorts.emplace(port, endpoint);
+    socket.pid = port;
+    return 0;
+}
+
+void ProbeLinux::queueNetlink(SocketState& endpoint, std::vector<uint8_t> packet) {
+    if (endpoint.inbox.size() >= 256 || endpoint.queuedBytes + packet.size() > endpoint.netlink->receiveBuffer) return;
+    const auto size = packet.size();
+    endpoint.inbox.push_back(std::move(packet));
+    endpoint.queuedBytes += size;
+    wakePollers();
+}
+
+uint64_t ProbeLinux::sendNetfilter(Machine& machine, const std::shared_ptr<SocketState>& endpoint,
+    std::span<const SocketVector> vectors, uint64_t address, uint64_t length) {
+    if (!(current->process->effectiveCaps & (1ULL << 12))) return uint64_t(-1);
+    if (address) {
+        std::array<uint32_t, 3> destination{};
+        if (length != sizeof(destination)) return invalid;
+        if (!machine.readInto(address, {reinterpret_cast<uint8_t*>(&destination), sizeof(destination)}))
+            return uint64_t(-14);
+        if (destination != std::array<uint32_t, 3>{16, 0, 0}) return uint64_t(-111);
+    }
+    constexpr size_t maximum = 65536;
+    size_t size = 0;
+    for (const auto& [_, bytes] : vectors) {
+        if (bytes > maximum - size) return uint64_t(-90);
+        size += bytes;
+    }
+    if (size < sizeof(NetlinkHeader)) return invalid;
+    try {
+        std::vector<uint8_t> data(size);
+        size_t offset = 0;
+        for (const auto& [source, bytes] : vectors) {
+            if (bytes && !machine.readInto(source, std::span(data).subspan(offset, bytes))) return uint64_t(-14);
+            offset += bytes;
+        }
+        if (!endpoint->netlink->pid)
+            if (const auto error = bindNetlink(endpoint, 0, 0)) return error;
+
+        const auto configure = [&](std::span<const uint8_t> message) -> int32_t {
+            if (message.size() < netfilterHeader || message[17] ||
+                (message[16] != 0 && message[16] != 2 && message[16] != 10)) return -22;
+            const uint16_t group = uint16_t(message[18]) << 8 | message[19];
+            uint8_t command = 0;
+            std::optional<std::array<uint32_t, 2>> mode;
+            for (auto attributes = message.subspan(netfilterHeader); !attributes.empty();) {
+                if (attributes.size() < 4) return -22;
+                const auto length = readNetlink<uint16_t>(attributes, 0);
+                const auto type = readNetlink<uint16_t>(attributes, 2);
+                if (length < 4 || length > attributes.size()) return -22;
+                const auto value = attributes.subspan(4, length - 4);
+                if (type == 1) {
+                    if (value.size() != 1 || command || value[0] < 1 || value[0] > 4) return -22;
+                    command = value[0];
+                } else if (type == 2) {
+                    if (value.size() != 6 || mode || value[4] > 2) return -22;
+                    const uint32_t range = uint32_t(value[0]) << 24 | uint32_t(value[1]) << 16 |
+                                           uint32_t(value[2]) << 8 | value[3];
+                    mode = std::array<uint32_t, 2>{value[4], range};
+                } else {
+                    return -95;
+                }
+                attributes = attributes.subspan(std::min(netlinkAlign(length), attributes.size()));
+            }
+            if (command == 3 || command == 4) return mode ? -22 : 0; // Family logger selection.
+            auto found = netfilterLogGroups.find(group);
+            auto owner = found == netfilterLogGroups.end() ? nullptr : found->second.owner.lock();
+            if (command == 1) {
+                if (owner) return owner == endpoint ? -16 : -1;
+                std::erase_if(netfilterLogGroups, [](const auto& item) { return item.second.owner.expired(); });
+                if (netfilterLogGroups.size() >= 256) return -28;
+                found = netfilterLogGroups.emplace(group, NetfilterLogGroup{endpoint}).first;
+            } else {
+                if (!owner) return -19;
+                if (owner != endpoint) return -1;
+                if (command == 2) {
+                    netfilterLogGroups.erase(found);
+                    return 0;
+                }
+                if (!mode) return -22;
+            }
+            if (mode) {
+                const auto [kind, range] = *mode;
+                found->second.mode = kind;
+                found->second.copyRange = range ? std::min(range, 65531U) : 65531;
+            }
+            return 0;
+        };
+        for (auto remaining = std::span<const uint8_t>(data); remaining.size() >= sizeof(NetlinkHeader);) {
+            const auto request = readNetlink<NetlinkHeader>(remaining, 0);
+            if (request.length < sizeof(request) || request.length > remaining.size()) break;
+            if (request.flags & netlinkRequest) {
+                const int32_t status = request.type == netfilterLogConfig
+                    ? configure(remaining.first(request.length)) : -95;
+                if (status || (request.flags & netlinkAck)) {
+                    const auto echoed = status ? request.length : sizeof(request);
+                    std::vector<uint8_t> ack(sizeof(NetlinkHeader) + sizeof(status) + echoed);
+                    const NetlinkHeader header{uint32_t(ack.size()), netlinkError, 0, request.sequence, endpoint->netlink->pid};
+                    std::memcpy(ack.data(), &header, sizeof(header));
+                    std::memcpy(ack.data() + sizeof(header), &status, sizeof(status));
+                    std::ranges::copy(remaining.first(echoed), ack.begin() + sizeof(header) + sizeof(status));
+                    queueNetlink(*endpoint, std::move(ack));
+                }
+            }
+            remaining = remaining.subspan(std::min(netlinkAlign(request.length), remaining.size()));
+        }
+        return size;
+    } catch (const std::bad_alloc&) {
+        return noMemory;
+    }
+}
+
+void ProbeLinux::emitNetfilterLog(const GuestFirewall::LogRecord& record, const SocketState& sender) {
+    const auto found = netfilterLogGroups.find(record.group);
+    if (found == netfilterLogGroups.end()) return;
+    const auto endpoint = found->second.owner.lock();
+    if (!endpoint || endpoint->inbox.size() >= 256) return;
+    try {
+        const bool ipv6 = record.packet.front() >> 4 == 6;
+        std::vector<uint8_t> packet(netfilterHeader);
+        packet[16] = ipv6 ? 10 : 2;
+        packet[18] = record.group >> 8;
+        packet[19] = record.group & 255;
+        const std::array<uint8_t, 4> link{uint8_t(ipv6 ? 0x86 : 8), uint8_t(ipv6 ? 0xdd : 0),
+                                          uint8_t(record.hook), 0};
+        appendNetlinkAttribute(packet, 1, link); // NFULA_PACKET_HDR
+        if (record.mark) appendNetlinkAttribute(packet, 2, netlinkNetwork32(record.mark));
+        const auto ingress = record.hook == GuestFirewall::input || record.hook == GuestFirewall::prerouting;
+        appendNetlinkAttribute(packet, ingress ? 4 : 5, netlinkNetwork32(guestLoopbackIndex));
+        if (!record.prefix.empty())
+            appendNetlinkAttribute(packet, 10, {reinterpret_cast<const uint8_t*>(record.prefix.data()),
+                                                record.prefix.size() + 1});
+        appendNetlinkAttribute(packet, 11, netlinkNetwork32(sender.credentials[1]));
+        appendNetlinkAttribute(packet, 14, netlinkNetwork32(sender.credentials[2]));
+        if (found->second.mode == 2) {
+            const auto limit = std::min(found->second.copyRange, record.captureLimit.value_or(UINT32_MAX));
+            const auto size = std::min<size_t>(record.packet.size(), limit);
+            if (size) appendNetlinkAttribute(packet, 9, record.packet.first(size));
+        }
+        const NetlinkHeader header{uint32_t(packet.size()), netfilterLogPacket, 0, 0, 0};
+        std::memcpy(packet.data(), &header, sizeof(header));
+        queueNetlink(*endpoint, std::move(packet));
+    } catch (const std::bad_alloc&) {
+        // Logging is best effort and must not change the packet verdict.
+    }
 }
 
 void ProbeLinux::emitLoopUevent(unsigned number) {
@@ -2173,7 +2387,7 @@ void ProbeLinux::emitLoopUevent(unsigned number) {
         if (!endpoint || endpoint->inbox.size() >= 256) continue;
         const auto size = endpoint->socketFilter ?
             endpoint->socketFilter->accept({reinterpret_cast<const uint8_t*>(packet.data()), packet.size()}) : packet.size();
-        if (size && endpoint->queuedBytes + size <= endpoint->uevent->receiveBuffer) {
+        if (size && endpoint->queuedBytes + size <= endpoint->netlink->receiveBuffer) {
             endpoint->inbox.emplace_back(packet.begin(), packet.begin() + size);
             endpoint->queuedBytes += size;
         }
@@ -2201,9 +2415,11 @@ bool ProbeLinux::socketCall(Machine& machine) {
     };
     switch (x[8]) {
         case 198: case 199: { // socket, socketpair
-            const bool uevent = x[8] == 198 && x[0] == 16 && x[2] == 15; // NETLINK_KOBJECT_UEVENT
+            const bool kernelNetlink = x[8] == 198 && x[0] == 16;
+            const bool uevent = kernelNetlink && x[2] == 15; // NETLINK_KOBJECT_UEVENT
+            const bool netfilter = kernelNetlink && x[2] == 12; // NETLINK_NETFILTER
             const bool inet = x[8] == 198 && (x[0] == 2 || x[0] == 10);
-            if (x[0] != 1 && !uevent && !inet) { x[0] = uint64_t(-97); break; }
+            if (x[0] != 1 && !uevent && !netfilter && !inet) { x[0] = uint64_t(-97); break; }
             const uint32_t type = x[1] & 15;
             constexpr uint32_t flags = 0x80000 | 0x800;
             const bool firewallSocket = inet && type == 3 && x[2] == 255;
@@ -2214,7 +2430,8 @@ bool ProbeLinux::socketCall(Machine& machine) {
             const uint32_t inetProtocol = firewallSocket ? 255 : type == 1 ? 6 : 17;
             if (inet && x[2] && x[2] != inetProtocol) { x[0] = uint64_t(-93); break; }
             if (x[1] & ~(uint64_t(flags) | 15) ||
-                (!inet && (uevent ? type != 2 : (type != 1 && type != 2 && type != 5) || x[2]))) {
+                (!inet && (uevent ? type != 2 : netfilter ? (type != 2 && type != 3) :
+                           (type != 1 && type != 2 && type != 5) || x[2]))) {
                 x[0] = uint64_t(-22);
                 break;
             }
@@ -2224,9 +2441,9 @@ bool ProbeLinux::socketCall(Machine& machine) {
             endpoint->context = current->socketCreateContext.empty()
                 ? current->process->context : current->socketCreateContext;
             endpoint->credentials = {uint32_t(processId()), userId(), groupId()};
-            Descriptor entry{inet ? "socket:[inet]" : uevent ? "socket:[uevent]" : "socket:[unix]",
+            Descriptor entry{inet ? "socket:[inet]" : kernelNetlink ? "socket:[netlink]" : "socket:[unix]",
                              {}, uint32_t(x[1] & flags) | 2, Node::socket};
-            if (uevent) endpoint->uevent.emplace();
+            if (kernelNetlink) endpoint->netlink.emplace();
             endpoint->family = x[0];
             endpoint->protocol = inet ? inetProtocol : x[2];
             endpoint->cookie = nextSocketCookie++;
@@ -2264,18 +2481,23 @@ bool ProbeLinux::socketCall(Machine& machine) {
                 x[0] = status;
                 break;
             }
-            if (auto& uevent = fd->second.socket->uevent; uevent) {
+            if (fd->second.socket->netlink) {
                 std::array<uint32_t, 3> address{};
-                if (x[8] != 200 || x[2] != sizeof(address)) { x[0] = invalid; break; }
-                const auto* data = machine.read(x[1], sizeof(address), 4);
-                if (!data) { x[0] = uint64_t(-14); break; }
-                std::memcpy(address.data(), data, sizeof(address));
-                if (address[0] != 16 || uevent->pid) { x[0] = invalid; break; }
-                if (address[2] && userId() != 0) { x[0] = uint64_t(-1); break; }
-                uevent->pid = address[1] ? address[1] : uint32_t(processId());
-                uevent->groups = address[2];
-                if (uevent->groups & 1) ueventListeners.push_back(fd->second.socket);
-                x[0] = 0;
+                if (x[2] != sizeof(address)) { x[0] = invalid; break; }
+                if (!machine.readInto(x[1], {reinterpret_cast<uint8_t*>(&address), sizeof(address)})) {
+                    x[0] = uint64_t(-14);
+                    break;
+                }
+                if (address[0] != 16) { x[0] = invalid; break; }
+                if (x[8] == 200) {
+                    x[0] = bindNetlink(fd->second.socket, address[1], address[2]);
+                } else if (fd->second.socket->protocol == 12 && !address[1] && !address[2]) {
+                    if (!fd->second.socket->netlink->pid && (x[0] = bindNetlink(fd->second.socket, 0, 0))) break;
+                    fd->second.socket->connected = true;
+                    x[0] = 0;
+                } else {
+                    x[0] = uint64_t(-95);
+                }
                 break;
             }
             if (x[2] < 3 || x[2] > 110) { x[0] = invalid; break; }
@@ -2399,8 +2621,8 @@ bool ProbeLinux::socketCall(Machine& machine) {
             if (!fd->second.socket) { x[0] = uint64_t(-88); break; }
             const auto& endpoint = *fd->second.socket;
             if (x[8] == 205 && !endpoint.connected) { x[0] = uint64_t(-107); break; }
-            if (endpoint.uevent) {
-                const std::array<uint32_t, 3> address{16, endpoint.uevent->pid, endpoint.uevent->groups};
+            if (endpoint.netlink) {
+                const std::array<uint32_t, 3> address{16, endpoint.netlink->pid, endpoint.netlink->groups};
                 x[0] = writeAddress({reinterpret_cast<const uint8_t*>(address.data()), sizeof(address)});
             } else if (endpoint.family == 2 || endpoint.family == 10) {
                 auto address = x[8] == 204 ? endpoint.localInetAddress : endpoint.peerInetAddress;
@@ -2416,6 +2638,12 @@ bool ProbeLinux::socketCall(Machine& machine) {
             if (!fd->second.socket) { x[0] = uint64_t(-88); break; }
             const bool send = x[8] == 206;
             const auto& socket = fd->second.socket;
+            if (send && socket->protocol == 12) {
+                if (x[3] & ~0x4040ULL) { x[0] = invalid; break; }
+                const SocketVector vector{x[1], x[2]};
+                x[0] = sendNetfilter(machine, socket, std::span(&vector, 1), x[4], x[5]);
+                break;
+            }
             if (socket->inetDatagram()) {
                 if (x[3] & ~(send ? 0x4040ULL : 0x162ULL)) { x[0] = invalid; break; }
                 const bool blocking = !(x[3] & 0x40) && !(fd->second.effectiveFlags() & 0x800);
@@ -2460,14 +2688,19 @@ bool ProbeLinux::socketCall(Machine& machine) {
             if (fd == descriptors().end()) { x[0] = uint64_t(-9); break; }
             const auto& endpoint = fd->second.socket;
             if (!endpoint) { x[0] = uint64_t(-88); break; }
-            if (endpoint->uevent || (x[2] & ~0x40c0ULL)) return false; // DONTWAIT, EOR, NOSIGNAL
+            if (endpoint->protocol == 15 || (x[2] & ~0x40c0ULL)) return false; // DONTWAIT, EOR, NOSIGNAL
             SocketMessage message{};
             std::vector<SocketVector> vectors;
             if (const auto error = readSocketMessage(machine, x[1], message, vectors)) {
                 x[0] = error;
                 break;
             }
-            if (message.controlLength || (message.nameLength && !endpoint->inetDatagram())) return false;
+            if (message.controlLength) return false;
+            if (endpoint->protocol == 12) {
+                x[0] = sendNetfilter(machine, endpoint, vectors, message.name, message.nameLength);
+                break;
+            }
+            if (message.nameLength && !endpoint->inetDatagram()) return false;
             const auto result = endpoint->inetDatagram() ?
                 sendInetDatagram(machine, endpoint, vectors, message.name, message.nameLength) :
                 socketWrite(machine, fd->second, vectors);
@@ -2481,11 +2714,11 @@ bool ProbeLinux::socketCall(Machine& machine) {
             if (fd == descriptors().end()) { x[0] = uint64_t(-9); break; }
             if (!fd->second.socket) { x[0] = uint64_t(-88); break; }
             auto& endpoint = *fd->second.socket;
-            if (endpoint.uevent) {
+            if (endpoint.netlink) {
                 if (endpoint.inbox.empty() && !(fd->second.effectiveFlags() & 0x800) && !(x[2] & 0x40) &&
                     waitForSocketTimeout(endpoint.receiveTimeout)) return true;
                 current->deadline.reset();
-                x[0] = recvUevent(machine, endpoint);
+                x[0] = receiveKernelNetlink(machine, endpoint);
                 break;
             }
             constexpr uint64_t peek = 0x2, trunc = 0x20, dontWait = 0x40, cloexec = 0x40000000;
@@ -2593,7 +2826,7 @@ bool ProbeLinux::socketCall(Machine& machine) {
                     case 2: value = endpoint.reuseAddress; break; // SO_REUSEADDR
                     case 3: value = endpoint.type; break; // SO_TYPE
                     case 7: value = endpoint.sendBuffer; break; // SO_SNDBUF
-                    case 8: value = endpoint.uevent ? endpoint.uevent->receiveBuffer : endpoint.receiveBuffer; break;
+                    case 8: value = endpoint.netlink ? endpoint.netlink->receiveBuffer : endpoint.receiveBuffer; break;
                     case 38: value = endpoint.protocol; break; // SO_PROTOCOL
                     case 39: value = endpoint.family; break; // SO_DOMAIN
                 }
@@ -2699,7 +2932,7 @@ bool ProbeLinux::socketCall(Machine& machine) {
                 x[0] = 0;
                 break;
             }
-            if (x[2] == 50 && endpoint.uevent) { // SO_ATTACH_BPF
+            if (x[2] == 50 && endpoint.protocol == 15) { // SO_ATTACH_BPF
                 uint32_t programFd = 0;
                 if (x[4] != sizeof(programFd)) { x[0] = invalid; break; }
                 if (!machine.readInto(x[3], {reinterpret_cast<uint8_t*>(&programFd), sizeof(programFd)})) {
@@ -2716,7 +2949,8 @@ bool ProbeLinux::socketCall(Machine& machine) {
                 x[0] = 0;
                 break;
             }
-            if (name != 2 && name != 16 && name != 7 && name != 8 && (name != 33 || !endpoint.uevent)) {
+            const bool timestamp = name == 29 && endpoint.netlink;
+            if (name != 2 && name != 16 && name != 7 && name != 8 && (name != 33 || !endpoint.netlink) && !timestamp) {
                 if (!endpoint.storageIdentity) return false;
                 x[0] = uint64_t(-92);
                 break;
@@ -2724,16 +2958,20 @@ bool ProbeLinux::socketCall(Machine& machine) {
             if (size < 4) { x[0] = invalid; break; }
             uint32_t enabled = 0;
             if (!readOption({reinterpret_cast<uint8_t*>(&enabled), sizeof(enabled)})) { x[0] = uint64_t(-14); break; }
-            if (name == 2) {
+            if (timestamp) {
+                endpoint.netlink->timestamp = enabled != 0;
+            } else if (name == 2) {
                 endpoint.reuseAddress = enabled != 0;
             } else if (name == 16) {
                 endpoint.passCredentials = enabled != 0;
             } else if (name == 7) {
                 endpoint.sendBuffer = 2 * std::clamp<uint32_t>(enabled, 1024, 131072);
                 wakePollers();
-            } else if (endpoint.uevent) {
-                if (x[2] == 33 && userId() != 0) { x[0] = uint64_t(-1); break; }
-                endpoint.uevent->receiveBuffer = 2 * std::clamp<uint32_t>(enabled, 1024, 4 * 1024 * 1024);
+            } else if (endpoint.netlink) {
+                const bool privileged = endpoint.protocol == 15 ? userId() == 0 :
+                    (current->process->effectiveCaps & (1ULL << 12)) != 0;
+                if (name == 33 && !privileged) { x[0] = uint64_t(-1); break; }
+                endpoint.netlink->receiveBuffer = 2 * std::clamp<uint32_t>(enabled, 1024, 4 * 1024 * 1024);
             } else {
                 endpoint.receiveBuffer = 2 * std::clamp<uint32_t>(enabled, 1024, 131072);
             }
@@ -5817,7 +6055,8 @@ bool ProbeLinux::transmitInetStream(SocketState& from, SocketState& to, std::spa
     packet.mark = from.socketMark;
     const auto connection = (flags & (syn | ack)) == syn ? GuestFirewall::newConnection :
                                                           GuestFirewall::establishedConnection;
-    const GuestFirewall::PacketState state{&packet.mark, from.tcpConnectionMark.get(), connection, &rejection};
+    const GuestFirewall::LogPacket logger = [&](const auto& record) { emitNetfilterLog(record, from); };
+    const GuestFirewall::PacketState state{&packet.mark, from.tcpConnectionMark.get(), connection, &rejection, &logger};
     packet.ifindex = guestLoopbackIndex;
     packet.socketLookup = [&](std::span<const uint8_t> tuple, bool tcp) {
         return lookupInetSocket(tuple, tcp, &to);
@@ -5984,7 +6223,9 @@ uint64_t ProbeLinux::sendInetDatagram(Machine& machine, const std::shared_ptr<So
         const auto status = connection && connection->sawReply ? GuestFirewall::establishedConnection :
                                                                 GuestFirewall::newConnection;
         GuestFirewall::Rejection rejection;
-        const GuestFirewall::PacketState state{&packet.mark, connection ? &connection->mark : nullptr, status, &rejection};
+        const GuestFirewall::LogPacket logger = [&](const auto& record) { emitNetfilterLog(record, *socket); };
+        const GuestFirewall::PacketState state{&packet.mark, connection ? &connection->mark : nullptr,
+                                                status, &rejection, &logger};
         const auto deliverRejection = [&] {
             if (!rejection.hard || !socket->connected || !matchInetPeer(socket->peerInetAddress, destination)) return;
             socket->inetError = rejection.error;

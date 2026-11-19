@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <functional>
+#include <optional>
 #include <map>
 #include <span>
 #include <string>
@@ -25,11 +27,21 @@ public:
         bool hard = false;
         bool reset = false;
     };
+    struct LogRecord {
+        uint16_t group;
+        std::optional<uint32_t> captureLimit;
+        std::string_view prefix;
+        Hook hook;
+        std::span<const uint8_t> packet;
+        uint32_t mark;
+    };
+    using LogPacket = std::function<void(const LogRecord&)>;
     struct PacketState {
         uint32_t* mark = nullptr;
         uint32_t* connectionMark = nullptr;
         ConnectionState connection = invalidConnection;
         Rejection* rejection = nullptr;
+        const LogPacket* logger = nullptr;
     };
 
     uint64_t get(Machine& machine, bool ipv6) {
@@ -46,7 +58,7 @@ public:
             const auto version = revision.back();
             if (match && name == "connmark") return version == 1 ? 0 : uint64_t(-93);
             if (!match && name == "CONNMARK") return (version == 1 || version == 2) ? 0 : uint64_t(-93);
-            const bool known = match ? name == "comment" || name == "tcp" || name == "udp" || name == "u32" || name == "state" : name == "TCPMSS" || name == "REJECT";
+            const bool known = match ? name == "comment" || name == "tcp" || name == "udp" || name == "u32" || name == "state" : name == "TCPMSS" || name == "REJECT" || name == "NFLOG";
             return !known ? missing : version ? uint64_t(-93) : 0;
         }
         if (option != 64 && option != 65) return unsupported;
@@ -385,6 +397,9 @@ private:
                     if (length != 64 || target[31] || string(target.subspan(targetHeader, 30)).empty()) return invalid;
                 } else if (targetName == "TCPMSS") {
                     if (length != 40 || target[31] || name != "mangle" || protocol != 6 || !synMatch) return invalid;
+                } else if (targetName == "NFLOG") {
+                    if (length != 112 || target[31] || (load<uint16_t>(target, 40) & ~1) || target[107])
+                        return invalid;
                 } else if (targetName == "REJECT") {
                     if (length != 40 || target[31] || name != "filter") return invalid;
                     const auto rejection = rejectionFor(layout.ipv6, load<uint32_t>(target, targetHeader));
@@ -596,7 +611,14 @@ private:
                         *state.rejection = rejectionFor(layout.ipv6, load<uint32_t>(parameters, 0));
                     return false;
                 }
-                if (type == "CONNMARK") {
+                if (type == "NFLOG") {
+                    if (state.logger) {
+                        std::optional<uint32_t> limit;
+                        if (load<uint16_t>(parameters, 8) & 1) limit = load<uint32_t>(parameters, 0);
+                        (*state.logger)({load<uint16_t>(parameters, 4), limit, string(parameters.subspan(12, 64)),
+                                         hook, packet, state.mark ? *state.mark : 0});
+                    }
+                } else if (type == "CONNMARK") {
                     applyConnectionMark(parameters, entry[target + 31], state);
                 } else if (type != "TCPMSS" || !applyMss(packet, layout.ipv6, load<uint16_t>(parameters, 0), mtu)) {
                     return false;

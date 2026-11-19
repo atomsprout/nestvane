@@ -211,8 +211,11 @@ private:
         bool receiveShutdown = false, sendShutdown = false;
         bool passCredentials = false, reuseAddress = false;
         bool logWriter = false;
-        struct UeventSocket { uint32_t pid = 0, groups = 0, receiveBuffer = 212992; };
-        std::optional<UeventSocket> uevent;
+        struct NetlinkSocket {
+            uint32_t pid = 0, groups = 0, receiveBuffer = 212992;
+            bool timestamp = false;
+        };
+        std::optional<NetlinkSocket> netlink;
         std::shared_ptr<const BpfProgram> socketFilter;
         explicit SocketState(uint32_t type) : type(type) {}
     };
@@ -548,7 +551,20 @@ private:
     uint64_t socketWrite(Machine& machine, const Descriptor& fd, uint64_t address, uint64_t size);
     uint64_t socketWrite(Machine& machine, const Descriptor& fd, std::span<const SocketVector> vectors);
     bool socketCall(Machine& machine);
-    uint64_t recvUevent(Machine& machine, SocketState& endpoint);
+    uint64_t receiveKernelNetlink(Machine& machine, SocketState& endpoint);
+    uint64_t sendNetfilter(Machine& machine, const std::shared_ptr<SocketState>& endpoint,
+        std::span<const std::array<uint64_t, 2>> vectors, uint64_t address = 0, uint64_t length = 0);
+    uint64_t bindNetlink(const std::shared_ptr<SocketState>& endpoint, uint32_t pid, uint32_t groups);
+    void emitNetfilterLog(const GuestFirewall::LogRecord& record, const SocketState& sender);
+    void queueNetlink(SocketState& endpoint, std::vector<uint8_t> packet);
+    struct NetfilterLogGroup {
+        std::weak_ptr<SocketState> owner;
+        uint32_t copyRange = 65531;
+        uint8_t mode = 2;
+    };
+    std::map<uint16_t, NetfilterLogGroup> netfilterLogGroups;
+    std::map<uint32_t, std::weak_ptr<SocketState>> netfilterPorts;
+    uint32_t nextNetfilterPort = 0x80000000;
     void emitLoopUevent(unsigned number);
     std::vector<std::weak_ptr<SocketState>> ueventListeners;
     std::map<std::string, unsigned, std::less<>> ueventTriggers;
