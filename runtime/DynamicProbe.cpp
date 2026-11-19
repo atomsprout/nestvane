@@ -121,7 +121,11 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
             timedOut = true;
             break;
         }
-        if (!linux.schedule(machine)) { idle = true; break; }
+        if (!linux.schedule(machine, deadline)) {
+            timedOut = std::chrono::steady_clock::now() >= deadline;
+            idle = !timedOut;
+            break;
+        }
         if (init && linux.hasChildEntryAt(cpu.pc)) {
             if (auto event = linux.observeEntry(cpu.pc); !event.empty()) {
                 if (event.find(" entered /system/bin/app_process64 ") != std::string::npos)

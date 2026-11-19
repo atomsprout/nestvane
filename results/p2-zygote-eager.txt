@@ -264,3 +264,13 @@ android_os_HwBinder: HwBinder: Starting thread pool for getting: android.hidl.ma
   syscall 26 (inotify_init1) [unimplemented in guest PID 165, suspended]
   guest execution wall time: 484261 ms
 Independent persistent and temporary file counts: host suite and ASan/UBSan passed.
+
+Mac with guest inotify
+SystemServerTiming: StartActivityManager took to complete: 12856ms
+SystemServerTiming: StartDataLoaderManagerService took to complete: 15ms
+SystemServerTiming: StartIncrementalService took to complete: 0ms
+SystemServerTiming: StartPowerManager
+SystemServiceManager: Starting com.android.server.power.PowerManagerService
+  no runnable guest threads
+  guest execution wall time: 233709 ms
+Guest scheduler regression: a 1050 ms guest sleep survives a shorter probe deadline and is resumed when the permitted deadline extends past the timer. Host suite, ASan/UBSan and iOS Release build passed.

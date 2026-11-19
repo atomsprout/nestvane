@@ -3124,7 +3124,7 @@ std::optional<std::chrono::steady_clock::time_point> ProbeLinux::refreshTimers(
     return next;
 }
 
-bool ProbeLinux::switchThread(Machine& machine) {
+bool ProbeLinux::switchThread(Machine& machine, std::chrono::steady_clock::time_point deadline) {
     using namespace std::chrono;
     auto now = steady_clock::now();
     std::optional<steady_clock::time_point> nextDeadline;
@@ -3154,11 +3154,12 @@ bool ProbeLinux::switchThread(Machine& machine) {
     };
     if (!binderDeathSubscribers.empty()) refreshBinderDeaths();
     updateTimers();
-    if (!runnable && nextDeadline && *nextDeadline - now <= seconds(1)) {
-        std::this_thread::sleep_until(*nextDeadline);
+    while (!runnable && nextDeadline && now < deadline) {
+        std::this_thread::sleep_until(std::min(*nextDeadline, deadline));
         now = steady_clock::now();
         updateTimers();
     }
+    if (now >= deadline) return false;
     auto next = threads.upper_bound(currentTid);
     for (size_t tested = 0; tested < threads.size(); ++tested) {
         if (next == threads.end()) next = threads.begin();

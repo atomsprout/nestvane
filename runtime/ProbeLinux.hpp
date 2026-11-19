@@ -39,8 +39,9 @@ struct ProbeLinux {
     uint64_t parentProcessId() const { return current->process->parent; }
     bool suspendChild();
     bool blocked() const { return current->wait != Wait::none; }
-    bool schedule(Machine& machine) {
-        return machine.cpu.retired < sliceEnd || switchThread(machine);
+    bool schedule(Machine& machine, std::chrono::steady_clock::time_point deadline =
+                  std::chrono::steady_clock::time_point::max()) {
+        return machine.cpu.retired < sliceEnd || switchThread(machine, deadline);
     }
     std::string workerReport() const;
     void setBootContext(std::string context);
@@ -116,7 +117,7 @@ private:
         std::array<uint64_t, 3> alternateStack{0, 2, 0};
     };
 
-    bool switchThread(Machine& machine);
+    bool switchThread(Machine& machine, std::chrono::steady_clock::time_point deadline);
     bool cloneThread(Machine& machine);
     bool forkProcess(Machine& machine);
     bool execProcess(Machine& machine);

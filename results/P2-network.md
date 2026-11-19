@@ -86,3 +86,5 @@
 - Mac 复测确认原版 Aconfig 平台与主线初始化均退出 0，原版 Java 框架取得 HIDL 服务管理器。ActivityManager 下一步停在 `inotify_init1`。现已在客体文件系统实现文件监听，覆盖创建、写入、关闭、改名、删除、取消监听与 epoll 唤醒，宿主回归、ASan/UBSan 和 iOS Release 构建通过。[运行记录](p2-zygote-eager.txt) · [Linux inotify ABI](https://man7.org/linux/man-pages/man7/inotify.7.html)
 
 - iPhone 11 确认原版平台 Aconfig 初始化退出 0，并取得 HIDL 服务管理器，随后复现同一个 `inotify_init1` 停点。真机保留的数据还触发了临时 Wi-Fi 标志文件的创建上限，宿主回归已验证持久文件和临时文件可分别使用各自的数量上限。真机数据保持原状，下一轮验证主线 Aconfig 和 inotify。[运行记录](p2-zygote-eager.txt)
+
+- Mac 复测已完成原版 ActivityManager、DataLoaderManager 和 IncrementalService 启动，进入 PowerManager 后暂时没有可运行的客体线程。原调度器只会等待一秒内的定时事件，现按探针总时限等待客体定时事件。已通过宿主、ASan/UBSan 和 iOS Release 构建验证。iPhone 11 正在复测上一版的 inotify 和文件数上限修复。[运行记录](p2-zygote-eager.txt)

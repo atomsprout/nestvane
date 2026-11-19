@@ -245,6 +245,15 @@ int main() {
         return value;
     };
     {
+        using namespace std::chrono;
+        assert(machine.store64(base, 1) && machine.store64(base + 8, 50'000'000));
+        assert(call(101, {base, 0}) == base && linux.blocked());
+        assert(!linux.schedule(machine, steady_clock::now() + milliseconds(10)) && linux.blocked());
+        assert(linux.schedule(machine, steady_clock::now() + seconds(2)) && !linux.blocked());
+        assert(call(101, {base, 0}) == 0);
+        machine.cpu.retired += 4096;
+    }
+    {
         constexpr uint64_t cwd = uint32_t(-100), event = base + 512, buffer = base + 1024;
         linux.addBootTmpfs("/watch", 0755, 0, 6);
         put(base, "/watch");
