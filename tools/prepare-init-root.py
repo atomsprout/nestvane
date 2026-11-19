@@ -149,13 +149,26 @@ def collect(serial, readelf, destination, small_art_heap):
         keymint = "/vendor/bin/hw/android.hardware.security.keymint-service"
         lights = "/vendor/bin/hw/android.hardware.lights-service.example"
         health = "/vendor/bin/hw/android.hardware.health-service.example"
+        sensors = "/vendor/bin/hw/android.hardware.sensors-service.multihal"
+        sensor_config = "/vendor/etc/sensors/hals.conf"
+        sensor_modules = []
+        for line in shell("cat", sensor_config).splitlines():
+            name = line.partition("#")[0].strip()
+            if not name:
+                continue
+            if not re.fullmatch(r"[A-Za-z0-9_.@+-]+\.so", name):
+                raise SystemExit(f"Unexpected Android sensor HAL module: {line}")
+            sensor_modules.append(f"/vendor/lib64/hw/{name}")
+        if not sensor_modules:
+            raise SystemExit("No Android sensor HAL modules configured in the reference")
         composer = "/vendor/bin/hw/android.hardware.graphics.composer3-service.ranchu"
         allocator = "/vendor/bin/hw/android.hardware.graphics.allocator-service.ranchu"
         camera_provider = "/vendor/bin/hw/android.hardware.camera.provider.ranchu"
         for programs, search_paths in (
             ((vold, service, cmd, vdc, keystore, casefold, vold_prepare, odsign, bpfloader, iptables), ("/system/lib64",)),
             ((zygote, installd, system_suspend, surfaceflinger, bootanimation, aconfigd, netd, cameraserver), ("/system/lib64", "/system_ext/lib64")),
-            ((keymint, lights, health, composer, allocator, camera_provider), ("/vendor/lib64", "/system/lib64")),
+            ((keymint, lights, health, sensors, composer, allocator, camera_provider),
+             ("/vendor/lib64", "/system/lib64")),
         ):
             dependencies = {}
             for directory in search_paths:
@@ -186,6 +199,9 @@ def collect(serial, readelf, destination, small_art_heap):
                     if name not in dependencies:
                         raise SystemExit(f"Public preload library {name} absent from platform and packaged APEX")
                     pending.append(dependencies[name])
+            if sensors in programs:
+                # Multi-HAL opens these modules from hals.conf, outside DT_NEEDED.
+                pending.extend(sensor_modules)
             if composer in programs:
                 # EGL and mapper implementations are selected at runtime.
                 pending.extend(("/vendor/lib64/egl/libEGL_emulation.so",
@@ -218,11 +234,11 @@ def collect(serial, readelf, destination, small_art_heap):
         subprocess.run(adb + ["pull", guest, str(root / guest.lstrip("/"))], check=True)
         copied.add(guest)
 
-        fstab = "/vendor/etc/fstab.ranchu"
-        local = root / fstab.lstrip("/")
-        local.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(adb + ["pull", fstab, str(local)], check=True)
-        copied.add(fstab)
+        for guest in ("/vendor/etc/fstab.ranchu", sensor_config):
+            local = root / guest.lstrip("/")
+            local.parent.mkdir(parents=True, exist_ok=True)
+            subprocess.run(adb + ["pull", guest, str(local)], check=True)
+            copied.add(guest)
 
         property_inputs = {
             "/system": "plat",
@@ -358,7 +374,7 @@ def collect(serial, readelf, destination, small_art_heap):
         boot_domains = []
         sdkext = "/apex/com.android.sdkext/bin"
         programs = ("/system/bin/apexd", system_self_test, vendor_self_test, vold, vdc, keystore, keymint,
-                    casefold, vold_prepare, odsign, zygote, installd, system_suspend, lights, health, surfaceflinger,
+                    casefold, vold_prepare, odsign, zygote, installd, system_suspend, lights, health, sensors, surfaceflinger,
                     bootanimation, composer, allocator, aconfigd, netd, iptables, cameraserver, camera_provider,
                     f"{sdkext}/derive_sdk", f"{sdkext}/derive_classpath",
                     "/apex/com.android.art/bin/art_boot", "/apex/com.android.art/bin/odrefresh",
