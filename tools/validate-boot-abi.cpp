@@ -1645,7 +1645,18 @@ int main() {
         assert(alias < 256 && invoke(57, {stream}) == 0);
         assert(invoke(280, {1, attr, sizeof(tag)}) == 0);
         assert(invoke(57, {alias}) == 0 && invoke(280, {1, attr, sizeof(tag)}) == uint64_t(-2));
-        assert(invoke(57, {root}) == 0);
+
+        const auto first = invoke(198, {2, 1, 0}), second = invoke(198, {2, 1, 0});
+        assert(first < 256 && second < 256);
+        const std::array<uint8_t, 16> loopback{2, 0, 0, 0, 127, 0, 0, 1};
+        assert(write(output, loopback) && invoke(200, {first, output, loopback.size()}) == 0);
+        const auto addrSize = output + 32;
+        assert(write(addrSize, uint32_t(loopback.size())) && invoke(204, {first, output, addrSize}) == 0);
+        const auto* assigned = task.read(output, loopback.size(), 4);
+        assert(assigned && assigned[2] >= 0x80 && assigned[4] == 127 && assigned[7] == 1);
+        assert(invoke(200, {second, output, loopback.size()}) == uint64_t(-98));
+        assert(invoke(57, {first}) == 0 && invoke(200, {second, output, loopback.size()}) == 0);
+        assert(invoke(57, {second}) == 0 && invoke(57, {root}) == 0);
         assert(invoke(220, {0x1200011, 0, 0, 0, base + 128}) == 2);
         assert(invoke(63, {procs, output, 128}) == 4);
         assert(std::memcmp(task.read(output, 4, 4), "1\n2\n", 4) == 0);

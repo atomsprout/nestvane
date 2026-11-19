@@ -179,8 +179,12 @@ struct BpfMap {
 
 class BpfProgram {
 public:
-    static constexpr uint32_t socketFilter = 1, classifier = 3, trafficAction = 4, cgroupPacket = 8, cgroupSocket = 9, socketOperations = 13;
+    static constexpr uint32_t socketFilter = 1, classifier = 3, trafficAction = 4, cgroupPacket = 8, cgroupSocket = 9, socketOperations = 13, socketAddress = 18;
     static constexpr uint32_t cgroupInetCreate = 2, cgroupSocketOperations = 3, cgroupInetRelease = 34;
+    static constexpr uint32_t bind4 = 8, bind6 = 9;
+    static bool inetAddressAttach(uint32_t type) {
+        return (type >= bind4 && type <= 11) || type == 14 || type == 15 || type == 19 || type == 20;
+    }
     static constexpr size_t maxInstructions = 4096, maxPacketBytes = 65535;
     using MapResolver = std::function<std::shared_ptr<BpfMap>(uint32_t)>;
 
@@ -258,12 +262,15 @@ public:
         uint64_t cookie;
         uint32_t uid, gid, family, type, protocol;
         std::function<bool(size_t)> canAllocateStorage;
+        uint32_t pid = 0, tid = 0, port = 0;
+        std::array<uint32_t, 4> address{};
     };
 
     static bool trafficControl(uint32_t type) { return type == classifier || type == trafficAction; }
     static bool packetProgram(uint32_t type) { return trafficControl(type) || type == cgroupPacket; }
     static bool supports(uint32_t type) {
-        return type == socketFilter || packetProgram(type) || type == cgroupSocket || type == socketOperations;
+        return type == socketFilter || packetProgram(type) || type == cgroupSocket ||
+            type == socketOperations || type == socketAddress;
     }
 
     bool load(uint32_t type, std::span<const uint8_t> bytes, const MapResolver& resolve) {
@@ -305,17 +312,17 @@ public:
                 if (i.registers || i.offset) return false;
                 switch (i.immediate) {
                     case 26: // skb_load_bytes
-                        if (type == socketOperations || type == cgroupSocket) return false;
+                        if (type == socketOperations || type == cgroupSocket || type == socketAddress) return false;
                         break;
                     case 1: break; // bpf_map_lookup_elem
                     case 2: case 47:
-                        if (type == socketOperations || type == cgroupSocket) return false;
+                        if (type == socketOperations || type == cgroupSocket || type == socketAddress) return false;
                         break;
                     case 3: // bpf_map_delete_elem
                         if (type == socketOperations) return false;
                         break;
-                    case 15: // bpf_get_current_uid_gid
-                        if (type != cgroupSocket) return false;
+                    case 14: case 15: // Current PID/TID and UID/GID.
+                        if (type != cgroupSocket && type != socketAddress) return false;
                         break;
                     case 46: // bpf_get_socket_cookie
                         if (type == socketOperations) return false;
@@ -408,7 +415,7 @@ public:
     }
 
     std::optional<uint32_t> runSocketContext(const SocketContext& socket) const {
-        if (programType != cgroupSocket || !socket.socket) return std::nullopt;
+        if ((programType != cgroupSocket && programType != socketAddress) || !socket.socket) return std::nullopt;
         return execute({}, nullptr, nullptr, &socket);
     }
 
@@ -884,6 +891,9 @@ private:
                                 }
                                 break;
                             }
+                            case 14: // bpf_get_current_pid_tgid
+                                result = uint64_t(socketContext->pid) << 32 | socketContext->tid;
+                                break;
                             case 15: // bpf_get_current_uid_gid
                                 result = uint64_t(socketContext->gid) << 32 | socketContext->uid;
                                 break;
@@ -1059,6 +1069,20 @@ private:
                 switch (i.kind()) {
                     case 1: {
                         const auto address = src + i.offset;
+                        if (socketContext && programType == socketAddress && address >= context && address < context + 72) {
+                            const auto offset = address - context;
+                            if (i.width() == 8 && offset == 64) dst = socketHandle;
+                            else if (i.width() != 4) return std::nullopt;
+                            else if (offset == 0 || offset == 28) dst = socketContext->family;
+                            else if (offset == 4 && socketContext->family == 2) dst = socketContext->address[0];
+                            else if (offset >= 8 && offset < 24 && !(offset & 3) && socketContext->family == 10)
+                                dst = socketContext->address[(offset - 8) / 4];
+                            else if (offset == 24) dst = socketContext->port;
+                            else if (offset == 32) dst = socketContext->type;
+                            else if (offset == 36) dst = socketContext->protocol;
+                            else return std::nullopt;
+                            break;
+                        }
                         if (socketContext && address >= context && address < context + 24) {
                             if (i.width() != 4) return std::nullopt;
                             switch (address - context) {

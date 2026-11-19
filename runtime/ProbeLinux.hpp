@@ -172,6 +172,7 @@ private:
         uint32_t family = 1, protocol = 0;
         uint64_t cookie = 0;
         std::shared_ptr<void> storageIdentity;
+        std::array<uint8_t, 28> localInetAddress{};
         std::function<void(const SocketState&)> onClose;
         ~SocketState() { if (onClose) onClose(*this); }
         std::array<uint32_t, 3> peerCredentials{0, UINT32_MAX, UINT32_MAX};
@@ -214,6 +215,7 @@ private:
     bool canAllocateSocketStorage(size_t valueSize);
     uint64_t changeBpfCgroupAttachment(Machine& machine);
     bool openInetSocket(const std::shared_ptr<SocketState>& socket);
+    uint64_t bindInetSocket(Machine& machine, const std::shared_ptr<SocketState>& socket);
     struct Directory;
     struct CgroupSocketPrograms {
         uint32_t flags;
@@ -221,7 +223,9 @@ private:
         std::vector<std::shared_ptr<const BpfProgram>> programs;
     };
     using CgroupSocketHooks = std::map<std::string, CgroupSocketPrograms, std::less<>>;
-    CgroupSocketHooks inetCreatePrograms;
+    CgroupSocketHooks inetCreatePrograms, inet4BindPrograms, inet6BindPrograms;
+    std::map<std::tuple<uint32_t, uint32_t, uint16_t>, std::weak_ptr<SocketState>> inetBindings;
+    uint16_t nextEphemeralPort = 32768;
     std::shared_ptr<CgroupSocketHooks> inetReleasePrograms = std::make_shared<CgroupSocketHooks>();
     uint64_t bpfMapCall(Machine& machine);
     uint64_t loadBpfProgram(Machine& machine);
