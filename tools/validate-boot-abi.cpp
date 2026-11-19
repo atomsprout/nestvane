@@ -128,6 +128,32 @@ int main() {
         assert(std::memcmp(permute.cpu.v[16].data(), unsignedDifference.data(), sizeof(unsignedDifference)) == 0);
         assert(executeStartupInstruction(permute, 0x4e632041)); // ssubl2 v1.4s, v2.8h, v3.8h
         assert(std::memcmp(permute.cpu.v[1].data(), highDifference.data(), sizeof(highDifference)) == 0);
+        const std::array<uint32_t, 4> words{UINT32_MAX, 0x80000000, 3, 7};
+        const std::array<uint32_t, 4> factors{3, 8, UINT32_MAX, 5};
+        const std::array<uint32_t, 4> indexedProduct{UINT32_MAX - 2, 0x80000000, 9, 21};
+        std::memcpy(permute.cpu.v[16].data(), words.data(), sizeof(words));
+        std::memcpy(permute.cpu.v[5].data(), factors.data(), sizeof(factors));
+        assert(executeStartupInstruction(permute, 0x4f858210)); // mul v16.4s, v16.4s, v5.s[0]
+        assert(std::memcmp(permute.cpu.v[16].data(), indexedProduct.data(), sizeof(indexedProduct)) == 0);
+        std::memcpy(permute.cpu.v[2].data(), words.data(), sizeof(words));
+        std::memcpy(permute.cpu.v[31].data(), factors.data(), sizeof(factors));
+        const std::array<uint32_t, 4> highWordProduct{UINT32_MAX - 4, 0x80000000, 15, 35};
+        assert(executeStartupInstruction(permute, 0x4fbf8841)); // mul v1.4s, v2.4s, v31.s[3]
+        assert(std::memcmp(permute.cpu.v[1].data(), highWordProduct.data(), sizeof(highWordProduct)) == 0);
+        const std::array<uint32_t, 4> indexedSum{UINT32_MAX - 3, 0, 12, 28};
+        assert(executeStartupInstruction(permute, 0x6f850841)); // mla v1.4s, v2.4s, v5.s[2]
+        assert(std::memcmp(permute.cpu.v[1].data(), indexedSum.data(), sizeof(indexedSum)) == 0);
+        const std::array<uint16_t, 8> halfwords{2, 3, 32768, 65535, 1, 2, 3, 4};
+        const std::array<uint16_t, 8> halfwordFactors{1, 2, 4, 5, 6, 8, 9, 3};
+        const std::array<uint16_t, 8> halfwordProduct{6, 9, 32768, 65533};
+        const std::array<uint16_t, 8> indexedDifference{65532, 65530, 0, 2, 65531, 65526, 65521, 65516};
+        std::memcpy(permute.cpu.v[2].data(), halfwords.data(), sizeof(halfwords));
+        std::memcpy(permute.cpu.v[3].data(), halfwordFactors.data(), sizeof(halfwordFactors));
+        std::memcpy(permute.cpu.v[5].data(), halfwordFactors.data(), sizeof(halfwordFactors));
+        assert(executeStartupInstruction(permute, 0x0f738841)); // mul v1.4h, v2.4h, v3.h[7]
+        assert(std::memcmp(permute.cpu.v[1].data(), halfwordProduct.data(), sizeof(halfwordProduct)) == 0);
+        assert(executeStartupInstruction(permute, 0x6f754041)); // mls v1.8h, v2.8h, v5.h[3]
+        assert(std::memcmp(permute.cpu.v[1].data(), indexedDifference.data(), sizeof(indexedDifference)) == 0);
         const std::array<float, 4> leftAdd{1, -2, 3, 4}, rightAdd{3, 1, 6, -4}, expectedSum{4, -1, 9, 0};
         std::memcpy(permute.cpu.v[0].data(), leftAdd.data(), sizeof(leftAdd));
         std::memcpy(permute.cpu.v[2].data(), rightAdd.data(), sizeof(rightAdd));

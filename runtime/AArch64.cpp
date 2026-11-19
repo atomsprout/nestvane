@@ -318,8 +318,24 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
     const uint32_t op = word & 0xbf20fc00;
     const uint32_t fmov = word & 0xfffffc00;
     const bool scalar = word & 0x10000000;
+    const auto integerElement = word & 0xbf00f400;
     const auto fpElement = word & 0xaf80f400;
-    if (fpElement == 0x0f801000 || fpElement == 0x0f805000 || fpElement == 0x0f809000) {
+    if (integerElement == 0x0f008000 || integerElement == 0x2f000000 || integerElement == 0x2f004000) {
+        // MUL, MLA and MLS with an indexed element.
+        if (size != 2 && size != 4) return false;
+        const unsigned highIndex = (word >> 11) & 1;
+        const unsigned lowIndex = (word >> 21) & 1;
+        // In the halfword encoding, the high register bit selects a lane instead.
+        const unsigned index = size == 2 ? highIndex * 4 + lowIndex * 2 + (rm >> 4) : highIndex * 2 + lowIndex;
+        const auto multiplier = lane(cpu.v[size == 2 ? rm & 15 : rm], index, size);
+        for (unsigned i = 0; i < width / size; ++i) {
+            const auto product = lane(source, i, size) * multiplier;
+            auto value = product;
+            if (integerElement == 0x2f000000) value = lane(cpu.v[rd], i, size) + product;
+            if (integerElement == 0x2f004000) value = lane(cpu.v[rd], i, size) - product;
+            setLane(result, i, size, value);
+        }
+    } else if (fpElement == 0x0f801000 || fpElement == 0x0f805000 || fpElement == 0x0f809000) {
         // FMLA, FMLS and FMUL with an indexed element.
         const bool wide = word & 0x400000;
         if ((scalar && width != 16) || (wide && (width != 16 || (word & 0x200000)))) return false;
