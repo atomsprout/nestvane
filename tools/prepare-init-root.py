@@ -127,10 +127,12 @@ def collect(serial, readelf, destination, small_art_heap):
         aconfigd = "/system/bin/aconfigd-system"
         keymint = "/vendor/bin/hw/android.hardware.security.keymint-service"
         lights = "/vendor/bin/hw/android.hardware.lights-service.example"
+        composer = "/vendor/bin/hw/android.hardware.graphics.composer3-service.ranchu"
+        allocator = "/vendor/bin/hw/android.hardware.graphics.allocator-service.ranchu"
         for programs, search_paths in (
             ((vold, service, cmd, vdc, keystore, casefold, vold_prepare, odsign), ("/system/lib64",)),
             ((zygote, installd, system_suspend, surfaceflinger, aconfigd), ("/system/lib64", "/system_ext/lib64")),
-            ((keymint, lights), ("/vendor/lib64", "/system/lib64")),
+            ((keymint, lights, composer, allocator), ("/vendor/lib64", "/system/lib64")),
         ):
             dependencies = {}
             for directory in search_paths:
@@ -160,6 +162,12 @@ def collect(serial, readelf, destination, small_art_heap):
                     if name not in dependencies:
                         raise SystemExit(f"Public preload library {name} absent from platform and packaged APEX")
                     pending.append(dependencies[name])
+            if composer in programs:
+                # EGL and mapper implementations are selected at runtime.
+                pending.extend(("/vendor/lib64/egl/libEGL_emulation.so",
+                                "/vendor/lib64/egl/libGLESv1_CM_emulation.so",
+                                "/vendor/lib64/egl/libGLESv2_emulation.so",
+                                "/vendor/lib64/hw/mapper.ranchu.so", "/vendor/lib64/libqemupipe.ranchu.so"))
             inspected = set()
             while pending:
                 guest = pending.popleft()
@@ -303,7 +311,8 @@ def collect(serial, readelf, destination, small_art_heap):
         boot_domains = []
         sdkext = "/apex/com.android.sdkext/bin"
         programs = ("/system/bin/apexd", system_self_test, vendor_self_test, vold, vdc, keystore, keymint,
-                    casefold, vold_prepare, odsign, zygote, installd, system_suspend, lights, surfaceflinger, aconfigd,
+                    casefold, vold_prepare, odsign, zygote, installd, system_suspend, lights, surfaceflinger,
+                    composer, allocator, aconfigd,
                     f"{sdkext}/derive_sdk", f"{sdkext}/derive_classpath",
                     "/apex/com.android.art/bin/art_boot", "/apex/com.android.art/bin/odrefresh",
                     "/apex/com.android.tethering/bin/netbpfload",

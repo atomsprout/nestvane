@@ -37,6 +37,15 @@ def make_framework_root(base, image, guest, defer_zygote_preload):
     replace_line(guest / "system/build.prop", r"^dalvik\.vm\.usejit=[^\r\n]*$", "dalvik.vm.usejit=false")
     for key in ("heapgrowthlimit", "heapsize"):
         replace_line(guest / "vendor/build.prop", rf"^dalvik\.vm\.{key}=[^\r\n]*$", f"dalvik.vm.{key}=96m")
+    if (guest / "vendor/lib64/egl/libEGL_emulation.so").is_file():
+        # The SDK normally selects these drivers from Ranchu's early-init actions.
+        vendor_properties = guest / "vendor/build.prop"
+        values = vendor_properties.read_text().rstrip("\n")
+        for key, value in (("ro.hardware.egl", "emulation"), ("ro.hardware.gralloc", "ranchu"),
+                           ("ro.boot.qemu.gltransport.name", "pipe")):
+            if not re.search(rf"^{re.escape(key)}=", values, flags=re.MULTILINE):
+                values += f"\n{key}={value}"
+        vendor_properties.write_text(values + "\n")
     if defer_zygote_preload:
         replace_line(guest / "system/etc/init/hw/init.zygote64.rc",
                      r"^(service zygote /system/bin/app_process64 [^\r\n]*--start-system-server[^\r\n]*)$",

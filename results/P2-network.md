@@ -98,3 +98,5 @@
 - Mac 离线复测进入 LightsService，并记录 `setsockopt(SOL_SOCKET, SO_SNDTIMEO_OLD)`。客体已支持两种 ARM64 发送超时选项，以及阻塞发送、写入和连接在队列不可用时的期限。宿主回归覆盖期限到达、队列重新可用及非阻塞调用，ASan/UBSan 通过。带发送超时和原版显示组件的签名构建已在 iPhone 11 启动，进程号 7150。[Linux Unix socket 实现](https://raw.githubusercontent.com/torvalds/linux/master/net/unix/af_unix.c)
 
 - Mac 复测中，原版 Lights HAL 响应支持灯光查询，LightsService 完成启动（63 ms），随后进入 DisplayManager。框架在 `fnmul d17, d7, d7` 停止，SurfaceFlinger 同时报告缺少 EGL 实现。运行时已实现单精度与双精度 FNMUL，宿主回归和 ASan/UBSan 覆盖本次指令编码、负零和目标寄存器高位清零。[Arm 指令参考](https://documentation-service.arm.com/static/67e40f3398aa3c3b6eea6a85)
+
+- Android 17 参考镜像采集现纳入 Ranchu Composer3、Allocator、EGL 和 Mapper 及各自依赖，干净采集共 1,192 个文件，离线客体镜像为 806,815,781 字节。参考模拟器的图形服务打开了 `goldfish_pipe_dprctd`、`goldfish_address_space` 和 `goldfish_sync`。诊断镜像保留匹配的 EGL、gralloc 和管道选择属性，原版 SurfaceFlinger 已在 Mac 进入进程初始化。只读镜像映射上限已独立于客体可写内存调至 1 GiB。iOS 签名构建通过，真机启动日志保留带相对时间的近期里程碑。[Goldfish 图形传输](https://android.googlesource.com/device/generic/goldfish-opengl/+/a24d1a13e7c6eca9b57a35cdd5fe5e3ac50ec103/system/OpenglSystemCommon/HostConnection.cpp)

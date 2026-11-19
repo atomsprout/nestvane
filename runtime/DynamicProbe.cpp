@@ -398,7 +398,8 @@ DynamicReport probeInit(const std::string& directory, const std::string& databas
         constexpr auto filename = "/system/bin/init";
         constexpr auto interpreter = "/system/bin/bootstrap/linker64";
         std::map<std::string, ReadOnlyImageFile, std::less<>> files;
-        constexpr uint64_t maxRootBytes = 768 * 1024 * 1024;
+        // The root is mapped read-only. The guest's writable memory is limited separately.
+        constexpr uint64_t maxRootBytes = 1024 * 1024 * 1024;
         uint64_t total = 0;
         for (const auto& entry : fs::recursive_directory_iterator(root)) {
             const auto type = entry.symlink_status();
@@ -436,6 +437,8 @@ DynamicReport probeInit(const std::string& directory, const std::string& databas
                 "SystemServerTiming: StartLightsService",
                 "SystemServerTiming: StartDisplayManager", "SystemServerTiming: WaitForDisplay",
                 "SystemServerTiming: StartPackageManagerService",
+                "SurfaceFlinger: SurfaceFlinger is starting", "SurfaceFlinger: Using HWComposer service",
+                "libEGL: couldn't find an OpenGL ES implementation",
                 "Watchdog: *** WATCHDOG KILLING SYSTEM PROCESS"
             };
             if (std::any_of(std::begin(milestones), std::end(milestones),

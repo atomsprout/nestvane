@@ -115,8 +115,17 @@ static NSString* ThermalState() {
                                                   attributes:nil error:&directoryError];
             NSURL* database = [guest URLByAppendingPathComponent:@"guest-data.sqlite3"];
             NSURL* progressURL = [documents URLByAppendingPathComponent:@"boot-progress.txt"];
+            const auto bootStarted = NSProcessInfo.processInfo.systemUptime;
+            std::string milestones;
             const auto progress = [&](std::string_view event) {
-                exportReport(progressURL, std::string(event) + "\n");
+                const auto elapsedSeconds = NSProcessInfo.processInfo.systemUptime - bootStarted;
+                milestones += "[" + std::to_string(static_cast<long long>(elapsedSeconds * 1000)) + " ms] ";
+                milestones.append(event);
+                milestones += '\n';
+                constexpr size_t maxMilestoneBytes = 16 * 1024;
+                if (milestones.size() > maxMilestoneBytes)
+                    milestones.erase(0, milestones.find('\n', milestones.size() - maxMilestoneBytes) + 1);
+                exportReport(progressURL, milestones);
             };
             auto probe = ready ? nestvane::probeInit(initRoot.fileSystemRepresentation, database.fileSystemRepresentation, progress) :
                 nestvane::DynamicReport{false, "Cannot create guest data directory\n"};
