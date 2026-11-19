@@ -212,6 +212,12 @@ private:
         bool hasInput() const { return !inbox.empty() || !datagrams.empty(); }
         std::function<void(const SocketState&)> onClose;
         ~SocketState() {
+            if (inetStream() && connected && linger[0] && !linger[1]) {
+                if (const auto remote = peer.lock()) {
+                    remote->inetError = 104; // ECONNRESET after previously delivered data.
+                    ++remote->pollNotifications.stateChange;
+                }
+            }
             if (family == 1 && type != 2) {
                 if (const auto remote = peer.lock()) ++remote->pollNotifications.stateChange;
             }
@@ -228,6 +234,7 @@ private:
         size_t backlog = 0;
         size_t queuedBytes = 0;
         uint32_t sendBuffer = 262144, receiveBuffer = 212992;
+        std::array<int32_t, 2> linger{}; // Linux struct linger: enabled, seconds.
         std::chrono::microseconds receiveTimeout{}, sendTimeout{};
         bool connected = false;
         bool listening = false;

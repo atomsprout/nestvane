@@ -359,3 +359,4 @@
 - Android 17 参考模拟器从验收 APK 打开后置 Camera2 预览，拍照后由 APK 和宿主各自确认 JPEG 为 640×480。退出相机界面后 CameraService 记录断开，活动客户端为空。该测试使用参考模拟器的后置摄像头，iPhone 11 实体相机仍待验证。
 - 两轮 Mac 完整启动日志均显示，新增 Binder 工作线程后，开机动画等服务反复扩容，随后普通 pthread_create 返回 EAGAIN。客体现在跨调度器的通用唤醒保留仍在等待 Binder 的线程身份，真正离开等待时清除。参考 Android 内核和 Mac 客体的同一 ARM64 测试证明，主 looper 等待同步回调时，已有空闲工作线程会抑制额外请求。完整启动仍待复测。
 - 同轮在 ARM64 指令 0xd503219f（AUTIA1716）停止。客体没有声明指针认证能力，四条兼容 HINT 编码按无指针认证时的语义继续执行。宿主 ABI 回归验证寄存器不变并正确前进 PC。
+- Mac 的原版 system_server 在 AlarmManager 阶段第一次停下的系统调用为 getsockopt(SOL_SOCKET, SO_LINGER)。客体现支持查询和设定该选项，TCP accept 继承监听端配置，最后一个引用关闭时可在已交付数据之后返回 ECONNRESET。参考 Android 内核与 Mac 客体的 ARM64 探针均通过，宿主覆盖 IPv4 和 IPv6，完整 iPhoneOS Release 构建和开发签名通过。包含 Binder 空闲线程、ARM64 HINT 与套接字修复的 Mac 冷启动已运行，当前真机仍在保留前一轮进程 8616。

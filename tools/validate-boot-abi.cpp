@@ -2867,7 +2867,22 @@ int main() {
                 assert(task.load64(buffer, observed) && observed == word);
             }
             assert(invoke(210, {client, 1}) == 0 && invoke(63, {server, buffer, 8}) == 0);
-            assert(invoke(57, {server}) == 0 && invoke(57, {client}) == 0 && invoke(57, {listener}) == 0);
+            assert(invoke(57, {server}) == 0 && invoke(57, {client}) == 0);
+
+            const auto abortClient = invoke(198, {family, 0x801, 0});
+            assert(abortClient < 256 && write(buffer, uint64_t{1}) && invoke(208, {abortClient, 1, 13, buffer, 8}) == 0);
+            assert(write(buffer, 1 | (uint64_t{4} << 32)) && invoke(208, {listener, 1, 13, buffer, 8}) == 0);
+            assert(write(fromLength, addressSize) && invoke(204, {listener, address, fromLength}) == 0);
+            assert(invoke(203, {abortClient, address, addressSize}) == 0);
+            const auto abortServer = invoke(242, {listener, 0, 0, 0x800});
+            assert(abortServer < 256 && write(fromLength, uint32_t{8}));
+            assert(invoke(209, {abortServer, 1, 13, buffer, fromLength}) == 0);
+            assert(task.load64(buffer, value64) && value64 == (1 | (uint64_t{4} << 32)));
+            assert(write(buffer, uint64_t{0x1234}) && invoke(64, {abortClient, buffer, 8}) == 8);
+            assert(invoke(57, {abortClient}) == 0);
+            assert(invoke(63, {abortServer, buffer, 8}) == 8 && task.load64(buffer, value64) && value64 == 0x1234);
+            assert(invoke(63, {abortServer, buffer, 8}) == uint64_t(-104));
+            assert(invoke(57, {abortServer}) == 0 && invoke(57, {listener}) == 0);
             assert(attachPacket(9, 1, verifyOptions) == 0 && invoke(57, {verifyOptions}) == 0);
         }
         for (uint32_t type : {1, 2}) {
@@ -3920,6 +3935,20 @@ int main() {
     assert(call(167, {8, 0}) == uint64_t(-1));
     assert(call(167, {28, 0}) == uint64_t(-1));
     assert(call(167, {27}) == 48);
+
+    {
+        const auto endpoint = call(198, {1, 1, 0});
+        constexpr auto value = base + 0x300, length = base + 0x310;
+        assert(endpoint < 256 && machine.store64(length, 8));
+        assert(call(209, {endpoint, 1, 13, value, length}) == 0 && load(value) == 0 && load(length) == 8);
+        assert(machine.store64(value, 2 | (uint64_t{7} << 32)));
+        assert(call(208, {endpoint, 1, 13, value, 4}) == uint64_t(-22));
+        assert(call(208, {endpoint, 1, 13, value, 8}) == 0);
+        assert(call(209, {endpoint, 1, 13, value, length}) == 0 && load(value) == (1 | (uint64_t{7} << 32)));
+        assert(machine.store64(length, 4));
+        assert(call(209, {endpoint, 1, 13, value, length}) == 0 && load(length) == 4);
+        assert(call(57, {endpoint}) == 0);
+    }
 
     put(base + 200, "/dev/binder-abi");
     put(base + 230, "binder");

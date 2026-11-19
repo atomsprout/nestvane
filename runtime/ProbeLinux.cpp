@@ -3007,6 +3007,14 @@ bool ProbeLinux::socketCall(Machine& machine) {
                 break;
             }
             std::span<const uint8_t> bytes;
+            if (x[2] == 13) { // SO_LINGER
+                if (size > INT32_MAX) { x[0] = invalid; break; }
+                size = std::min<uint32_t>(size, sizeof(endpoint.linger));
+                const auto* setting = reinterpret_cast<const uint8_t*>(endpoint.linger.data());
+                x[0] = (!size || machine.write(x[3], {setting, size})) && writeGuest(machine, x[4], size)
+                    ? 0 : uint64_t(-14);
+                break;
+            }
             if (x[2] == 2 || x[2] == 3 || x[2] == 7 || x[2] == 8 || x[2] == 38 || x[2] == 39) {
                 uint32_t value = 0;
                 switch (x[2]) {
@@ -3091,6 +3099,18 @@ bool ProbeLinux::socketCall(Machine& machine) {
             if (level != 1) {
                 if (!endpoint.storageIdentity) return false;
                 x[0] = uint64_t(-92);
+                break;
+            }
+            if (name == 13) { // SO_LINGER
+                std::array<int32_t, 2> setting{};
+                if (size < sizeof(setting)) { x[0] = invalid; break; }
+                if (!readOption({reinterpret_cast<uint8_t*>(setting.data()), sizeof(setting)})) {
+                    x[0] = uint64_t(-14);
+                    break;
+                }
+                endpoint.linger[0] = setting[0] != 0;
+                if (setting[0]) endpoint.linger[1] = setting[1];
+                x[0] = 0;
                 break;
             }
             if (name == 36 && endpoint.storageIdentity) { // SO_MARK
@@ -6567,6 +6587,7 @@ uint64_t ProbeLinux::connectInetStream(const std::shared_ptr<SocketState>& socke
         accepted->cookie = nextSocketCookie++;
         accepted->credentials = listener->credentials;
         accepted->socketMark = listener->socketMark;
+        accepted->linger = listener->linger;
         accepted->context = listener->context;
         const bool mapped = socket->family != accepted->family;
         accepted->localInetAddress = mapped ? asMappedIpv4(destination) : destination;
@@ -6795,6 +6816,7 @@ uint64_t ProbeLinux::getInetSocketOption(Machine& machine, SocketState& socket) 
             case 4: store(uint32_t(std::exchange(socket.inetError, 0))); break;
             case 7: store(socket.sendBuffer); break;
             case 8: store(socket.receiveBuffer); break;
+            case 13: store(socket.linger); break;
             case 38: store(socket.protocol); break;
             case 36: store(socket.socketMark); break;
             case 39: store(socket.family); break;
