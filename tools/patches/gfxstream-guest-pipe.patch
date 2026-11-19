@@ -14,7 +14,7 @@ index bd99c3f930d41fadc1c272c2917350f1b8ff997b..dec984393044abc6f721bca1c6049e12
                        uint32_t context_init);
  
 diff --git a/host/virtio_gpu_gfxstream_renderer.cpp b/host/virtio_gpu_gfxstream_renderer.cpp
-index d6315ea35ecc059fdb1c88bae959016de91d2ddc..76f77f914ad11ba6cc349516bb758bb6bfad9ca8 100644
+index d6315ea35ecc059fdb1c88bae959016de91d2ddc..193a2372cdd4beedcffcfacf6afac75d169ef7ba 100644
 --- a/host/virtio_gpu_gfxstream_renderer.cpp
 +++ b/host/virtio_gpu_gfxstream_renderer.cpp
 @@ -33,6 +33,9 @@ extern "C" {
@@ -27,7 +27,7 @@ index d6315ea35ecc059fdb1c88bae959016de91d2ddc..76f77f914ad11ba6cc349516bb758bb6
  #include "render-utils/Renderer.h"
  #include "render-utils/RenderLib.h"
  #include "render_thread.h"
-@@ -334,10 +337,77 @@ RendererPtr GetRenderer(uint32_t displayWidth,
+@@ -334,10 +337,92 @@ RendererPtr GetRenderer(uint32_t displayWidth,
      return renderer;
  }
  
@@ -41,6 +41,21 @@ index d6315ea35ecc059fdb1c88bae959016de91d2ddc..76f77f914ad11ba6cc349516bb758bb6
  
  extern "C" {
  
++// Start the local EGL renderer independently of a virtio device or window.
++VG_EXPORT int gfxstream_guest_renderer_start(uint32_t width, uint32_t height) {
++    if (!width || !height || width > 4096 || height > 4096) return -22;
++    const auto fence = +[](void*, stream_renderer_fence*) {};
++    stream_renderer_param parameters[] = {
++        {STREAM_RENDERER_PARAM_USER_DATA, 0},
++        {STREAM_RENDERER_PARAM_FENCE_CALLBACK, reinterpret_cast<uintptr_t>(fence)},
++        {STREAM_RENDERER_PARAM_RENDERER_FLAGS, STREAM_RENDERER_FLAGS_USE_EGL_BIT |
++            STREAM_RENDERER_FLAGS_USE_SURFACELESS_BIT | STREAM_RENDERER_FLAGS_USE_GLES_BIT},
++        {STREAM_RENDERER_PARAM_WIN0_WIDTH, width},
++        {STREAM_RENDERER_PARAM_WIN0_HEIGHT, height},
++    };
++    return stream_renderer_init(parameters, sizeof(parameters) / sizeof(parameters[0]));
++}
++
 +// One nonblocking byte stream for a Goldfish opengles connection.
 +VG_EXPORT void* gfxstream_guest_pipe_open() {
 +    auto channel = sFrontend()->openGuestRenderChannel();

@@ -139,3 +139,5 @@
 - Mac 使用带非阻塞通道的本地 Gfxstream 构建运行原版 Android 17。原版 Composer3 和 Allocator 向服务管理器查询并登记各自的默认接口。SurfaceFlinger 完成 EGL 初始化，读到宿主 OpenGL ES 3.0 及最大纹理尺寸 16,384。随后 Ranchu Mapper 打开 Goldfish 共享显存设备失败，尚未验证默认显示。复现可在上述编译命令后，用带通道补丁的宿主库执行 `/tmp/nestvane-probe-gfxstream-host /path/to/patched-renderer.dylib --init guest-root-path guest.sqlite3`。宿主库应使用不同于 SDK 渲染库的文件名，确保 dyld 选择目标二进制。
 
 - ANGLE `64a0b11458e24cc3afa7e04a2fb534109f30f7ab` 用 [iPhoneOS GN 参数](../tools/angle-iphoneos.gn) 和 Chromium Clang 24 构建出 ARM64 `libEGL.framework` 与 `libGLESv2.framework`。Gfxstream 从 App 的 Frameworks 目录加载两者。iPhone 11 第 7381 号进程从签名安装包运行原版 gfxstream 与 ANGLE Metal，`stream_renderer_init` 返回 0，非阻塞渲染通道返回真实协议版本 1。此验证运行在真机上，Android 客体接入与显示帧验证仍待完成。ANGLE 使用默认的运行时 Metal 着色器编译配置。
+
+- iPhone 11 第 7389 号进程使用 [签名打包工具](../tools/embed-ios-graphics.sh) 安装 gfxstream、EGL 和 GLES 三个框架。正常 App 启动自动初始化本地渲染器，71 ms 后进入原版 Android，随后 SurfaceFlinger 启动。渲染器由完整启动过程持有，客体描述符关闭后再释放。尚待共享显存和显示帧验证。

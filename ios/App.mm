@@ -1,6 +1,7 @@
 #import <UIKit/UIKit.h>
 
 #include "DynamicProbe.hpp"
+#include "GfxstreamSession.hpp"
 #include "Validation.hpp"
 
 static NSString* ThermalState() {
@@ -127,9 +128,28 @@ static NSString* ThermalState() {
                     milestones.erase(0, milestones.find('\n', milestones.size() - maxMilestoneBytes) + 1);
                 exportReport(progressURL, milestones);
             };
-            auto probe = ready ? nestvane::probeInit(initRoot.fileSystemRepresentation, database.fileSystemRepresentation, progress) :
-                nestvane::DynamicReport{false, "Cannot create guest data directory\n"};
-            if (!ready) NSLog(@"Unable to create guest data directory: %@", directoryError);
+            const auto runAndroid = [&]() -> nestvane::DynamicReport {
+                if (!ready) {
+                    NSLog(@"Unable to create guest data directory: %@", directoryError);
+                    return {false, "Cannot create guest data directory\n"};
+                }
+
+                NSString* rendererPath = [NSBundle.mainBundle.privateFrameworksPath
+                    stringByAppendingPathComponent:@"NestvaneGfxstream.framework/NestvaneGfxstream"];
+                if (![manager fileExistsAtPath:rendererPath]) {
+                    return nestvane::probeInit(initRoot.fileSystemRepresentation, database.fileSystemRepresentation, progress);
+                }
+
+                progress("Initializing local Android renderer");
+                nestvane::GfxstreamSession renderer(rendererPath.fileSystemRepresentation, 640, 960);
+                if (!renderer) return {false, renderer.error() + "\n"};
+                progress("Local Android renderer initialized");
+                auto boot = nestvane::probeInit(initRoot.fileSystemRepresentation, database.fileSystemRepresentation,
+                                                progress, renderer.pipeFactory());
+                boot.report.insert(0, "Local Android renderer initialized\n");
+                return boot;
+            };
+            auto probe = runAndroid();
             result.report += "\n" + probe.report;
             if (!probe.passed) status = @"Android 17 startup probe stopped";
             else if (probe.report.find("linkerconfig generation verified: yes") != std::string::npos)
