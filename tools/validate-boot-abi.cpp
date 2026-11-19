@@ -3196,7 +3196,7 @@ int main() {
     assert(call(63, {event, base + 512, 8}) == 8 && load(base + 512) == 3);
     assert(call(22, {poll, base + 512, 1}) == 0);
 
-    for (const uint64_t clock : {1, 9}) {
+    for (const uint64_t clock : {0, 1, 8, 9}) {
         const auto timer = call(85, {clock, 0x80800});
         assert(timer < 256 && call(21, {poll, 1, timer, base + 256}) == 0);
         assert(call(63, {timer, base + 512, 8}) == uint64_t(-11));
@@ -3208,6 +3208,44 @@ int main() {
         assert(call(63, {timer, base + 512, 8}) == 8 && load(base + 512) == 1);
         assert(call(22, {poll, base + 512, 1}) == 0);
         assert(call(57, {timer}) == 0);
+    }
+    {
+        constexpr auto now = base + 0x3a0, spec = base + 0x3c0, result = base + 0x3e0;
+        assert(call(113, {0, now}) == 0);
+        const auto originalTime = load(now), originalFraction = load(now + 8);
+        const auto setClock = [&](uint64_t seconds, uint64_t fraction = 0) {
+            assert(machine.store64(now, seconds) && machine.store64(now + 8, fraction));
+            assert(call(112, {0, now}) == 0);
+        };
+        const auto arm = [&](uint64_t fd, uint64_t flags, uint64_t seconds) {
+            const std::array<uint64_t, 4> times{0, 0, seconds, 0};
+            assert(machine.write(spec, {reinterpret_cast<const uint8_t*>(times.data()), sizeof times}));
+            assert(call(86, {fd, flags, spec, 0}) == 0);
+        };
+        setClock(10'000);
+        const auto absolute = call(85, {8, 0x80800});
+        const auto relative = call(85, {0, 0x80800});
+        const auto changes = call(85, {0, 0x80800});
+        assert(absolute < 256 && relative < 256 && changes < 256);
+        assert(call(21, {poll, 1, changes, base + 256}) == 0);
+        arm(absolute, 1, 10'005);
+        arm(relative, 0, 60);
+        arm(changes, 3, 0); // Android listens for time changes on a disarmed CLOCK_REALTIME fd.
+        assert(call(22, {poll, base + 512, 1}) == 0);
+        setClock(10'010);
+        assert(call(113, {8, now}) == 0 && load(now) == 10'010);
+        assert(call(169, {now, 0}) == 0 && load(now) == 10'010);
+        assert(call(22, {poll, base + 512, 1}) == 1);
+        assert(call(63, {changes, result, 8}) == uint64_t(-125));
+        assert(call(22, {poll, base + 512, 1}) == 0);
+        assert(call(63, {absolute, result, 8}) == 8 && load(result) == 1);
+        assert(call(63, {relative, result, 8}) == uint64_t(-11));
+        assert(call(57, {absolute}) == 0 && call(57, {relative}) == 0 && call(57, {changes}) == 0);
+        setClock(3'000'000'000);
+        assert(machine.store64(now, 2'999'999'999) && machine.store64(now + 8, 0));
+        assert(machine.store64(result, 0));
+        assert(call(98, {result, 0x109, 0, now, 0, UINT32_MAX}) == uint64_t(-110));
+        setClock(originalTime, originalFraction);
     }
     {
         ProbeLinux unprivileged(1, 1000);

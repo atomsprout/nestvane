@@ -1572,8 +1572,9 @@ bool ProbeLinux::eventCall(Machine& machine) {
             break;
         }
         case 85: { // timerfd_create
-            const bool wakeAlarm = x[0] == 9; // CLOCK_BOOTTIME_ALARM
-            if ((x[0] != 1 && x[0] != 7 && !wakeAlarm) || (x[1] & ~(cloexec | nonblock))) {
+            const bool wakeAlarm = x[0] == 8 || x[0] == 9; // CLOCK_REALTIME_ALARM / CLOCK_BOOTTIME_ALARM
+            const bool realtime = x[0] == 0 || x[0] == 8;
+            if ((x[0] != 1 && x[0] != 7 && !wakeAlarm && !realtime) || (x[1] & ~(cloexec | nonblock))) {
                 x[0] = invalid;
                 break;
             }
@@ -1584,7 +1585,9 @@ bool ProbeLinux::eventCall(Machine& machine) {
             Descriptor entry{"anon_inode:[timerfd]", {}, uint32_t(x[1]), Node::timer};
             entry.event = std::make_shared<EventState>();
             // Wake alarm timers use the guest scheduler while the iOS app is running.
-            entry.event->timer.emplace().wakeAlarm = wakeAlarm;
+            auto& timer = entry.event->timer.emplace();
+            timer.wakeAlarm = wakeAlarm;
+            timer.realtime = realtime;
             timers.emplace_back(entry.event);
             descriptors().emplace(fd, std::move(entry));
             x[0] = fd;
@@ -1607,7 +1610,8 @@ bool ProbeLinux::eventCall(Machine& machine) {
             };
             EventState::Timer replacement;
             if (setting) {
-                if (x[1] & ~uint64_t{1}) { x[0] = invalid; break; }
+                constexpr uint64_t absolute = 1, cancelOnSet = 2;
+                if (x[1] & ~(absolute | cancelOnSet)) { x[0] = invalid; break; }
                 const auto* input = machine.read(x[2], sizeof previous, 4);
                 if (!input) { x[0] = uint64_t(-14); break; }
                 std::array<int64_t, 4> values{};
@@ -1619,14 +1623,17 @@ bool ProbeLinux::eventCall(Machine& machine) {
                     break;
                 }
                 replacement.wakeAlarm = timer.wakeAlarm;
+                replacement.realtime = timer.realtime;
+                replacement.absoluteRealtime = timer.realtime && (x[1] & absolute);
+                replacement.cancelOnSet = replacement.absoluteRealtime && (x[1] & cancelOnSet);
                 replacement.interval = *interval;
-                const auto epoch = x[1] ? steady_clock::time_point{} : now;
                 if (value->count()) {
-                    replacement.next = *value > steady_clock::time_point::max() - epoch ?
-                        steady_clock::time_point::max() : epoch + *value;
+                    const auto epoch = x[1] & absolute ? nanoseconds{} : duration_cast<nanoseconds>(now.time_since_epoch());
+                    replacement.next = epoch + std::min(*value, nanoseconds::max() - epoch);
                 }
             }
-            const auto remaining = timer.next ? duration_cast<nanoseconds>(*timer.next - now) : nanoseconds{};
+            const auto timerNow = timer.absoluteRealtime ? realtimeAt(now) : duration_cast<nanoseconds>(now.time_since_epoch());
+            const auto remaining = timer.next ? *timer.next - timerNow : nanoseconds{};
             previous = {duration_cast<seconds>(timer.interval).count(), timer.interval.count() % 1'000'000'000,
                         duration_cast<seconds>(remaining).count(), remaining.count() % 1'000'000'000};
             if ((!setting || x[3]) && !writeGuest(machine, setting ? x[3] : x[1], previous)) {
@@ -2236,7 +2243,7 @@ uint64_t ProbeLinux::receiveKernelNetlink(Machine& machine, SocketState& endpoin
     if (endpoint.passCredentials && !control(credentials)) return uint64_t(-14);
     if (endpoint.netlink->timestamp) {
         const auto usec = std::chrono::duration_cast<std::chrono::microseconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count();
+            realtimeAt(std::chrono::steady_clock::now())).count();
         const std::array<uint64_t, 4> timestamp{32, (uint64_t{29} << 32) | 1,
                                             uint64_t(usec / 1000000), uint64_t(usec % 1000000)};
         if (!control(timestamp)) return uint64_t(-14);
@@ -3817,6 +3824,11 @@ bool ProbeLinux::fileCall(Machine& machine) {
                 if (fd.node == Node::timer) refreshTimers(std::chrono::steady_clock::now());
                 if (x[8] == 67) { x[0] = uint64_t(-29); break; }
                 if (x[2] < 8) { x[0] = invalid; break; }
+                if (fd.node == Node::timer && std::exchange(fd.event->timer->cancelled, false)) {
+                    fd.event->counter = 0;
+                    x[0] = uint64_t(-125); // ECANCELED follows a guest wall-clock change.
+                    break;
+                }
                 if (!fd.event->counter) {
                     if (!(fd.effectiveFlags() & 0x800)) return waitForEvents();
                     x[0] = uint64_t(-11);
@@ -4370,6 +4382,35 @@ uint64_t ProbeLinux::writeDescriptor(Machine& machine, const Descriptor& fd, uin
     return size;
 }
 
+std::chrono::nanoseconds ProbeLinux::realtimeAt(std::chrono::steady_clock::time_point now) const {
+    using namespace std::chrono;
+    const auto elapsed = duration_cast<nanoseconds>(now.time_since_epoch());
+    return elapsed + std::min(realtimeOffset, nanoseconds::max() - elapsed);
+}
+
+void ProbeLinux::setRealtime(std::chrono::nanoseconds value) {
+    using namespace std::chrono;
+    const auto now = steady_clock::now();
+    const auto offset = value - duration_cast<nanoseconds>(now.time_since_epoch());
+    if (offset == realtimeOffset) return;
+    realtimeOffset = offset;
+    for (auto& [_, task] : threads) {
+        if (task.wait != Wait::futex || !task.realtimeFutexDeadline) continue;
+        const auto delay = std::max(nanoseconds{}, *task.realtimeFutexDeadline - value);
+        task.deadline = now + std::min(delay, duration_cast<nanoseconds>(steady_clock::time_point::max() - now));
+    }
+    bool notify = false;
+    for (const auto& weak : timers) {
+        const auto event = weak.lock();
+        if (!event || !event->timer->cancelOnSet) continue;
+        event->timer->cancelled = true;
+        event->counter = std::max(event->counter, uint64_t{1});
+        notify = true;
+    }
+    if (notify) wakePollers();
+    refreshTimers(now);
+}
+
 std::optional<std::chrono::steady_clock::time_point> ProbeLinux::refreshTimers(
     std::chrono::steady_clock::time_point now) {
     using namespace std::chrono;
@@ -4379,21 +4420,25 @@ std::optional<std::chrono::steady_clock::time_point> ProbeLinux::refreshTimers(
         const auto event = timer.lock();
         if (!event || !event->timer->next) continue;
         auto& state = *event->timer;
-        if (*state.next <= now) {
+        const auto clock = state.absoluteRealtime ? realtimeAt(now) : duration_cast<nanoseconds>(now.time_since_epoch());
+        if (*state.next <= clock) {
             auto count = uint64_t{1};
             if (state.interval.count()) {
-                const auto overdue = duration_cast<nanoseconds>(now - *state.next);
+                const auto overdue = clock - *state.next;
                 count += overdue / state.interval;
                 const auto delay = state.interval - overdue % state.interval;
-                state.next = delay > steady_clock::time_point::max() - now ?
-                    steady_clock::time_point::max() : now + delay;
+                state.next = clock + std::min(delay, nanoseconds::max() - clock);
             } else {
                 state.next.reset();
             }
             event->counter += std::min(count, UINT64_MAX - event->counter);
             expired = true;
         }
-        if (state.next && (!next || *state.next < *next)) next = state.next;
+        if (state.next) {
+            const auto remaining = *state.next - clock;
+            const auto deadline = now + std::min(remaining, duration_cast<nanoseconds>(steady_clock::time_point::max() - now));
+            if (!next || deadline < *next) next = deadline;
+        }
     }
     if (expired) wakePollers();
     return next;
@@ -5140,6 +5185,7 @@ bool ProbeLinux::futex(Machine& machine) {
     uint32_t value = 0;
     std::memcpy(&value, bytes, sizeof(value));
     if (value != uint32_t(x[2])) { x[0] = uint64_t(-11); return true; }
+    current->realtimeFutexDeadline.reset();
     if (x[3]) {
         using namespace std::chrono;
         std::array<int64_t, 2> timeout{};
@@ -5154,9 +5200,10 @@ bool ProbeLinux::futex(Machine& machine) {
         auto remaining = duration_cast<nanoseconds>(seconds(timeout[0])) + nanoseconds(timeout[1]);
         const auto now = steady_clock::now();
         if (op == 9) {
-            const auto epoch = (x[1] & realtime) ? duration_cast<nanoseconds>(system_clock::now().time_since_epoch())
-                                                  : duration_cast<nanoseconds>(now.time_since_epoch());
+            const bool wallClock = x[1] & realtime;
+            const auto epoch = wallClock ? realtimeAt(now) : duration_cast<nanoseconds>(now.time_since_epoch());
             if (remaining <= epoch) { x[0] = uint64_t(-110); return true; }
+            if (wallClock) current->realtimeFutexDeadline = remaining;
             remaining -= epoch;
         }
         if (!remaining.count()) { x[0] = uint64_t(-110); return true; }
@@ -8169,10 +8216,9 @@ bool ProbeLinux::syscall(Machine& machine) {
         }
         case 113: { // clock_gettime
             std::chrono::nanoseconds now;
-            if (x[0] == 0 || x[0] == 5) {
-                now = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    std::chrono::system_clock::now().time_since_epoch());
-            } else if (x[0] == 1 || x[0] == 4 || x[0] == 6 || x[0] == 7) {
+            if (x[0] == 0 || x[0] == 5 || x[0] == 8) {
+                now = realtimeAt(std::chrono::steady_clock::now());
+            } else if (x[0] == 1 || x[0] == 4 || x[0] == 6 || x[0] == 7 || x[0] == 9) {
                 now = std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now().time_since_epoch());
             } else if (x[0] == 2 || x[0] == 3) {
@@ -8290,26 +8336,43 @@ bool ProbeLinux::syscall(Machine& machine) {
             x[0] = 0;
             break;
         }
+        case 112: case 170: { // clock_settime / settimeofday, confined to the guest.
+            const bool timeOfDay = number == 170;
+            if (!timeOfDay && x[0] != 0) { x[0] = invalid; break; }
+            if (!(current->process->effectiveCaps & (1ULL << 25))) { x[0] = uint64_t(-1); break; }
+            const auto address = x[timeOfDay ? 0 : 1];
+            std::array<int64_t, 2> time{};
+            std::array<int32_t, 2> timezone{};
+            if (address || !timeOfDay) {
+                const auto* input = machine.read(address, sizeof time, 4);
+                if (!input) { x[0] = uint64_t(-14); break; }
+                std::memcpy(time.data(), input, sizeof time);
+                const auto ticksPerSecond = timeOfDay ? 1'000'000 : 1'000'000'000;
+                const auto fraction = time[1] >= 0 && time[1] < ticksPerSecond
+                    ? time[1] * (1'000'000'000 / ticksPerSecond) : -1;
+                if (fraction < 0 || time[0] < 0 || time[0] > (INT64_MAX - fraction) / 1'000'000'000) {
+                    x[0] = invalid;
+                    break;
+                }
+                time[1] = fraction;
+            }
+            if (timeOfDay && x[1]) {
+                const auto* input = machine.read(x[1], sizeof timezone, 4);
+                if (!input) { x[0] = uint64_t(-14); break; }
+                std::memcpy(timezone.data(), input, sizeof timezone);
+                if (timezone[0] < -900 || timezone[0] > 900) { x[0] = invalid; break; }
+                guestTimezone = timezone;
+            }
+            if (address) setRealtime(std::chrono::seconds(time[0]) + std::chrono::nanoseconds(time[1]));
+            x[0] = 0;
+            break;
+        }
         case 169: { // gettimeofday
-            const auto now = std::chrono::system_clock::now().time_since_epoch();
+            const auto now = realtimeAt(std::chrono::steady_clock::now());
             const auto micros = std::chrono::duration_cast<std::chrono::microseconds>(now).count();
             const std::array<int64_t, 2> time{micros / 1'000'000, micros % 1'000'000};
             x[0] = (!x[0] || writeGuest(machine, x[0], time)) &&
                    (!x[1] || writeGuest(machine, x[1], guestTimezone)) ? 0 : uint64_t(-14);
-            break;
-        }
-        case 170: { // settimeofday, with a guest-only timezone.
-            if (!(current->process->effectiveCaps & (1ULL << 25))) { x[0] = uint64_t(-1); break; }
-            if (x[0]) return false; // Wall-clock offsets are not modeled.
-            if (x[1]) {
-                std::array<int32_t, 2> update{};
-                const auto* source = machine.read(x[1], sizeof(update), 4);
-                if (!source) { x[0] = uint64_t(-14); break; }
-                std::memcpy(update.data(), source, sizeof(update));
-                if (update[0] < -900 || update[0] > 900) { x[0] = invalid; break; }
-                guestTimezone = update;
-            }
-            x[0] = 0;
             break;
         }
         case 279: { // memfd_create, backed by guest-only memory.

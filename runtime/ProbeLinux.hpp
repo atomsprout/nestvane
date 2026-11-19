@@ -130,6 +130,7 @@ private:
         uint32_t futexMask = 0, ioPriority = 0;
         int nice = 0;
         std::optional<std::chrono::steady_clock::time_point> deadline;
+        std::optional<std::chrono::nanoseconds> realtimeFutexDeadline;
         std::optional<std::chrono::steady_clock::time_point> hostEventRetry;
         uint64_t signalMask = 0;
         uint64_t signalWaitMask = 0;
@@ -364,9 +365,10 @@ private:
     };
     struct EventState {
         struct Timer {
-            std::optional<std::chrono::steady_clock::time_point> next;
+            std::optional<std::chrono::nanoseconds> next;
             std::chrono::nanoseconds interval{};
-            bool wakeAlarm = false;
+            bool wakeAlarm = false, realtime = false, absoluteRealtime = false;
+            bool cancelOnSet = false, cancelled = false;
         };
         std::optional<Timer> timer;
         PollNotifications pollNotifications;
@@ -616,6 +618,12 @@ private:
     uint64_t randomMappingBase() const;
     struct Setting { unsigned value, minimum, maximum; };
     std::array<int32_t, 2> guestTimezone{};
+    // The guest owns its wall clock and starts at the host's current wall time.
+    std::chrono::nanoseconds realtimeOffset =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()) -
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch());
+    std::chrono::nanoseconds realtimeAt(std::chrono::steady_clock::time_point now) const;
+    void setRealtime(std::chrono::nanoseconds value);
     std::map<std::string, Setting, std::less<>> kernelSettings{
         {"/proc/sys/vm/mmap_rnd_bits", {24, 14, 24}},
         {"/proc/sys/kernel/kptr_restrict", {2, 0, 2}},
