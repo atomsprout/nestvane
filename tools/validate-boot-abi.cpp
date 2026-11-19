@@ -3776,6 +3776,19 @@ int main() {
 
     assert(call(67, {block, base + 512, 2, 0}) == uint64_t(-6));
 
+    linux.mount("/vendor/apex/test.apex", package);
+    linux.mount("/vendor/other/test.apex", package);
+    for (const auto& [path, expected] : {std::pair{"/vendor/other/test.apex", -95},
+                                         std::pair{"/vendor/apex/test.apex", 0}}) {
+        put(base + 280, path);
+        const auto image = call(56, {uint32_t(-100), base + 280, 0x10000});
+        assert(image < 256 && machine.store64(loopConfig, (uint64_t{4096} << 32) | image));
+        assert(call(29, {block, 0x4c0a, loopConfig}) == uint64_t(expected));
+        assert(call(57, {image}) == 0);
+    }
+    assert(call(67, {block, base + 512, 2, 0}) == 2 && (load(base + 512) & 0xffff) == 0xef53);
+    assert(call(29, {block, 0x4c01}) == 0);
+
     put(base + 200, "/dev/ptmx");
     put(base + 230, "/dev/pts/0");
     const auto master = call(56, {uint32_t(-100), base + 200, 0x80802});

@@ -24,7 +24,7 @@ def public_preload_libraries(config):
         yield fields[0]
 
 
-def reference_classpath_packages(classpath, apex_info):
+def reference_boot_inputs(classpath, apex_info):
     required = {"BOOTCLASSPATH", "DEX2OATBOOTCLASSPATH", "SYSTEMSERVERCLASSPATH", "STANDALONE_SYSTEMSERVER_JARS"}
     exports = {}
     for kind, value in re.findall(r"^export ([A-Z0-9_]+) ([^\r\n]*)$", classpath, re.MULTILINE):
@@ -58,6 +58,10 @@ def reference_classpath_packages(classpath, apex_info):
         if not re.fullmatch(r"/system/apex/[A-Za-z0-9_.-]+\.apex", path):
             raise SystemExit(f"Expected an active factory system APEX file for {module}")
         packages.add(path)
+    power_apex = "/vendor/apex/com.android.hardware.power.apex"
+    if factory.get("com.android.hardware.power") != power_apex:
+        raise SystemExit(f"Expected an active factory Power HAL APEX at {power_apex}")
+    packages.add(power_apex)
     return platform, packages
 
 
@@ -74,7 +78,7 @@ def collect(serial, readelf, destination, small_art_heap):
         raise SystemExit("The reference emulator must use ARM64")
     print("Android build:", shell("getprop", "ro.build.id"), flush=True)
     classpath = shell("cat", "/data/system/environ/classpath")
-    framework, packages = reference_classpath_packages(classpath, shell("cat", "/apex/apex-info-list.xml"))
+    framework, packages = reference_boot_inputs(classpath, shell("cat", "/apex/apex-info-list.xml"))
     available = {}
     for directory in search:
         for name in shell("ls", "-1", directory).splitlines():
@@ -351,7 +355,9 @@ def collect(serial, readelf, destination, small_art_heap):
                     "/apex/com.android.tethering/bin/netbpfload", uprobestats, bpfloader,
                     "/apex/com.android.conscrypt/bin/boringssl_self_test64",
                     "/apex/com.android.configinfrastructure/bin/aconfigd-mainline",
-                    "/apex/com.android.os.statsd/bin/statsd", *managers)
+                    "/apex/com.android.os.statsd/bin/statsd",
+                    "/apex/com.android.hardware.power/bin/hw/android.hardware.power-service.example",
+                    "/apex/com.android.hardware.power/bin/hw/android.hardware.power.stats-service.example", *managers)
         for path in programs:
             file_context = shell("ls", "-Zd", path).split()[0]
             source = {

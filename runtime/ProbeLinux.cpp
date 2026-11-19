@@ -5779,7 +5779,8 @@ uint64_t ProbeLinux::loopIoctl(Machine& machine, const Descriptor& fd) {
         if (!loop.bytes.empty()) return uint64_t(-16);
         const auto& image = backing->second;
         // Only immutable preinstalled package bytes are valid backing storage here.
-        if (image.node != Node::regular || image.snapshot || !image.path.starts_with("/system/apex/") ||
+        const bool factoryPartition = image.path.starts_with("/system/apex/") || image.path.starts_with("/vendor/apex/");
+        if (image.node != Node::regular || image.snapshot || !factoryPartition ||
             !image.path.ends_with(".apex") || (image.flags & 3)) return uint64_t(-95);
         const auto offset = config.info[3], size = config.info[4];
         const auto settings = static_cast<uint32_t>(config.info[6] >> 32);
