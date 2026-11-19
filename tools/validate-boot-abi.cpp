@@ -3189,6 +3189,30 @@ int main() {
     assert(call(39, {base + 16}) == uint64_t(-16));
 
     {
+        constexpr auto pair = base + 0x300, data = base + 0x320, vector = base + 0x340;
+        constexpr auto message = base + 0x360, control = base + 0x3a0;
+        assert(call(199, {1, 2, 0, pair}) == 0); // AF_UNIX, SOCK_DGRAM
+        const auto sender = uint32_t(load(pair)), receiver = uint32_t(load(pair) >> 32);
+        assert(machine.store64(data, 'a'));
+        assert(call(208, {receiver, 1, 16, data, 4}) == 0); // SO_PASSCRED
+        assert(call(206, {sender, data, 1, 0}) == 1);
+        assert(machine.store64(vector, data) && machine.store64(vector + 8, 1));
+        const auto receive = [&](uint64_t capacity, uint64_t flags) {
+            const std::array<uint64_t, 7> header{0, 0, vector, 1, control, capacity, 0};
+            assert(machine.write(message, {reinterpret_cast<const uint8_t*>(header.data()), sizeof(header)}));
+            return call(212, {receiver, message, flags});
+        };
+        assert(receive(20, 0x42) == 1 && load(message + 48) == 8); // PEEK and CTRUNC.
+        assert(load(control) == 20);
+        assert(receive(32, 0x40) == 1 && load(message + 48) == 0);
+        assert(load(control) == 28 && load(control + 8) == 0x200000001);
+        assert(load(control + 16) == 1 && uint32_t(load(control + 24)) == 0);
+        assert(receive(32, 0x40) == uint64_t(-11));
+        assert(call(57, {sender}) == 0 && call(57, {receiver}) == 0);
+        assert(call(425) == uint64_t(-38)); // Linux reports an unavailable io_uring subsystem.
+    }
+
+    {
         linux.captureAndroidLogs = true;
         unsigned snapshots = 0;
         linux.watchdogObserver = [&](std::string_view report) {

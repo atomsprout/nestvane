@@ -1821,7 +1821,8 @@ uint64_t ProbeLinux::socketRead(Machine& machine, const Descriptor& fd, uint64_t
         const auto count = std::min<uint64_t>(size, endpoint.queuedBytes);
         std::vector<uint8_t> bytes;
         bytes.reserve(count);
-        for (const auto& packet : endpoint.inbox) {
+        for (const auto& queued : endpoint.inbox) {
+            const auto& packet = queued.payload;
             const auto chunk = std::min<size_t>(packet.size(), count - bytes.size());
             bytes.insert(bytes.end(), packet.begin(), packet.begin() + chunk);
             if (bytes.size() == count) break;
@@ -1830,7 +1831,7 @@ uint64_t ProbeLinux::socketRead(Machine& machine, const Descriptor& fd, uint64_t
         consumeSocketStream(endpoint, count);
         return count;
     }
-    auto& packet = endpoint.inbox.front();
+    auto& packet = endpoint.inbox.front().payload;
     const auto count = std::min<uint64_t>(size, packet.size());
     if (count && !machine.write(address, std::span(packet).first(count))) return uint64_t(-14);
     endpoint.queuedBytes -= packet.size();
@@ -1846,7 +1847,7 @@ void ProbeLinux::consumeSocketStream(SocketState& endpoint, size_t count) {
     while (!endpoint.rights.empty() && endpoint.rights.front().firstByte < endpoint.streamOffset)
         endpoint.rights.pop_front();
     while (count) {
-        auto& packet = endpoint.inbox.front();
+        auto& packet = endpoint.inbox.front().payload;
         if (packet.size() > count) {
             packet.erase(packet.begin(), packet.begin() + count);
             break;
@@ -2256,7 +2257,10 @@ uint64_t ProbeLinux::socketWrite(Machine& machine, const Descriptor& fd, std::sp
             peer->rights.push_back({firstByte, firstByte + size, std::move(rights)});
         }
         try {
-            peer->inbox.push_back(std::move(packet));
+            std::optional<std::array<uint32_t, 3>> sender;
+            if (peer->family == 1 && !stream && (fd.socket->passCredentials || peer->passCredentials))
+                sender = {uint32_t(processId()), current->process->userIds[0], current->process->groupIds[0]};
+            peer->inbox.push_back({std::move(packet), sender});
         } catch (const std::bad_alloc&) {
             if (hasRights) peer->rights.pop_back();
             return noMemory;
@@ -2300,7 +2304,8 @@ uint64_t ProbeLinux::receiveUnixStreamMessage(Machine& machine, SocketState& end
 
     std::vector<uint8_t> payload;
     payload.reserve(count);
-    for (const auto& packet : endpoint.inbox) {
+    for (const auto& queued : endpoint.inbox) {
+        const auto& packet = queued.payload;
         const auto chunk = std::min<size_t>(packet.size(), count - payload.size());
         payload.insert(payload.end(), packet.begin(), packet.begin() + chunk);
         if (payload.size() == count) break;
@@ -2361,7 +2366,7 @@ uint64_t ProbeLinux::receiveKernelNetlink(Machine& machine, SocketState& endpoin
     const auto* iov = machine.read(message.vector, sizeof(vector), 4);
     if (!iov) return uint64_t(-14);
     std::memcpy(vector.data(), iov, sizeof(vector));
-    const auto& packet = endpoint.inbox.front();
+    const auto& packet = endpoint.inbox.front().payload;
     const auto copied = std::min<uint64_t>(packet.size(), vector[1]);
     if (copied && !machine.write(vector[0], std::span(packet).first(copied))) return uint64_t(-14);
     message.flags = copied < packet.size() ? 0x20 : 0; // MSG_TRUNC
@@ -2405,7 +2410,7 @@ uint64_t ProbeLinux::receiveKernelNetlinkFrom(Machine& machine, SocketState& end
     constexpr uint64_t peek = 2, trunc = 0x20, dontwait = 0x40;
     if (x[3] & ~(peek | trunc | dontwait)) return invalid;
     if (endpoint.inbox.empty()) return uint64_t(-11);
-    const auto& packet = endpoint.inbox.front();
+    const auto& packet = endpoint.inbox.front().payload;
     const auto bytes = std::min<uint64_t>(packet.size(), x[2]);
     if (bytes && !machine.write(x[1], std::span(packet).first(bytes))) return uint64_t(-14);
     if (x[4]) {
@@ -2486,7 +2491,7 @@ uint64_t ProbeLinux::bindNetlink(const std::shared_ptr<SocketState>& endpoint, u
 void ProbeLinux::queueNetlink(SocketState& endpoint, std::vector<uint8_t> packet) {
     if (endpoint.inbox.size() >= 256 || endpoint.queuedBytes + packet.size() > endpoint.netlink->receiveBuffer) return;
     const auto size = packet.size();
-    endpoint.inbox.push_back(std::move(packet));
+    endpoint.inbox.push_back({std::move(packet)});
     endpoint.queuedBytes += size;
     wakePollers();
 }
@@ -2663,7 +2668,7 @@ void ProbeLinux::emitLoopUevent(unsigned number) {
         const auto size = endpoint->socketFilter ?
             endpoint->socketFilter->accept({reinterpret_cast<const uint8_t*>(packet.data()), packet.size()}) : packet.size();
         if (size && endpoint->queuedBytes + size <= endpoint->netlink->receiveBuffer) {
-            endpoint->inbox.emplace_back(packet.begin(), packet.begin() + size);
+            endpoint->inbox.push_back({std::vector<uint8_t>(packet.begin(), packet.begin() + size)});
             endpoint->queuedBytes += size;
         }
     }
@@ -3082,8 +3087,9 @@ bool ProbeLinux::socketCall(Machine& machine) {
                 break;
             }
             constexpr uint64_t peek = 0x2, trunc = 0x20, dontWait = 0x40, cloexec = 0x40000000;
-            if (endpoint.type == 1 || endpoint.passCredentials || (x[2] & ~(peek | trunc | dontWait | cloexec)))
-                return false;
+            const bool unixCredentials = endpoint.family == 1 && endpoint.passCredentials;
+            if (endpoint.type == 1 || (endpoint.passCredentials && !unixCredentials) ||
+                (x[2] & ~(peek | trunc | dontWait | cloexec))) return false;
             SocketMessage message{};
             std::vector<SocketVector> vectors;
             if (const auto error = readSocketMessage(machine, x[1], message, vectors)) {
@@ -3109,7 +3115,7 @@ bool ProbeLinux::socketCall(Machine& machine) {
                 break;
             }
             current->deadline.reset();
-            const auto& packet = endpoint.inetDatagram() ? endpoint.datagrams.front().payload : endpoint.inbox.front();
+            const auto& packet = endpoint.inetDatagram() ? endpoint.datagrams.front().payload : endpoint.inbox.front().payload;
             auto remaining = std::span(packet);
             bool copied = true;
             for (const auto& [address, size] : vectors) {
@@ -3136,7 +3142,22 @@ bool ProbeLinux::socketCall(Machine& machine) {
                 message.nameLength = 0;
             }
             message.flags = remaining.empty() ? 0 : trunc;
+            const auto controlCapacity = message.control ? message.controlLength : 0;
             message.controlLength = 0;
+            if (copied && unixCredentials) {
+                const std::array<uint32_t, 3> absent{0, 65534, 65534};
+                const auto sender = endpoint.inbox.front().credentials.value_or(absent);
+                constexpr auto length = sizeof(SocketControl) + sizeof(sender);
+                if (controlCapacity < length) message.flags |= 0x8; // MSG_CTRUNC
+                if (controlCapacity >= sizeof(SocketControl)) {
+                    const auto used = std::min<uint64_t>(controlCapacity, length);
+                    const SocketControl control{used, socketControlLevel, 2}; // SCM_CREDENTIALS
+                    const auto payload = std::span(reinterpret_cast<const uint8_t*>(sender.data()), sizeof(sender));
+                    copied = message.control <= UINT64_MAX - used && writeGuest(machine, message.control, control) &&
+                        machine.write(message.control + sizeof(control), payload.first(used - sizeof(control)));
+                    message.controlLength = std::min<uint64_t>(controlCapacity, socketControlAlign(length));
+                }
+            }
             if (!copied || !writeGuest(machine, x[1], message)) { x[0] = uint64_t(-14); break; }
             x[0] = (x[2] & trunc) ? packet.size() : packet.size() - remaining.size();
             if (!(x[2] & peek)) {
@@ -8162,6 +8183,9 @@ bool ProbeLinux::syscall(Machine& machine) {
     if (securityCall(machine) || socketCall(machine) || eventCall(machine) || fileCall(machine)) return true;
     const auto descriptor = descriptors().find(uint32_t(x[0]));
     switch (number) {
+        case 425: case 426: case 427: // io_uring is not available in the guest.
+            x[0] = uint64_t(-38);
+            return true;
         case 280: { // bpf
             if (x[0] <= 4) { x[0] = bpfMapCall(machine); break; }
             if (x[0] == 5) { x[0] = loadBpfProgram(machine); break; }

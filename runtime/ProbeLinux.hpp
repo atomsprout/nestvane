@@ -241,7 +241,11 @@ private:
         std::string localAddress, peerAddress;
         std::array<uint32_t, 3> credentials{0, UINT32_MAX, UINT32_MAX};
         std::weak_ptr<SocketState> peer;
-        std::deque<std::vector<uint8_t>> inbox;
+        struct Packet {
+            std::vector<uint8_t> payload;
+            std::optional<std::array<uint32_t, 3>> credentials{};
+        };
+        std::deque<Packet> inbox;
         struct RightsMessage {
             uint64_t firstByte, endByte;
             SocketRights files;
