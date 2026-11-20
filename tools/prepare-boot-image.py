@@ -176,9 +176,14 @@ def make_framework_root(base, image, guest, defer_zygote_preload, hardware_timeo
     replace_line(init_rc, r"^([ \t]+)trigger boot$", r"\1trigger boot\n\1trigger nonencrypted")
     replace_line(guest / "product/etc/build.prop", r"^ro\.dalvik\.vm\.enable_uffd_gc=[^\r\n]*$",
                  "ro.dalvik.vm.enable_uffd_gc=false")
-    replace_line(guest / "system/build.prop", r"^dalvik\.vm\.usejit=[^\r\n]*$", "dalvik.vm.usejit=false")
+    system_properties = guest / "system/build.prop"
+    replace_line(system_properties, r"^dalvik\.vm\.usejit=[^\r\n]*$", "dalvik.vm.usejit=false")
+    # ART creates a code-cache memory file for every app even with JIT disabled.
+    values = system_properties.read_text().rstrip("\n")
+    cache = "dalvik.vm.jitmaxsize=8m"
+    values, count = re.subn(r"^dalvik\.vm\.jitmaxsize=[^\r\n]*$", cache, values, flags=re.MULTILINE)
+    system_properties.write_text((values if count else f"{values}\n{cache}") + "\n")
     if hardware_timeout_multiplier is not None:
-        system_properties = guest / "system/build.prop"
         values = system_properties.read_text().rstrip("\n")
         setting = f"ro.hw_timeout_multiplier={hardware_timeout_multiplier}"
         values, count = re.subn(r"^ro\.hw_timeout_multiplier=[^\r\n]*$", setting, values, flags=re.MULTILINE)

@@ -3900,6 +3900,20 @@ int main() {
     assert(linux.schedule(machine) && linux.threadId() == 2 && machine.cpu.x[0] == 0);
     assert(machine.cpu.pc == base + 8);
 
+    constexpr uint64_t farTimeout = base + pageSize - 16, timedFutex = base + 0x800;
+    assert(machine.store64(farTimeout, 0) && machine.store64(farTimeout + 8, 1'000'000'000));
+    assert(call(98, {timedFutex, 128, 5, farTimeout}) == uint64_t(-22));
+    for (const auto [op, seconds, nanos] : {
+             std::array<uint64_t, 3>{128, INT64_MAX / 1'000'000'000, INT64_MAX % 1'000'000'000},
+             std::array<uint64_t, 3>{128 | 256 | 9, INT64_MAX, 0}}) {
+        assert(machine.store64(farTimeout, seconds) && machine.store64(farTimeout + 8, nanos));
+        call(98, {timedFutex, op, 5, farTimeout, 0, UINT32_MAX});
+        assert(linux.blocked() && linux.schedule(machine) && linux.threadId() == 1);
+        assert(call(98, {timedFutex, 129, 1}) == 1);
+        machine.cpu.retired += 4096;
+        assert(linux.schedule(machine) && linux.threadId() == 2 && machine.cpu.x[0] == 0);
+    }
+
     constexpr uint64_t piWord = base + 0x838, piTimeout = base + 0x848;
     constexpr uint64_t privateFutex = 128, lockPi2 = 13, unlockPi = 7, trylockPi = 8;
     constexpr uint64_t piWaiters = 0x80000000, piOwnerDied = 0x40000000;

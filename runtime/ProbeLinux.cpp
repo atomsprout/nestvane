@@ -6031,12 +6031,12 @@ bool ProbeLinux::futex(Machine& machine) {
         const auto* data = machine.read(x[3], sizeof(timeout), 4);
         if (!data) { x[0] = uint64_t(-14); return true; }
         std::memcpy(timeout.data(), data, sizeof(timeout));
-        if (timeout[0] < 0 || timeout[1] < 0 || timeout[1] >= 1'000'000'000 ||
-            timeout[0] > (INT64_MAX - 1'000'000'000) / 1'000'000'000) {
+        if (timeout[0] < 0 || timeout[1] < 0 || timeout[1] >= 1'000'000'000) {
             x[0] = invalid;
             return true;
         }
-        auto remaining = duration_cast<nanoseconds>(seconds(timeout[0])) + nanoseconds(timeout[1]);
+        auto remaining = timeout[0] > (INT64_MAX - timeout[1]) / 1'000'000'000
+            ? nanoseconds::max() : nanoseconds(timeout[0] * 1'000'000'000 + timeout[1]);
         const auto now = steady_clock::now();
         if (op == 9) {
             const bool wallClock = x[1] & realtime;
