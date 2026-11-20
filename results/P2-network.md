@@ -650,3 +650,4 @@
 - iPhone 14 全屏版进程 1441 的 Android 相机授权对话框晚于首轮等待出现。实际触控选「While using the app」，返回 Smoke 后进入 Camera2，再在 iOS 原生授权对话框点 Allow。Camera2 获得实体后摄预览，触控 Capture photo 后界面显示读回成功，XCUITest 通过。设备客体数据通过 SQLite quick_check，Smoke 应用目录的 camera-check.jpg 为有效 640 × 480 JPEG，11,443 字节。退出相机与 iOS 退后台的释放测试另行验证。
 - 同一 iPhone 14 进程按 Android Back 退出相机页面，再打开 Camera2，实体后摄重新获取并显示预览，XCUITest 通过。另一轮重新打开实体预览后将 Nestvane 切到 iOS 后台，确认系统 Camera 位于前台、Nestvane 在后台且系统快门可用，XCUITest 通过。系统 Camera 未拍照。
 - iPhone 14 全屏版进程 1441 从原版 Launcher 触控打开 OpenCalc 3.2.0，按计算器的 7、×、8、= 键后，实际屏幕显示 56，XCUITest 通过。导出的客体数据库 quick_check 通过，OpenCalc 应用偏好记录 HISTORY_ELEMENTS 含同一条 7×8 → 56。跨重启历史回读仍待验证。
+- Mac 使用已安装 ScriptWidget 官方 APK 的数据重启。BOOTING、RUNNING_LOCKED 时找不到 Launcher Activity，RUNNING_UNLOCKING 时开始可解析，RUNNING_UNLOCKED 后由 Android 的标准活动管理器启动。日志记录 ScriptWidget MainActivity 的 Displayed，客体导出画面显示 My Widgets 和模板列表。该画面中模板预览仍在加载，真机安装和模板渲染尚待验证。
