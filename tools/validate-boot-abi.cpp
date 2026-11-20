@@ -5367,6 +5367,7 @@ int main() {
     linux.setBootContext("u:r:vold:s0");
     const auto registeringBinder = call(56, {uint32_t(-100), base + 260, 2});
     assert(registeringBinder < 256);
+    uint64_t closingHandle = 0;
     for (uint64_t index = 0; index < 320; ++index) {
         const std::array<uint64_t, 3> service{flatBinder, objectPtr + index * 8, objectCookie + index * 8};
         const std::string_view bytes(reinterpret_cast<const char*>(service.data()), sizeof service);
@@ -5389,8 +5390,29 @@ int main() {
         if (index + 1 < 320) {
             machine.cpu.retired += 4096;
             assert(linux.schedule(machine) && linux.processId() == registeringPeer);
+        } else {
+            closingHandle = serviceHandle;
         }
     }
+    assert(bindRequest(manager, 0x400c630e, 0, "", false, {}, closingHandle) == 0);
+    machine.cpu.retired += 4096;
+    assert(linux.schedule(machine) && linux.processId() == registeringPeer);
+    const auto duplicatedBinder = call(25, {registeringBinder, 0, 0});
+    assert(duplicatedBinder != registeringBinder && duplicatedBinder < 256);
+    assert(call(57, {registeringBinder}) == 0);
+    machine.cpu.retired += 4096;
+    assert(linux.schedule(machine) && linux.processId() == 1);
+    assert(call(25, {manager, 4, 0x800}) == 0);
+    assert(bindRequest(manager, 0, 0, "", true) == uint64_t(-11));
+    assert(call(25, {manager, 4, 0}) == 0);
+    machine.cpu.retired += 4096;
+    assert(linux.schedule(machine) && linux.processId() == registeringPeer);
+    assert(call(57, {duplicatedBinder}) == 0);
+    machine.cpu.retired += 4096;
+    assert(linux.schedule(machine) && linux.processId() == 1);
+    assert(call(129, {registeringPeer, 0}) == 0);
+    assert(bindRequest(manager, 0, 0, "", true) == 0);
+    assert(uint32_t(load(base + 0x720)) == 0x8008720f);
     assert(call(129, {registeringPeer, 9}) == 0);
 
     Startup commandLine{};

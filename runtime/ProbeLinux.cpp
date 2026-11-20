@@ -1754,7 +1754,7 @@ uint64_t ProbeLinux::open(const Machine& machine, const std::string& path, uint3
             const uint32_t requested = (flags & 3) == 2 ? 6 : (flags & 3) == 1 ? 2 : 4;
             if (((node.mode >> shift) & requested) != requested) return uint64_t(-13);
         }
-        entry->binder = std::make_shared<BinderConnection>(processId());
+        entry->binder = std::make_shared<BinderConnection>(processId(), binderDeathsDirty);
     }
     if (!entry->pathOnly() && (entry->node == Node::ptyMaster || entry->node == Node::ptySlave)) {
         if (const auto error = openPty(*entry); error) return error;
@@ -5171,7 +5171,7 @@ bool ProbeLinux::switchThread(Machine& machine, std::chrono::steady_clock::time_
             runnable = true;
         }
     };
-    if (!binderDeathSubscribers.empty()) refreshBinderDeaths();
+    if (*binderDeathsDirty) refreshBinderDeaths();
     updateTimers();
     while (!runnable && nextDeadline && now < deadline && !stop.stop_requested()) {
         const auto wake = std::min(*nextDeadline, deadline);
@@ -6225,6 +6225,7 @@ bool ProbeLinux::futex(Machine& machine) {
 
 void ProbeLinux::finishProcess(Process& process, uint32_t status, bool killed) {
     processes.erase(process.id);
+    *binderDeathsDirty = true;
     const uint32_t code = killed ? 2 : 1; // CLD_KILLED, CLD_EXITED
     const auto uid = process.userIds[0];
     const auto parent = process.parent;

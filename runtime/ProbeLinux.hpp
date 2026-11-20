@@ -531,7 +531,13 @@ private:
         std::deque<BinderPacket> incoming;
         std::map<uint64_t, std::deque<BinderPacket>> pendingAsync; // Present while this node has a live transaction.
         std::map<uint64_t, bool> loopers; // Whether the looper was requested by the driver.
-        explicit BinderConnection(uint64_t owner) : owner(owner) {}
+        BinderConnection(uint64_t owner, const std::shared_ptr<bool>& deathsDirty)
+            : owner(owner), deathsDirty(deathsDirty) {}
+        ~BinderConnection() {
+            if (const auto dirty = deathsDirty.lock()) *dirty = true;
+        }
+
+        std::weak_ptr<bool> deathsDirty;
     };
     struct Ashmem {
         WritableFile file{};
@@ -784,8 +790,10 @@ private:
         uint32_t minor;
         std::weak_ptr<BinderConnection> manager{};
     };
+    // Connection lifetime and guest process changes are handled by the guest scheduler.
+    std::shared_ptr<bool> binderDeathsDirty = std::make_shared<bool>(false);
     std::vector<std::weak_ptr<BinderConnection>> binderDeathSubscribers;
-    bool refreshBinderDeaths();
+    void refreshBinderDeaths();
     std::string binderTrace;
     unsigned binderCapacityReports = 0;
     std::map<std::string, std::string, std::less<>> bootFileLabels;

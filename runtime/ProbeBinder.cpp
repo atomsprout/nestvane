@@ -132,7 +132,8 @@ bool ProbeLinux::freeBinderBuffer(BinderConnection& connection, uint64_t address
     return true;
 }
 
-bool ProbeLinux::refreshBinderDeaths() {
+void ProbeLinux::refreshBinderDeaths() {
+    *binderDeathsDirty = false;
     bool queued = false;
     std::erase_if(binderDeathSubscribers, [&](const auto& subscriber) {
         const auto connection = subscriber.lock();
@@ -144,7 +145,10 @@ bool ProbeLinux::refreshBinderDeaths() {
             const auto receiver = threads.find(death.thread);
             auto& queue = receiver != threads.end() && receiver->second.wait != Wait::exited
                 ? connection->directed[death.thread] : connection->incoming;
-            if (queue.size() >= 32) continue;
+            if (queue.size() >= 32) {
+                *binderDeathsDirty = true;
+                continue;
+            }
             BinderPacket packet{brDeadBinder};
             packet.reference[0] = death.cookie;
             queue.push_back(packet);
@@ -154,7 +158,6 @@ bool ProbeLinux::refreshBinderDeaths() {
         return connection->deaths.empty();
     });
     if (queued) wakePollers();
-    return queued;
 }
 
 uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint32_t command,
@@ -223,6 +226,7 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
             packet.reference[0] = cookie;
             connection.directed[currentTid].push_back(packet);
             connection.deaths.erase(death);
+            if (connection.deaths.empty()) *binderDeathsDirty = true;
             return 0;
         }
         case 0x40086310: { // BC_DEAD_BINDER_DONE
@@ -238,6 +242,7 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
                 packet.reference[0] = cookie;
                 connection.directed[currentTid].push_back(packet);
                 connection.deaths.erase(death);
+                if (connection.deaths.empty()) *binderDeathsDirty = true;
             }
             return 0;
         }
