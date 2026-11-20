@@ -647,3 +647,4 @@
 - iPhone 14 全屏版进程 1441 连续冷启动，1,009.531 秒收到原版 QuickstepLauncher 的 Displayed 事件，1,009.825 秒由 UIKit 呈现 578 × 1064 客体画面，记录物理内存峰值 2,386,845,568 字节。真机触控打开应用列表并从列表重新打开 Smoke，界面读取升级前保存的计数 1，XCUITest 通过。该轮确认一次冷启动进入可操作桌面及 Smoke 的应用数据读回。第三方应用内操作与实体后摄仍待验收。
 - ScriptWidget 同一份官方 APK 在修复前的 Mac 客体被 PackageInstallerService 以内部空间不足拒绝。分离 /data 与临时文件计量后，重新从同一份检测前数据启动，原版命令返回 Success，正式安装路径的 base.apk 共 28,533,228 字节，与 APK 发布 SHA-256 一致。应用主界面及真机修复版仍待验收。
 - iPhone 14 全屏版从 Smoke 触控进入 Camera2 页面，三分钟内等待 Android 相机授权且未出现可见授权对话框。当时有 GrantPermissionsActivity 的 InputSink 日志，Android Back 恢复 Smoke。使用同一 Smoke APK 的原版 API 37 ARM64 参考机可看到相机权限对话框，并通过「While using the app」正常写入授权。Nestvane 的实体预览与拍照读回仍待验证。
+- iPhone 14 全屏版进程 1441 的 Android 相机授权对话框晚于首轮等待出现。实际触控选「While using the app」，返回 Smoke 后进入 Camera2，再在 iOS 原生授权对话框点 Allow。Camera2 获得实体后摄预览，触控 Capture photo 后界面显示读回成功，XCUITest 通过。设备客体数据通过 SQLite quick_check，Smoke 应用目录的 camera-check.jpg 为有效 640 × 480 JPEG，11,443 字节。退出相机与 iOS 退后台的释放测试另行验证。
