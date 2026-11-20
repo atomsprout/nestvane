@@ -564,7 +564,8 @@ private:
         bool exclusive;
     };
     std::map<std::pair<uint64_t, std::string>, std::vector<WholeFileLock>> wholeFileLocks;
-    uint64_t stat(Machine& machine, uint64_t address, const Descriptor& fd) const;
+    uint64_t stat(Machine& machine, uint64_t address, const Descriptor& fd, bool extended = false) const;
+    uint64_t statx(Machine& machine) const;
     uint64_t resize(const WritableFile& file, uint64_t size);
     uint64_t readGraphics(Machine& machine, GraphicsPipeState& pipe, uint64_t address, uint64_t size);
     uint64_t writeGraphics(const Machine& machine, GraphicsPipeState& pipe, uint64_t address, uint64_t size);

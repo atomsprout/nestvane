@@ -741,6 +741,38 @@ int main() {
         assert(call(57, {file}) == 0 && call(57, {root}) == 0);
     }
     {
+        constexpr uint64_t cwd = uint32_t(-100), input = base + 32, output = base + 512;
+        const auto putPath = [&](const char* path) {
+            assert(machine.write(input, {reinterpret_cast<const uint8_t*>(path), std::strlen(path) + 1}));
+        };
+        linux.alias("/test/statx-link", "/system/etc/xtables.lock");
+        putPath("/test/statx-link");
+        const auto fd = call(56, {cwd, input, 0});
+        assert(fd < 256);
+        for (uint64_t flags : {0, 0x100}) {
+            assert(call(291, {cwd, input, flags, 0xfff, output}) == 0);
+            const auto* bytes = machine.read(output, 256, 4);
+            assert(bytes);
+            uint32_t mask;
+            uint16_t mode;
+            std::memcpy(&mask, bytes, sizeof(mask));
+            std::memcpy(&mode, bytes + 28, sizeof(mode));
+            assert(mask == 0x7ff);
+            assert(mode == (flags ? 0120777 : 0100444));
+        }
+        assert(call(291, {cwd, input, 0x6000, 0xfff, output}) == uint64_t(-22));
+        assert(call(291, {cwd, input, 0, 0x80000000, output}) == uint64_t(-22));
+        assert(call(291, {fd, 0, 0x1000, 0xfff, output}) == 0);
+        uint64_t inode = 0, legacyInode = 0;
+        assert(machine.load64(output + 32, inode));
+        assert(call(80, {fd, output}) == 0 && machine.load64(output + 8, legacyInode));
+        assert(inode == legacyInode);
+        assert(call(291, {cwd, input, 0, 0xfff, 0}) == uint64_t(-14));
+        putPath("/system/etc/no-such-font");
+        assert(call(291, {cwd, input, 0, 0xfff, output}) == uint64_t(-2));
+        assert(call(57, {fd}) == 0);
+    }
+    {
         const std::string_view filename = "/system/etc/xtables.lock";
         assert(machine.write(base, {reinterpret_cast<const uint8_t*>(filename.data()), filename.size() + 1}));
         constexpr uint64_t cwd = uint32_t(-100);

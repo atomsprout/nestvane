@@ -333,8 +333,38 @@ bool writeGuest(Machine& machine, uint64_t address, const T& data) {
     return machine.write(address, {reinterpret_cast<const uint8_t*>(&data), sizeof(data)});
 }
 
-uint64_t statFile(Machine& machine, uint64_t address, uint64_t size, uint64_t inode, uint32_t mode, uint32_t uid = 0, uint32_t gid = 0, uint64_t device = 0,
-                  const GuestInodeTimes& times = {}) {
+struct GuestStatx {
+    struct Timestamp { int64_t seconds; uint32_t nanos; uint32_t reserved; };
+    uint32_t mask, blockSize;
+    uint64_t attributes;
+    uint32_t links, uid, gid;
+    uint16_t mode, padding;
+    uint64_t inode, size, blocks, attributesMask;
+    Timestamp accessed, created, changed, modified;
+    uint32_t deviceTypeMajor, deviceTypeMinor, deviceMajor, deviceMinor;
+    std::array<uint64_t, 14> optional{};
+};
+static_assert(sizeof(GuestStatx) == 256 && offsetof(GuestStatx, accessed) == 64
+              && offsetof(GuestStatx, deviceTypeMajor) == 128);
+
+uint64_t statFile(Machine& machine, uint64_t address, bool extended, uint64_t size, uint64_t inode,
+                  uint32_t mode, uint32_t uid, uint32_t gid, uint64_t device, const GuestInodeTimes& times) {
+    if (extended) {
+        const auto major = [](uint64_t number) {
+            return uint32_t((number >> 8) & 0xfff) | (uint32_t(number >> 32) & 0xfffff000);
+        };
+        const auto minor = [](uint64_t number) {
+            return uint32_t(number & 0xff) | (uint32_t(number >> 12) & 0xffffff00);
+        };
+        const auto timestamp = [&](size_t index) -> GuestStatx::Timestamp {
+            return {times[index], uint32_t(times[index + 1]), 0};
+        };
+        // Report basic metadata only. The guest file model has no birth times or extended attributes here.
+        const GuestStatx result{0x7ff, pageSize, 0, 1, uid, gid, uint16_t(mode), 0,
+                               inode, size, (size + 511) / 512, 0, timestamp(0), {},
+                               timestamp(4), timestamp(2), major(device), minor(device), 0, 1};
+        return writeGuest(machine, address, result) ? 0 : uint64_t(-14);
+    }
     // Linux asm-generic stat layout, shared by Android arm64.
     std::array<uint64_t, 16> stat{};
     stat[0] = 1;
@@ -929,67 +959,101 @@ bool ProbeLinux::exportExt4Mount(ProbeLinux& reader, std::string_view path) cons
     return true;
 }
 
-uint64_t ProbeLinux::stat(Machine& machine, uint64_t address, const Descriptor& fd) const {
-    if (fd.node == Node::touchDevice) return statFile(machine, address, 0, 70'265, 0020660, 0, 1004, 0x0d40);
-    if (fd.node == Node::graphicsAddressSpace) return statFile(machine, address, 0, 70'266, 0020666, 1000, 1000, 0x100a0a);
-    if (fd.graphics && fd.graphics->vsock) return statFile(machine, address, 0, 70'269, 0140777);
-    if (fd.node == Node::graphicsPipe) return statFile(machine, address, 0, 70'267, 0020666, 1000, 1000, 0x100a0b);
-    if (fd.node == Node::ashmem) return statFile(machine, address, 0, 69'999, 0020666, 0, 0, 0x100a03);
+uint64_t ProbeLinux::stat(Machine& machine, uint64_t address, const Descriptor& fd, bool extended) const {
+    const auto result = [&](uint64_t size, uint64_t inode, uint32_t mode, uint32_t uid = 0,
+                            uint32_t gid = 0, uint64_t device = 0, const GuestInodeTimes& times = {}) {
+        return statFile(machine, address, extended, size, inode, mode, uid, gid, device, times);
+    };
+    if (fd.node == Node::touchDevice) return result(0, 70'265, 0020660, 0, 1004, 0x0d40);
+    if (fd.node == Node::graphicsAddressSpace) return result(0, 70'266, 0020666, 1000, 1000, 0x100a0a);
+    if (fd.graphics && fd.graphics->vsock) return result(0, 70'269, 0140777);
+    if (fd.node == Node::graphicsPipe) return result(0, 70'267, 0020666, 1000, 1000, 0x100a0b);
+    if (fd.node == Node::ashmem) return result(0, 69'999, 0020666, 0, 0, 0x100a03);
     if (fd.temporary) {
         const auto& file = *fd.temporary;
-        return statFile(machine, address, file.storage->size, file.inode, 0100000 | file.mode, file.uid, file.gid, 0, file.times);
+        return result(file.storage->size, file.inode, 0100000 | file.mode, file.uid, file.gid, 0, file.times);
     }
     if (fd.node == Node::kernelSetting || fd.node == Node::ueventTrigger)
-        return statFile(machine, address, 0, std::hash<std::string>{}(fd.path) | 1, 0100644);
+        return result(0, std::hash<std::string>{}(fd.path) | 1, 0100644);
     if (fd.cgroupFile)
-        return statFile(machine, address, 0, std::hash<std::string>{}(fd.path) | 1,
+        return result(0, std::hash<std::string>{}(fd.path) | 1,
                         0100000 | fd.cgroupFile->mode, fd.cgroupFile->uid, fd.cgroupFile->gid);
-    if (fd.node == Node::ptyMaster) return statFile(machine, address, 0, 3, 0020666, 0, 0, 0x502);
+    if (fd.node == Node::ptyMaster) return result(0, 3, 0020666, 0, 0, 0x502);
     if (fd.node == Node::ptySlave && fd.pty)
-        return statFile(machine, address, 0, 10000 + fd.pty->number, 0020620, fd.pty->owner, 5, 0x8800 | fd.pty->number);
+        return result(0, 10000 + fd.pty->number, 0020620, fd.pty->owner, 5, 0x8800 | fd.pty->number);
     if (fd.node == Node::binder) {
         const auto& device = binderDevices.at(fd.path);
         constexpr uint64_t guestBinderMajor = 240; // Guest character-device numbers.
-        return statFile(machine, address, 0, 70'000 + device.minor, 0020000 | device.mode,
+        return result(0, 70'000 + device.minor, 0020000 | device.mode,
                         device.uid, device.gid, guestBinderMajor << 8 | device.minor);
     }
-    if (fd.node == Node::loopControl) return statFile(machine, address, 0, 3, 0020600, 0, 0, 0xaed);
+    if (fd.node == Node::loopControl) return result(0, 3, 0020600, 0, 0, 0xaed);
     if (fd.node == Node::loopDevice) {
         const auto& loop = loopDevices.at(fd.path);
-        return statFile(machine, address, 0, 65536 + loop.number, 0060000 | loop.mode,
+        return result(0, 65536 + loop.number, 0060000 | loop.mode,
                         loop.uid, loop.gid, 0x700 | loop.number);
     }
     if (const auto node = ext4Nodes.find(fd.path); node != ext4Nodes.end()) {
         const auto& inode = *node->second;
-        return statFile(machine, address, inode.size, std::hash<std::string>{}(fd.path) | 1,
+        return result(inode.size, std::hash<std::string>{}(fd.path) | 1,
                         inode.mode, inode.uid, inode.gid);
     }
     if (fd.node == Node::directory) {
         const auto pos = directories.find(fd.path);
         const auto node = pos != directories.end() ? pos->second : Directory{0755};
-        return statFile(machine, address, pageSize, std::hash<std::string>{}(fd.path) | 1,
+        return result(pageSize, std::hash<std::string>{}(fd.path) | 1,
                         0040000 | node.mode, node.uid, node.gid, 0, node.times);
     }
     if (fd.mountNamespace)
-        return statFile(machine, address, 0, fd.mountNamespace->id, 0100444);
-    if (fd.snapshot) return statFile(machine, address, 0, 4, 0100444);
+        return result(0, fd.mountNamespace->id, 0100444);
+    if (fd.snapshot) return result(0, 4, 0100444);
     if (fd.node == Node::entropy)
-        return statFile(machine, address, 0, 5, 0020666, 0, 0, fd.path == "/dev/random" ? 0x108 : 0x109);
+        return result(0, 5, 0020666, 0, 0, fd.path == "/dev/random" ? 0x108 : 0x109);
     if (kernelFiles.contains(fd.path))
-        return statFile(machine, address, fd.bytes.size(), std::hash<std::string>{}(fd.path) | 1, 0100444);
+        return result(fd.bytes.size(), std::hash<std::string>{}(fd.path) | 1, 0100444);
     if (fd.node == Node::socket) {
         const auto bound = socketPaths.find(fd.path);
         if (bound != socketPaths.end()) {
             const auto& node = bound->second;
-            return statFile(machine, address, 0, 3, 0140000 | node.mode, node.uid, node.gid);
+            return result(0, 3, 0140000 | node.mode, node.uid, node.gid);
         }
-        return statFile(machine, address, 0, 3, 0140777);
+        return result(0, 3, 0140777);
     }
-    if (fd.node != Node::regular) return statFile(machine, address, 0, 3, 0020666);
+    if (fd.node != Node::regular) return result(0, 3, 0020666);
     const auto file = files.find(fd.path);
     const auto mode = fd.path.starts_with("/data/") || fd.path.find("/bin/") != std::string::npos
         ? 0100555 : 0100444;
-    return statFile(machine, address, fd.bytes.size(), std::distance(files.begin(), file) + 8, mode);
+    return result(fd.bytes.size(), std::distance(files.begin(), file) + 8, mode);
+}
+
+uint64_t ProbeLinux::statx(Machine& machine) const {
+    constexpr uint32_t atCwd = uint32_t(-100), noFollow = 0x100, noAutomount = 0x800, emptyPath = 0x1000;
+    constexpr uint32_t syncType = 0x6000, reservedMask = 0x80000000;
+    const auto& x = machine.cpu.x;
+    const uint32_t directory = x[0], flags = x[2], mask = x[3];
+    if (flags & ~(noFollow | noAutomount | emptyPath | syncType) ||
+        (flags & syncType) == syncType || (mask & reservedMask)) return invalid;
+    const auto path = !x[1] && (flags & emptyPath) ? std::optional<std::string>{""} : readPath(machine, x[1]);
+    if (!path) return uint64_t(-14);
+    if (path->empty() && !(flags & emptyPath)) return uint64_t(-2);
+    if (path->empty() && directory != atCwd) {
+        const auto fd = descriptors().find(directory);
+        return fd == descriptors().end() ? uint64_t(-9) : stat(machine, x[4], fd->second, true);
+    }
+    std::string absolute;
+    if (const auto error = resolveAtPath(directory, *path, absolute)) return error;
+    const auto visible = followLinks(std::move(absolute), !(flags & noFollow));
+    if (!visible) return uint64_t(-40);
+    const auto backing = backingPath(*visible);
+    if (!canAccessParent(backing, false)) return uint64_t(-13);
+    if (flags & noFollow) {
+        if (const auto link = resolve(*visible)) {
+            return statFile(machine, x[4], true, link->size(), std::hash<std::string>{}(backing) | 1,
+                            0120777, 0, 0, 0, {});
+        }
+    }
+    const auto fd = find(backing, 0, &machine);
+    return fd ? stat(machine, x[4], *fd, true) : uint64_t(-2);
 }
 
 uint64_t ProbeLinux::freeMemory(const Machine& machine) const {
@@ -4239,6 +4303,9 @@ bool ProbeLinux::fileCall(Machine& machine) {
             break;
         case 80: // fstat
             x[0] = descriptor == descriptors().end() ? uint64_t(-9) : stat(machine, x[1], descriptor->second);
+            break;
+        case 291: // statx
+            x[0] = statx(machine);
             break;
         case 43: { // statfs by guest pathname
             const auto path = readPath(machine, x[0]);
