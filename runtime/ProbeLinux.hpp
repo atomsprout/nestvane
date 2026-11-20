@@ -114,8 +114,9 @@ private:
         uint64_t generation = 0;
         std::map<std::string, MountView, std::less<>> mounts{{"/dev", {6, 0755, 0, 0, "/dev"}}};
     };
-    enum class Wait { none, poll, futex, futexPi, signal, sleep, exited, suspended };
+    enum class Wait { none, poll, recordLock, futex, futexPi, signal, sleep, exited, suspended };
     struct Process;
+    struct WritableFile;
     using PendingSignals = std::map<uint32_t, std::array<uint32_t, 32>>;
     struct BinderConnection;
     struct SeccompFilter {
@@ -132,6 +133,9 @@ private:
         std::weak_ptr<BinderConnection> idleBinder;
         std::weak_ptr<BinderConnection> waitingBinder;
         uint32_t waitingBinderFd = 0;
+        std::weak_ptr<WritableFile> waitingRecordFile;
+        std::weak_ptr<uint64_t> waitingRecordDescription;
+        uint64_t recordLockBlocker = 0;
         bool noNewPrivileges = false;
         Wait wait = Wait::none;
         uint64_t clearTid = 0, futexAddress = 0, futexPiOrder = 0;
@@ -627,7 +631,8 @@ private:
     uint32_t descriptorLimit() const;
     uint32_t freeDescriptor(uint32_t minimum = 0) const;
     uint64_t recordLock(Machine& machine, const Descriptor& fd);
-    static void releaseRecordLocks(const Descriptor& fd, uint64_t owner);
+    void wakeRecordLockWaiters(const WritableFile& file);
+    void releaseRecordLocks(const Descriptor& fd, uint64_t owner);
     uint64_t readDirectory(Machine& machine, const Descriptor& fd) const;
     uint64_t socketRead(Machine& machine, const Descriptor& fd, uint64_t address, uint64_t size);
     using SocketVector = std::array<uint64_t, 2>; // Guest iovec: pointer and length.

@@ -1417,9 +1417,8 @@ uint64_t ProbeLinux::recordLock(Machine& machine, const Descriptor& fd) {
     };
     static_assert(sizeof(Flock) == 32);
     Flock request;
-    const auto* input = machine.read(x[2], sizeof(request), 4);
-    if (!input) return uint64_t(-14);
-    std::memcpy(&request, input, sizeof(request));
+    if (!machine.readInto(x[2], {reinterpret_cast<uint8_t*>(&request), sizeof(request)}))
+        return uint64_t(-14);
     const bool query = x[1] == 5;
     if (request.type < readLock || request.type > unlock || (query && request.type == unlock) ||
         request.whence < 0 || request.whence > 2) return invalid;
@@ -1446,7 +1445,27 @@ uint64_t ProbeLinux::recordLock(Machine& machine, const Descriptor& fd) {
                          int32_t(conflict->owner), 0};
         return writeGuest(machine, x[2], request) ? 0 : uint64_t(-14);
     }
-    if (request.type != unlock && conflict != locks.end()) return uint64_t(-11);
+    if (request.type != unlock && conflict != locks.end()) {
+        if (x[1] != 7) return uint64_t(-11);
+        std::set<uint64_t> visited;
+        std::vector<uint64_t> blockers{conflict->owner};
+        while (!blockers.empty()) {
+            const auto blocker = blockers.back();
+            blockers.pop_back();
+            if (blocker == owner) return uint64_t(-35); // EDEADLK
+            if (!visited.insert(blocker).second) continue;
+            for (const auto& [tid, thread] : threads) {
+                if (thread.wait == Wait::recordLock && thread.process->id == blocker)
+                    blockers.push_back(thread.recordLockBlocker);
+            }
+        }
+        current->waitingRecordFile = fd.temporary;
+        current->waitingRecordDescription = fd.offset;
+        current->recordLockBlocker = conflict->owner;
+        current->wait = Wait::recordLock;
+        sliceEnd = 0;
+        return x[0]; // The scheduler will retry fcntl with its original descriptor.
+    }
 
     std::vector<RecordLock> updated;
     updated.reserve(locks.size() + 2);
@@ -1469,13 +1488,20 @@ uint64_t ProbeLinux::recordLock(Machine& machine, const Descriptor& fd) {
     }
     updated.resize(used);
     locks = std::move(updated);
+    wakeRecordLockWaiters(*fd.temporary);
     return 0;
 }
 
-void ProbeLinux::releaseRecordLocks(const Descriptor& fd, uint64_t owner) {
-    if (fd.temporary) {
-        std::erase_if(fd.temporary->locks, [owner](const auto& lock) { return lock.owner == owner; });
+void ProbeLinux::wakeRecordLockWaiters(const WritableFile& file) {
+    for (auto& [tid, thread] : threads) {
+        if (thread.wait != Wait::recordLock || thread.waitingRecordFile.lock().get() != &file) continue;
+        thread.wait = Wait::none;
     }
+}
+
+void ProbeLinux::releaseRecordLocks(const Descriptor& fd, uint64_t owner) {
+    if (fd.temporary && std::erase_if(fd.temporary->locks, [owner](const auto& lock) { return lock.owner == owner; }))
+        wakeRecordLockWaiters(*fd.temporary);
 }
 
 uint64_t ProbeLinux::renameDirectory(const std::string& source, const std::string& destination, bool noReplace) {
@@ -6517,6 +6543,7 @@ std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedPr
             }
             case Wait::futexPi:
             case Wait::futex: tasks << " futex=0x" << std::hex << thread.futexAddress << std::dec; break;
+            case Wait::recordLock: tasks << " record lock held by PID " << thread.recordLockBlocker; break;
             case Wait::signal: tasks << " signal"; break;
             case Wait::sleep: tasks << " sleeping"; break;
             case Wait::suspended:
@@ -8973,6 +9000,16 @@ bool ProbeLinux::syscall(Machine& machine) {
             break;
         }
         case 25: { // fcntl file-descriptor flags and open-file status.
+            if (x[1] == 7 && current->recordLockBlocker) {
+                const auto original = current->waitingRecordDescription.lock();
+                current->waitingRecordFile.reset();
+                current->waitingRecordDescription.reset();
+                current->recordLockBlocker = 0;
+                if (descriptor == descriptors().end() || descriptor->second.offset != original) {
+                    x[0] = uint64_t(-9);
+                    break;
+                }
+            }
             if (descriptor == descriptors().end()) { x[0] = uint64_t(-9); break; }
             auto& fd = descriptor->second;
             constexpr uint32_t cloexec = 0x80000;
@@ -9027,7 +9064,7 @@ bool ProbeLinux::syscall(Machine& machine) {
                     *fd.status = x[2] & Descriptor::mutableStatus;
                     x[0] = 0;
                     break;
-                case 5: case 6: // F_GETLK, F_SETLK
+                case 5: case 6: case 7: // F_GETLK, F_SETLK, F_SETLKW
                     x[0] = recordLock(machine, fd);
                     break;
                 default: return false;
