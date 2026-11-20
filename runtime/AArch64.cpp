@@ -347,12 +347,16 @@ void setLane(std::array<uint8_t, 16>& vector, unsigned index, unsigned size, uin
 }
 
 template<class Float, class UInt>
-Float floatingMinMax(Float left, Float right, bool minimum, bool numeric) {
+Float floatingMinMax(CPU& cpu, Float left, Float right, bool minimum, bool numeric) {
     const auto leftBits = std::bit_cast<UInt>(left), rightBits = std::bit_cast<UInt>(right);
     constexpr UInt quietBit = UInt{1} << (std::numeric_limits<Float>::digits - 2);
     const bool leftNaN = std::isnan(left), rightNaN = std::isnan(right);
-    if (leftNaN && !(leftBits & quietBit)) return std::bit_cast<Float>(leftBits | quietBit);
-    if (rightNaN && !(rightBits & quietBit)) return std::bit_cast<Float>(rightBits | quietBit);
+    const bool leftSignaling = leftNaN && !(leftBits & quietBit);
+    const bool rightSignaling = rightNaN && !(rightBits & quietBit);
+    if (leftSignaling || rightSignaling) {
+        cpu.fpsr |= 1; // Invalid Operation cumulative exception (IOC).
+        return std::bit_cast<Float>((leftSignaling ? leftBits : rightBits) | quietBit);
+    }
     if (leftNaN && (!numeric || rightNaN)) return left;
     if (rightNaN) return numeric ? left : right;
     if (leftNaN) return right;
@@ -582,15 +586,17 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
             const auto value = std::bit_cast<double>(lane(source, i, 8));
             setLane(result, first + i, 4, std::bit_cast<uint32_t>(static_cast<float>(value)));
         }
-    } else if ((word & 0xbf20fc00) == 0x0e20c400) { // FMAXNM, FMINNM (vector).
+    } else if (const auto minMax = word & 0xbf20fc00;
+               minMax == 0x0e20f400 || minMax == 0x0e20c400) { // FMAX, FMIN, FMAXNM, FMINNM (vector).
         const bool wide = word & 0x400000, minimum = word & 0x800000;
+        const bool numeric = minMax == 0x0e20c400;
         if (wide && width == 8) return false;
         const auto apply = [&]<class Float, class UInt>() {
             constexpr unsigned laneSize = sizeof(Float);
             for (unsigned i = 0; i < width / laneSize; ++i) {
                 const auto left = std::bit_cast<Float>(UInt(lane(source, i, laneSize)));
                 const auto right = std::bit_cast<Float>(UInt(lane(other, i, laneSize)));
-                const auto value = floatingMinMax<Float, UInt>(left, right, minimum, true);
+                const auto value = floatingMinMax<Float, UInt>(cpu, left, right, minimum, numeric);
                 setLane(result, i, laneSize, std::bit_cast<UInt>(value));
             }
         };
@@ -1063,7 +1069,7 @@ bool floatInstruction(CPU& cpu, uint32_t word) {
         }
     } else if (binary == 0x1e204800 || binary == 0x1e205800 ||
                binary == 0x1e206800 || binary == 0x1e207800) { // FMAX, FMIN, FMAXNM, FMINNM.
-        store(floatingMinMax<Float, UInt>(get(rn), get(rm), word & 0x1000, word & 0x2000));
+        store(floatingMinMax<Float, UInt>(cpu, get(rn), get(rm), word & 0x1000, word & 0x2000));
     } else if (binary == 0x1e202000 && (rd == 0 || rd == 8)) {
         const auto a = get(rn), b = rd ? 0 : get(rm);
         cpu.nzcv = std::isunordered(a, b) ? 3 : a < b ? 8 : a == b ? 6 : 2;

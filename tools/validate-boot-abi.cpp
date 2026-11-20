@@ -599,6 +599,29 @@ int main() {
         std::memcpy(permute.cpu.v[0].data(), minLeft.data(), sizeof(minLeft));
         assert(executeStartupInstruction(permute, 0x0e20c440)); // fmaxnm v0.2s, v2.2s, v0.2s
         assert(std::memcmp(permute.cpu.v[0].data(), maxOutput.data(), sizeof(maxOutput)) == 0);
+        const std::array<uint32_t, 4> leftMax{0x80000000, 0x7fc00042, 0x7f800017, 0xc0000000};
+        const std::array<uint32_t, 4> rightMax{0, 0x3f800000, 0x7fc00051, 0x40400000};
+        const std::array<uint32_t, 4> expectedMax{0, 0x7fc00042, 0x7fc00017, 0x40400000};
+        std::memcpy(permute.cpu.v[16].data(), leftMax.data(), sizeof(leftMax));
+        std::memcpy(permute.cpu.v[21].data(), rightMax.data(), sizeof(rightMax));
+        permute.cpu.fpsr = fpsrSaturation;
+        assert(executeStartupInstruction(permute, 0x4e35f610)); // fmax v16.4s, v16.4s, v21.4s
+        assert(std::memcmp(permute.cpu.v[16].data(), expectedMax.data(), sizeof(expectedMax)) == 0);
+        assert(permute.cpu.fpsr == (fpsrSaturation | 1));
+        const std::array<uint32_t, 4> expectedMin{0x80000000, 0x7fc00042, 0, 0};
+        std::memcpy(permute.cpu.v[2].data(), minLeft.data(), sizeof(minLeft));
+        std::memcpy(permute.cpu.v[3].data(), minRight.data(), sizeof(minRight));
+        permute.cpu.fpsr = 0;
+        assert(executeStartupInstruction(permute, 0x0ea3f442)); // fmin v2.2s, v2.2s, v3.2s
+        assert(std::memcmp(permute.cpu.v[2].data(), expectedMin.data(), sizeof(expectedMin)) == 0);
+        assert(permute.cpu.fpsr == 0);
+        const std::array<double, 2> leftDoubleMax{-3.0, 0.5}, rightDoubleMax{-1.0, 0.125};
+        const std::array<double, 2> expectedDoubleMax{-1.0, 0.5};
+        std::memcpy(permute.cpu.v[2].data(), leftDoubleMax.data(), sizeof(leftDoubleMax));
+        std::memcpy(permute.cpu.v[1].data(), rightDoubleMax.data(), sizeof(rightDoubleMax));
+        assert(executeStartupInstruction(permute, 0x4e61f441)); // fmax v1.2d, v2.2d, v1.2d
+        assert(std::memcmp(permute.cpu.v[1].data(), expectedDoubleMax.data(), sizeof(expectedDoubleMax)) == 0);
+        assert(!executeStartupInstruction(permute, 0x0e61f441)); // unallocated 1D vector form
         const std::array<int64_t, 2> positiveAndNegative{1, INT64_MIN}, zeroAndPositive{0, INT64_MAX};
         const std::array<uint64_t, 2> firstGreater{UINT64_MAX, 0}, secondGreater{0, UINT64_MAX};
         std::memcpy(permute.cpu.v[2].data(), positiveAndNegative.data(), sizeof(positiveAndNegative));

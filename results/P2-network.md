@@ -467,3 +467,4 @@
 - Mac 客体在 420 秒快照中显示 Launcher3 的原生返回地址落在新生成的 `Launcher3QuickStep.odex`，确认 ART 正在执行 AOT 代码。独立预编译和完整镜像生成流程均产出了匹配参考类加载上下文的 Launcher 编译产物。
 - iPhone 11 进程 9650 在 86.849 秒呈现开机画面，508.317 秒完成 `startHomeOnAllDisplays`。480 秒时采样到物理内存约 2.087 GB，峰值约 2.115 GB，系统报告进程剩余约 113 MB。随后 CoreDevice 控制台报告进程被信号 9 终止，尚未验证 Launcher 绘制。客体快照新增匿名脏页、私有段和共享缓冲容量分类，宿主测试、快照输出和 iPhoneOS Release 构建通过。
 - 客体进程 fork 后共享仍未修改的私有段后备缓冲区，首次写入时复制该段。显式共享映射和匿名分页继续走原有路径，内存快照按后备缓冲区去重。宿主 ABI 回归验证父子在首次写入前共享缓冲区，子进程写入后父进程内容及缓冲区不变。iPhoneOS Release 构建和开发签名校验通过，尚需真机对照确认物理内存与桌面首帧。
+- Mac 的 Launcher AOT 启动在进入 Launcher 后遇到向量 `fmax v16.4s, v16.4s, v21.4s`（`0x4e35f610`）。解释器支持 Float32 和 Float64 的向量 FMAX/FMIN，沿用客体缺省 FPCR，并在遇到 signaling NaN 时累积 FPSR 的 IOC 标志。宿主回归与本机 ARM64 指令对照覆盖 NaN 有效载荷、正负零、目的寄存器别名，iPhoneOS Release 构建通过。[Arm FMAX 指令](https://documentation-service.arm.com/static/67e40f3398aa3c3b6eea6a85)
