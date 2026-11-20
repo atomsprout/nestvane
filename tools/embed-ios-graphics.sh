@@ -15,6 +15,34 @@ if [[ ! -d "$app" || ! -f "$backend" || ! -f "$angle/libEGL.framework/libEGL" ||
     printf 'Provide a signed app, built renderer frameworks and a new output app path.\n' >&2
     exit 2
 fi
+executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Info.plist")
+python3 - "$app/$executable" "$backend" "$angle/libEGL.framework/libEGL" \
+    "$angle/libGLESv2.framework/libGLESv2" <<'PYTHON'
+import pathlib
+import subprocess
+import sys
+
+
+def minimum_ios_version(binary):
+    info = subprocess.check_output(["xcrun", "vtool", "-show-build", binary], text=True)
+    for line in info.splitlines():
+        fields = line.split()
+        if fields[:1] == ["minos"]:
+            return tuple(int(part) for part in fields[1].split("."))
+    raise SystemExit(f"Cannot determine minimum OS version for {binary}")
+
+
+app, *frameworks = sys.argv[1:]
+minimum = minimum_ios_version(app)
+for framework in frameworks:
+    required = minimum_ios_version(framework)
+    if required > minimum:
+        name = pathlib.Path(framework).name
+        required_version = ".".join(map(str, required))
+        app_version = ".".join(map(str, minimum))
+        raise SystemExit(f"{name} requires iOS {required_version}, but the app supports iOS {app_version}.")
+PYTHON
+
 identity=$(/usr/bin/codesign -dv --verbose=4 "$app" 2>&1 | sed -n 's/^Authority=\(Apple Development: .*\)$/\1/p' | head -1)
 if [[ -z "$identity" ]]; then
     printf 'The input must use an Apple Development signature available on this Mac.\n' >&2
