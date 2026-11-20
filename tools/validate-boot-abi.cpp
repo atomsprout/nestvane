@@ -718,6 +718,19 @@ int main() {
         std::memcpy(permute.cpu.v[4].data(), roundedInput.data(), sizeof(roundedInput));
         assert(executeStartupInstruction(permute, 0x6f182485)); // urshr v5.8h, v4.8h, #8
         assert(std::memcmp(permute.cpu.v[5].data(), roundedShift.data(), sizeof(roundedShift)) == 0);
+        const std::array<uint16_t, 8> roundedSum{0, 127, 129, 256, 257, 384, 386, 255};
+        std::memcpy(permute.cpu.v[0].data(), roundedInput.data(), sizeof(roundedInput));
+        assert(executeStartupInstruction(permute, 0x6f183400)); // ursra v0.8h, v0.8h, #8
+        assert(std::memcmp(permute.cpu.v[0].data(), roundedSum.data(), sizeof(roundedSum)) == 0);
+        const std::array<uint64_t, 2> wideInput{UINT64_MAX, uint64_t{1} << 63};
+        const std::array<uint64_t, 2> wideAccumulator{UINT64_MAX, 17}, wideRoundedSum{0, 18};
+        std::memcpy(permute.cpu.v[2].data(), wideInput.data(), sizeof(wideInput));
+        std::memcpy(permute.cpu.v[1].data(), wideAccumulator.data(), sizeof(wideAccumulator));
+        assert(executeStartupInstruction(permute, 0x4f403441)); // srsra v1.2d, v2.2d, #64
+        assert(std::memcmp(permute.cpu.v[1].data(), wideAccumulator.data(), sizeof(wideAccumulator)) == 0);
+        assert(executeStartupInstruction(permute, 0x6f403441)); // ursra v1.2d, v2.2d, #64
+        assert(std::memcmp(permute.cpu.v[1].data(), wideRoundedSum.data(), sizeof(wideRoundedSum)) == 0);
+        assert(!executeStartupInstruction(permute, 0x2f403441)); // unallocated 1D vector form
         assert(executeStartupInstruction(permute, 0x2e254082)); // raddhn v2.8b, v4.8h, v5.8h
         const std::array<uint8_t, 16> narrowedSum{0, 0, 1, 1, 1, 2, 2, 1};
         assert(permute.cpu.v[2] == narrowedSum);

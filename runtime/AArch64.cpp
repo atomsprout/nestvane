@@ -937,19 +937,21 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
         }
     } else if (const auto rightShift = word & 0x9f80fc00;
                rightShift == 0x0f000400 || rightShift == 0x0f001400 ||
-               rightShift == 0x0f002400) { // SSHR/USHR, SSRA/USRA, SRSHR/URSHR.
+               rightShift == 0x0f002400 || rightShift == 0x0f003400) { // SSHR, SSRA, SRSHR, SRSRA and unsigned forms.
         const bool signedShift = !(word & 0x20000000);
+        const bool accumulate = rightShift & 0x1000, round = rightShift & 0x2000;
         const unsigned immediate = (word >> 16) & 127;
         if (immediate < 8) return false;
         const unsigned bits = 1U << (std::bit_width(immediate) - 1);
+        if (bits == 64 && width == 8) return false;
         const unsigned amount = 2 * bits - immediate;
         size = bits / 8;
         for (unsigned i = 0; i < width / size; ++i) {
             const auto value = lane(source, i, size);
             const auto shifted = amount == bits ? (signedShift && (value >> (bits - 1)) ? UINT64_MAX : 0)
                                                 : shift(value, signedShift ? 2 : 1, amount, bits);
-            const auto accumulator = rightShift == 0x0f001400 ? lane(cpu.v[rd], i, size) : 0;
-            const auto rounding = rightShift == 0x0f002400 ? (value >> (amount - 1)) & 1 : 0;
+            const auto accumulator = accumulate ? lane(cpu.v[rd], i, size) : 0;
+            const auto rounding = round ? (value >> (amount - 1)) & 1 : 0;
             setLane(result, i, size, accumulator + shifted + rounding);
         }
     } else if ((word & 0xbf80fc00) == 0x2f005400) { // SLI (vector).
