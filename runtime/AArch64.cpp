@@ -785,6 +785,18 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
             else if (op == 0x2e208400) value = a - b;
             setLane(result, i, size, value);
         }
+    } else if (const auto difference = op & ~0x20000000;
+               difference == 0x0e207400 || difference == 0x0e207000) { // ABD and ABDL (signed or unsigned).
+        if (size == 8) return false;
+        const bool widen = difference == 0x0e207000;
+        const unsigned count = (widen ? 8 : width) / size;
+        const unsigned first = widen && width == 16 ? count : 0;
+        const auto bias = (word & 0x20000000) ? 0 : uint64_t{1} << (size * 8 - 1);
+        for (unsigned i = 0; i < count; ++i) {
+            const auto left = lane(source, first + i, size) ^ bias;
+            const auto right = lane(other, first + i, size) ^ bias;
+            setLane(result, i, widen ? size * 2 : size, left >= right ? left - right : right - left);
+        }
     } else if (op == 0x2e200400) { // UHADD (vector).
         if (size == 8) return false;
         for (unsigned i = 0; i < width / size; ++i)
@@ -1254,7 +1266,8 @@ bool vectors(Machine& m, uint32_t word) {
         if (postIndex) put(cpu, rn, base + offset, 64, true);
         return true;
     }
-    if ((word & 0xbf202000) == 0x0d000000 && ((word >> 14) & 3) != 3) { // LD1/ST1 single lane.
+    if ((word & 0xbf000000) == 0x0d000000 && ((word >> 14) & 3) != 3) { // LD/ST single-lane structures.
+        const unsigned count = 1 + ((word >> 21) & 1) + ((word >> 12) & 2);
         const unsigned scale = (word >> 14) & 3;
         const unsigned encoded = ((word >> 27) & 8) | ((word >> 10) & 7);
         const unsigned size = scale == 2 && (encoded & 1) ? 8 : 1U << scale;
@@ -1263,14 +1276,18 @@ bool vectors(Machine& m, uint32_t word) {
         const unsigned offset = encoded & ~(size - 1);
         const bool postIndex = word & 0x800000;
         if (!postIndex && rm) return false;
-        auto* element = cpu.v[rd].data() + offset;
+        std::array<uint8_t, 32> data;
+        const auto bytes = std::span(data).first(size * count);
         if (word & 0x400000) {
-            if (!m.readInto(base, {element, size})) { m.fault(cpu.pc, base); return true; }
-        } else if (!m.write(base, {element, size})) {
-            m.fault(cpu.pc, base);
-            return true;
+            if (!m.readInto(base, bytes)) { m.fault(cpu.pc, base); return true; }
+            for (unsigned i = 0; i < count; ++i)
+                std::memcpy(cpu.v[(rd + i) & 31].data() + offset, bytes.data() + i * size, size);
+        } else {
+            for (unsigned i = 0; i < count; ++i)
+                std::memcpy(bytes.data() + i * size, cpu.v[(rd + i) & 31].data() + offset, size);
+            if (!m.write(base, bytes)) { m.fault(cpu.pc, base); return true; }
         }
-        if (postIndex) put(cpu, rn, base + (rm == 31 ? size : reg(cpu, rm)), 64, true);
+        if (postIndex) put(cpu, rn, base + (rm == 31 ? bytes.size() : reg(cpu, rm)), 64, true);
         return true;
     }
     if ((word & 0xbf60f000) == 0x0d40c000) { // LD1R for one vector.

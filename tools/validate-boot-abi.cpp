@@ -231,6 +231,40 @@ int main() {
         assert(outcomes.size() == 3 && outcomes.back() == Result::guestStopped);
     }
     {
+        constexpr uint64_t address = 0x100000;
+        Machine lanes(Image{address, {{address, std::vector<uint8_t>(pageSize), 6}}, {}});
+        lanes.cpu.x[1] = address;
+        for (unsigned i = 0; i < 4; ++i) lanes.cpu.v[i].fill(uint8_t(0x10 + i));
+        assert(executeStartupInstruction(lanes, 0x0dbfa020)); // st4 {v0.s-v3.s}[0], [x1], #16
+        const std::array<uint32_t, 4> expected{0x10101010, 0x11111111, 0x12121212, 0x13131313};
+        std::array<uint32_t, 4> values{};
+        assert(lanes.readInto(address, {reinterpret_cast<uint8_t*>(values.data()), sizeof(values)}));
+        assert(values == expected && lanes.cpu.x[1] == address + 16);
+
+        lanes.cpu.x[3] = address;
+        lanes.cpu.x[4] = 11;
+        lanes.cpu.v[31].fill(0xff);
+        assert(executeStartupInstruction(lanes, 0x4dc4787f)); // ld3 {v31.h, v0.h, v1.h}[7], [x3], x4
+        assert(lanes.cpu.x[3] == address + 11);
+        assert(lanes.cpu.v[31][13] == 0xff && lanes.cpu.v[31][14] == 0x10 && lanes.cpu.v[31][15] == 0x10);
+        assert(lanes.cpu.v[0][13] == 0x10 && lanes.cpu.v[0][14] == 0x10 && lanes.cpu.v[0][15] == 0x10);
+        assert(lanes.cpu.v[1][13] == 0x11 && lanes.cpu.v[1][14] == 0x11 && lanes.cpu.v[1][15] == 0x11);
+
+        lanes.cpu.sp = address + 32;
+        lanes.cpu.v[30].fill(0x33);
+        assert(executeStartupInstruction(lanes, 0x4d2087fe)); // st2 {v30.d, v31.d}[1], [sp]
+        assert(lanes.cpu.sp == address + 32);
+        uint64_t first, second;
+        assert(lanes.load64(address + 32, first) && first == 0x3333333333333333ULL);
+        assert(lanes.load64(address + 40, second) && second == 0x1010ffffffffffffULL);
+
+        lanes.cpu.x[3] = address + pageSize - 24;
+        const auto before = lanes.cpu.v;
+        assert(executeStartupInstruction(lanes, 0x4dffa47d)); // ld4 {v29.d-v0.d}[1], [x3], #32
+        assert(lanes.cpu.stop == Stop::fault && lanes.cpu.x[3] == address + pageSize - 24);
+        assert(lanes.cpu.v == before);
+    }
+    {
         auto map = std::make_shared<BpfMap>();
         map->id = 1;
         map->array = true;
@@ -945,6 +979,17 @@ int main() {
         const std::array<uint8_t, 16> insertedBytes{0x17, 0x17, 0x17, 0x17, 0x17, 0x17, 0x17, 0x17};
         assert(permute.cpu.v[2] == insertedBytes);
         assert(!executeStartupInstruction(permute, 0x2f7f5421)); // unallocated 1D vector form
+        permute.cpu.v[6] = {1, 254, 0, 255, 2, 100, 128, 9, 255, 128, 254, 127, 12, 3, 4, 1};
+        permute.cpu.v[3] = {255, 0, 255, 0, 2, 123, 1, 9, 0, 127, 1, 128, 4, 3, 1, 2};
+        const std::array<uint16_t, 8> distance{254, 254, 255, 255, 0, 23, 127, 0};
+        assert(executeStartupInstruction(permute, 0x2e2370c7)); // uabdl v7.8h, v6.8b, v3.8b
+        assert(std::memcmp(permute.cpu.v[7].data(), distance.data(), sizeof(distance)) == 0);
+        const std::array<uint16_t, 8> upperDistance{255, 1, 253, 1, 8, 0, 3, 1};
+        assert(executeStartupInstruction(permute, 0x6e2370c7)); // uabdl2 v7.8h, v6.16b, v3.16b
+        assert(std::memcmp(permute.cpu.v[7].data(), upperDistance.data(), sizeof(upperDistance)) == 0);
+        const std::array<uint8_t, 16> signedDistance{2, 2, 1, 1, 0, 23, 129, 0};
+        assert(executeStartupInstruction(permute, 0x0e2374c6)); // sabd v6.8b, v6.8b, v3.8b
+        assert(permute.cpu.v[6] == signedDistance);
         permute.cpu.v[2] = {255, 255, 0, 1, 7, 11, 128, 2, 1, 2, 3, 4, 5, 6, 7, 8};
         permute.cpu.v[3] = {255, 254, 1, 0, 11, 14, 129, 4, 9, 10, 11, 12, 13, 14, 15, 16};
         assert(executeStartupInstruction(permute, 0x2e230442)); // uhadd v2.8b, v2.8b, v3.8b

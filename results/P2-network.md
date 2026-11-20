@@ -508,3 +508,5 @@
 - 实现向量 FRINTN，覆盖最接近偶数舍入、负零、无穷、NaN 载荷及 FPSR 的无效操作位。宿主 ABI 回归包含真机所需的单精度编码和双精度向量，12,000 组原生 ARM64 差分及 iPhoneOS Release 构建通过。新版 Mac 联测已启动，Launcher 绘制还在验证。
 - Mac 向量 FRINTN 修复版越过原停点并完成 `BOOT_COMPLETED` 广播，随后 Launcher 的 launcher-loader 在 `frintn s17, s17`（`0x1e244231`）停止。同版原厂 `libhwui.so` 的像素转换循环中，这条标量指令紧接向量 FRINTN。共享原有舍入实现并支持单、双精度标量形式。直接运行原厂像素循环，1 至 32 像素的透明和不透明样本均产生正确的通道转换。原生 ARM64 对照覆盖 20,000 组标量和向量值及 FPSR，宿主回归与 iPhoneOS Release 构建通过。
 - 客体终止报告现在为真正停下的线程输出映射路径、ELF 偏移与调用栈，包含 Launcher 的后台 loader 线程。宿主回归覆盖在同一进程的非主线程停止时输出该线程的 PC 和 LR 映射。已启动包含标量修复的 Mac 联测，iPhone 11 仍保留进行中的 UQADD 复测。
+- iPhone 11 进程 9770 的最后一份快照为 930.003 秒，峰值物理占用 1,830,903,480 字节。尝试用 LLDB 读取客体日志时进程消失。应用未生成新终止报告，也未找到对应的 Nestvane 崩溃报告，退出原因未确认。客体数据库通过 SQLite `quick_check`，随后安装含两种 FRINTN 的构建。进程 9786 于 95.578 秒提交 640×960 像素，进入后续启动阶段。
+- Mac 含标量 FRINTN 的版本越过两个舍入停点并完成用户解锁与 `BOOT_COMPLETED` 广播。此后 Launcher 的 launcher-loader 在 `libandroidfw.so+0x11a608` 尝试执行 PNG Sub 过滤器的单通道 `st4`（`0x0dbfa020`），新终止日志记录了对应 ELF 与 libpng 调用栈。补齐单通道结构加载与存储，并通过同版原厂 PNG Paeth 过滤器补齐向量绝对差与扩宽绝对差。直接执行原厂七个 NEON PNG 行函数，224 组行数据与独立参考计算逐字节匹配。宿主回归覆盖寄存器环绕、通道保留、两种回写方式和越界访问保持寄存器，iPhoneOS Release 构建通过。
