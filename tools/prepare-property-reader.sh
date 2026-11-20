@@ -21,4 +21,6 @@ if [[ -f "$root/system/bin/cmd" ]]; then
     ld.lld -m aarch64elf -pie --dynamic-linker /system/bin/bootstrap/linker64 -z max-page-size=4096 \
         -e _start --allow-shlib-undefined generated/android17-apk-install.o --no-as-needed "$libc" \
         -o "$root/system/bin/nestvane-apk-install"
+    mkdir -p "$root/system/etc/nestvane"
+    cp fixtures/android17-apk-ready.sh "$root/system/etc/nestvane/apk-ready.sh"
 fi

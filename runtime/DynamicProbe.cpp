@@ -525,15 +525,23 @@ DynamicReport probeInit(const std::string& directory, const std::string& databas
         }
         linux.captureAndroidLogs = true;
         linux.watchdogObserver = watchdog;
+        const bool expectSmoke = files.contains("/system/etc/nestvane/smoke.apk");
+        if (apkInbox || expectSmoke) {
+            for (const auto input : {GuestApkInbox::installer, std::string_view("/system/bin/cmd"),
+                                      std::string_view("/system/bin/sh"), std::string_view("/system/bin/dumpsys"),
+                                      std::string_view("/system/bin/toybox"),
+                                      std::string_view("/system/etc/nestvane/apk-ready.sh")}) {
+                if (!files.contains(input))
+                    throw std::runtime_error("missing Android APK installer input: " + std::string(input));
+            }
+        }
         if (apkInbox) {
-            if (!files.contains(GuestApkInbox::installer) || !files.contains("/system/bin/cmd"))
-                throw std::runtime_error("APK import requires the guest installer and Android cmd");
             linux.setApkInbox(std::move(apkInbox));
             static constexpr std::string_view installer = R"rc(
 on property:sys.boot_completed=1
     start nestvane-apk-install
 
-service nestvane-apk-install /system/bin/nestvane-apk-install
+service nestvane-apk-install /system/bin/sh /system/etc/nestvane/apk-ready.sh
     user shell
     group shell
     seclabel u:r:shell:s0
@@ -553,7 +561,6 @@ service nestvane-apk-install /system/bin/nestvane-apk-install
                     throw std::runtime_error("invalid guest package relabel policy");
             }
         }
-        const bool expectSmoke = files.contains("/system/etc/nestvane/smoke.apk");
         bool smokeActivityOpened = false;
         if (progress || expectSmoke) linux.androidLogObserver = [&](std::string_view message) {
             if (expectSmoke && message.starts_with("NestvaneSmoke: Opened activity with count "))
@@ -711,22 +718,11 @@ service nestvane-check-vold-shell /system/bin/service check vold
             linux.alias("/dev/kmsg_debug", "/dev/kmsg");
         }
         if (expectSmoke) {
-            if (!files.contains(GuestApkInbox::installer) || !files.contains("/system/bin/cmd"))
-                throw std::runtime_error("smoke APK requires the guest installer and Android cmd");
             static constexpr std::string_view smoke = R"rc(
 on property:sys.boot_completed=1
-    exec_start nestvane-smoke-install
-    exec_start nestvane-smoke-launch
+    start nestvane-smoke
 
-service nestvane-smoke-install /system/bin/nestvane-apk-install /system/etc/nestvane/smoke.apk
-    user shell
-    group shell
-    seclabel u:r:shell:s0
-    disabled
-    oneshot
-    stdio_to_kmsg
-
-service nestvane-smoke-launch /system/bin/cmd activity start -W -S -n dev.nestvane.smoke/.MainActivity
+service nestvane-smoke /system/bin/sh /system/etc/nestvane/apk-ready.sh /system/etc/nestvane/smoke.apk
     user shell
     group shell
     seclabel u:r:shell:s0
@@ -799,10 +795,9 @@ service nestvane-smoke-launch /system/bin/cmd activity start -W -S -n dev.nestva
                 };
                 return found(linux.kernelOutput) || found(linux.recentKernelOutput);
             };
-            result.report += succeeded("<6>init: Service 'nestvane-smoke-install' ") ?
-                "  guest smoke APK install command: passed\n" : "  guest smoke APK install command: unverified\n";
-            result.report += succeeded("<6>init: Service 'nestvane-smoke-launch' ") ?
-                "  guest smoke APK launch command: passed\n" : "  guest smoke APK launch command: unverified\n";
+            result.report += succeeded("<6>init: Service 'nestvane-smoke' ") ?
+                "  guest smoke APK install and launch commands: passed\n" :
+                "  guest smoke APK install and launch commands: unverified\n";
             result.report += smokeActivityOpened ?
                 "  guest smoke APK activity creation: verified\n" : "  guest smoke APK activity creation: unverified\n";
         }

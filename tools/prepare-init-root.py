@@ -139,6 +139,7 @@ def collect(serial, readelf, destination, small_art_heap):
         vold = "/system/bin/vold"
         service = "/system/bin/service"
         cmd = "/system/bin/cmd"
+        installer_tools = ("/system/bin/sh", "/system/bin/dumpsys", "/system/bin/toybox")
         vdc = "/system/bin/vdc"
         keystore = "/system/bin/keystore2"
         casefold = "/system/bin/casefolding_remover"
@@ -177,7 +178,8 @@ def collect(serial, readelf, destination, small_art_heap):
         camera_provider = "/vendor/bin/hw/android.hardware.camera.provider.ranchu"
         audio_hal = "/vendor/bin/hw/android.hardware.audio.service"
         for programs, search_paths in (
-            ((vold, service, cmd, vdc, keystore, casefold, vold_prepare, odsign, bpfloader, iptables), ("/system/lib64",)),
+            ((vold, service, cmd, vdc, keystore, casefold, vold_prepare, odsign, bpfloader, iptables, *installer_tools),
+             ("/system/lib64",)),
             ((zygote, installd, system_suspend, surfaceflinger, bootanimation, aconfigd, netd, cameraserver, audioserver, gatekeeperd),
              ("/system/lib64", "/system_ext/lib64")),
             ((keymint, lights, health, sensors, composer, allocator, camera_provider, audio_hal),
