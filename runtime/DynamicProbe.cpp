@@ -149,7 +149,7 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
     struct NativeLoop {
         const uint8_t* entry = nullptr;
         uint64_t entries = 0, instructions = 0;
-    } dexAot, dexVerifierAot, artReturnAot, bionicFillAot, bionicCopyAot;
+    } dexAot, dexVerifierAot, artReturnAot, bionicFillAot, bionicCopyAot, fontScanAot;
     const auto runNativeLoop = [&]<typename Loop>(NativeLoop& stats, const uint8_t* bytes) {
         if (cpu.pc % pageSize != Loop::fileOffset % pageSize || !androidLoopMatches(machine, bytes, Loop::words))
             return false;
@@ -179,7 +179,7 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
     uint64_t previousSnapshotRetired = 0, previousSnapshotAot = 0;
     const auto aotInstructions = [&] {
         return sha256AotInstructions + dexAot.instructions + dexVerifierAot.instructions + artReturnAot.instructions +
-               bionicFillAot.instructions + bionicCopyAot.instructions;
+               bionicFillAot.instructions + bionicCopyAot.instructions + fontScanAot.instructions;
     };
     const auto appendRanking = [](std::ostream& out, const CodeSamples& histogram, size_t limit) {
         std::vector<std::pair<CodeLocation, uint64_t>> ranked(histogram.begin(), histogram.end());
@@ -210,7 +210,9 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
                 << "  Android Bionic fill AOT entries: " << bionicFillAot.entries
                 << ", guest instructions: " << bionicFillAot.instructions << '\n'
                 << "  Android Bionic copy AOT entries: " << bionicCopyAot.entries
-                << ", guest instructions: " << bionicCopyAot.instructions << '\n';
+                << ", guest instructions: " << bionicCopyAot.instructions << '\n'
+                << "  Android font family scan AOT entries: " << fontScanAot.entries
+                << ", guest instructions: " << fontScanAot.instructions << '\n';
         }
         if (!sampleBoot) return;
         out << "  guest instruction samples: " << samples << ", unattributed: " << unattributedSamples << '\n';
@@ -360,6 +362,8 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
                 runNativeLoop.operator()<AndroidDexHashLoop>(dexAot, bytes)) continue;
             if (word == AndroidDexAsciiVerifierLoop::words.front() &&
                 runNativeLoop.operator()<AndroidDexAsciiVerifierLoop>(dexVerifierAot, bytes)) continue;
+            if (word == AndroidFontFamilyScan::words.front() &&
+                runNativeLoop.operator()<AndroidFontFamilyScan>(fontScanAot, bytes)) continue;
             if (word == AndroidArtGcReturn::words.front() &&
                 runNativeLoop.operator()<AndroidArtGcReturn>(artReturnAot, bytes)) continue;
             if (word == AndroidBionicFillLoop::words.front() &&

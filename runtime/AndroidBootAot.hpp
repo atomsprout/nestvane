@@ -111,6 +111,44 @@ struct AndroidDexHashLoop {
     }
 };
 
+// Skip font families whose cached next codepoint is beyond this page in
+// FontCollection::init. The interpreter handles exhaustion and cache misses.
+struct AndroidFontFamilyScan {
+    static constexpr std::string_view moduleSuffix = "/system/lib64/libminikin.so";
+    static constexpr uint64_t fileOffset = 0x185474;
+    static constexpr std::array<uint32_t, 12> words{
+        0x9100077b, 0xeb08037f, 0x54fffce2, 0x8b1b0a7c,
+        0xeb1c02e9, 0xb7f809bc, 0x54000983, 0xf100113f,
+        0x54000943, 0xb87b7aa9, 0xeb09031f, 0x54fffea9,
+    };
+    static constexpr uint64_t batchSize = 16, maxIterationInstructions = words.size();
+
+    static uint64_t execute(Machine& machine, uint64_t iterations) {
+        auto& cpu = machine.cpu;
+        auto& x = cpu.x;
+        uint64_t completed = 0;
+        for (; completed < iterations; ++completed) {
+            const uint64_t family = x[27] + 1;
+            if (family >= x[8]) break;
+            const uint64_t position = x[19] + (family << 2);
+            if ((position >> 63) || x[23] < position || x[23] - position < sizeof(uint32_t)) break;
+            const auto* cached = machine.read(x[21] + (family << 2), sizeof(uint32_t), 4);
+            if (!cached) break;
+            uint32_t nextCodepoint;
+            std::memcpy(&nextCodepoint, cached, sizeof(nextCodepoint));
+            if (x[24] > nextCodepoint) break;
+
+            x[27] = family;
+            x[28] = position;
+            x[9] = nextCodepoint;
+            cpu.nzcv = x[24] == nextCodepoint ? 6 : 8; // CMP x24, x9 on the taken B.LS path.
+        }
+        const auto retired = completed * words.size();
+        cpu.retired += retired;
+        return retired;
+    }
+};
+
 // CheckIntraStringDataItem in Android 17 libdexfile. Handle nonzero ASCII
 // bytes on the back edge; multibyte and malformed inputs use the interpreter.
 struct AndroidDexAsciiVerifierLoop {

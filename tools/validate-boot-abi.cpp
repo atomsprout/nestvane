@@ -105,6 +105,58 @@ int main() {
         assert(!AndroidDexHashLoop::execute(native, 16) && native.cpu == beforeFault);
     }
     {
+        using Loop = AndroidFontFamilyScan;
+        constexpr uint64_t entry = 0x4474, cache = 0x8000;
+        std::vector<uint8_t> code(sizeof(Loop::words)), bytes(pageSize);
+        std::memcpy(code.data(), Loop::words.data(), code.size());
+        const Image image{entry, {{entry, code, 5}, {cache, bytes, 6}}, {}};
+        Machine native(image), reference(image);
+        for (unsigned example = 0; example < 256; ++example) {
+            CPU cpu;
+            cpu.pc = entry;
+            cpu.retired = example;
+            cpu.nzcv = example & 15;
+            cpu.x[8] = 30;
+            cpu.x[19] = 0x3000;
+            cpu.x[21] = cache;
+            cpu.x[23] = 0x3100;
+            cpu.x[24] = 0x400;
+            cpu.x[27] = example % 10;
+            const auto stop = cpu.x[27] + 1 + example % 20;
+            for (size_t i = 0; i < 32; ++i) {
+                const uint32_t value = i == stop ? 0x3ff : 0x400 + (i + example) % 2;
+                std::memcpy(bytes.data() + i * sizeof(value), &value, sizeof(value));
+            }
+            assert(native.write(cache, bytes) && reference.write(cache, bytes));
+            native.cpu = reference.cpu = cpu;
+            const auto iterations = 1 + example % Loop::batchSize;
+            const auto expected = std::min({iterations, stop - cpu.x[27] - 1, cpu.x[8] - cpu.x[27] - 1});
+            const auto retired = Loop::execute(native, iterations);
+            assert(retired == expected * Loop::words.size());
+            for (uint64_t i = 0; i < retired; ++i) {
+                const auto word = Loop::words[(reference.cpu.pc - entry) / sizeof(uint32_t)];
+                const auto decoded = decode(word);
+                if (decoded.op == Op::unsupported) assert(executeStartupInstruction(reference, word));
+                else executeDecoded(reference, decoded);
+            }
+            assert(native.cpu == reference.cpu);
+        }
+        const auto rejects = [&](CPU cpu) {
+            native.cpu = cpu;
+            assert(!Loop::execute(native, Loop::batchSize) && native.cpu == cpu);
+        };
+        auto cpu = native.cpu;
+        cpu.x[27] = 0;
+        cpu.x[21] = cache - 8;
+        rejects(cpu);
+        cpu.x[21] = cache;
+        cpu.x[23] = cpu.x[19] + 7;
+        rejects(cpu);
+        cpu.x[19] = uint64_t{1} << 63;
+        cpu.x[23] = UINT64_MAX;
+        rejects(cpu);
+    }
+    {
         using Loop = AndroidDexAsciiVerifierLoop;
         constexpr uint64_t entry = 0x4508, input = 0x6000, object = 0x8000, cursor = object + 0x88;
         std::vector<uint8_t> code(sizeof(Loop::words)), bytes(pageSize, 0x41), state(pageSize);
