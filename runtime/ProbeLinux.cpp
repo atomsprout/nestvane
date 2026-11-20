@@ -6966,9 +6966,11 @@ std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedPr
         if (storage && countedShared.insert(storage).second) sharedBytes += storage->pages.capacity();
     };
     std::set<uint64_t> countedProcesses;
+    std::vector<const Process*> activeProcesses;
     for (const auto& [_, thread] : threads) {
         const auto& process = *thread.process;
         if (thread.wait == Wait::exited || !countedProcesses.insert(process.id).second) continue;
+        activeProcesses.push_back(&process);
         for (const auto& area : process.id == processId() ? machine.segments : process.segments) {
             if (!area.bytes.empty() && countedDense.insert(area.bytes.data()).second)
                 privateBytes += area.bytes.capacity();
@@ -6985,6 +6987,15 @@ std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedPr
     tasks << "  guest memory bytes: anonymous dirty=" << anonymousBudget->dirty
           << " dense private capacity=" << privateBytes << " shared capacity=" << sharedBytes
           << " anonymous reserved=" << anonymousBudget->reserved << '/' << anonymousBudget->reservedLimit << '\n';
+    const auto top = activeProcesses.begin() + std::min<size_t>(activeProcesses.size(), 8);
+    std::partial_sort(activeProcesses.begin(), top, activeProcesses.end(),
+                      [](const Process* a, const Process* b) { return a->cpuTime > b->cpuTime; });
+    for (auto entry = activeProcesses.begin(); entry != top; ++entry) {
+        const auto& process = **entry;
+        const auto hostCPU = std::chrono::duration_cast<std::chrono::milliseconds>(process.cpuTime).count();
+        tasks << "  guest process host CPU: " << hostCPU << " ms pid=" << process.id
+              << ' ' << (process.programName.empty() ? process.executable : process.programName) << '\n';
+    }
     const auto threadName = [](const Thread& thread) -> std::string_view {
         const auto end = std::find(thread.name.begin(), thread.name.end(), uint8_t{0});
         return {reinterpret_cast<const char*>(thread.name.data()), size_t(end - thread.name.begin())};
