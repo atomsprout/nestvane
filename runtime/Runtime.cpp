@@ -10,6 +10,10 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+#ifdef __APPLE__
+#include <mach/mach.h>
+#endif
+
 namespace nestvane {
 
 namespace {
@@ -460,46 +464,98 @@ bool AnonymousPages::copyTo(AnonymousPages& target, uint64_t source, uint64_t de
     return true;
 }
 
+struct DenseBytes::Storage {
+    explicit Storage(size_t size, std::vector<uint8_t> initial = {}) : length(size) {
+#ifdef __APPLE__
+        // Give large guest mappings their own host pages so the kernel can fork them lazily.
+        constexpr size_t minimumMapping = 256 * 1024;
+        if (length >= minimumMapping) {
+            void* address = mmap(nullptr, length, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+            if (address != MAP_FAILED) {
+                mapping = static_cast<uint8_t*>(address);
+                if (!initial.empty()) std::memcpy(mapping, initial.data(), initial.size());
+                return;
+            }
+        }
+#endif
+        bytes = std::move(initial);
+        bytes.resize(length);
+    }
+
+    ~Storage() {
+        if (mapping) munmap(mapping, length);
+    }
+
+    Storage(const Storage&) = delete;
+    Storage& operator=(const Storage&) = delete;
+
+    std::shared_ptr<Storage> clone() const {
+#ifdef __APPLE__
+        if (mapping) {
+            auto copy = std::make_shared<Storage>(0);
+            vm_address_t destination = 0;
+            vm_prot_t current = 0, maximum = 0;
+            const auto task = mach_task_self();
+            if (vm_remap(task, &destination, length, 0, VM_FLAGS_ANYWHERE, task,
+                         reinterpret_cast<vm_address_t>(mapping), true, &current, &maximum,
+                         VM_INHERIT_NONE) == KERN_SUCCESS) {
+                copy->mapping = reinterpret_cast<uint8_t*>(destination);
+                copy->length = length;
+                return copy;
+            }
+        }
+#endif
+        auto copy = std::make_shared<Storage>(length);
+        std::memcpy(copy->data(), data(), length);
+        return copy;
+    }
+
+    uint8_t* data() { return mapping ? mapping : bytes.data(); }
+    const uint8_t* data() const { return mapping ? mapping : bytes.data(); }
+    size_t capacity() const { return mapping ? length : bytes.capacity(); }
+
+    size_t length;
+    std::vector<uint8_t> bytes;
+    uint8_t* mapping = nullptr;
+};
+
 DenseBytes::DenseBytes(std::vector<uint8_t> bytes) {
-    if (!bytes.empty()) storage = std::make_shared<std::vector<uint8_t>>(std::move(bytes));
+    if (!bytes.empty()) storage = std::make_shared<Storage>(bytes.size(), std::move(bytes));
 }
 
 DenseBytes::DenseBytes(std::initializer_list<uint8_t> bytes)
     : DenseBytes(std::vector<uint8_t>(bytes)) {}
 
-DenseBytes::DenseBytes(std::vector<uint8_t>::const_iterator first, std::vector<uint8_t>::const_iterator last)
-    : DenseBytes(std::vector<uint8_t>(first, last)) {}
-
-std::vector<uint8_t>::const_iterator DenseBytes::begin() const {
-    return storage ? storage->cbegin() : std::vector<uint8_t>::const_iterator{};
+DenseBytes::DenseBytes(const uint8_t* first, const uint8_t* last) {
+    if (first == last) return;
+    storage = std::make_shared<Storage>(last - first);
+    std::memcpy(storage->data(), first, storage->length);
 }
 
-std::vector<uint8_t>::const_iterator DenseBytes::end() const {
-    return storage ? storage->cend() : std::vector<uint8_t>::const_iterator{};
-}
+size_t DenseBytes::size() const { return storage ? storage->length : 0; }
+size_t DenseBytes::capacity() const { return storage ? storage->capacity() : 0; }
+const uint8_t* DenseBytes::data() const { return storage ? storage->data() : nullptr; }
 
 uint8_t* DenseBytes::mutableData() {
     if (!storage) return nullptr;
-    if (storage.use_count() != 1) storage = std::make_shared<std::vector<uint8_t>>(*storage);
+    if (storage.use_count() != 1) storage = storage->clone();
     return storage->data();
 }
 
 void DenseBytes::resize(size_t length) {
+    if (length == size()) return;
     if (!length) {
         storage.reset();
-    } else if (!storage) {
-        storage = std::make_shared<std::vector<uint8_t>>(length);
-    } else if (length != storage->size()) {
-        if (storage.use_count() != 1)
-            storage = std::make_shared<std::vector<uint8_t>>(storage->begin(),
-                storage->begin() + std::min(length, storage->size()));
-        storage->resize(length);
+        return;
     }
+    auto resized = std::make_shared<Storage>(length);
+    if (storage) std::memcpy(resized->data(), storage->data(), std::min(length, storage->length));
+    storage = std::move(resized);
 }
 
 bool DenseBytes::operator==(const DenseBytes& other) const {
-    return storage == other.storage || (empty() && other.empty()) ||
-        (storage && other.storage && *storage == *other.storage);
+    return storage == other.storage ||
+        (size() == other.size() && std::memcmp(data(), other.data(), size()) == 0);
 }
 
 uint64_t Segment::accessibleSize() const {

@@ -70,20 +70,21 @@ public:
     DenseBytes() = default;
     DenseBytes(std::vector<uint8_t> bytes);
     DenseBytes(std::initializer_list<uint8_t> bytes);
-    DenseBytes(std::vector<uint8_t>::const_iterator first, std::vector<uint8_t>::const_iterator last);
+    DenseBytes(const uint8_t* first, const uint8_t* last);
 
-    size_t size() const { return storage ? storage->size() : 0; }
-    size_t capacity() const { return storage ? storage->capacity() : 0; }
+    size_t size() const;
+    size_t capacity() const;
     bool empty() const { return size() == 0; }
-    const uint8_t* data() const { return storage ? storage->data() : nullptr; }
-    std::vector<uint8_t>::const_iterator begin() const;
-    std::vector<uint8_t>::const_iterator end() const;
+    const uint8_t* data() const;
+    const uint8_t* begin() const { return data(); }
+    const uint8_t* end() const { return empty() ? data() : data() + size(); }
     uint8_t* mutableData();
     void resize(size_t size);
     bool operator==(const DenseBytes& other) const;
 
 private:
-    std::shared_ptr<std::vector<uint8_t>> storage;
+    struct Storage;
+    std::shared_ptr<Storage> storage;
 };
 
 struct Segment {
