@@ -43,6 +43,7 @@ constexpr uint64_t lazyAnonymousThreshold = 4 * 1024 * 1024;
 constexpr uint64_t noMemory = uint64_t(-12);
 constexpr char unlabeledFile[] = "u:object_r:unlabeled:s0";
 constexpr std::string_view restoreconMarker = "user.restorecon_in_progress";
+constexpr uint32_t setgidMode = 02000;
 constexpr uint8_t mdweRefuseExecGain = 1, mdweNoInherit = 2;
 constexpr uint32_t sealSeal = 1, sealShrink = 2, sealGrow = 4, sealWrite = 8, sealFutureWrite = 16;
 constexpr unsigned sigChild = 17;
@@ -1352,6 +1353,21 @@ uint64_t ProbeLinux::writeFileBytes(WritableFile& file, uint64_t offset, std::sp
     return 0;
 }
 
+const ProbeLinux::Directory* ProbeLinux::setgidParent(std::string_view path) const {
+    const auto parent = directories.find(path.substr(0, path.rfind('/')));
+    return parent != directories.end() && (parent->second.mode & setgidMode) ? &parent->second : nullptr;
+}
+
+uint64_t ProbeLinux::chmodDirectory(Directory& directory, uint32_t mode) const {
+    if (userId() != 0 && userId() != directory.uid) return uint64_t(-1);
+    constexpr uint64_t capFsetid = 1ULL << 4;
+    const auto& process = *current->process;
+    if (userId() != 0 && !(process.effectiveCaps & capFsetid) && groupId() != directory.gid &&
+        std::ranges::find(process.groups, directory.gid) == process.groups.end()) mode &= ~setgidMode;
+    directory.mode = mode & 03777;
+    return 0;
+}
+
 bool ProbeLinux::canAccessParent(std::string_view path, bool modify) const {
     if (!userId()) return true;
     const MountView* view = nullptr;
@@ -1633,7 +1649,8 @@ uint64_t ProbeLinux::open(const Machine& machine, const std::string& path, uint3
         file->inode = nextInode++;
         file->mode = mode & 0777 & ~current->process->umask;
         file->uid = userId();
-        file->gid = groupId();
+        const auto* inherited = setgidParent(pathname);
+        file->gid = inherited ? inherited->gid : groupId();
         file->persistent = persistent;
         markFileModified(*file);
         file->times[0] = file->times[2];
@@ -3970,7 +3987,8 @@ bool ProbeLinux::fileCall(Machine& machine) {
                     x[0] = changeMetadata(socket->second);
                 else if (!writablePath(target ? *target : path)) x[0] = uint64_t(-30);
                 else if (auto directory = directories.find(entry->path); directory != directories.end())
-                    x[0] = changeMetadata(directory->second);
+                    x[0] = x[8] == 53 ? chmodDirectory(directory->second, uint32_t(x[2])) :
+                        changeMetadata(directory->second);
                 else if (auto block = loopDevices.find(entry->path); block != loopDevices.end())
                     x[0] = changeMetadata(block->second);
                 else if (auto binder = binderDevices.find(entry->path); binder != binderDevices.end())
@@ -3985,11 +4003,14 @@ bool ProbeLinux::fileCall(Machine& machine) {
                 else if (!canAccessParent(backing, true)) x[0] = uint64_t(-13);
                 else if (directories.size() - ext4DirectoryCount >= maxGuestDirectories) x[0] = uint64_t(-28);
                 else {
-                    directories.emplace(backing, Directory{uint32_t(x[2] & 01777 & ~current->process->umask),
-                                                           userId(), groupId(), newFileContext(backing)});
+                    const auto* inherited = setgidParent(backing);
+                    const auto gid = inherited ? inherited->gid : groupId();
+                    auto mode = uint32_t(x[2] & 01777 & ~current->process->umask);
+                    if (inherited) mode |= setgidMode;
+                    directories.emplace(backing, Directory{mode, userId(), gid, newFileContext(backing)});
                     if (const auto* view = mountFor(path); view && view->device == "cgroup2") {
                         cgroupFiles.emplace(backing + std::string(cgroupProcs),
-                                            std::make_shared<Directory>(Directory{0644, userId(), groupId()}));
+                                            std::make_shared<Directory>(Directory{0644, userId(), gid}));
                     }
                     fileEvent(backing, fileCreated, true);
                     x[0] = 0;
@@ -4335,7 +4356,16 @@ bool ProbeLinux::fileCall(Machine& machine) {
         }
         case 52: case 55: { // fchmod, fchown
             if (descriptor == descriptors().end() || descriptor->second.pathOnly()) { x[0] = uint64_t(-9); break; }
-            const auto& file = descriptor->second.temporary;
+            const auto& entry = descriptor->second;
+            if (x[8] == 52 && entry.node == Node::directory) {
+                const auto& visible = entry.visiblePath.empty() ? entry.path : entry.visiblePath;
+                const auto directory = directories.find(entry.path);
+                x[0] = directory != directories.end() && writablePath(visible) ?
+                    chmodDirectory(directory->second, uint32_t(x[1])) : uint64_t(-30);
+                if (!x[0]) fileEvent(entry.path, fileAttributes, true);
+                break;
+            }
+            const auto& file = entry.temporary;
             if (!file) { x[0] = uint64_t(-30); break; }
             if (userId() != 0 && userId() != file->uid) { x[0] = uint64_t(-1); break; }
             if (x[8] == 52) file->mode = x[1] & 0777;

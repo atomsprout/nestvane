@@ -580,6 +580,8 @@ private:
     bool validAppProcessContext(std::string_view label) const;
     bool canSpecializeApp(std::string_view label) const;
     bool canAccessParent(std::string_view path, bool modify) const;
+    const Directory* setgidParent(std::string_view path) const;
+    uint64_t chmodDirectory(Directory& directory, uint32_t mode) const;
     uint64_t renameFile(Machine& machine);
     uint64_t renameDirectory(const std::string& source, const std::string& destination, bool noReplace);
     sqlite3* dataDatabase = nullptr;
