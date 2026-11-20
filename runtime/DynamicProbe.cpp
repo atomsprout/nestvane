@@ -89,7 +89,7 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
     auto machine = linux.createMachine(image);
     auto& cpu = machine.cpu;
     const auto& startup = image.startup.value();
-    linux.setCommandLine(startup);
+    linux.setCommandLine(startup, &machine);
     report << std::hex << "  linker PC=0x" << image.entry << " base=0x" << startup.interpreterBase
            << " executable entry=0x" << startup.executableEntry << " phdr=0x" << startup.programHeaders
            << " initial SP=0x" << cpu.sp << std::dec << '\n';

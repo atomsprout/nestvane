@@ -930,6 +930,44 @@ const ProbeLinux::Process* ProbeLinux::procTaskDirectory(std::string_view path) 
     return subject && subject->process->id == tid ? subject->process.get() : nullptr;
 }
 
+uint64_t ProbeLinux::procThreadId(std::string_view task) const {
+    if (task == "self") return processId();
+    if (task == "thread-self") return currentTid;
+    if (const auto tid = procId(task)) return tid;
+    const auto slash = task.rfind('/');
+    if (slash == std::string_view::npos) return 0;
+    const auto* owner = procTaskDirectory("/proc/" + std::string(task.substr(0, slash)));
+    const auto tid = procId(task.substr(slash + 1));
+    const auto* subject = visibleProcThread(tid);
+    return owner && subject && subject->process.get() == owner ? tid : 0;
+}
+
+std::string ProbeLinux::procCommandLine(const Process& process, const Machine* machine) const {
+    if (!process.argvAddress || !machine) return process.commandLine;
+    const auto& segments = process.id == processId() ? machine->segments : process.segments;
+    std::string result(process.commandLine.size(), '\0');
+    uint64_t address = process.argvAddress;
+    size_t copied = 0;
+    while (copied < result.size()) {
+        const auto next = std::upper_bound(segments.begin(), segments.end(), address,
+            [](uint64_t address, const Segment& segment) { return address < segment.address; });
+        if (next == segments.begin()) break;
+        const auto& area = *std::prev(next);
+        const auto offset = address - area.address;
+        if (!(area.flags & 4) || offset >= area.accessibleSize()) break;
+        const auto length = std::min<uint64_t>(result.size() - copied, area.accessibleSize() - offset);
+        if (area.anonymousPages)
+            area.anonymousPages->readInto(area.fileOffset + offset,
+                {reinterpret_cast<uint8_t*>(result.data() + copied), length});
+        else
+            std::memcpy(result.data() + copied, area.data() + offset, length);
+        copied += length;
+        address += length;
+    }
+    result.resize(copied);
+    return result;
+}
+
 bool ProbeLinux::directoryExists(std::string_view path) const {
     if (path.starts_with("/proc/")) {
         const auto id = path.substr(sizeof("/proc/") - 1);
@@ -1264,27 +1302,14 @@ std::optional<ProbeLinux::Descriptor> ProbeLinux::find(std::string_view path, ui
     if (path.starts_with("/proc/") && path.size() > 6 + procSuffix.size() && path.ends_with(procSuffix)) {
         auto task = path.substr(6);
         task.remove_suffix(procSuffix.size());
-        uint64_t tid = 0;
-        if (task == "self") {
-            tid = processId();
-        } else if (task == "thread-self") {
-            tid = currentTid;
-        } else {
-            tid = procId(task);
-            if (const auto separator = task.rfind('/'); !tid && separator != std::string_view::npos) {
-                const auto* owner = procTaskDirectory(path.substr(0, separator + sizeof("/proc/") - 1));
-                tid = procId(task.substr(separator + 1));
-                const auto* subject = visibleProcThread(tid);
-                if (!owner || !subject || subject->process.get() != owner) return {};
-            }
-        }
+        const auto tid = procThreadId(task);
         const auto* subject = visibleProcThread(tid);
         if (!subject) return {};
         const auto& thread = *subject;
         const auto& process = *thread.process;
         if (isCmdline) {
             Descriptor entry{std::string(path), {}, flags, Node::regular};
-            entry.snapshot = std::make_shared<std::string>(process.commandLine);
+            entry.snapshot = std::make_shared<std::string>(procCommandLine(process, machine));
             entry.bytes = {reinterpret_cast<const uint8_t*>(entry.snapshot->data()), entry.snapshot->size()};
             return entry;
         }
@@ -4053,36 +4078,24 @@ bool ProbeLinux::fileCall(Machine& machine) {
                 }
                 const auto ownProc = "/proc/" + std::to_string(processId());
                 const bool procMaps = path == "/proc/self/maps" || path == ownProc + "/maps";
-                uint64_t statTid = 0;
-                if (path == "/proc/self/stat" || path == ownProc + "/stat") statTid = processId();
-                else if (path == "/proc/thread-self/stat") statTid = currentTid;
-                else if (path.ends_with("/stat")) {
-                    std::string_view task = path;
-                    const auto ownTasks = ownProc + "/task/";
-                    if (task.starts_with("/proc/self/task/")) task.remove_prefix(sizeof("/proc/self/task/") - 1);
-                    else if (task.starts_with(ownTasks)) task.remove_prefix(ownTasks.size());
-                    else task = {};
-                    if (task.size() > 5) {
-                        task.remove_suffix(5);
-                        const auto [end, error] = std::from_chars(task.begin(), task.end(), statTid);
-                        if (error != std::errc{} || end != task.end()) statTid = 0;
-                    }
-                }
+                const std::string_view procPath = path;
+                const auto statTid = procPath.starts_with("/proc/") && procPath.ends_with("/stat") && procPath.size() > 11
+                    ? procThreadId(procPath.substr(6, procPath.size() - 11)) : 0;
                 if (procMaps || statTid) {
                     if ((x[2] & 3) || (x[2] & 0x240)) { x[0] = uint64_t(-13); break; }
                     const auto fd = freeDescriptor();
                     if (fd == descriptorCapacity) { x[0] = uint64_t(-24); break; }
                     std::ostringstream listing;
                     if (statTid) {
-                        const auto& process = *current->process;
-                        const auto subject = threads.find(statTid);
-                        if (subject == threads.end() || subject->second.process.get() != &process ||
-                            subject->second.wait == Wait::exited) { x[0] = uint64_t(-2); break; }
-                        const auto& thread = subject->second;
+                        const auto* subject = visibleProcThread(statTid);
+                        if (!subject) { x[0] = uint64_t(-2); break; }
+                        const auto& thread = *subject;
+                        const auto& process = *thread.process;
+                        const auto& segments = process.id == processId() ? machine.segments : process.segments;
                         // mprotect can split the stack. The exec stack pointer stays near its high end.
-                        const auto topStack = std::find_if(machine.segments.rbegin(), machine.segments.rend(),
+                        const auto topStack = std::find_if(segments.rbegin(), segments.rend(),
                             [](const Segment& area) { return area.initialStack; });
-                        const uint64_t stackStart = topStack == machine.segments.rend() ? 0 :
+                        const uint64_t stackStart = topStack == segments.rend() ? 0 :
                             topStack->address + topStack->mappedSize() - 16;
                         const auto taskCount = std::count_if(threads.begin(), threads.end(), [&](const auto& task) {
                             return task.second.process.get() == &process && task.second.wait != Wait::exited;
@@ -6239,8 +6252,11 @@ std::string ProbeLinux::observeEntry(uint64_t pc) {
            (process.context.empty() ? "" : " (guest context " + process.context + ")") + "\n";
 }
 
-void ProbeLinux::setCommandLine(const Startup& startup) {
-    auto& commandLine = current->process->commandLine;
+void ProbeLinux::setCommandLine(const Startup& startup, const Machine* machine) {
+    auto& process = *current->process;
+    process.argvAddress = 0;
+    if (machine) machine->load64(machine->cpu.sp + sizeof(uint64_t), process.argvAddress);
+    auto& commandLine = process.commandLine;
     commandLine = startup.argv0.value_or(startup.filename);
     commandLine.push_back('\0');
     for (const auto& argument : startup.arguments) {
@@ -6314,7 +6330,7 @@ bool ProbeLinux::execProcess(Machine& machine) {
         process.expeditedMembarrier = false;
         process.executable = executablePath;
         process.programName = *filename;
-        setCommandLine(*image.startup);
+        setCommandLine(*image.startup, &machine);
         const auto basename = std::string_view(*filename).substr(filename->find_last_of('/') + 1);
         current->name.fill(0);
         std::copy_n(basename.begin(), std::min(basename.size(), current->name.size() - 1), current->name.begin());

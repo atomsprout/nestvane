@@ -73,7 +73,7 @@ struct ProbeLinux {
     std::string workerReport(const Machine& machine, uint64_t observedProcess = 0) const;
     std::optional<std::pair<std::string_view, uint64_t>> guestCodeFile(const uint8_t* instruction) const;
     void setBootContext(std::string context);
-    void setCommandLine(const Startup& startup);
+    void setCommandLine(const Startup& startup, const Machine* machine = nullptr);
     bool loadBootTransition(std::string_view manifest);
     bool loadBootFileLabels(std::string_view manifest);
     bool loadCurrentContextPolicy(std::string_view manifest);
@@ -681,6 +681,8 @@ private:
     bool writablePath(std::string_view path) const;
     bool directoryExists(std::string_view path) const;
     const Thread* visibleProcThread(uint64_t tid) const;
+    uint64_t procThreadId(std::string_view task) const;
+    std::string procCommandLine(const Process& process, const Machine* machine) const;
     const Process* procTaskDirectory(std::string_view path) const;
     static std::string mountList(const MountNamespace& group);
     uint64_t writableAllocation() const;
@@ -772,6 +774,7 @@ private:
         std::string workingDirectory = "/";
         std::string programName;
         std::string commandLine;
+        uint64_t argvAddress = 0;
         std::string context, pendingContext;
         std::string cgroup;
         uint64_t group = 0, session = 0;

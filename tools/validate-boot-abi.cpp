@@ -6844,6 +6844,44 @@ int main() {
         assert(load(base + 0x724) == objectPtr && load(base + 0x72c) == objectCookie);
     }
 
+    {
+        ProbeLinux guest(1, 0);
+        Startup startup{};
+        startup.filename = "/system/bin/app_process64";
+        startup.argv0 = "app_process64";
+        startup.arguments = {"--zygote", "--start-system-server"};
+        auto task = guest.createMachine(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, startup});
+        guest.setCommandLine(startup, &task);
+        const auto invoke = [&](uint64_t number, std::array<uint64_t, 6> args) {
+            std::ranges::copy(args, task.cpu.x.begin());
+            task.cpu.x[8] = number;
+            assert(guest.syscall(task));
+            return task.cpu.x[0];
+        };
+        uint64_t argv;
+        assert(task.load64(task.cpu.sp + sizeof(uint64_t), argv));
+        const auto child = invoke(220, {0x1200011, 0, 0, 0, base + 0x500});
+        assert(child > 1 && guest.schedule(task) && guest.processId() == child);
+        constexpr char name[] = "com.android.launcher3";
+        const std::array<uint8_t, 45> empty{};
+        assert(task.write(argv, empty));
+        assert(task.write(argv, {reinterpret_cast<const uint8_t*>(name), sizeof(name)}));
+        assert(invoke(124, {}) == 0); // Yield to the parent before its procfs lookup.
+        assert(guest.schedule(task) && guest.processId() == 1);
+        const auto open = [&](std::string path) {
+            assert(task.write(base, {reinterpret_cast<const uint8_t*>(path.c_str()), path.size() + 1}));
+            return invoke(56, {uint32_t(-100), base, 0});
+        };
+        const auto childPath = "/proc/" + std::to_string(child);
+        const auto childArgs = open(childPath + "/cmdline");
+        const auto parentArgs = open("/proc/self/cmdline");
+        assert(childArgs < 256 && parentArgs < 256 && open(childPath + "/stat") < 256);
+        assert(invoke(63, {childArgs, base + 256, 64}) >= sizeof(name));
+        assert(std::memcmp(task.read(base + 256, sizeof(name), 4), name, sizeof(name)) == 0);
+        assert(invoke(63, {parentArgs, base + 256, 64}) > 13);
+        assert(std::memcmp(task.read(base + 256, 13, 4), "app_process64", 13) == 0);
+    }
+
     Startup commandLine{};
     commandLine.filename = "/system/bin/app_process64";
     commandLine.argv0 = "app_process";
