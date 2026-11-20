@@ -78,6 +78,57 @@ def copy_framework_apps(adb, remote, active_modules, guest):
     print(f"Added {len(paths)} factory APKs with {len(FRAMEWORK_APP_APEXES)} framework APEX dependencies", flush=True)
 
 
+def check_reference_files(remote, root, files):
+    digests = dict((path, value) for value, path in (
+        line.split(maxsplit=1) for line in remote("sha256sum", *sorted(files)).splitlines()
+    ))
+    for path in sorted(files):
+        digest = hashlib.sha256()
+        with (root / path.lstrip("/")).open("rb") as file:
+            for chunk in iter(lambda: file.read(1024 * 1024), b""):
+                digest.update(chunk)
+        if digest.hexdigest() != digests.get(path):
+            raise SystemExit(f"Boot input differs from SDK reference: {path}")
+
+
+def precompile_framework_code(adb, remote, guest, stage, bootclasspath):
+    # These are the class loader contexts of the matching SDK's prebuilt files.
+    location_provider = "/system/framework/com.android.location.provider.jar"
+    extensions = "/system_ext/framework/androidx.window.extensions.jar"
+    sidecar = "/system_ext/framework/androidx.window.sidecar.jar"
+    targets = (
+        ("/system/framework/services.jar", f"PCL[{location_provider}]"),
+        ("/system_ext/priv-app/SystemUI/SystemUI.apk", f"PCL[]{{PCL[{extensions}]#PCL[{sidecar}]}}"),
+    )
+    check_reference_files(remote, guest, {source for source, _ in targets} |
+                          {location_provider, extensions, sidecar})
+    # ART resolves the boot image location through the arm64 subdirectory.
+    remote("mkdir", stage + "/arm64")
+    for suffix in ("art", "oat", "vdex"):
+        remote("mv", f"{stage}/boot.{suffix}", f"{stage}/arm64/boot.{suffix}")
+    for source, context in targets:
+        dex = Path(source.lstrip("/"))
+        folder = guest / dex.parent / "oat/arm64"
+        folder.mkdir(parents=True, exist_ok=True)
+        base = f"{stage}/{dex.stem}"
+        command = [
+            "/apex/com.android.art/bin/dex2oat64",
+            "--runtime-arg", "-Xbootclasspath:" + ":".join(bootclasspath),
+            "--runtime-arg", "-Xgc:CC", "--runtime-arg", "-Xmx384m", "-j2",
+            "--instruction-set=arm64", "--instruction-set-features=default",
+            "--boot-image=" + stage + "/boot.art", "--compiler-filter=speed",
+            "--dex-file=" + source, "--dex-location=" + source,
+            "--class-loader-context=" + context, "--avoid-storing-invocation",
+            "--oat-file=" + base + ".odex", "--output-vdex=" + base + ".vdex",
+        ]
+        subprocess.run(adb + ["shell", shlex.join(command)], check=True)
+        for suffix in ("odex", "vdex"):
+            artifact = folder / f"{dex.stem}.{suffix}"
+            subprocess.run(adb + ["pull", f"{base}.{suffix}", str(artifact)], check=True)
+            if artifact.stat().st_size == 0:
+                raise SystemExit(f"Reference produced an empty {artifact.name}")
+
+
 def replace_line(path, pattern, value):
     updated, count = re.subn(pattern, value, path.read_text(), flags=re.MULTILINE)
     if count != 1:
@@ -169,6 +220,8 @@ def main():
                         help="Produce a complete offline diagnostic guest root using the compiled image")
     parser.add_argument("--framework-apps", action="store_true",
                         help="Include launcher, SystemUI and package-management apps from the matching reference")
+    parser.add_argument("--precompile-framework-code", action="store_true",
+                        help="Add offline speed-compiled services.jar and SystemUI code")
     parser.add_argument("--smoke-apk", type=Path,
                         help="Stage the APK from tools/build-smoke-apk.sh for an install and launch check")
     parser.add_argument("--tethering-loader", type=Path,
@@ -184,6 +237,8 @@ def main():
         parser.error("--defer-zygote-preload requires --framework-diagnostic")
     if args.framework_apps and not args.framework_diagnostic:
         parser.error("--framework-apps requires --framework-diagnostic")
+    if args.precompile_framework_code and not args.framework_apps:
+        parser.error("--precompile-framework-code requires --framework-apps")
     if args.smoke_apk is not None:
         if not args.framework_apps:
             parser.error("--smoke-apk requires --framework-apps")
@@ -228,7 +283,14 @@ def main():
     if not match:
         raise SystemExit("The reference did not export DEX2OATBOOTCLASSPATH")
     jars = match[1].split(":")
-    if not jars or any(not re.fullmatch(r"/(?:apex|system)/[A-Za-z0-9_.+/\-]+\.jar", jar) for jar in jars):
+    bootclasspath = []
+    if args.precompile_framework_code:
+        full_classpath = re.search(r"^export BOOTCLASSPATH (\S+)$", path_input, re.MULTILINE)
+        if not full_classpath:
+            raise SystemExit("The reference did not export BOOTCLASSPATH")
+        bootclasspath = full_classpath[1].split(":")
+    if not jars or any(not re.fullmatch(r"/(?:apex|system)/[A-Za-z0-9_.+/\-]+\.jar", jar)
+                       for jar in jars + bootclasspath):
         raise SystemExit("Unexpected boot class path")
 
     apex_info = ElementTree.fromstring(remote("cat", "/apex/apex-info-list.xml"))
@@ -250,7 +312,7 @@ def main():
         if active_modules.get("com.android.tethering") != TETHERING_APEX:
             raise SystemExit("Expected the factory Tethering APEX at " + TETHERING_APEX)
         reference_files.add(TETHERING_APEX)
-    for jar in jars:
+    for jar in jars + bootclasspath:
         if jar.startswith("/system/"):
             reference_files.add(jar)
             continue
@@ -259,16 +321,11 @@ def main():
         if not re.fullmatch(r"/system/apex/[A-Za-z0-9_.-]+\.apex", factory_apex):
             raise SystemExit(f"Expected an active factory APEX for {module}")
         reference_files.add(factory_apex)
-    digests = dict((path, value) for value, path in (
-        line.split(maxsplit=1) for line in remote("sha256sum", *sorted(reference_files)).splitlines()
-    ))
-    for guest in sorted(reference_files):
-        digest = hashlib.sha256()
-        with (args.root / guest.lstrip("/")).open("rb") as file:
-            for chunk in iter(lambda: file.read(1024 * 1024), b""):
-                digest.update(chunk)
-        if digest.hexdigest() != digests.get(guest):
-            raise SystemExit(f"Boot input differs from SDK reference: {guest}")
+    if args.precompile_framework_code:
+        # These factory modules are pulled and checked when assembling the guest.
+        reference_files.difference_update(active_modules[module] for module in FRAMEWORK_APP_APEXES
+                                          if module in active_modules)
+    check_reference_files(remote, args.root, reference_files)
     print(f"Matched {len(reference_files)} boot inputs to {properties['ro.build.id']}", flush=True)
 
     stage = remote("mktemp", "-d", "/data/local/tmp/nestvane-preopt.XXXXXX")
@@ -307,6 +364,11 @@ def main():
                 if args.framework_apps:
                     copy_framework_apps(adb, remote, active_modules, guest)
                     capture_framework_app_policy(adb, remote, guest)
+                if args.precompile_framework_code:
+                    check_reference_files(
+                        remote, guest, {active_modules[module] for module in FRAMEWORK_APP_APEXES}
+                    )
+                    precompile_framework_code(adb, remote, guest, stage, bootclasspath)
                 if args.smoke_apk is not None:
                     target = guest / "system/etc/nestvane/smoke.apk"
                     target.parent.mkdir(parents=True, exist_ok=True)

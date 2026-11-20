@@ -61,6 +61,8 @@ tools/prepare-boot-image.py emulator-5580 --root generated/android17-init-root \
 tools/prepare-property-reader.sh generated/android17-framework-smoke
 ```
 
+可在上述镜像构建命令中加入 `--compiler-filter speed --precompile-framework-code`，在参考模拟器上同时预编译系统服务和 SystemUI。系统服务和 SystemUI 的产物合计约 146 MB。
+
 使用带图形后端的 Mac 探针运行该目录，或把它作为 `generated/android17-init-root` 构建 iPhone App。[本地图形后端验证](results/P2-network.md)
 
 ## Android 17 原版 ART 探针
