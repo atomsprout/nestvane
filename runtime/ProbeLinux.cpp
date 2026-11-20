@@ -1258,7 +1258,16 @@ uint64_t ProbeLinux::resize(const WritableFile& file, uint64_t size) {
     return 0;
 }
 
-uint64_t ProbeLinux::writeFileBytes(const WritableFile& file, uint64_t offset, std::span<const uint8_t> bytes) {
+void ProbeLinux::markFileModified(WritableFile& file) const {
+    using namespace std::chrono;
+    const auto time = realtimeAt(steady_clock::now());
+    const auto seconds = floor<std::chrono::seconds>(time);
+    const auto nanoseconds = (time - seconds).count();
+    file.times[2] = file.times[4] = seconds.count();
+    file.times[3] = file.times[5] = nanoseconds;
+}
+
+uint64_t ProbeLinux::writeFileBytes(WritableFile& file, uint64_t offset, std::span<const uint8_t> bytes) {
     if (offset + bytes.size() > file.storage->size) {
         // An input mapping may share the output storage, whose allocation can move.
         const std::vector<uint8_t> copy(bytes.begin(), bytes.end());
@@ -1267,6 +1276,7 @@ uint64_t ProbeLinux::writeFileBytes(const WritableFile& file, uint64_t offset, s
     } else {
         std::memmove(file.storage->pages.data() + offset, bytes.data(), bytes.size());
     }
+    markFileModified(file);
     return 0;
 }
 
@@ -1553,6 +1563,9 @@ uint64_t ProbeLinux::open(const Machine& machine, const std::string& path, uint3
         file->uid = userId();
         file->gid = groupId();
         file->persistent = persistent;
+        markFileModified(*file);
+        file->times[0] = file->times[2];
+        file->times[1] = file->times[3];
         if (const auto context = newFileContext(pathname); !context.empty())
             file->attributes["security.selinux"].assign(context.c_str(), context.c_str() + context.size() + 1);
         writableFiles.emplace(pathname, std::move(file));
@@ -1585,7 +1598,11 @@ uint64_t ProbeLinux::open(const Machine& machine, const std::string& path, uint3
         entry->ashmem = std::make_shared<Ashmem>();
         entry->ashmem->file.memoryFile = true;
     }
-    if ((flags & truncate) && entry->temporary) resize(*entry->temporary, 0);
+    if ((flags & truncate) && entry->temporary) {
+        if (const auto error = resize(*entry->temporary, 0)) return error;
+        markFileModified(*entry->temporary);
+        fileEvent(entry->path, fileModified);
+    }
     if (entry->node == Node::directory && pathname.find('/', 2) == std::string::npos) {
         // Each BPF mount owns a synthetic backing root. A bind mount can expose a subdirectory.
         const auto* mount = mountFor(*logical);
@@ -4044,7 +4061,7 @@ bool ProbeLinux::fileCall(Machine& machine) {
                 ? std::span<const uint8_t>(source.temporary->storage->pages).first(source.temporary->storage->size)
                 : source.contents();
             if (!x[3] || position >= data.size()) { x[0] = 0; break; }
-            const auto& file = *output.temporary;
+            auto& file = *output.temporary;
             if (file.seals & (sealWrite | sealFutureWrite)) { x[0] = uint64_t(-1); break; }
             const auto count = std::min<uint64_t>(x[3], data.size() - position);
             const auto offset = *output.offset;
@@ -4235,7 +4252,10 @@ bool ProbeLinux::fileCall(Machine& machine) {
             if (descriptor == descriptors().end() || !(descriptor->second.flags & 3)) { x[0] = uint64_t(-9); break; }
             const auto& file = descriptor->second.temporary;
             x[0] = !file || x[1] > INT64_MAX ? invalid : resize(*file, x[1]);
-            if (!x[0]) fileEvent(descriptor->second.path, fileModified);
+            if (!x[0]) {
+                markFileModified(*file);
+                fileEvent(descriptor->second.path, fileModified);
+            }
             break;
         }
         case 52: case 55: { // fchmod, fchown
@@ -4756,7 +4776,7 @@ uint64_t ProbeLinux::writeDescriptor(Machine& machine, const Descriptor& fd, uin
     }
     if (!size || fd.node == Node::null) return size;
     if (fd.temporary) {
-        const auto& file = *fd.temporary;
+        auto& file = *fd.temporary;
         if (file.seals & (sealWrite | sealFutureWrite)) return uint64_t(-1);
         const auto offset = fd.effectiveFlags() & 0x400 ? file.storage->size : position.value_or(*fd.offset);
         const auto limit = file.persistent || file.memoryFile ? maxDataFileBytes : maxGuestFileBytes;

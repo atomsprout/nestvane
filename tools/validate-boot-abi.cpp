@@ -4631,6 +4631,36 @@ int main() {
         }
         constexpr auto atCwd = uint32_t(-100);
         constexpr auto firstPath = base + 0x280, secondPath = base + 0x300, payload = base + 0x380;
+
+        {
+            const auto cacheDatabase = (cleanup.directory / "package-cache.sqlite3").string();
+            ProbeLinux cache(1, 0);
+            cache.mountData(cacheDatabase);
+            put(firstPath, "/data/package-cache");
+            put(payload, "parsed package");
+            const auto entry = invoke(cache, 56, {atCwd, firstPath, 0x42, 0600});
+            constexpr auto stat = base + 0x480;
+            assert(entry < 256 && invoke(cache, 80, {entry, stat}) == 0);
+            assert(load(stat + 88) > 0 && load(stat + 104) == load(stat + 88));
+            assert(invoke(cache, 64, {entry, payload, 14}) == 14);
+            assert(invoke(cache, 80, {entry, stat}) == 0 && load(stat + 48) == 14);
+            const auto modified = load(stat + 88), modifiedNanos = load(stat + 96);
+            assert(modified > 0 && modifiedNanos < 1000000000);
+            assert(invoke(cache, 82, {entry}) == 0);
+            ProbeLinux reopened(1, 0);
+            reopened.mountData(cacheDatabase);
+            assert(invoke(reopened, 79, {atCwd, firstPath, stat, 0}) == 0);
+            assert(load(stat + 88) == modified && load(stat + 96) == modifiedNanos);
+
+            // Explicitly make the file old and verify a truncate refreshes its modification time.
+            constexpr auto times = base + 0x600;
+            assert(machine.store64(times, 100) && machine.store64(times + 8, 0));
+            assert(machine.store64(times + 16, 100) && machine.store64(times + 24, 0));
+            assert(invoke(reopened, 88, {atCwd, firstPath, times, 0}) == 0);
+            const auto truncated = invoke(reopened, 56, {atCwd, firstPath, 0x202, 0});
+            assert(truncated < 256 && invoke(reopened, 80, {truncated, stat}) == 0);
+            assert(load(stat + 48) == 0 && load(stat + 88) > 100);
+        }
         assert(writer.loadFsCreatePolicy(
             "2 19\nu:r:init:s0 u:r:init:s0 40000 ffffffff 0 ffffffff 1 0\n"
             "u:r:shell:s0 u:r:shell:s0 0 ffffffff 0 ffffffff 1 0\n"));

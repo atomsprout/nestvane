@@ -587,7 +587,8 @@ private:
     std::vector<std::weak_ptr<SharedFileBytes>> memoryFiles;
     std::optional<Descriptor> find(std::string_view path, uint32_t flags, const Machine* machine = nullptr) const;
     uint64_t freeMemory(const Machine& machine) const;
-    uint64_t writeFileBytes(const WritableFile& file, uint64_t offset, std::span<const uint8_t> bytes);
+    void markFileModified(WritableFile& file) const;
+    uint64_t writeFileBytes(WritableFile& file, uint64_t offset, std::span<const uint8_t> bytes);
     std::string backingPath(std::string_view path) const;
     static std::string backingPath(std::string_view path, const MountNamespace& mountNamespace);
     const MountView* mountFor(std::string_view path) const;
