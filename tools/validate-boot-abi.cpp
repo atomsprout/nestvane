@@ -30,8 +30,15 @@ int main() {
             assert(copy.data()[0] == 0x6a);
             copy.mutableData()[copy.size() - 1] = 0xb5;
             assert(source.data()[offset + copy.size() - 1] == 0x6a);
+            auto nested = copy.copyRange(3, copy.size() - 3);
+            assert(nested.data()[0] == 0x6a && nested.data()[nested.size() - 1] == 0xb5);
+            auto nestedFork = nested;
+            nestedFork.mutableData()[0] = 0x35;
+            assert(copy.data()[3] == 0x6a && nested.data()[0] == 0x6a);
             source.mutableData()[offset] = 0x6a;
         }
+        auto shortCopy = source.copyRange(hostPage - 2, 5);
+        assert(shortCopy.size() == 5 && shortCopy.data()[4] == 0x6a);
     }
     {
         const Startup startup{0x4000, 0, 0, 0, 0, "/bin/crc", {}, 0};

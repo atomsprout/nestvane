@@ -552,7 +552,7 @@ struct DenseBytes::Storage {
     }
 
     ~Storage() {
-        if (mapping) munmap(mapping, length);
+        if (mapping) munmap(mapping, mappingOffset + length);
     }
 
     Storage(const Storage&) = delete;
@@ -561,15 +561,20 @@ struct DenseBytes::Storage {
     std::shared_ptr<Storage> clone(size_t offset, size_t size) const {
 #ifdef __APPLE__
         static const auto hostPage = static_cast<size_t>(getpagesize());
-        if (mapping && size >= hostPage && offset % hostPage == 0) {
+        if (mapping && size >= hostPage) {
+            // The guest can split inside a host page. Copy the enclosing host
+            // pages and expose only the requested bytes of the new view.
+            const auto sourceOffset = mappingOffset + offset;
+            const auto leading = sourceOffset % hostPage;
             auto copy = std::make_shared<Storage>(0);
             vm_address_t destination = 0;
             vm_prot_t current = 0, maximum = 0;
             const auto task = mach_task_self();
-            if (vm_remap(task, &destination, size, 0, VM_FLAGS_ANYWHERE, task,
-                         reinterpret_cast<vm_address_t>(mapping + offset), true, &current, &maximum,
+            if (vm_remap(task, &destination, leading + size, 0, VM_FLAGS_ANYWHERE, task,
+                         reinterpret_cast<vm_address_t>(mapping + sourceOffset - leading), true, &current, &maximum,
                          VM_INHERIT_NONE) == KERN_SUCCESS) {
                 copy->mapping = reinterpret_cast<uint8_t*>(destination);
+                copy->mappingOffset = leading;
                 copy->length = size;
                 return copy;
             }
@@ -580,13 +585,14 @@ struct DenseBytes::Storage {
         return copy;
     }
 
-    uint8_t* data() { return mapping ? mapping : bytes.data(); }
-    const uint8_t* data() const { return mapping ? mapping : bytes.data(); }
+    uint8_t* data() { return mapping ? mapping + mappingOffset : bytes.data(); }
+    const uint8_t* data() const { return mapping ? mapping + mappingOffset : bytes.data(); }
     size_t capacity() const { return mapping ? length : bytes.capacity(); }
 
     size_t length;
     std::vector<uint8_t> bytes;
     uint8_t* mapping = nullptr;
+    size_t mappingOffset = 0;
 };
 
 DenseBytes::DenseBytes(std::vector<uint8_t> bytes) {
