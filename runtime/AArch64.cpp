@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <type_traits>
 
 namespace nestvane {
 
@@ -550,11 +551,27 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
         }
     } else if (const auto rounding = word & 0xbfbffc00;
                rounding == 0x0e219800 || rounding == 0x2e218800 ||
-               rounding == 0x0ea18800) { // FRINTM, FRINTA, FRINTP (vector).
-        const auto roundToIntegral = [rounding](auto value) {
+               rounding == 0x0ea18800 || rounding == 0x0e218800) { // FRINTM/A/P/N (vector).
+        const auto roundToIntegral = [rounding, &cpu](auto value) {
             if (rounding == 0x0e219800) return std::floor(value);
             if (rounding == 0x0ea18800) return std::ceil(value);
-            return std::round(value);
+            if (rounding == 0x2e218800) return std::round(value);
+
+            using Float = decltype(value);
+            using UInt = std::conditional_t<sizeof(Float) == 4, uint32_t, uint64_t>;
+            if (std::isnan(value)) {
+                constexpr UInt quietBit = UInt{1} << (std::numeric_limits<Float>::digits - 2);
+                const auto bits = std::bit_cast<UInt>(value);
+                if (!(bits & quietBit)) cpu.fpsr |= 1; // Invalid Operation (IOC).
+                return std::bit_cast<Float>(bits | quietBit);
+            }
+            if (!std::isfinite(value)) return value;
+            const auto magnitude = std::abs(value);
+            const auto integral = std::floor(magnitude);
+            const auto fraction = magnitude - integral;
+            const bool increment = fraction > Float{0.5} ||
+                (fraction == Float{0.5} && std::fmod(integral, Float{2}) != 0);
+            return std::copysign(integral + increment, value);
         };
         const bool wide = word & 0x400000;
         if (wide && width == 8) return false;

@@ -503,3 +503,6 @@
 - 新版 Mac Metal 完整启动中，原版平台加载器完成 GPU 对象加载，客体 bpffs 同时存在原版 map 和 program，映射权限为 0640、所有者为 root:graphics。该轮完成用户 0 解锁，越过对照组中 ActivityManager 中止的解锁阶段。桌面尚未确认。宿主调试器读取后短暂停过进程，恢复了同一轮，因此本轮不作为启动性能样本。
 - iPhone 11 进程 9750 在 692.694 秒完成用户解锁，786.385 秒记录 ActivityManager SIGABRT，取回的 640×960 客体画面为黑屏。保存客体数据库并通过 SQLite `quick_check` 后，使用保留原应用标识、原客体镜像和图形框架的包安装新版。进程 9762 已启动 Android 17，客体记录到 SurfaceFlinger 与 BootAnimation，iOS 侧尚未取到本轮帧，Launcher、APK 和 Camera2 仍在验收。
 - 同一轮 Mac 对照中，原版 Launcher 活动进入 resumed 与 user active。随后其 launcher-loader 线程在 `uqadd v16.8b, v4.8b, v1.8b`（`0x2e210c90`）停止，未记录 Launcher 完成绘制。现已实现向量 UQADD，宿主 ABI 回归覆盖实际指令、寄存器别名、窄向量清零和不合法的单 64 位通道。七种向量宽度与元素尺寸组合的 7,000 组输入与原生 ARM64 结果及 FPSR 匹配，iPhoneOS Release 构建通过。
+- eBPF 修复版 iPhone 11 进程 9762 于 662.143 秒完成用户解锁，747.495 秒完成 Android `BOOT_COMPLETED` 广播，对照组的 ActivityManager SIGABRT 未再出现。完整报告确认客体在 815.788 秒停于 Launcher 的 `uqadd`（`0x2e210c90`），未确认 Launcher 完成绘制或 `sys.boot_completed=1`。此轮峰值物理占用 1,877,712,888 字节。客体数据库备份经 SQLite `quick_check` 校验。
+- 真机换装 UQADD 修复版后，iPhone 11 进程 9770 于 94.612 秒提交 640×960 像素。导出的 PNG 确认为 Android 开机动画。Mac 上同版越过 UQADD 和上轮停止的位置，完成 `BOOT_COMPLETED` 广播，随后 Launcher 的 launcher-loader 停于 `frintn v16.2s, v16.2s`（`0x0e218a10`）。
+- 实现向量 FRINTN，覆盖最接近偶数舍入、负零、无穷、NaN 载荷及 FPSR 的无效操作位。宿主 ABI 回归包含真机所需的单精度编码和双精度向量，12,000 组原生 ARM64 差分及 iPhoneOS Release 构建通过。新版 Mac 联测已启动，Launcher 绘制还在验证。

@@ -573,6 +573,23 @@ int main() {
         std::memcpy(permute.cpu.v[0].data(), roundSingles.data(), sizeof(roundSingles));
         assert(executeStartupInstruction(permute, 0x2e218800)); // frinta v0.2s, v0.2s
         assert(std::memcmp(permute.cpu.v[0].data(), roundSinglesResult.data(), sizeof(roundSinglesResult)) == 0);
+        const std::array<float, 4> nearestSingles{-0.5f, 2.5f, 1, 2}, nearestSinglesResult{-0.0f, 2, 0, 0};
+        std::memcpy(permute.cpu.v[16].data(), nearestSingles.data(), sizeof(nearestSingles));
+        assert(executeStartupInstruction(permute, 0x0e218a10)); // frintn v16.2s, v16.2s
+        assert(std::memcmp(permute.cpu.v[16].data(), nearestSinglesResult.data(), sizeof(nearestSinglesResult)) == 0);
+        const std::array<double, 2> nearestDoubles{-2.5, 3.5}, nearestDoublesResult{-2, 4};
+        std::memcpy(permute.cpu.v[16].data(), nearestDoubles.data(), sizeof(nearestDoubles));
+        assert(executeStartupInstruction(permute, 0x4e618a10)); // frintn v16.2d, v16.2d
+        assert(std::memcmp(permute.cpu.v[16].data(), nearestDoublesResult.data(), sizeof(nearestDoublesResult)) == 0);
+        assert(!executeStartupInstruction(permute, 0x0e618a10)); // unallocated 1D vector form
+        const std::array<uint32_t, 4> roundingNaNs{0x7f812345, 0xffc01234, 0x7f800000, 0xff800000};
+        const std::array<uint32_t, 4> quietedNaNs{0x7fc12345, 0xffc01234, 0x7f800000, 0xff800000};
+        permute.cpu.fpsr = fpsrSaturation;
+        std::memcpy(permute.cpu.v[16].data(), roundingNaNs.data(), sizeof(roundingNaNs));
+        assert(executeStartupInstruction(permute, 0x4e218a10)); // frintn v16.4s, v16.4s
+        assert(std::memcmp(permute.cpu.v[16].data(), quietedNaNs.data(), sizeof(quietedNaNs)) == 0 &&
+               permute.cpu.fpsr == (fpsrSaturation | 1));
+        permute.cpu.fpsr = 0;
         const std::array<uint64_t, 2> negateDoubles{0, 0xfff0000000000000ULL};
         const std::array<uint64_t, 2> negateDoublesResult{0x8000000000000000ULL, 0x7ff0000000000000ULL};
         std::memcpy(permute.cpu.v[0].data(), negateDoubles.data(), sizeof(negateDoubles));
