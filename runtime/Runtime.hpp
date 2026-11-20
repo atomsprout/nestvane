@@ -45,7 +45,8 @@ struct AnonymousBudget {
 
 class AnonymousPages {
 public:
-    static std::shared_ptr<AnonymousPages> allocate(uint64_t size, const std::shared_ptr<AnonymousBudget>& budget);
+    static std::shared_ptr<AnonymousPages> allocate(uint64_t size, const std::shared_ptr<AnonymousBudget>& budget,
+                                                     int* mappingError = nullptr);
     ~AnonymousPages();
     AnonymousPages(const AnonymousPages&) = delete;
     AnonymousPages& operator=(const AnonymousPages&) = delete;

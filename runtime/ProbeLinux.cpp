@@ -5379,13 +5379,14 @@ bool ProbeLinux::forkProcess(Machine& machine) {
     auto& x = cpu.x;
     // Bionic fork uses SIGCHLD, CLONE_CHILD_SETTID and CLONE_CHILD_CLEARTID.
     if (x[0] != 0x1200011 || x[1]) return false;
-    const auto retry = [&](std::string_view reason, uint64_t requested) {
+    const auto retry = [&](std::string_view reason, uint64_t requested, int mappingError = 0) {
         if (androidLogObserver) {
             std::ostringstream event;
             event << "guest fork EAGAIN: pid=" << processId() << " reason=" << reason
                   << " requested=" << requested << " tasks=" << threads.size() << '/' << maxGuestTasks
                   << " sparse reserved=" << anonymousBudget->reserved << '/' << anonymousBudget->reservedLimit
                   << " dirty=" << anonymousBudget->dirty << '/' << anonymousBudget->dirtyLimit;
+            if (mappingError) event << " host mmap errno=" << mappingError;
             androidLogObserver(event.str());
         }
         x[0] = uint64_t(-11);
@@ -5409,11 +5410,13 @@ bool ProbeLinux::forkProcess(Machine& machine) {
         }
         const auto& source = segment.anonymousPages;
         auto& copy = privateCopies[source.get()];
-        if (!copy) copy = AnonymousPages::allocate(source->capacity(), anonymousBudget);
         if (!copy) {
-            const auto reason = source->capacity() > anonymousBudget->reservedLimit - anonymousBudget->reserved
-                ? "sparse reservation limit" : "host mapping failed";
-            return retry(reason, source->capacity());
+            int mappingError = 0;
+            copy = AnonymousPages::allocate(source->capacity(), anonymousBudget, &mappingError);
+            if (!copy) {
+                return retry(mappingError ? "host mapping failed" : "sparse reservation limit",
+                             source->capacity(), mappingError);
+            }
         }
         if (!segment.wipeOnFork &&
             !source->copyTo(*copy, segment.fileOffset, segment.fileOffset, segment.mappedSize()))

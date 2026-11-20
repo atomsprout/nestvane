@@ -1,6 +1,7 @@
 #include "Runtime.hpp"
 
 #include <algorithm>
+#include <cerrno>
 #include <cstring>
 #include <fstream>
 #include <iterator>
@@ -386,13 +387,18 @@ Machine::Machine(const Image& image, const std::shared_ptr<AnonymousBudget>& bud
 AnonymousPages::AnonymousPages(uint64_t length, const std::shared_ptr<AnonymousBudget>& limits)
     : budget(limits), hostPage(getpagesize()), size((length + hostPage - 1) & ~(hostPage - 1)) {}
 
-std::shared_ptr<AnonymousPages> AnonymousPages::allocate(uint64_t length, const std::shared_ptr<AnonymousBudget>& budget) {
+std::shared_ptr<AnonymousPages> AnonymousPages::allocate(uint64_t length, const std::shared_ptr<AnonymousBudget>& budget,
+                                                        int* mappingError) {
+    if (mappingError) *mappingError = 0;
     auto pages = std::shared_ptr<AnonymousPages>(new AnonymousPages(length, budget));
     if (pages->size > budget->reservedLimit - budget->reserved) return {};
     pages->dirty.resize(pages->size / pages->hostPage);
     // Only the interpreter reads these bytes as guest instructions. Host permissions are always RW.
     auto* region = mmap(nullptr, pages->size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (region == MAP_FAILED) return {};
+    if (region == MAP_FAILED) {
+        if (mappingError) *mappingError = errno;
+        return {};
+    }
     pages->mapping = static_cast<uint8_t*>(region);
     budget->reserved += pages->size;
     return pages;
