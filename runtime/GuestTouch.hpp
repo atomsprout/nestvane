@@ -16,7 +16,7 @@ class GuestTouch {
 public:
     static constexpr int32_t maximumAxis = 32767;
     static constexpr uint16_t touchKey = 0x14a;
-    static constexpr uint16_t wakeKey = 143;
+    enum class Key : uint16_t { wake = 143, back = 158, home = 172 };
 
     struct Event {
         int64_t seconds;
@@ -65,13 +65,14 @@ public:
         return true;
     }
 
-    bool wake() {
+    bool press(Key key) {
         std::scoped_lock lock(mutex);
         if (!readerAvailable || events.size() + 4 > capacity) return false;
         const auto [seconds, micros] = eventTime();
+        const auto code = static_cast<uint16_t>(key);
         events.insert(events.end(), {
-            {seconds, micros, 1, wakeKey, 1}, {seconds, micros, 0, 0, 0},
-            {seconds, micros, 1, wakeKey, 0}, {seconds, micros, 0, 0, 0},
+            {seconds, micros, 1, code, 1}, {seconds, micros, 0, 0, 0},
+            {seconds, micros, 1, code, 0}, {seconds, micros, 0, 0, 0},
         });
         return true;
     }

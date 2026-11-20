@@ -125,6 +125,7 @@ static NSString* ThermalState() {
 
 @interface GuestDisplayView : UIImageView
 - (void)setTouchDevice:(std::shared_ptr<nestvane::GuestTouch>)device;
+- (void)pressKey:(nestvane::GuestTouch::Key)key;
 @end
 
 @implementation GuestDisplayView {
@@ -136,6 +137,10 @@ static NSString* ThermalState() {
     if (_activeTouch) [self sendTouch:_activeTouch down:NO];
     _activeTouch = nil;
     _touchDevice = std::move(device);
+}
+
+- (void)pressKey:(nestvane::GuestTouch::Key)key {
+    if (_touchDevice) _touchDevice->press(key);
 }
 
 - (BOOL)sendTouch:(UITouch*)touch down:(BOOL)down {
@@ -183,6 +188,7 @@ static NSString* ThermalState() {
 @property(nonatomic, strong) GuestDisplayView* display;
 @property(nonatomic, strong) UIButton* run;
 @property(nonatomic, strong) UIButton* importApk;
+@property(nonatomic, strong) UIStackView* androidNavigation;
 @property(nonatomic, strong) UILabel* apkStatus;
 @end
 
@@ -231,6 +237,19 @@ static NSString* ThermalState() {
     [self.importApk addTarget:self action:@selector(chooseApk) forControlEvents:UIControlEventTouchUpInside];
     self.importApk.hidden = YES;
 
+    UIButton* back = [UIButton buttonWithType:UIButtonTypeSystem];
+    [back setTitle:@"Android Back" forState:UIControlStateNormal];
+    [back addTarget:self action:@selector(guestBack) forControlEvents:UIControlEventTouchUpInside];
+    UIButton* home = [UIButton buttonWithType:UIButtonTypeSystem];
+    [home setTitle:@"Android Home" forState:UIControlStateNormal];
+    [home addTarget:self action:@selector(guestHome) forControlEvents:UIControlEventTouchUpInside];
+    self.androidNavigation = [[UIStackView alloc] initWithArrangedSubviews:@[back, home]];
+    self.androidNavigation.distribution = UIStackViewDistributionFillEqually;
+    self.androidNavigation.hidden = YES;
+    NSLayoutConstraint* navigationHeight = [self.androidNavigation.heightAnchor constraintGreaterThanOrEqualToConstant:44];
+    navigationHeight.priority = UILayoutPriorityRequired - 1;
+    navigationHeight.active = YES;
+
     self.apkStatus = [UILabel new];
     self.apkStatus.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
     self.apkStatus.adjustsFontForContentSizeCategory = YES;
@@ -238,7 +257,7 @@ static NSString* ThermalState() {
     self.apkStatus.hidden = YES;
 
     UIStackView* layout = [[UIStackView alloc] initWithArrangedSubviews:
-        @[title, self.status, self.details, self.display, self.apkStatus, self.importApk, self.run]];
+        @[title, self.status, self.details, self.display, self.androidNavigation, self.apkStatus, self.importApk, self.run]];
     layout.axis = UILayoutConstraintAxisVertical;
     layout.spacing = 12;
     layout.translatesAutoresizingMaskIntoConstraints = NO;
@@ -262,6 +281,14 @@ static NSString* ThermalState() {
     } else {
         [self runValidation];
     }
+}
+
+- (void)guestBack {
+    [self.display pressKey:nestvane::GuestTouch::Key::back];
+}
+
+- (void)guestHome {
+    [self.display pressKey:nestvane::GuestTouch::Key::home];
 }
 
 - (void)chooseApk {
@@ -347,6 +374,7 @@ static NSString* ThermalState() {
     [self.display setTouchDevice:touch];
     self.display.image = nil;
     self.display.hidden = YES;
+    self.androidNavigation.hidden = YES;
     self.details.hidden = NO;
     self.details.text = nil;
     UIApplication.sharedApplication.idleTimerDisabled = YES;
@@ -485,6 +513,7 @@ static NSString* ThermalState() {
                         self.status.text = @"Android 17 display";
                         self.details.hidden = YES;
                         self.display.hidden = NO;
+                        self.androidNavigation.hidden = NO;
                         writePresentationTime(displayProgress);
                     }
                     if (captureFirstFrame && (firstFrame || content || launcher)) {
@@ -535,6 +564,7 @@ static NSString* ThermalState() {
             self.status.text = status;
             [self.display setTouchDevice:std::shared_ptr<nestvane::GuestTouch>{}];
             self.details.text = report;
+            self.androidNavigation.hidden = YES;
             self->_androidStop = std::stop_source{std::nostopstate};
             self.importApk.enabled = NO;
             [self.run setTitle:apkInbox ? @"Start Android" : @"Run validation" forState:UIControlStateNormal];

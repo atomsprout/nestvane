@@ -746,7 +746,7 @@ service nestvane-apk-install /system/bin/sh /system/etc/nestvane/apk-ready.sh
             if (line.starts_with(launcherDisplay) && !displayInactive) launcherDrawn = true;
             const bool queueWake = startupTouch && !wakeSent && !launcherDrawn && bootBroadcastCompleted &&
                 displayInactive && (viewportChanged || line.starts_with(bootBroadcast));
-            if (queueWake && startupTouch->wake()) {
+            if (queueWake && startupTouch->press(GuestTouch::Key::wake)) {
                 wakeSent = true;
                 if (progress) progress("Queued WAKEUP key for inactive Android startup display");
             }
