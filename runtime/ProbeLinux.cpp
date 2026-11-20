@@ -1416,6 +1416,15 @@ bool ProbeLinux::inodeAllows(const auto& node, unsigned requested, bool realIds)
     const auto& process = *current->process;
     const auto uid = process.userIds[realIds ? 0 : 1];
     if (!uid) return true;
+    // access(2) with a non-root real UID ignores the process's capabilities.
+    if (!realIds) {
+        constexpr uint64_t capDacOverride = 1ULL << 1, capDacReadSearch = 1ULL << 2;
+        constexpr bool directory = std::is_same_v<std::remove_cvref_t<decltype(node)>, Directory>;
+        if ((process.effectiveCaps & capDacOverride) &&
+            (directory || !(requested & 1) || (node.mode & 0111))) return true;
+        if ((process.effectiveCaps & capDacReadSearch) && !(requested & (directory ? 2U : 3U)))
+            return true;
+    }
     if (node.accessAcl.empty())
         return ((node.mode >> permissionShift(node.uid, node.gid, realIds)) & requested) == requested;
     const auto inGroup = [&](uint32_t group) {

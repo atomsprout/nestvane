@@ -1853,6 +1853,41 @@ int main() {
         assert(invoke(56, {atCwd, apkPath, 2}) < 256);
     }
     {
+        ProbeLinux guest(1, 0);
+        guest.addBootTmpfs("/data", 0771, 1000, 6);
+        guest.addDirectory("/data/dalvik-cache", 0771);
+        guest.addDirectory("/data/dalvik-cache/arm64", 0711);
+        auto task = guest.createMachine(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
+        const auto invoke = [&](uint64_t number, std::array<uint64_t, 6> args) {
+            std::ranges::copy(args, task.cpu.x.begin());
+            task.cpu.x[8] = number;
+            assert(guest.syscall(task));
+            return task.cpu.x[0];
+        };
+        constexpr auto atCwd = uint32_t(-100);
+        constexpr auto header = base + 64, caps = base + 80, path = base + 128;
+        constexpr char artifact[] = "/data/dalvik-cache/arm64/artd-test.tmp";
+        constexpr uint32_t create = 0x42, dacOverride = 1U << 1, dacReadSearch = 1U << 2;
+        assert(task.write(path, {reinterpret_cast<const uint8_t*>(artifact), sizeof artifact}));
+        assert(task.store64(header, 0x20080522));
+        assert(invoke(167, {8, 1}) == 0); // PR_SET_KEEPCAPS
+        assert(invoke(144, {1082, 1082, 1082}) == 0);
+        assert(invoke(147, {1082, 1082, 1082}) == 0);
+        const auto setCapabilities = [&](uint32_t effective, uint32_t permitted) {
+            const std::array<uint32_t, 6> values{effective, permitted};
+            assert(task.write(caps, {reinterpret_cast<const uint8_t*>(values.data()), sizeof values}));
+            assert(invoke(91, {header, caps}) == 0);
+        };
+        assert(invoke(56, {atCwd, path, create, 0400}) == uint64_t(-13));
+        setCapabilities(dacReadSearch, dacOverride | dacReadSearch);
+        assert(invoke(56, {atCwd, path, create, 0400}) == uint64_t(-13));
+        setCapabilities(dacOverride, dacOverride | dacReadSearch);
+        const auto fd = invoke(56, {atCwd, path, create, 0400});
+        assert(fd < 256 && invoke(57, {fd}) == 0);
+        assert(invoke(48, {atCwd, path, 2}) == uint64_t(-13));
+        assert(invoke(56, {atCwd, path, 2}) < 256);
+    }
+    {
         static std::array<uint8_t, pageSize * 3 + 32> contents{};
         contents[pageSize] = 0x37;
         contents[2 * pageSize] = 0x72;
