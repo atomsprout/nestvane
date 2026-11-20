@@ -70,6 +70,11 @@ std::jthread StartDisplayReader(const nestvane::GfxstreamSession& renderer, bool
         }
     });
 }
+void AppendPeakRSS(std::string& report) {
+    rusage usage{};
+    if (getrusage(RUSAGE_SELF, &usage) == 0)
+        report += "  peak iOS process RSS bytes: " + std::to_string(usage.ru_maxrss) + "\n";
+}
 } // namespace
 
 static NSString* ThermalState() {
@@ -286,6 +291,7 @@ static NSString* ThermalState() {
 }
 
 - (void)runValidation {
+    const auto validationStarted = NSProcessInfo.processInfo.systemUptime;
     self.run.enabled = NO;
     NSString* installer = [NSBundle.mainBundle.resourcePath
         stringByAppendingPathComponent:@"android17-init-root/system/bin/nestvane-apk-install"];
@@ -362,6 +368,8 @@ static NSString* ThermalState() {
             NSURL* progressURL = [documents URLByAppendingPathComponent:@"boot-progress.txt"];
             const auto bootStarted = NSProcessInfo.processInfo.systemUptime;
             std::string milestones;
+            bool launcherDisplayed = false;
+            NSURL* launcherURL = [documents URLByAppendingPathComponent:@"launcher-displayed.txt"];
             const auto progress = [&](std::string_view event) {
                 const auto elapsedSeconds = NSProcessInfo.processInfo.systemUptime - bootStarted;
                 milestones += "[" + std::to_string(static_cast<long long>(elapsedSeconds * 1000)) + " ms] ";
@@ -371,6 +379,16 @@ static NSString* ThermalState() {
                 if (milestones.size() > maxMilestoneBytes)
                     milestones.erase(0, milestones.find('\n', milestones.size() - maxMilestoneBytes) + 1);
                 exportReport(progressURL, milestones);
+                if (!launcherDisplayed && event.starts_with("ActivityTaskManager: Displayed com.android.launcher3/")) {
+                    launcherDisplayed = true;
+                    const auto elapsed = (NSProcessInfo.processInfo.systemUptime - validationStarted) * 1000;
+                    std::string report = "Android Launcher displayed after " +
+                        std::to_string(static_cast<long long>(elapsed)) + " ms\n";
+                    report += event;
+                    report += '\n';
+                    AppendPeakRSS(report);
+                    exportReport(launcherURL, report);
+                }
             };
             NSURL* watchdogURL = [documents URLByAppendingPathComponent:@"guest-watchdog.txt"];
             const auto exportWatchdog = [&](std::string_view threads) {
@@ -378,7 +396,9 @@ static NSString* ThermalState() {
             };
             NSURL* liveURL = [documents URLByAppendingPathComponent:@"guest-live.txt"];
             const auto exportLiveSnapshot = [&](std::string_view threads) {
-                exportReport(liveURL, std::string(threads));
+                std::string report(threads);
+                AppendPeakRSS(report);
+                exportReport(liveURL, report);
             };
             const auto runAndroid = [&]() -> nestvane::DynamicReport {
                 if (!ready) {
@@ -445,9 +465,7 @@ static NSString* ThermalState() {
             };
             auto probe = runAndroid();
             result.report += "\n" + probe.report;
-            rusage usage{};
-            if (getrusage(RUSAGE_SELF, &usage) == 0)
-                result.report += "  peak iOS process RSS bytes: " + std::to_string(usage.ru_maxrss) + "\n";
+            AppendPeakRSS(result.report);
             if (!probe.passed) status = @"Android 17 startup probe stopped";
             else if (probe.report.find("linkerconfig generation verified: yes") != std::string::npos)
                 status = @"Android 17 linker configuration generated";
