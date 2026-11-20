@@ -17,6 +17,7 @@ constexpr uint32_t binderFile = 0x66642a85, closeOnExec = 0x80000;
 constexpr uint32_t binderObject = 0x73622a85, binderHandle = 0x73682a85;
 constexpr uint32_t binderBuffer = 0x70742a85, hasParent = 1;
 constexpr uint32_t brIncrefs = 0x80107207, brAcquire = 0x80107208;
+constexpr uint32_t brRelease = 0x80107209, brDecrefs = 0x8010720a;
 constexpr uint32_t brDeadBinder = 0x8008720f, brClearDeath = 0x80087210;
 // Android 17 service managers keep references to hundreds of registered objects.
 constexpr size_t binderObjectLimit = 4096;
@@ -65,6 +66,61 @@ bool writeGuest(Machine& machine, uint64_t address, const T& value) {
 
 } // namespace
 
+void ProbeLinux::BinderConnection::changeReference(const std::shared_ptr<BinderNode>& node,
+                                                       int64_t strong, int64_t weak) {
+    const bool hadStrong = node->strong != 0;
+    const bool hadWeak = node->weak != 0;
+    node->strong = uint64_t(int64_t(node->strong) + strong);
+    node->weak = uint64_t(int64_t(node->weak) + weak);
+    if (hadStrong == bool(node->strong) && hadWeak == bool(node->weak)) return;
+    if (const auto changes = referenceChanges.lock()) changes->insert(node);
+}
+
+ProbeLinux::BinderConnection::~BinderConnection() {
+    if (const auto dirty = deathsDirty.lock()) *dirty = true;
+    for (const auto& [handle, ref] : handles)
+        changeReference(ref.node, -int64_t(ref.strong) - ref.inBuffer, -int64_t(ref.weak));
+    for (const auto& [offset, buffer] : allocations)
+        for (const auto& node : buffer.localReferences) changeReference(node, -1, 0);
+}
+
+void ProbeLinux::refreshBinderReferences() {
+    BinderReferenceChanges changes;
+    changes.swap(*binderReferenceChanges);
+    bool queued = false;
+    for (const auto& item : changes) {
+        const auto node = item.lock();
+        if (!node) continue;
+        const auto owner = node->owner.lock();
+        if (!owner || !processAlive(owner->owner)) continue;
+        const auto send = [&](uint32_t command) {
+            BinderPacket packet{command};
+            packet.reference = {node->object.value, node->object.cookie};
+            owner->incoming.push_back(packet);
+            queued = true;
+        };
+        const bool strong = node->strong != 0;
+        const bool weak = strong || node->weak != 0;
+        if (weak && !node->ownerWeak) {
+            send(brIncrefs);
+            node->ownerWeak = node->pendingWeak = true;
+        }
+        if (strong && !node->ownerStrong) {
+            send(brAcquire);
+            node->ownerStrong = node->pendingStrong = true;
+        }
+        if (!strong && node->ownerStrong && !node->pendingStrong) {
+            send(brRelease);
+            node->ownerStrong = false;
+        }
+        if (!weak && !node->ownerStrong && !node->pendingWeak) {
+            if (node->ownerWeak) send(brDecrefs);
+            owner->localNodes.erase(node->object.value);
+        }
+    }
+    if (queued) wakePollers();
+}
+
 bool ProbeLinux::binderAvailableForProcessWork(const BinderConnection& connection, uint64_t tid) {
     if (!connection.loopers.contains(tid) || connection.pendingCalls.contains(tid)) return false;
     const auto replies = connection.replies.find(tid);
@@ -105,7 +161,7 @@ uint64_t ProbeLinux::storeBinderBuffer(BinderConnection& target, std::span<const
         offset = start + buffer.size;
     }
     if (needed > target.mapped->size || offset > target.mapped->size - needed) return 0;
-    target.allocations.emplace(offset, BinderAllocation{needed, {}, false, asyncCharge});
+    target.allocations.emplace(offset, BinderAllocation{needed, {}, {}, false, asyncCharge});
     target.asyncBytes += asyncCharge;
     auto begin = target.mapped->pages.begin() + offset;
     std::fill_n(begin, needed, 0);
@@ -123,8 +179,10 @@ bool ProbeLinux::freeBinderBuffer(BinderConnection& connection, uint64_t address
     for (const auto handle : buffer->second.handles) {
         const auto it = connection.handles.find(handle);
         auto& ref = it->second;
+        connection.changeReference(ref.node, -1, 0);
         if (!--ref.inBuffer && !ref.strong && !ref.weak) connection.handles.erase(it);
     }
+    for (const auto& node : buffer->second.localReferences) connection.changeReference(node, -1, 0);
     if (buffer->second.asyncCharge) {
         connection.asyncBytes -= buffer->second.asyncCharge;
         const auto pending = connection.pendingAsync.find(buffer->second.asyncTarget);
@@ -195,9 +253,12 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
             const auto it = connection.handles.find(handle);
             if (it == connection.handles.end()) return invalid;
             auto& ref = it->second;
-            auto& count = command == 0x40046304 || command == 0x40046307 ? ref.weak : ref.strong;
+            const bool weak = command == 0x40046304 || command == 0x40046307;
+            auto& count = weak ? ref.weak : ref.strong;
             const bool increment = command == 0x40046304 || command == 0x40046305;
             if (increment ? count == UINT32_MAX : !count) return invalid;
+            const auto change = increment ? 1 : -1;
+            connection.changeReference(ref.node, weak ? 0 : change, weak ? change : 0);
             if (increment) ++count;
             else if (!--count && !ref.inBuffer && !ref.strong && !ref.weak) connection.handles.erase(it);
             return 0;
@@ -206,8 +267,14 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
             std::array<uint64_t, 2> pointerCookie{};
             std::memcpy(pointerCookie.data(), data.data(), sizeof pointerCookie);
             const auto node = connection.localNodes.find(pointerCookie[0]);
-            return node != connection.localNodes.end() && node->second->object.cookie == pointerCookie[1]
-                ? 0 : invalid;
+            if (node == connection.localNodes.end() || node->second->object.cookie != pointerCookie[1])
+                return invalid;
+            auto& pending = command == 0x40106308 ? node->second->pendingWeak : node->second->pendingStrong;
+            if (pending) {
+                pending = false;
+                binderReferenceChanges->insert(node->second);
+            }
+            return 0;
         }
         case 0x400c630e: case 0x400c630f: { // BC_REQUEST/CLEAR_DEATH_NOTIFICATION
             uint32_t handle;
@@ -502,8 +569,17 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
         auto* destination = target->mapped->pages.data() + (address - target->address) + item.offset;
         std::memcpy(destination, &item.object, sizeof item.object);
         if (item.handle) {
-            ++target->handles.at(item.handle).inBuffer;
+            auto& ref = target->handles.at(item.handle);
+            ++ref.inBuffer;
+            target->changeReference(ref.node, 1, 0);
             allocation.handles.push_back(item.handle);
+        } else if (item.object.value && item.object.type == binderObject) {
+            // A proxy flattened back to its owner keeps the local object alive through delivery.
+            const auto found = target->localNodes.find(item.object.value);
+            if (found != target->localNodes.end()) {
+                target->changeReference(found->second, 1, 0);
+                allocation.localReferences.push_back(found->second);
+            }
         }
     }
     auto* targetBytes = target->mapped->pages.data() + (address - target->address);
@@ -520,6 +596,8 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
         if (target == fd.binder) continue;
         BinderPacket weak{brIncrefs}, strong{brAcquire};
         weak.reference = strong.reference = {pointer, node->object.cookie};
+        node->ownerWeak = node->pendingWeak = true;
+        node->ownerStrong = node->pendingStrong = true;
         notices.push_back(weak);
         notices.push_back(strong);
     }
@@ -593,6 +671,7 @@ uint64_t ProbeLinux::binderWriteRead(Machine& machine, const Descriptor& fd) {
         request.writeConsumed += sizeof command + size;
     }
 
+    if (!binderReferenceChanges->empty()) refreshBinderReferences();
     auto& connection = *fd.binder;
     if (!request.readSize) return writeGuest(machine, argument, request) ? 0 : fault;
     if (!binderReadable(connection, processId(), currentTid)) {
@@ -661,8 +740,8 @@ uint64_t ProbeLinux::binderWriteRead(Machine& machine, const Descriptor& fd) {
     }
     auto* packet = response.data() + prefix;
     std::memcpy(packet, &next.command, sizeof(uint32_t));
-    if (next.command == brIncrefs || next.command == brAcquire ||
-        next.command == brDeadBinder || next.command == brClearDeath)
+    if (next.command == brIncrefs || next.command == brAcquire || next.command == brRelease ||
+        next.command == brDecrefs || next.command == brDeadBinder || next.command == brClearDeath)
         std::memcpy(packet + sizeof(uint32_t), next.reference.data(), size);
     else if (size >= sizeof(BinderTransaction))
         std::memcpy(packet + sizeof(uint32_t), &next.transaction, sizeof(BinderTransaction));

@@ -5256,10 +5256,10 @@ int main() {
     const auto bindRequest = [&](uint64_t channel, uint32_t operation, uint64_t tag,
                                  std::string_view message, bool receive,
                                  std::span<const uint64_t> offsets = {}, uint64_t handle = 0,
-                                 uint64_t extraSize = 0) {
+                                 uint64_t extraSize = 0, uint64_t cookie = 0) {
         constexpr auto command = base + 0x600, arguments = base + 0x690, output = base + 0x720;
         constexpr auto payload = base + 0x800, offsetList = base + 0x850;
-        const std::array<uint64_t, 9> callData{handle, 0, tag, UINT64_MAX,
+        const std::array<uint64_t, 9> callData{handle, cookie, tag, UINT64_MAX,
                                                message.size(), offsets.size_bytes(), payload, offsetList, extraSize};
         assert(machine.write(command, {reinterpret_cast<const uint8_t*>(&operation), 4}));
         const auto size = (operation >> 16) & 0x3fff;
@@ -5664,14 +5664,22 @@ int main() {
     assert(registeringBinder < 256);
     assert(call(222, {0, 8 * pageSize, 1, 0x4002, registeringBinder, 0}) > 0x100000000);
     uint64_t closingHandle = 0;
+    uint64_t weakHandle = 0;
     for (uint64_t index = 0; index < 320; ++index) {
-        const std::array<uint64_t, 3> service{flatBinder, objectPtr + index * 8, objectCookie + index * 8};
+        const auto pointer = index == 1 ? objectPtr : objectPtr + index * 8;
+        const auto cookie = objectCookie + index * 8;
+        const std::array<uint64_t, 3> service{flatBinder, pointer, cookie};
         const std::string_view bytes(reinterpret_cast<const char*>(service.data()), sizeof service);
         constexpr uint64_t registerOneWay = (uint64_t{1} << 32) | 48;
         assert(bindRequest(registeringBinder, 0x40406300, registerOneWay, bytes, true, objectOffset) == 0);
         assert(uint32_t(load(base + 0x720)) == 0x80107207); // BR_INCREFS
         assert(bindRequest(registeringBinder, 0, 0, "", true) == 0);
         assert(uint32_t(load(base + 0x720)) == 0x80107208); // BR_ACQUIRE
+        if (index == 0) {
+            assert(bindRequest(registeringBinder, 0x40106308, 0, "", false, {}, pointer, 0, cookie) == 0);
+            assert(bindRequest(registeringBinder, 0x40106309, 0, "", false, {}, pointer, 0, cookie) == 0);
+            assert(bindRequest(registeringBinder, 0x630c, 0, "", false) == 0);
+        }
         assert(bindRequest(registeringBinder, 0, 0, "", true) == 0);
         assert(uint32_t(load(base + 0x720)) == 0x7206); // BR_TRANSACTION_COMPLETE
         machine.cpu.retired += 4096;
@@ -5683,9 +5691,27 @@ int main() {
         assert(serviceHandle && uint32_t(load(serviceBuffer)) == flatHandle);
         assert(bindRequest(manager, 0x40046305, 0, "", false, {}, serviceHandle) == 0);
         assert(bindRequest(manager, 0x40086303, 0, "", false, {}, serviceBuffer) == 0);
+        if (index == 0) {
+            weakHandle = serviceHandle;
+            assert(bindRequest(manager, 0x40046304, 0, "", false, {}, weakHandle) == 0);
+            assert(bindRequest(manager, 0x40046306, 0, "", false, {}, weakHandle) == 0);
+            machine.cpu.retired += 4096;
+            assert(linux.schedule(machine) && linux.processId() == registeringPeer);
+            assert(bindRequest(registeringBinder, 0, 0, "", true) == 0);
+            assert(uint32_t(load(base + 0x720)) == 0x80107209); // BR_RELEASE
+            assert(load(base + 0x724) == pointer && load(base + 0x72c) == cookie);
+            machine.cpu.retired += 4096;
+            assert(linux.schedule(machine) && linux.processId() == 1);
+            assert(bindRequest(manager, 0x40046307, 0, "", false, {}, weakHandle) == 0);
+        }
         if (index + 1 < 320) {
             machine.cpu.retired += 4096;
             assert(linux.schedule(machine) && linux.processId() == registeringPeer);
+            if (index == 0) {
+                assert(bindRequest(registeringBinder, 0, 0, "", true) == 0);
+                assert(uint32_t(load(base + 0x720)) == 0x8010720a); // BR_DECREFS
+                assert(load(base + 0x724) == pointer && load(base + 0x72c) == cookie);
+            }
         } else {
             closingHandle = serviceHandle;
         }
@@ -5719,6 +5745,40 @@ int main() {
     assert(bindRequest(manager, 0, 0, "", true) == uint64_t(-11));
     assert(call(25, {manager, 4, 0}) == 0);
     assert(call(129, {registeringPeer, 9}) == 0);
+
+    {
+        // The owning service must also be notified when an importer exits with a live proxy.
+        const auto importer = call(220, {0x1200011, 0, 0, 0, base + 0x848});
+        assert(importer > registeringPeer);
+        assert(linux.schedule(machine) && linux.processId() == importer);
+        const auto client = call(56, {uint32_t(-100), base + 260, 2});
+        assert(client < 256 && call(222, {0, 8 * pageSize, 1, 0x4002, client, 0}) > 0x100000000);
+        assert(bindRequest(client, 0x40406300, 82, "", true) == 0);
+        assert(uint32_t(load(base + 0x720)) == 0x7206);
+        assert(bindRequest(client, 0, 0, "", true) == client && linux.blocked());
+        assert(linux.schedule(machine) && linux.processId() == 1);
+        assert(bindRequest(manager, 0, 0, "", true) == 0);
+        assert(uint32_t(load(base + 0x720)) == 0x80407202);
+        assert(bindRequest(manager, 0x40086303, 0, "", false, {}, load(base + 0x724 + 6 * 8)) == 0);
+        assert(bindRequest(manager, 0x40406301, 0, objectBytes, true, objectOffset) == 0);
+        assert(uint32_t(load(base + 0x720)) == 0x80107207);
+        assert(bindRequest(manager, 0, 0, "", true) == 0 && uint32_t(load(base + 0x720)) == 0x80107208);
+        assert(bindRequest(manager, 0x40106308, 0, "", false, {}, objectPtr, 0, objectCookie) == 0);
+        assert(bindRequest(manager, 0x40106309, 0, "", false, {}, objectPtr, 0, objectCookie) == 0);
+        assert(bindRequest(manager, 0, 0, "", true) == 0 && uint32_t(load(base + 0x720)) == 0x7206);
+        machine.cpu.retired += 4096;
+        assert(linux.schedule(machine) && linux.processId() == importer);
+        assert(bindRequest(client, 0, 0, "", true) == 0 && uint32_t(load(base + 0x720)) == 0x80407203);
+        const auto importedBuffer = load(base + 0x724 + 6 * 8);
+        const auto importedHandle = load(importedBuffer + 8);
+        assert(bindRequest(client, 0x40046305, 0, "", false, {}, importedHandle) == 0);
+        assert(bindRequest(client, 0x40086303, 0, "", false, {}, importedBuffer) == 0);
+        assert(call(94, {0}) == 0);
+        assert(linux.schedule(machine) && linux.processId() == 1);
+        assert(bindRequest(manager, 0, 0, "", true) == 0 && uint32_t(load(base + 0x720)) == 0x80107209);
+        assert(bindRequest(manager, 0, 0, "", true) == 0 && uint32_t(load(base + 0x720)) == 0x8010720a);
+        assert(load(base + 0x724) == objectPtr && load(base + 0x72c) == objectCookie);
+    }
 
     Startup commandLine{};
     commandLine.filename = "/system/bin/app_process64";

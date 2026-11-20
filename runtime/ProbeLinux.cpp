@@ -1780,7 +1780,7 @@ uint64_t ProbeLinux::open(const Machine& machine, const std::string& path, uint3
             const uint32_t requested = (flags & 3) == 2 ? 6 : (flags & 3) == 1 ? 2 : 4;
             if (((node.mode >> shift) & requested) != requested) return uint64_t(-13);
         }
-        entry->binder = std::make_shared<BinderConnection>(processId(), binderDeathsDirty);
+        entry->binder = std::make_shared<BinderConnection>(processId(), binderDeathsDirty, binderReferenceChanges);
     }
     if (!entry->pathOnly() && (entry->node == Node::ptyMaster || entry->node == Node::ptySlave)) {
         if (const auto error = openPty(*entry); error) return error;
@@ -5262,6 +5262,7 @@ bool ProbeLinux::switchThread(Machine& machine, std::chrono::steady_clock::time_
         }
     };
     if (*binderDeathsDirty) refreshBinderDeaths();
+    if (!binderReferenceChanges->empty()) refreshBinderReferences();
     updateTimers();
     while (!runnable && nextDeadline && now < deadline && !stop.stop_requested()) {
         const auto wake = std::min(*nextDeadline, deadline);

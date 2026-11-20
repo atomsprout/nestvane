@@ -470,7 +470,11 @@ private:
     struct BinderNode {
         std::weak_ptr<BinderConnection> owner;
         BinderObject object;
+        uint64_t strong = 0, weak = 0;
+        bool ownerStrong = false, ownerWeak = false;
+        bool pendingStrong = false, pendingWeak = false;
     };
+    using BinderReferenceChanges = std::set<std::weak_ptr<BinderNode>, std::owner_less<>>;
     struct BinderReference {
         std::shared_ptr<BinderNode> node;
         uint32_t inBuffer = 0, strong = 0, weak = 0;
@@ -478,6 +482,7 @@ private:
     struct BinderAllocation {
         size_t size;
         std::vector<uint32_t> handles;
+        std::vector<std::shared_ptr<BinderNode>> localReferences;
         bool delivered = false;
         size_t asyncCharge = 0;
         uint64_t asyncTarget = 0;
@@ -537,13 +542,13 @@ private:
         std::deque<BinderPacket> incoming;
         std::map<uint64_t, std::deque<BinderPacket>> pendingAsync; // Present while this node has a live transaction.
         std::map<uint64_t, bool> loopers; // Whether the looper was requested by the driver.
-        BinderConnection(uint64_t owner, const std::shared_ptr<bool>& deathsDirty)
-            : owner(owner), deathsDirty(deathsDirty) {}
-        ~BinderConnection() {
-            if (const auto dirty = deathsDirty.lock()) *dirty = true;
-        }
-
+        BinderConnection(uint64_t owner, const std::shared_ptr<bool>& deathsDirty,
+                         const std::shared_ptr<BinderReferenceChanges>& referenceChanges)
+            : owner(owner), deathsDirty(deathsDirty), referenceChanges(referenceChanges) {}
+        ~BinderConnection();
+        void changeReference(const std::shared_ptr<BinderNode>& node, int64_t strong, int64_t weak);
         std::weak_ptr<bool> deathsDirty;
+        std::weak_ptr<BinderReferenceChanges> referenceChanges;
     };
     struct Ashmem {
         WritableFile file{};
@@ -802,6 +807,8 @@ private:
     std::shared_ptr<bool> binderDeathsDirty = std::make_shared<bool>(false);
     std::vector<std::weak_ptr<BinderConnection>> binderDeathSubscribers;
     void refreshBinderDeaths();
+    std::shared_ptr<BinderReferenceChanges> binderReferenceChanges = std::make_shared<BinderReferenceChanges>();
+    void refreshBinderReferences();
     std::string binderTrace;
     unsigned binderCapacityReports = 0;
     std::map<std::string, std::string, std::less<>> bootFileLabels;
