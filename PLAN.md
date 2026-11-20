@@ -51,7 +51,7 @@ Android 镜像使用 SDK 的 AOSP `default` 变体，保留桌面、设置、文
 | OpenCalc 3.2.0（53） | 输入 `7 × 8` 并确认界面显示 `56`，重启后检查计算历史。[F-Droid 发布页](https://f-droid.org/packages/com.darkempire78.opencalculator/) | `2642613868a8a80f0ce963a4863bc153e7281b97b3bbdf36ca92a99dded7134a` |
 | Editor 1.98（198） | 输入 `Nestvane17`，通过 Android 文件选择器存为 `nestvane-reference.txt`，重启后重新打开确认文本。[F-Droid 发布页](https://f-droid.org/packages/org.billthefarmer.editor/) | `343d17e11d0914e1a7708df2781580a0413e52501c0a41d91f7ef725d9615fe9` |
 
-iOS「文件」导入与客体安装助手已经实现。用户选择的 APK 以只读描述符交给客体 `cmd package install`，由包管理器检查签名和安装资格。当前存储上限为单个 APK 64 MiB。Android 17 参考系统以同一助手验证两款 APK 安装及损坏包拒绝。Mac 上用诊断接收器验证了整文件读取、EOF、结果回传与停止时保存。文件选择、真机安装和重启后可用性仍待端到端验收。
+iOS「文件」导入与客体安装助手已经实现。用户选择的 APK 以只读描述符交给客体 `cmd package install`，由包管理器检查签名和安装资格。当前存储上限为单个 APK 64 MiB。Android 17 参考系统以同一助手验证两款 APK 安装及损坏包拒绝。Mac 上用诊断接收器验证了整文件读取、EOF、结果回传与停止时保存。iPhone 14 已通过 iOS「文件」安装 Smoke、OpenCalc 和 Editor，正式安装 APK 的 SHA-256 与输入一致。Smoke 已从 Launcher 打开并通过触控把计数从 0 改为 1。第三方应用操作、重启后的应用和数据恢复仍待端到端验收。
 
 ## 首个开发批次
 

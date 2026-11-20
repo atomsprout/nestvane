@@ -641,3 +641,6 @@
 - 含 TracerPid 的 iPhoneOS Release 诊断包已通过签名验证。对该包内的 18 个预装 APK 逐一读取 Manifest 包名，未见 Play Store、Google Play 服务、Google 服务框架或 com.google 旗下应用。该包尚未在 iPhone 14 安装。
 - Mac 完整重启对照使用三款 APK 已安装的数据库副本，启动时未重新递交 APK。Android 完成 BOOT_COMPLETED 和 Launcher 绘制，原版 cmd package path --user 0 返回三个原安装路径。同轮启动后立即查询时，三个包的 resolve-activity 均返回 No activity found，这一阶段只确认已安装文件跨启动保留，未确认 Launcher 能打开应用或应用数据保留。
 - iPhone 14 诊断进程 1345 恢复到前台后，Android 报告 QuickstepLauncher Displayed，当时记录此前物理内存峰值 2,569,429,200 字节。该轮中途在后台暂停过，不能计为连续冷启动样本。XCUITest 改用截图，避开 iOS 17.3.1 的 testmanagerd 自动录屏崩溃。真实 iOS「文件」选择器分别导入 Smoke、Editor 1.98 和 OpenCalc 3.2.0，三次都收到 Android 安装成功回执。真机数据库 quick_check 通过，三个包均已注册，正式安装的 base.apk 与离线样本 SHA-256 一致。从 Launcher 操作、重启的数据保留及实体相机仍待验收。
+- iPhone 14 进程 1345 使用 XCUITest 真实触屏长按 Launcher 打开 Apps list。应用列表可见 Calculator、Editor 和 Smoke。点击 Smoke 图标后，应用晚于首次自动化等待绘制。同轮继续点击 Increment，界面计数从 0 变为 1，导出的客体数据通过 quick_check，Smoke 的 shared_prefs/state.xml 记录 count=1。相机页面仍等待 Android 的 CAMERA 授权，未取得实体后摄预览。
+- 全屏布局版在 iPhone 14 进程 1441 使用 578 × 1064 客体画面，98,833 ms 时呈现 Android 启动动画的首帧，并在真机截图中看到底部的返回、主页、导入和停止按钮。该数字为启动动画首帧，桌面及重启后的 Smoke 交互正在独立测量。
+- ScriptWidget Android 1.0.0 官方 APK 经 SHA-256 和开发者发布证书核对。API 37 ARM64 SDK 参考机 CE2A.260420.051.A3 用 cmd package install -r -S 安装成功，打开应用并渲染 Datetime Current 模板，界面显示 Ran in 12 ms。同一 APK 在 iPhone 14 通过「文件」选中后显示 Android 安装失败，具体包管理器错误还在对照采集。
