@@ -63,8 +63,9 @@ uint64_t ProbeLinux::storeBinderBuffer(BinderConnection& target, std::span<const
     const auto endBuffers = endOffsets + extra.size();
     const auto size = (endBuffers + (context.empty() ? 0 : context.size() + 1) + size_t{7}) & ~size_t{7};
     const auto needed = std::max(size_t{8}, size);
-    // Reserve half of the mapping for synchronous traffic and charge queued packet storage.
-    const auto asyncCharge = asynchronous ? needed + sizeof(BinderPacket) : 0;
+    // The Android Binder allocator charges the aligned mapped bytes to the
+    // asynchronous budget. Host packet metadata is outside the guest mapping.
+    const auto asyncCharge = asynchronous ? needed : 0;
     if (asyncCharge && target.asyncBytes + asyncCharge > target.mapped->size / 2) return 0;
     uint64_t offset = 0;
     for (const auto& [start, buffer] : target.allocations) {

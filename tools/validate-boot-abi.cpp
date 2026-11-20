@@ -5289,15 +5289,16 @@ int main() {
     }
     {
         const std::string payload(64, 'a');
-        size_t queued = 0;
-        for (; queued < 256; ++queued) {
-            assert(bindRequest(channel, 0x40406300, oneway | (100 + queued), payload, true) == 0);
-            const auto response = uint32_t(load(base + 0x720));
-            if (response == 0x7211) break; // Asynchronous allocation budget exhausted.
-            assert(response == 0x7206);
+        const auto queued = 8 * pageSize / 2 / payload.size();
+        constexpr uint32_t synchronousCode = 4000;
+        constexpr uint32_t reuseCode = 4001;
+        for (size_t index = 0; index < queued; ++index) {
+            assert(bindRequest(channel, 0x40406300, oneway | (100 + index), payload, true) == 0);
+            assert(uint32_t(load(base + 0x720)) == 0x7206);
         }
-        assert(queued > 32 && queued < 256);
-        assert(bindRequest(channel, 0x40406300, 400, "synchronous", true) == 0);
+        assert(bindRequest(channel, 0x40406300, oneway | (100 + queued), payload, true) == 0);
+        assert(uint32_t(load(base + 0x720)) == 0x7211);
+        assert(bindRequest(channel, 0x40406300, synchronousCode, "synchronous", true) == 0);
         assert(uint32_t(load(base + 0x720)) == 0x7206);
         assert(bindRequest(channel, 0, 0, "", true) == channel && linux.blocked());
         assert(linux.schedule(machine) && linux.processId() == 1);
@@ -5312,7 +5313,7 @@ int main() {
         const auto firstBuffer = takeOneWay(0);
         assert(bindRequest(manager, 0, 0, "", true) == 0);
         assert(uint32_t(load(base + 0x720)) == 0x80407202);
-        assert(uint32_t(load(base + 0x724 + 2 * 8)) == 400); // Same-node oneways wait for the first buffer.
+        assert(uint32_t(load(base + 0x724 + 2 * 8)) == synchronousCode); // Same-node oneways wait for the first buffer.
         const auto requestBuffer = load(base + 0x724 + 6 * 8);
         assert(bindRequest(manager, 0x40406301, 0, "response", true) == 0);
         assert(uint32_t(load(base + 0x720)) == 0x7206);
@@ -5327,13 +5328,13 @@ int main() {
         assert(bindRequest(channel, 0, 0, "", true) == 0);
         assert(uint32_t(load(base + 0x720)) == 0x80407203);
         assert(bindRequest(channel, 0x40086303, 0, "", false, {}, load(base + 0x724 + 6 * 8)) == 0);
-        assert(bindRequest(channel, 0x40406300, oneway | 401, payload, true) == 0);
+        assert(bindRequest(channel, 0x40406300, oneway | reuseCode, payload, true) == 0);
         assert(uint32_t(load(base + 0x720)) == 0x7206);
         machine.cpu.retired += 4096;
         assert(linux.schedule(machine) && linux.processId() == 1);
         assert(bindRequest(manager, 0, 0, "", true) == 0);
         assert(uint32_t(load(base + 0x720)) == 0x80407202);
-        assert(uint32_t(load(base + 0x724 + 2 * 8)) == 401);
+        assert(uint32_t(load(base + 0x724 + 2 * 8)) == reuseCode);
         assert(bindRequest(manager, 0x40086303, 0, "", false, {}, load(base + 0x724 + 6 * 8)) == 0);
         machine.cpu.retired += 4096;
         assert(linux.schedule(machine) && linux.processId() == binderChild);

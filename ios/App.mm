@@ -11,6 +11,8 @@
 #include <atomic>
 #include <chrono>
 #include <mach/mach.h>
+#include <memory>
+#include <new>
 #include <thread>
 #include <sys/resource.h>
 #include <vector>
@@ -19,24 +21,27 @@ namespace {
 constexpr uint32_t guestWidth = 640;
 constexpr uint32_t guestHeight = 960;
 
-UIImage* GuestDisplayImage(std::span<const uint8_t> pixels, uint32_t width, uint32_t height) {
+UIImage* GuestDisplayImage(std::unique_ptr<uint8_t[]>& pixels, size_t capacity,
+                           uint32_t width, uint32_t height) {
     const size_t stride = size_t(width) * 4;
     const size_t bytes = stride * height;
-    if (!width || !height || width > 4096 || height > 4096 || bytes > pixels.size()) return nil;
+    if (!width || !height || width > 4096 || height > 4096 || bytes > capacity) return nil;
 
-    // The guest compositor has already oriented its output for the display.
-    NSData* frameBytes = [NSData dataWithBytes:pixels.data() length:bytes];
-    CGDataProviderRef provider = CGDataProviderCreateWithCFData((__bridge CFDataRef)frameBytes);
+    // Keep the readback alive through the image provider without copying it.
+    CGDataProviderRef provider = CGDataProviderCreateWithData(nullptr, pixels.get(), bytes,
+        [](void*, const void* data, size_t) { delete[] static_cast<const uint8_t*>(data); });
+    if (!provider) return nil;
+    pixels.release();
     CGColorSpaceRef color = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
     const CGBitmapInfo bitmap = kCGBitmapByteOrder32Big | CGBitmapInfo(kCGImageAlphaNoneSkipLast);
-    CGImageRef frame = provider && color
+    CGImageRef frame = color
         ? CGImageCreate(width, height, 8, 32, stride, color, bitmap, provider, nullptr, false,
                         kCGRenderingIntentDefault)
         : nullptr;
     UIImage* image = frame ? [UIImage imageWithCGImage:frame] : nil;
     if (frame) CGImageRelease(frame);
     if (color) CGColorSpaceRelease(color);
-    if (provider) CGDataProviderRelease(provider);
+    CGDataProviderRelease(provider);
     return image;
 }
 
@@ -46,21 +51,28 @@ std::jthread StartDisplayReader(const nestvane::GfxstreamSession& renderer, bool
     if (!renderer.hasDisplayReadback()) return {};
     return std::jthread([&renderer, &launcherDrawn, captureContent, present](std::stop_token stop) mutable {
         bool captureLauncher = captureContent;
-        std::vector<uint8_t> pixels(size_t(guestWidth) * guestHeight * 4);
+        constexpr auto capacity = size_t(guestWidth) * guestHeight * 4;
+        std::unique_ptr<uint8_t[]> pixels;
         const auto slot = dispatch_semaphore_create(1);
         uint64_t lastFrame = 0;
         while (!stop.stop_requested()) {
             @autoreleasepool {
                 if (dispatch_semaphore_wait(slot, DISPATCH_TIME_NOW) == 0) {
                     const bool wantLauncher = captureLauncher && launcherDrawn.load(std::memory_order_relaxed);
+                    if (!pixels) pixels.reset(new (std::nothrow) uint8_t[capacity]);
+                    const auto* readback = pixels.get();
                     uint32_t dimensions[2]{};
-                    const auto frame = renderer.readDisplay(lastFrame, pixels, dimensions);
-                    UIImage* image = frame ? GuestDisplayImage(pixels, dimensions[0], dimensions[1]) : nil;
+                    const auto frame = pixels
+                        ? renderer.readDisplay(lastFrame, {pixels.get(), capacity}, dimensions)
+                        : 0;
+                    UIImage* image = frame
+                        ? GuestDisplayImage(pixels, capacity, dimensions[0], dimensions[1])
+                        : nil;
                     if (image) {
                         lastFrame = frame;
                         const auto bytes = size_t(dimensions[0]) * dimensions[1] * 4;
                         const bool nonuniform = (captureContent || wantLauncher) &&
-                            nestvane::guestDisplayHasColorVariation(std::span(pixels).first(bytes));
+                            nestvane::guestDisplayHasColorVariation({readback, bytes});
                         const bool content = captureContent && nonuniform;
                         const bool launcher = wantLauncher && nonuniform;
                         if (content) captureContent = false;
