@@ -555,3 +555,4 @@
 - 同一个应用目录的保存流程会用到备份文件重命名和删除。客体 renameat 和 unlinkat 现在通过父路径链接进入应用挂载，允许在同一 bind mount 内重命名，同时维持跨挂载的 EXDEV。宿主 ABI 回归覆盖隔离挂载中的文件创建、改名、经另一挂载查看和删除。
 - Mac 联测确认目录修复后的原版 DocumentsUI 创建了 16,384 字节的 search_history.db，原版 Downloads 创建了 24,576 字节的 downloads.db。从持久化数据卷导出两份数据库，PRAGMA quick_check 均返回 ok。已安装的 Smoke 从数据卷启动并收到了 GuestTouch 点按，落盘 state.xml 的 count 从缺省值变为 1。该轮的部分宿主合成帧只在左上角呈现缩小内容，计数以数据卷为准。已用包含该值的校验通过的 SQLite 副本开始重启复测。
 - 更新版 APK 在从空数据卷走正式安装后的 Mac GuestTouch 联测中，应用日志按顺序记录 Opened activity with count 0、Saved count 1、Saved count 2。完整性检查通过的持久化数据卷副本含 count=2，SharedPreferences 的备份文件已清理。带 UI 的客体重启、第三方收件和实体相机仍需独立确认。
+- 从含 count=1 的已校验数据卷副本启动独立 Mac 客体。Android 重新打开原版包管理器中已安装的 Smoke，ActivityTaskManager 记录 MainActivity Displayed。点按一次后，应用将 SharedPreferences 的 count 更新为 2，确认新进程读回了重启前的值。该轮按已确认的客体坐标点按，宿主合成画面仍偶发缩小或变形。
