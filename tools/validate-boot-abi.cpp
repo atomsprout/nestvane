@@ -454,6 +454,20 @@ int main() {
         std::memcpy(permute.cpu.v[4].data(), negateSingles.data(), sizeof(negateSingles));
         assert(executeStartupInstruction(permute, 0x2ea0f883)); // fneg v3.2s, v4.2s
         assert(std::memcmp(permute.cpu.v[3].data(), negateSinglesResult.data(), sizeof(negateSinglesResult)) == 0);
+        const std::array<float, 4> absSingles{-3.25f, -0.0f, -17.0f, 42.0f};
+        const std::array<float, 4> absLow{3.25f, 0.0f, 0.0f, 0.0f}, absAll{3.25f, 0.0f, 17.0f, 42.0f};
+        std::memcpy(permute.cpu.v[0].data(), absSingles.data(), sizeof(absSingles));
+        permute.cpu.v[2].fill(0xff);
+        assert(executeStartupInstruction(permute, 0x0ea0f802)); // fabs v2.2s, v0.2s
+        assert(std::memcmp(permute.cpu.v[2].data(), absLow.data(), sizeof(absLow)) == 0);
+        assert(executeStartupInstruction(permute, 0x4ea0f800)); // fabs v0.4s, v0.4s
+        assert(std::memcmp(permute.cpu.v[0].data(), absAll.data(), sizeof(absAll)) == 0);
+        const std::array<uint64_t, 2> absDoubles{0xfff8000000000012ULL, 0xfff0000000000000ULL};
+        const std::array<uint64_t, 2> absDoubleResult{0x7ff8000000000012ULL, 0x7ff0000000000000ULL};
+        std::memcpy(permute.cpu.v[1].data(), absDoubles.data(), sizeof(absDoubles));
+        assert(executeStartupInstruction(permute, 0x4ee0f821)); // fabs v1.2d, v1.2d
+        assert(std::memcmp(permute.cpu.v[1].data(), absDoubleResult.data(), sizeof(absDoubleResult)) == 0);
+        assert(!executeStartupInstruction(permute, 0x0ee0f821)); // unallocated 1D vector form
         const std::array<float, 4> widenInput{1.75f, -0.0f, -11.5f, 23.25f};
         const std::array<double, 2> widenedLow{1.75, -0.0}, widenedHigh{-11.5, 23.25};
         std::memcpy(permute.cpu.v[2].data(), widenInput.data(), sizeof(widenInput));
