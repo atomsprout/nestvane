@@ -1017,9 +1017,11 @@ std::string ProbeLinux::mountList(const MountNamespace& group) {
     return list;
 }
 
-uint64_t ProbeLinux::writableAllocation() const {
+uint64_t ProbeLinux::writableAllocation(bool persistent) const {
     uint64_t bytes = 0;
-    for (const auto& [path, file] : writableFiles) bytes += file->storage->pages.size();
+    for (const auto& [path, file] : writableFiles) {
+        if (file->persistent == persistent) bytes += file->storage->pages.size();
+    }
     return bytes;
 }
 
@@ -1048,7 +1050,7 @@ uint64_t ProbeLinux::statFilesystem(Machine& machine, uint64_t address, std::str
     }
     if (dataPath(backingPath(path))) {
         stat[2] = maxWritableBytes / pageSize;
-        stat[3] = stat[4] = (maxWritableBytes - writableAllocation()) / pageSize;
+        stat[3] = stat[4] = (maxWritableBytes - writableAllocation(true)) / pageSize;
     }
     if (!bootTransitions.empty() && (path == "/sys/fs/selinux" || inside(path, "/sys/fs/selinux"))) {
         stat[0] = 0xf97cff8c; // SELINUX_MAGIC
@@ -1437,7 +1439,7 @@ uint64_t ProbeLinux::resize(const WritableFile& file, uint64_t size) {
                 if (const auto storage = weakFile.lock()) allocated += storage->pages.size();
             }
         } else {
-            allocated = writableAllocation();
+            allocated = writableAllocation(file.persistent);
         }
         const auto limit = file.memoryFile ? std::max(maxWritableBytes, memoryLimit / 2) : maxWritableBytes;
         if (pages - file.storage->pages.size() + allocated > limit) return uint64_t(-28);

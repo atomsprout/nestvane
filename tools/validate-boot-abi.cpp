@@ -6964,17 +6964,31 @@ int main() {
             quota.mountData((cleanup.directory / "quota.sqlite3").string());
             quota.addBootTmpfs("/metadata", 0755, 0, 6);
             constexpr uint64_t cwd = uint32_t(-100);
+            constexpr auto fsStat = base + 0x200;
+            const auto dataFreeBlocks = [&] {
+                put(base, "/data");
+                assert(invoke(quota, 43, {base, fsStat}) == 0);
+                const auto freeBlocks = load(fsStat + 3 * sizeof(uint64_t));
+                assert(freeBlocks == load(fsStat + 4 * sizeof(uint64_t)));
+                return freeBlocks;
+            };
+            const auto initialFree = dataFreeBlocks();
             for (unsigned i = 0; i < 1024; ++i) {
                 const auto path = "/metadata/" + std::to_string(i);
                 put(base, path.c_str());
                 const auto file = invoke(quota, 56, {cwd, base, 0xc1, 0600});
-                assert(file < 256 && invoke(quota, 57, {file}) == 0);
+                assert(file < 256);
+                if (i == 0) assert(invoke(quota, 46, {file, 2 * 1024 * 1024}) == 0);
+                assert(invoke(quota, 57, {file}) == 0);
             }
+            assert(dataFreeBlocks() == initialFree);
             put(base, "/metadata/overflow");
             assert(invoke(quota, 56, {cwd, base, 0xc1, 0600}) == uint64_t(-28));
             put(base, "/data/package");
             const auto persistent = invoke(quota, 56, {cwd, base, 0xc1, 0600});
-            assert(persistent < 256 && invoke(quota, 57, {persistent}) == 0 && quota.syncData());
+            assert(persistent < 256 && invoke(quota, 46, {persistent, pageSize}) == 0);
+            assert(dataFreeBlocks() + 1 == initialFree);
+            assert(invoke(quota, 57, {persistent}) == 0 && quota.syncData());
         }
         {
             ProbeLinux installer(1, 0);

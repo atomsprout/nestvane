@@ -646,6 +646,7 @@ private:
     sqlite3* dataDatabase = nullptr;
     int64_t dataGeneration = 0;
     static constexpr uint64_t maxDataFileBytes = 64 * 1024 * 1024;
+    // Persistent data and transient filesystem writes each have their own budget.
     static constexpr uint64_t maxWritableBytes = 128 * 1024 * 1024;
     std::vector<std::weak_ptr<SharedFileBytes>> memoryFiles;
     std::optional<Descriptor> find(std::string_view path, uint32_t flags, const Machine* machine = nullptr) const;
@@ -685,7 +686,7 @@ private:
     std::string procCommandLine(const Process& process, const Machine* machine) const;
     const Process* procTaskDirectory(std::string_view path) const;
     static std::string mountList(const MountNamespace& group);
-    uint64_t writableAllocation() const;
+    uint64_t writableAllocation(bool persistent) const;
     uint64_t statFilesystem(Machine& machine, uint64_t address, std::string_view path) const;
     static constexpr uint32_t descriptorCapacity = 512 * 1024, defaultDescriptorLimit = 1024;
     static constexpr uint32_t resourceObjectCapacity = 4096;
