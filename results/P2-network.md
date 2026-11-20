@@ -565,3 +565,4 @@
 - Android 原版启动命令对重启后的 Nestvane 返回 OpenCalc Activity 不存在。该数据卷中的 APK、packages.list、原版 ABX 安装记录和用户 0 的包状态均保留，参考模拟器能用同一命令启动同一组件。Editor 的原版启动命令返回 Status: ok，但该轮尚未取得应用实际画面。原版 ACTION_ALL_APPS 在参考模拟器显示两款应用，在 Nestvane 已投递到前台 QuickstepLauncher，真实列表画面待核对。
 - Mac 按下 Capture Photo 后，原版 Ranchu Camera HAL 的 RGBA 预览及 YUV420 拍照请求均被接收。运行时随后在 /vendor/lib64/libjpeg.so+0x15f9c 遇到 0x4f70c234，即 SQDMULH 向量按元素形式，整机执行停止，未写出 JPEG。已补齐向量 SQDMULH 和 SQRDMULH 按元素执行，回归覆盖原始机器码、16/32 位索引、舍入、饱和状态和窄向量清零。完整拍照仍待复验，宿主对预览纹理的 glTexSubImage2D 错误也待定位。
 - 另一次从相同安装数据卷重启后，原版包管理器在重装前就能解析 OpenCalc、Editor 和 Smoke 的启动组件。原版安装通道重新安装前两款后，解析结果保持一致。对保留的 OpenCalc APK 使用客体 pread64 和 mmap 逐字节核对，2,359,134 字节均一致。此前组件启动错误的触发条件仍待验证。
+- 直接执行导致停机的原版 /vendor/lib64/libjpeg.so 中完整的 jsimd_fdct_ifast_neon。隔离夹具仅调整 ELF 装载头，保留程序段内容，在 Nestvane 上运行常量及非均匀两个 8×8 块。参考 Android 17 使用 SHA-256 完全相同的库执行同一函数，两块共 128 个系数逐项相同。新运行时的 iPhoneOS Release 编译通过，完整 Camera2 拍照链路正在复测。
