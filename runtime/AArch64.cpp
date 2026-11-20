@@ -1403,6 +1403,15 @@ bool executeStartupInstruction(Machine& machine, uint32_t word) {
                 ++cpu.retired;
                 return true;
             }
+            if ((word & 0xffffffe0) == 0xd50b7a20) { // DC CVAC
+                const auto address = reg(cpu, word & 31);
+                // The interpreter has coherent guest memory. Preserve the EL0 read access check.
+                constexpr unsigned readable = 4;
+                if (!machine.read(address, 1, readable))
+                    machine.fault(cpu.pc, address);
+                handled = true;
+                break;
+            }
             // Ordering is inherent in the interpreter. PAC and BTI are disabled.
             const bool barrier = word == 0xd5033b9f || // DSB ISH, used by __clear_cache.
                                  word == 0xd50339bf || word == 0xd5033abf || word == 0xd5033bbf ||

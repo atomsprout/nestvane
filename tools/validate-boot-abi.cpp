@@ -350,6 +350,22 @@ int main() {
         assert(literal.cpu.v[8] == bytes);
     }
     {
+        constexpr uint64_t location = 0x4000;
+        Machine cache(Image{location, {{location, std::vector<uint8_t>(pageSize, 0x35), 4},
+                                      {location + pageSize, std::vector<uint8_t>(pageSize), 0}}, {}});
+        cache.cpu.x[22] = location + 3;
+        assert(executeStartupInstruction(cache, 0xd50b7a36)); // dc cvac, x22
+        assert(cache.cpu.pc == location + 4 && cache.cpu.retired == 1);
+        assert(cache.cpu.x[22] == location + 3 && *cache.read(location + 3, 1, 4) == 0x35);
+        for (const auto inaccessible : {location + pageSize, location + 2 * pageSize}) {
+            cache.cpu.x[22] = inaccessible;
+            assert(executeStartupInstruction(cache, 0xd50b7a36));
+            assert(cache.cpu.stop == Stop::fault && cache.cpu.faultAddress == inaccessible);
+            assert(cache.cpu.pc == location + 4 && cache.cpu.retired == 1);
+            cache.cpu.stop = Stop::running;
+        }
+    }
+    {
         Machine permute(Image{base, {}, {}});
         const std::array<uint32_t, 4> left{10, 20, 30, 40}, right{1, 2, 3, 4}, expected{20, 2, 40, 4};
         std::memcpy(permute.cpu.v[2].data(), left.data(), sizeof(left));
