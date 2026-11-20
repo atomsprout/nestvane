@@ -204,7 +204,7 @@ private:
         uint32_t seals = 0;
         std::vector<RecordLock> locks;
         std::shared_ptr<SharedFileBytes> storage = std::make_shared<SharedFileBytes>();
-        std::map<std::string, std::vector<uint8_t>, std::less<>> attributes;
+        std::map<std::string, std::vector<uint8_t>, std::less<>> attributes, userAttributes;
         PosixAcl accessAcl{};
         std::shared_ptr<BpfMap> pinnedMap{};
         std::shared_ptr<const BpfProgram> pinnedProgram{};
@@ -627,7 +627,7 @@ private:
     bool inodeAllows(const auto& node, unsigned requested, bool realIds = false) const;
     uint64_t changePosixAcl(Machine& machine, const Descriptor& entry, bool defaults, bool removing);
     uint64_t chmodDirectory(Directory& directory, uint32_t mode) const;
-    uint64_t changeDirectoryUserAttribute(Machine& machine, const Descriptor& entry,
+    uint64_t changeUserAttribute(Machine& machine, const Descriptor& entry,
                                           const std::string& name, bool removing);
     uint64_t renameFile(Machine& machine);
     uint64_t renameDirectory(const std::string& source, const std::string& destination, bool noReplace);

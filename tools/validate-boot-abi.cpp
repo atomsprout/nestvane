@@ -6000,6 +6000,42 @@ int main() {
         constexpr auto firstPath = base + 0x280, secondPath = base + 0x300, payload = base + 0x380;
 
         {
+            const auto attrDatabase = (cleanup.directory / "file-xattrs.sqlite3").string();
+            ProbeLinux owner(1, 0);
+            owner.mountData(attrDatabase);
+            constexpr auto key = base + 0x440, copied = base + 0x480;
+            constexpr char uuid[] = "13af50b6-5dc1-4c75-85f5-6607f157dd27";
+            put(firstPath, "/data/media.db.tmp");
+            put(secondPath, "/data/media.db");
+            put(payload, uuid);
+            put(key, "user.uuid");
+            const auto descriptor = invoke(owner, 56, {atCwd, firstPath, 0xc2, 0600});
+            assert(descriptor < 256 && invoke(owner, 55, {descriptor, 10032, 10032}) == 0);
+            assert(invoke(owner, 146, {10032}) == 0);
+            assert(invoke(owner, 5, {firstPath, key, payload, sizeof(uuid) - 1, 2}) == uint64_t(-61));
+            assert(invoke(owner, 5, {firstPath, key, payload, sizeof(uuid) - 1, 1}) == 0);
+            assert(invoke(owner, 7, {descriptor, key, payload, sizeof(uuid) - 1, 1}) == uint64_t(-17));
+            assert(invoke(owner, 10, {descriptor, key, copied, 0}) == sizeof(uuid) - 1);
+            assert(invoke(owner, 38, {atCwd, firstPath, atCwd, secondPath}) == uint64_t(-13));
+            assert(owner.syncData());
+
+            // Rename as the directory owner, then reopen the same file as its application UID.
+            ProbeLinux rename(1, 0);
+            rename.mountData(attrDatabase);
+            assert(invoke(rename, 38, {atCwd, firstPath, atCwd, secondPath}) == 0 && rename.syncData());
+            ProbeLinux reader(1, 10032), otherApp(1, 10033);
+            reader.mountData(attrDatabase);
+            otherApp.mountData(attrDatabase);
+            assert(invoke(reader, 8, {secondPath, key, copied, sizeof(uuid)}) == sizeof(uuid) - 1);
+            assert(std::memcmp(machine.read(copied, sizeof(uuid) - 1, 4), uuid, sizeof(uuid) - 1) == 0);
+            assert(invoke(otherApp, 8, {secondPath, key, copied, sizeof(uuid)}) == uint64_t(-13));
+            assert(invoke(otherApp, 5, {secondPath, key, payload, 1, 0}) == uint64_t(-13));
+            assert(invoke(reader, 5, {secondPath, key, 0, 0, 2}) == 0);
+            assert(invoke(reader, 8, {secondPath, key, copied, sizeof(uuid)}) == 0);
+            assert(invoke(reader, 14, {secondPath, key}) == 0);
+            assert(invoke(reader, 8, {secondPath, key, copied, sizeof(uuid)}) == uint64_t(-61));
+        }
+        {
             const auto cacheDatabase = (cleanup.directory / "package-cache.sqlite3").string();
             ProbeLinux cache(1, 0);
             cache.mountData(cacheDatabase);

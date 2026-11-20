@@ -4607,7 +4607,7 @@ bool ProbeLinux::fileCall(Machine& machine) {
                 break;
             }
             if (name->starts_with("user.")) {
-                x[0] = changeDirectoryUserAttribute(machine, *entry, *name, removing);
+                x[0] = changeUserAttribute(machine, *entry, *name, removing);
                 break;
             }
             if (*name != "security.selinux") { x[0] = uint64_t(-95); break; }
@@ -5882,40 +5882,43 @@ uint64_t ProbeLinux::updateTimes(Machine& machine) {
     return uint64_t(-95);
 }
 
-uint64_t ProbeLinux::changeDirectoryUserAttribute(Machine& machine, const Descriptor& entry,
-                                                  const std::string& name, bool removing) {
+uint64_t ProbeLinux::changeUserAttribute(Machine& machine, const Descriptor& entry,
+                                        const std::string& name, bool removing) {
     if (name.size() <= 5 || name.size() > 255) return uint64_t(-34);
-    const auto directory = directories.find(entry.path);
-    if (entry.node != Node::directory || directory == directories.end() || !dataPath(entry.path))
-        return uint64_t(-95);
+    if (!dataPath(entry.path)) return uint64_t(-95);
     const auto& visible = entry.visiblePath.empty() ? entry.path : entry.visiblePath;
     if (!writablePath(visible)) return uint64_t(-30);
-    auto& node = directory->second;
-    constexpr uint64_t capFowner = 1ULL << 3;
-    if (userId() != 0) {
-        if ((node.mode & 01000) && userId() != node.uid &&
-            !(current->process->effectiveCaps & capFowner)) return uint64_t(-1);
-        if (!inodeAllows(node, 2)) return uint64_t(-13);
-    }
-    auto& attributes = node.userAttributes;
-    const auto existing = attributes.find(name);
-    const bool present = existing != attributes.end();
-    if (removing) {
-        if (!present) return uint64_t(-61);
-        attributes.erase(existing);
-    } else {
-        const auto& x = machine.cpu.x;
-        if (x[4] > 2) return invalid;
-        if (x[3] > Directory::maxUserAttributeValue) return uint64_t(-7);
-        if (x[4] == 1 && present) return uint64_t(-17);
-        if (x[4] == 2 && !present) return uint64_t(-61);
-        if (!present && attributes.size() >= Directory::maxUserAttributes) return uint64_t(-28);
-        std::vector<uint8_t> value(x[3]);
-        if (!machine.readInto(x[2], value)) return uint64_t(-14);
-        attributes.insert_or_assign(name, std::move(value));
-    }
-    fileEvent(entry.path, fileAttributes, true);
-    return 0;
+    const auto update = [&](auto& node, bool directory) -> uint64_t {
+        constexpr uint64_t capFowner = 1ULL << 3;
+        if (userId() != 0) {
+            if (directory && (node.mode & 01000) && userId() != node.uid &&
+                !(current->process->effectiveCaps & capFowner)) return uint64_t(-1);
+            if (!inodeAllows(node, 2)) return uint64_t(-13);
+        }
+        auto& attributes = node.userAttributes;
+        const auto existing = attributes.find(name);
+        const bool present = existing != attributes.end();
+        if (removing) {
+            if (!present) return uint64_t(-61);
+            attributes.erase(existing);
+        } else {
+            const auto& x = machine.cpu.x;
+            if (x[4] > 2) return invalid;
+            if (x[3] > Directory::maxUserAttributeValue) return uint64_t(-7);
+            if (x[4] == 1 && present) return uint64_t(-17);
+            if (x[4] == 2 && !present) return uint64_t(-61);
+            if (!present && attributes.size() >= Directory::maxUserAttributes) return uint64_t(-28);
+            std::vector<uint8_t> value(x[3]);
+            if (!value.empty() && !machine.readInto(x[2], value)) return uint64_t(-14);
+            attributes.insert_or_assign(name, std::move(value));
+        }
+        fileEvent(entry.path, fileAttributes, directory);
+        return 0;
+    };
+    if (entry.temporary && entry.temporary->persistent) return update(*entry.temporary, false);
+    const auto directory = directories.find(entry.path);
+    if (entry.node == Node::directory && directory != directories.end()) return update(directory->second, true);
+    return uint64_t(-95);
 }
 
 uint64_t ProbeLinux::changePosixAcl(Machine& machine, const Descriptor& entry, bool defaults, bool removing) {
@@ -6004,18 +6007,21 @@ bool ProbeLinux::securityCall(Machine& machine) {
         }
         value = aclBytes;
     }
-    if (name->starts_with("user.") && *name != restoreconMarker) {
-        const auto directory = directories.find(fd->path);
-        if (fd->node == Node::directory && directory != directories.end() && dataPath(fd->path)) {
-            const auto& node = directory->second;
-            if (!inodeAllows(node, 4)) {
-                x[0] = uint64_t(-13);
-                return true;
-            }
+    if (name->starts_with("user.") && *name != restoreconMarker && dataPath(fd->path)) {
+        if (fd->pathOnly()) { x[0] = uint64_t(-9); return true; }
+        const auto lookup = [&](const auto& node) {
+            if (!inodeAllows(node, 4)) return false;
             if (const auto attribute = node.userAttributes.find(*name); attribute != node.userAttributes.end()) {
                 value = attribute->second;
                 present = true;
             }
+            return true;
+        };
+        const auto directory = directories.find(fd->path);
+        if (fd->temporary && fd->temporary->persistent) {
+            if (!lookup(*fd->temporary)) { x[0] = uint64_t(-13); return true; }
+        } else if (fd->node == Node::directory && directory != directories.end()) {
+            if (!lookup(directory->second)) { x[0] = uint64_t(-13); return true; }
         }
     }
     if (*name == restoreconMarker) {

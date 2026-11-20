@@ -73,6 +73,8 @@ void ProbeLinux::mountData(const std::string& databasePath) {
         "CREATE TABLE IF NOT EXISTS restorecon_progress (path TEXT PRIMARY KEY, value INTEGER NOT NULL);"
         "CREATE TABLE IF NOT EXISTS directory_user_attributes (path TEXT NOT NULL, name TEXT NOT NULL,"
         " value BLOB NOT NULL, PRIMARY KEY(path,name));"
+        "CREATE TABLE IF NOT EXISTS file_user_attributes (path TEXT NOT NULL, name TEXT NOT NULL,"
+        " value BLOB NOT NULL, PRIMARY KEY(path,name));"
         "CREATE TABLE IF NOT EXISTS inode_acls (path TEXT NOT NULL, defaults INTEGER NOT NULL,"
         " value BLOB NOT NULL, PRIMARY KEY(path,defaults));"
         "CREATE TABLE IF NOT EXISTS inode_times (path TEXT PRIMARY KEY, a_sec INTEGER NOT NULL, a_ns INTEGER NOT NULL,"
@@ -152,23 +154,30 @@ void ProbeLinux::mountData(const std::string& databasePath) {
     }
     markers.reset();
     if (result != SQLITE_DONE) throw std::runtime_error("cannot read guest restorecon entries");
-    auto attributes = prepare(raw, "SELECT path,name,value FROM directory_user_attributes");
-    if (!attributes) throw std::runtime_error("cannot read guest directory attributes");
+    auto attributes = prepare(raw, "SELECT path,name,value,0 FROM directory_user_attributes"
+                                   " UNION ALL SELECT path,name,value,1 FROM file_user_attributes");
+    if (!attributes) throw std::runtime_error("cannot read guest user attributes");
     while ((result = sqlite3_step(attributes.get())) == SQLITE_ROW) {
         const auto path = columnBytes(attributes.get(), 0);
         const auto name = columnBytes(attributes.get(), 1), value = columnBytes(attributes.get(), 2);
-        const auto node = loadedDirectories.find(path);
-        if (node == loadedDirectories.end() || !name.starts_with("user.") || name.size() <= 5 ||
+        decltype(Directory::userAttributes)* inodeAttributes = nullptr;
+        if (sqlite3_column_int(attributes.get(), 3)) {
+            if (const auto file = loadedFiles.find(path); file != loadedFiles.end())
+                inodeAttributes = &file->second->userAttributes;
+        } else if (const auto directory = loadedDirectories.find(path); directory != loadedDirectories.end()) {
+            inodeAttributes = &directory->second.userAttributes;
+        }
+        if (!inodeAttributes || !name.starts_with("user.") || name.size() <= 5 ||
             name.size() > 255 || name.find('\0') != std::string_view::npos ||
             name == "user.restorecon_in_progress" || value.size() > Directory::maxUserAttributeValue ||
-            node->second.userAttributes.size() >= Directory::maxUserAttributes)
-            throw std::runtime_error("invalid guest directory attribute");
+            inodeAttributes->size() >= Directory::maxUserAttributes)
+            throw std::runtime_error("invalid guest user attribute");
         std::vector<uint8_t> bytes;
         if (!value.empty()) bytes.assign(value.begin(), value.end());
-        node->second.userAttributes.emplace(std::string(name), std::move(bytes));
+        inodeAttributes->emplace(std::string(name), std::move(bytes));
     }
     attributes.reset();
-    if (result != SQLITE_DONE) throw std::runtime_error("cannot read guest directory attribute entries");
+    if (result != SQLITE_DONE) throw std::runtime_error("cannot read guest user attribute entries");
     auto acls = prepare(raw, "SELECT path,defaults,value FROM inode_acls");
     if (!acls) throw std::runtime_error("cannot read guest inode ACLs");
     while ((result = sqlite3_step(acls.get())) == SQLITE_ROW) {
@@ -237,14 +246,25 @@ bool ProbeLinux::syncData() {
             return false;
         check.reset();
         if (!execute(database, "DELETE FROM entries; DELETE FROM restorecon_progress; DELETE FROM inode_times;"
-                               "DELETE FROM directory_user_attributes; DELETE FROM inode_acls;"))
+                               "DELETE FROM directory_user_attributes; DELETE FROM file_user_attributes;"
+                               "DELETE FROM inode_acls;"))
             return false;
         auto insert = prepare(database, "INSERT INTO entries VALUES(?,?,?,?,?,?,?,?)");
         auto marker = prepare(database, "INSERT INTO restorecon_progress VALUES(?,?)");
         auto inodeTimes = prepare(database, "INSERT INTO inode_times VALUES(?,?,?,?,?,?,?)");
-        auto attributes = prepare(database, "INSERT INTO directory_user_attributes VALUES(?,?,?)");
+        auto directoryAttributes = prepare(database, "INSERT INTO directory_user_attributes VALUES(?,?,?)");
+        auto fileAttributes = prepare(database, "INSERT INTO file_user_attributes VALUES(?,?,?)");
         auto acls = prepare(database, "INSERT INTO inode_acls VALUES(?,?,?)");
-        if (!insert || !marker || !inodeTimes || !attributes || !acls) return false;
+        if (!insert || !marker || !inodeTimes || !directoryAttributes || !fileAttributes || !acls) return false;
+        const auto writeAttributes = [&](sqlite3_stmt* cursor, const std::string& path, const auto& attributes) {
+            for (const auto& [name, value] : attributes) {
+                if (sqlite3_reset(cursor) != SQLITE_OK ||
+                    sqlite3_bind_text(cursor, 1, path.data(), int(path.size()), SQLITE_TRANSIENT) != SQLITE_OK ||
+                    sqlite3_bind_text(cursor, 2, name.data(), int(name.size()), SQLITE_TRANSIENT) != SQLITE_OK ||
+                    !bindBytes(cursor, 3, value) || sqlite3_step(cursor) != SQLITE_DONE) return false;
+            }
+            return true;
+        };
         const auto writeAcl = [&](const std::string& path, bool defaults, const PosixAcl& acl) {
             if (acl.empty()) return true;
             const auto value = acl.encode();
@@ -289,13 +309,7 @@ bool ProbeLinux::syncData() {
                  sqlite3_bind_text(marker.get(), 1, path.data(), int(path.size()), SQLITE_TRANSIENT) != SQLITE_OK ||
                  sqlite3_bind_int(marker.get(), 2, *directory.restoreconInProgress) != SQLITE_OK ||
                  sqlite3_step(marker.get()) != SQLITE_DONE)) return false;
-            for (const auto& [name, value] : directory.userAttributes) {
-                auto* cursor = attributes.get();
-                if (sqlite3_reset(cursor) != SQLITE_OK ||
-                    sqlite3_bind_text(cursor, 1, path.data(), int(path.size()), SQLITE_TRANSIENT) != SQLITE_OK ||
-                    sqlite3_bind_text(cursor, 2, name.data(), int(name.size()), SQLITE_TRANSIENT) != SQLITE_OK ||
-                    !bindBytes(cursor, 3, value) || sqlite3_step(cursor) != SQLITE_DONE) return false;
-            }
+            if (!writeAttributes(directoryAttributes.get(), path, directory.userAttributes)) return false;
         }
         for (const auto& [path, file] : writableFiles) {
             if (!dataPath(path)) continue;
@@ -304,7 +318,8 @@ bool ProbeLinux::syncData() {
                                std::span<const uint8_t>(attribute->second);
             if (!row(path, 1, file->mode, file->uid, file->gid, file->inode,
                      std::span(file->storage->pages).first(file->storage->size), label) ||
-                !writeTimes(path, file->times) || !writeAcl(path, false, file->accessAcl)) return false;
+                !writeTimes(path, file->times) || !writeAcl(path, false, file->accessAcl) ||
+                !writeAttributes(fileAttributes.get(), path, file->userAttributes)) return false;
         }
         for (const auto& [path, link] : links) {
             if (dataPath(path) && !row(path, 2, 0, 0, 0, 0,
