@@ -96,9 +96,11 @@ def precompile_framework_code(adb, remote, guest, stage, bootclasspath):
     location_provider = "/system/framework/com.android.location.provider.jar"
     extensions = "/system_ext/framework/androidx.window.extensions.jar"
     sidecar = "/system_ext/framework/androidx.window.sidecar.jar"
+    window_context = f"PCL[]{{PCL[{extensions}]#PCL[{sidecar}]}}"
     targets = (
         ("/system/framework/services.jar", f"PCL[{location_provider}]"),
-        ("/system_ext/priv-app/SystemUI/SystemUI.apk", f"PCL[]{{PCL[{extensions}]#PCL[{sidecar}]}}"),
+        ("/system_ext/priv-app/SystemUI/SystemUI.apk", window_context),
+        ("/system_ext/priv-app/Launcher3QuickStep/Launcher3QuickStep.apk", window_context),
     )
     check_reference_files(remote, guest, {source for source, _ in targets} |
                           {location_provider, extensions, sidecar})
@@ -226,7 +228,7 @@ def main():
     parser.add_argument("--framework-apps", action="store_true",
                         help="Include launcher, SystemUI and package-management apps from the matching reference")
     parser.add_argument("--precompile-framework-code", action="store_true",
-                        help="Add offline speed-compiled services.jar and SystemUI code")
+                        help="Add offline speed-compiled services.jar, SystemUI and Launcher code")
     parser.add_argument("--smoke-apk", type=Path,
                         help="Stage the APK from tools/build-smoke-apk.sh for an install and launch check")
     parser.add_argument("--tethering-loader", type=Path,

@@ -9,6 +9,7 @@
 #include "Validation.hpp"
 
 #include <chrono>
+#include <mach/mach.h>
 #include <thread>
 #include <sys/resource.h>
 #include <vector>
@@ -70,10 +71,20 @@ std::jthread StartDisplayReader(const nestvane::GfxstreamSession& renderer, bool
         }
     });
 }
-void AppendPeakRSS(std::string& report) {
+void AppendMemoryUsage(std::string& report) {
     rusage usage{};
     if (getrusage(RUSAGE_SELF, &usage) == 0)
         report += "  peak iOS process RSS bytes: " + std::to_string(usage.ru_maxrss) + "\n";
+    task_vm_info_data_t memory{};
+    mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+    if (task_info(mach_task_self(), TASK_VM_INFO, reinterpret_cast<task_info_t>(&memory), &count) != KERN_SUCCESS)
+        return;
+    if (count >= TASK_VM_INFO_REV1_COUNT)
+        report += "  iOS physical footprint bytes: " + std::to_string(memory.phys_footprint) + "\n";
+    if (count >= TASK_VM_INFO_REV3_COUNT)
+        report += "  peak iOS physical footprint bytes: " + std::to_string(memory.ledger_phys_footprint_peak) + "\n";
+    if (count >= TASK_VM_INFO_REV4_COUNT)
+        report += "  iOS process memory limit remaining bytes: " + std::to_string(memory.limit_bytes_remaining) + "\n";
 }
 } // namespace
 
@@ -386,7 +397,7 @@ static NSString* ThermalState() {
                         std::to_string(static_cast<long long>(elapsed)) + " ms\n";
                     report += event;
                     report += '\n';
-                    AppendPeakRSS(report);
+                    AppendMemoryUsage(report);
                     exportReport(launcherURL, report);
                 }
             };
@@ -397,7 +408,7 @@ static NSString* ThermalState() {
             NSURL* liveURL = [documents URLByAppendingPathComponent:@"guest-live.txt"];
             const auto exportLiveSnapshot = [&](std::string_view threads) {
                 std::string report(threads);
-                AppendPeakRSS(report);
+                AppendMemoryUsage(report);
                 exportReport(liveURL, report);
             };
             const auto runAndroid = [&]() -> nestvane::DynamicReport {
@@ -465,7 +476,7 @@ static NSString* ThermalState() {
             };
             auto probe = runAndroid();
             result.report += "\n" + probe.report;
-            AppendPeakRSS(result.report);
+            AppendMemoryUsage(result.report);
             if (!probe.passed) status = @"Android 17 startup probe stopped";
             else if (probe.report.find("linkerconfig generation verified: yes") != std::string::npos)
                 status = @"Android 17 linker configuration generated";

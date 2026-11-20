@@ -460,3 +460,5 @@
 - iPhone 11（iOS 26.0.1）重新连接后，已备份客体数据库并通过 SQLite 完整性检查。开发签名版进程 9544 在 89.338 秒绘制 640 × 960 的 Android 开机画面，正在继续验证桌面。
 - Mac 对照中，原版 `lmkd` 成功收到 ActivityManager 的 4、8、24 和 52 字节消息。下一处失败是打开 `/proc/<pid>/oom_score_adj`。客体补齐进程级读写、fork 继承、权限下限与进程退出后的处理。宿主回归和参考 Android 17 对照验证取值、继承和能力下限，iPhoneOS Release 构建通过。内存压力监视器仍待完成。[Linux procfs 实现](https://github.com/torvalds/linux/blob/master/fs/proc/base.c)
 - Mac 在补齐 SSHL 后越过该编码，进一步遇到 `fmla v16.4s, v17.4s, v1.4s`（`0x4e21ce30`）。解释器支持向量 `FMLA/FMLS`，宿主回归覆盖单次舍入、目标寄存器别名、双精度和保留编码。ARM64 Android 17 的原生单次舍入对照和 iPhoneOS Release 构建通过。
+- iPhone 11 进程 9544 在 494.561 秒完成 `startHomeOnAllDisplays`，最后一条启动日志在 495.177 秒。随后 CoreDevice 确认进程退出，设备截屏显示 iOS 主屏幕。最后采样到的峰值 RSS 为 1,699,430,400 字节，设备没有该次对应的崩溃或 Jetsam 文件，退出原因待复测。iOS 启动诊断增加进程物理内存、峰值和系统报告的内存余量。
+- 与客体启动镜像同版的 Android 17 参考机已为 Launcher3 生成 `speed` 编译的 39,319,360 字节 ODEX 和 412,580 字节 VDEX。通过 `oatdump` 核对编译器过滤器和类加载上下文。启动镜像工具加入相同的 Launcher 目标，运行器提高文件映射总长度上限以接纳 1,375,495,764 字节的镜像，保留独立的客体可写内存限制。iPhoneOS Release 构建通过，Launcher AOT 文件在客体中的映射和桌面绘制仍在验证。
