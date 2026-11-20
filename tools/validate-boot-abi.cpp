@@ -122,6 +122,60 @@ int main() {
         assert(call(164, {7, limits}) == uint64_t(-1));
     }
     {
+        ProbeLinux guest(1, 0);
+        constexpr uint64_t base = 0x2000, text = base + 0x100, output = base + 0x180;
+        Machine task(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
+        const auto call = [&](uint64_t number, std::array<uint64_t, 6> args) {
+            std::copy(args.begin(), args.end(), task.cpu.x.begin());
+            task.cpu.x[8] = number;
+            assert(guest.syscall(task));
+            return task.cpu.x[0];
+        };
+        const auto copy = [&](std::string_view value) {
+            assert(task.write(text, {reinterpret_cast<const uint8_t*>(value.data()), value.size()}));
+            const uint8_t zero = 0;
+            assert(task.write(text + value.size(), {&zero, 1}));
+        };
+        const auto open = [&](std::string_view path, uint64_t flags) {
+            copy(path);
+            return call(56, {uint32_t(-100), text, flags});
+        };
+        const auto set = [&](uint64_t descriptor, std::string_view value) {
+            copy(value);
+            return call(64, {descriptor, text, value.size()});
+        };
+        const auto get = [&](uint64_t descriptor, std::string_view expected) {
+            assert(call(67, {descriptor, output, 16, 0}) == expected.size());
+            assert(std::memcmp(task.read(output, expected.size(), 4), expected.data(), expected.size()) == 0);
+        };
+        const auto parentScore = open("/proc/self/oom_score_adj", 2);
+        assert(parentScore < 256);
+        get(parentScore, "0\n");
+        assert(set(parentScore, "-1001") == uint64_t(-22));
+        assert(set(parentScore, "+0x64\n") == 6);
+        const auto child = call(220, {0x1200011, 0, 0, 0, base + 0x40});
+        assert(child > 1 && guest.schedule(task) && guest.processId() == child);
+        assert(call(147, {1000, 1000, 1000}) == 0);
+        assert(open("/proc/1/oom_score_adj", 2) == uint64_t(-2));
+        const auto ownScore = open("/proc/thread-self/oom_score_adj", 2);
+        assert(ownScore < 256);
+        get(ownScore, "100\n");
+        assert(set(ownScore, "300") == 3 && set(ownScore, "99") == uint64_t(-13));
+        assert(set(ownScore, "100") == 3);
+        get(ownScore, "100\n");
+        assert(set(ownScore, "400") == 3);
+        get(parentScore, "100\n");
+        task.cpu.retired += 4096;
+        assert(guest.schedule(task) && guest.processId() == 1);
+        const auto childScore = open("/proc/" + std::to_string(child) + "/oom_score_adj", 2);
+        assert(childScore < 256);
+        get(childScore, "400\n");
+        assert(set(childScore, "-1000") == 5);
+        get(childScore, "-1000\n");
+        assert(call(129, {child, 9}) == 0);
+        assert(call(67, {childScore, output, 16, 0}) == uint64_t(-3));
+    }
+    {
         using Result = GuestApkInbox::Result;
         GuestApkInbox inbox;
         std::vector<Result> outcomes;

@@ -1016,6 +1016,11 @@ uint64_t ProbeLinux::stat(Machine& machine, uint64_t address, const Descriptor& 
         const auto& file = *fd.temporary;
         return result(file.storage->size, file.inode, 0100000 | file.mode, file.uid, file.gid, 0, file.times);
     }
+    if (fd.node == Node::oomScoreAdjustment) {
+        const auto* subject = liveProcess(fd.targetProcess);
+        return subject ? result(0, std::hash<std::string>{}(fd.path) | 1, 0100644,
+                                subject->userIds[1], subject->groupIds[1]) : uint64_t(-3);
+    }
     if (fd.node == Node::kernelSetting || fd.node == Node::ueventTrigger)
         return result(0, std::hash<std::string>{}(fd.path) | 1, 0100644);
     if (fd.cgroupFile)
@@ -1172,9 +1177,12 @@ std::optional<ProbeLinux::Descriptor> ProbeLinux::find(std::string_view path, ui
     }
     if (path == "/sys/fs/selinux/context" && (!currentContextTransitions.empty() || !appDataLabelTypes.empty() || !appTransitionDomains.empty()))
         return Descriptor{std::string(path), {}, flags, Node::securityValidate};
-    if (path.size() > sizeof("/proc//status") - 1 && path.starts_with("/proc/") && path.ends_with("/status")) {
+    constexpr std::string_view scoreSuffix = "/oom_score_adj";
+    const bool isOomScore = path.ends_with(scoreSuffix);
+    const std::string_view procSuffix = isOomScore ? scoreSuffix : "/status";
+    if (path.starts_with("/proc/") && path.size() > 6 + procSuffix.size() && path.ends_with(procSuffix)) {
         auto task = path.substr(6);
-        task.remove_suffix(7);
+        task.remove_suffix(procSuffix.size());
         uint64_t tid = 0;
         if (task == "self") {
             tid = processId();
@@ -1196,6 +1204,11 @@ std::optional<ProbeLinux::Descriptor> ProbeLinux::find(std::string_view path, ui
             groupId() == readproc || std::ranges::find(reader.groups, readproc) != reader.groups.end();
         if (&process != &reader && !mayReadOtherProcesses &&
             !std::ranges::all_of(process.userIds, [&](uint32_t uid) { return uid == userId(); })) return {};
+        if (isOomScore) {
+            Descriptor entry{std::string(path), {}, flags, Node::oomScoreAdjustment};
+            entry.targetProcess = process.id;
+            return entry;
+        }
         const auto state = thread.wait == Wait::none ? "R (running)" :
             thread.wait == Wait::suspended ? "T (stopped)" : "S (sleeping)";
         std::ostringstream listing;
@@ -1653,6 +1666,13 @@ uint64_t ProbeLinux::open(const Machine& machine, const std::string& path, uint3
     if (entry && entry->node == Node::directory && (flags & 3)) return uint64_t(-21);
     if (entry && entry->node == Node::regular && ((flags & 3) || (flags & truncate))) return uint64_t(-30);
     if (entry && entry->cgroupFile && (flags & 3) && !canWriteCgroup(*entry->cgroupFile)) return uint64_t(-13);
+    if (entry && entry->node == Node::oomScoreAdjustment && !(flags & pathOnly) && (flags & (3 | truncate))) {
+        constexpr uint64_t capDacOverride = 1ULL << 1;
+        const auto* subject = liveProcess(entry->targetProcess);
+        if (!subject) return uint64_t(-3);
+        if (userId() != subject->userIds[1] && !(current->process->effectiveCaps & capDacOverride))
+            return uint64_t(-13);
+    }
     if (entry && entry->temporary && userId() != 0 && !(flags & pathOnly)) {
         const auto& file = *entry->temporary;
         const unsigned requested = (flags & 3) == 2 ? 6 : ((flags & 3) || (flags & truncate)) ? 2 : 4;
@@ -4109,7 +4129,7 @@ bool ProbeLinux::fileCall(Machine& machine) {
             }
             auto& fd = descriptor->second;
             if (fd.node != Node::regular && fd.node != Node::temporary && fd.node != Node::directory &&
-                fd.node != Node::kernelSetting) {
+                fd.node != Node::kernelSetting && fd.node != Node::oomScoreAdjustment) {
                 x[0] = uint64_t(-29); break;
             }
             if (x[2] > 2 || (fd.node == Node::directory && x[2] != 0)) { x[0] = invalid; break; }
@@ -4273,9 +4293,12 @@ bool ProbeLinux::fileCall(Machine& machine) {
                 x[0] = size;
                 break;
             }
-            if (fd.securityReply || fd.node == Node::kernelSetting) {
+            if (fd.securityReply || fd.node == Node::kernelSetting || fd.node == Node::oomScoreAdjustment) {
                 const auto offset = x[8] == 67 ? x[3] : *fd.offset;
-                const auto setting = fd.securityReply ? std::string{} : std::to_string(kernelSettings.at(fd.path).value) + "\n";
+                const auto* subject = fd.node == Node::oomScoreAdjustment ? liveProcess(fd.targetProcess) : nullptr;
+                if (fd.node == Node::oomScoreAdjustment && !subject) { x[0] = uint64_t(-3); break; }
+                const auto setting = subject ? std::to_string(subject->oomScoreAdjustment) + "\n" :
+                    fd.securityReply ? std::string{} : std::to_string(kernelSettings.at(fd.path).value) + "\n";
                 const std::string_view reply = fd.securityReply ? *fd.securityReply : setting;
                 if (!x[2] || offset >= reply.size()) { x[0] = 0; break; }
                 const auto size = std::min<uint64_t>(reply.size() - offset, x[2]);
@@ -4859,6 +4882,28 @@ uint64_t ProbeLinux::writeDescriptor(Machine& machine, const Descriptor& fd, uin
         return count;
     }
     if (fd.cgroupFile) return moveToCgroup(machine, fd, address, size);
+    if (fd.node == Node::oomScoreAdjustment) {
+        if (!size || size > 16) return invalid;
+        auto* subject = liveProcess(fd.targetProcess);
+        if (!subject) return uint64_t(-3);
+        std::array<uint8_t, 16> bytes{};
+        if (!machine.readInto(address, std::span(bytes).first(size))) return uint64_t(-14);
+        std::string_view input(reinterpret_cast<const char*>(bytes.data()), size);
+        constexpr std::string_view space = " \t\n\r\v\f";
+        const auto first = input.find_first_not_of(space);
+        if (first == std::string_view::npos) return invalid;
+        input = input.substr(first, input.find_last_not_of(space) - first + 1);
+        const std::string text(input);
+        char* end = nullptr;
+        const auto value = std::strtol(text.c_str(), &end, 0);
+        if (end == text.c_str() || end != text.c_str() + text.size() || value < -1000 || value > 1000)
+            return invalid;
+        constexpr uint64_t capSysResource = 1ULL << 24;
+        if (current->process->effectiveCaps & capSysResource) subject->minimumOomScoreAdjustment = int(value);
+        else if (value < subject->minimumOomScoreAdjustment) return uint64_t(-13);
+        subject->oomScoreAdjustment = int(value);
+        return size;
+    }
     if (fd.node == Node::kernelSetting) {
         if (userId() != 0) return uint64_t(-1);
         if (*fd.offset || !size || size > 16) return invalid;
@@ -6109,14 +6154,15 @@ bool ProbeLinux::exitThread(Machine& machine) {
     return true;
 }
 
-bool ProbeLinux::processAlive(uint64_t id) const {
+ProbeLinux::Process* ProbeLinux::liveProcess(uint64_t id) const {
     const auto leader = threads.find(id);
     if (leader != threads.end() && leader->second.process->id == id && leader->second.wait != Wait::exited)
-        return true;
+        return leader->second.process.get();
     // A process remains alive after its leader exits if it still has another thread.
-    return std::any_of(threads.begin(), threads.end(), [&](const auto& entry) {
+    const auto member = std::find_if(threads.begin(), threads.end(), [&](const auto& entry) {
         return entry.second.process->id == id && entry.second.wait != Wait::exited;
     });
+    return member == threads.end() ? nullptr : member->second.process.get();
 }
 
 bool ProbeLinux::waitChild(Machine& machine) {

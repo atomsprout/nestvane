@@ -173,7 +173,8 @@ private:
     bool exitThread(Machine& machine);
     void finishProcess(Process& process, uint32_t status, bool killed);
     bool waitChild(Machine& machine);
-    bool processAlive(uint64_t id) const;
+    Process* liveProcess(uint64_t id) const;
+    bool processAlive(uint64_t id) const { return liveProcess(id) != nullptr; }
     bool installSignalFrame(Machine& machine, uint32_t signal, const SignalWords& info, uint64_t faultAddress = 0);
     void deliverPendingCaughtSignal(Machine& machine);
     bool restoreSignalContext(Machine& machine);
@@ -182,7 +183,7 @@ private:
     uint64_t installSeccomp(Machine& machine, uint64_t address);
     bool enforceSeccomp(Machine& machine);
 
-    enum class Node { regular, temporary, directory, symbolicLink, input, output, error, null, entropy, kernelLog, poller, event, inotify, signal, socket, keySocket, mountNamespace, pipeRead, pipeWrite, execLabel, fsCreateLabel, socketCreateLabel, securityInfo, securityCreate, securityAccess, securityValidate, loopControl, loopDevice, timer, ptyMaster, ptySlave, ueventTrigger, kernelSetting, binder, processHandle, cgroupProcs, ashmem, graphicsPipe, graphicsAddressSpace, touchDevice, bpfMap, bpfProgram, bpfBtf };
+    enum class Node { regular, temporary, directory, symbolicLink, input, output, error, null, entropy, kernelLog, poller, event, inotify, signal, socket, keySocket, mountNamespace, pipeRead, pipeWrite, execLabel, fsCreateLabel, socketCreateLabel, securityInfo, securityCreate, securityAccess, securityValidate, loopControl, loopDevice, timer, ptyMaster, ptySlave, ueventTrigger, kernelSetting, oomScoreAdjustment, binder, processHandle, cgroupProcs, ashmem, graphicsPipe, graphicsAddressSpace, touchDevice, bpfMap, bpfProgram, bpfBtf };
     struct RecordLock {
         uint64_t owner, start, end;
         int16_t type;
@@ -729,6 +730,7 @@ private:
         uint64_t group = 0, session = 0;
         uint32_t umask = 0022, secureBits = 0;
         uint8_t mdwe = 0;
+        int oomScoreAdjustment = 0, minimumOomScoreAdjustment = 0;
         std::array<uint32_t, 3> userIds{}, groupIds{}; // real, effective, saved
         std::vector<uint32_t> groups;
         static constexpr uint64_t allCapabilities = (uint64_t{1} << 41) - 1;
