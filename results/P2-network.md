@@ -558,3 +558,4 @@
 - 从含 count=1 的已校验数据卷副本启动独立 Mac 客体。Android 重新打开原版包管理器中已安装的 Smoke，ActivityTaskManager 记录 MainActivity Displayed。点按一次后，应用将 SharedPreferences 的 count 更新为 2，确认新进程读回了重启前的值。该轮按已确认的客体坐标点按，宿主合成画面仍偶发缩小或变形。
 - 真机使用相同类别的 Metal 后端。Mac ANGLE Metal 联测在重启后实际绘出完整的 640×960 Smoke 界面和 Count: 2，客体日志也确认读回计数 2。GuestApkInbox 通过正式安装服务先后回报 OpenCalc、Editor 安装成功，持久化数据卷中的 APK 字节与两个已核对的输入逐字节一致。第三方应用的桌面启动和操作仍待验证。
 - 带触摸显示的启动现在在 boot_completed 且开机动画停止时，通过原版 PowerManager 唤醒一次客体屏幕。未修改系统的自动休眠设置。Android 17 参考模拟器上用同一命令确认从 Asleep 回到 Awake，macOS 和 iPhoneOS Release 编译通过。从空数据卷、不加诊断保活脚本的联测已启动。
+- Mac OpenGL 同一进程的两次点按均写入 Smoke 计数。正常帧和缩到左上角的帧都由 640×960 读回输出。异常轮次在宿主合成器内采样，Smoke 源图层的中心、四分位和角落均为有效非黑像素，目标 framebuffer 完整，视口为 640×960，裁剪测试关闭，目标的五个采样点却都为零。另一轮同样采样时目标正常。问题已缩小到 Mac OpenGL 合成，尚需重现并确认具体原因。已启动桌面优先的 Metal 对照，从持久化数据卷恢复三款应用并采集窗口、CameraService 及应用权限状态。
