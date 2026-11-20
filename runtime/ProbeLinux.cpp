@@ -4924,8 +4924,13 @@ uint64_t ProbeLinux::writeDescriptor(Machine& machine, const Descriptor& fd, uin
         const auto offset = fd.effectiveFlags() & 0x400 ? file.storage->size : position.value_or(*fd.offset);
         const auto limit = file.persistent || file.memoryFile ? maxDataFileBytes : maxGuestFileBytes;
         if (offset > limit || size > limit - offset) return uint64_t(-27);
+        std::vector<uint8_t> splitBuffer;
         const auto* data = machine.read(address, size, 4);
-        if (!data) return uint64_t(-14);
+        if (!data) {
+            splitBuffer.resize(size);
+            if (!machine.readInto(address, splitBuffer)) return uint64_t(-14);
+            data = splitBuffer.data();
+        }
         if (const auto error = writeFileBytes(file, offset, {data, size}); error) return error;
         if (!position) *fd.offset = offset + size;
         fileEvent(fd.path, fileModified);

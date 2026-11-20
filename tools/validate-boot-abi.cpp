@@ -4976,6 +4976,33 @@ int main() {
             assert(truncated < 256 && invoke(reopened, 80, {truncated, stat}) == 0);
             assert(load(stat + 48) == 0 && load(stat + 88) > 100);
         }
+        {
+            const auto journalDatabase = (cleanup.directory / "journal.sqlite3").string();
+            ProbeLinux guest(1, 0);
+            guest.mountData(journalDatabase);
+            put(firstPath, "/data/rollback-journal");
+            const auto file = invoke(guest, 56, {atCwd, firstPath, 0x42, 0600});
+            const auto mapping = invoke(guest, 222, {0, 2 * pageSize, 3, 0x22, UINT32_MAX});
+            assert(file < 256 && mapping < INT64_MAX);
+            const auto buffer = mapping + pageSize - 128;
+            constexpr size_t length = 4096;
+            std::array<uint8_t, length> data{};
+            for (size_t i = 0; i < data.size(); ++i) data[i] = uint8_t(i % 251);
+            assert(machine.write(buffer, data));
+            assert(invoke(guest, 226, {mapping + pageSize, pageSize, 0}) == 0);
+            assert(invoke(guest, 68, {file, buffer, length, 25140}) == uint64_t(-14));
+            assert(invoke(guest, 226, {mapping + pageSize, pageSize, 1}) == 0);
+            assert(!machine.read(buffer, length, 4));
+            assert(invoke(guest, 68, {file, buffer, length, 25140}) == length);
+            assert(invoke(guest, 82, {file}) == 0);
+            ProbeLinux reopened(1, 0);
+            reopened.mountData(journalDatabase);
+            const auto persisted = invoke(reopened, 56, {atCwd, firstPath, 0});
+            assert(persisted < 256 && invoke(reopened, 67, {persisted, mapping, length, 25140}) == length);
+            std::array<uint8_t, length> saved{};
+            assert(machine.readInto(mapping, saved) && saved == data);
+            assert(invoke(guest, 215, {mapping, 2 * pageSize}) == 0);
+        }
         assert(writer.loadFsCreatePolicy(
             "2 19\nu:r:init:s0 u:r:init:s0 40000 ffffffff 0 ffffffff 1 0\n"
             "u:r:shell:s0 u:r:shell:s0 0 ffffffff 0 ffffffff 1 0\n"));
