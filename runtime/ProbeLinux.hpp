@@ -582,6 +582,8 @@ private:
     bool canAccessParent(std::string_view path, bool modify) const;
     const Directory* setgidParent(std::string_view path) const;
     uint64_t chmodDirectory(Directory& directory, uint32_t mode) const;
+    uint64_t changeDirectoryUserAttribute(Machine& machine, const Descriptor& entry,
+                                          const std::string& name, bool removing);
     uint64_t renameFile(Machine& machine);
     uint64_t renameDirectory(const std::string& source, const std::string& destination, bool noReplace);
     sqlite3* dataDatabase = nullptr;
@@ -741,6 +743,8 @@ private:
         std::string securityContext{};
         std::optional<uint8_t> restoreconInProgress{};
         GuestInodeTimes times{};
+        static constexpr size_t maxUserAttributes = 8, maxUserAttributeValue = 4096;
+        std::map<std::string, std::vector<uint8_t>, std::less<>> userAttributes{};
     };
     struct BinderDevice : Directory {
         uint32_t minor;

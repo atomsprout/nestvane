@@ -4443,6 +4443,10 @@ bool ProbeLinux::fileCall(Machine& machine) {
                 x[0] = 0;
                 break;
             }
+            if (name->starts_with("user.")) {
+                x[0] = changeDirectoryUserAttribute(machine, *entry, *name, removing);
+                break;
+            }
             if (*name != "security.selinux") { x[0] = uint64_t(-95); break; }
             if (removing) { x[0] = uint64_t(-13); break; }
             if (x[3] > 4096 || x[4] > 2) { x[0] = invalid; break; }
@@ -5563,6 +5567,42 @@ uint64_t ProbeLinux::updateTimes(Machine& machine) {
     return uint64_t(-95);
 }
 
+uint64_t ProbeLinux::changeDirectoryUserAttribute(Machine& machine, const Descriptor& entry,
+                                                  const std::string& name, bool removing) {
+    if (name.size() <= 5 || name.size() > 255) return uint64_t(-34);
+    const auto directory = directories.find(entry.path);
+    if (entry.node != Node::directory || directory == directories.end() || !dataPath(entry.path))
+        return uint64_t(-95);
+    const auto& visible = entry.visiblePath.empty() ? entry.path : entry.visiblePath;
+    if (!writablePath(visible)) return uint64_t(-30);
+    auto& node = directory->second;
+    constexpr uint64_t capFowner = 1ULL << 3;
+    if (userId() != 0) {
+        if ((node.mode & 01000) && userId() != node.uid &&
+            !(current->process->effectiveCaps & capFowner)) return uint64_t(-1);
+        if (!(node.mode >> permissionShift(node.uid, node.gid) & 2)) return uint64_t(-13);
+    }
+    auto& attributes = node.userAttributes;
+    const auto existing = attributes.find(name);
+    const bool present = existing != attributes.end();
+    if (removing) {
+        if (!present) return uint64_t(-61);
+        attributes.erase(existing);
+    } else {
+        const auto& x = machine.cpu.x;
+        if (x[4] > 2) return invalid;
+        if (x[3] > Directory::maxUserAttributeValue) return uint64_t(-7);
+        if (x[4] == 1 && present) return uint64_t(-17);
+        if (x[4] == 2 && !present) return uint64_t(-61);
+        if (!present && attributes.size() >= Directory::maxUserAttributes) return uint64_t(-28);
+        std::vector<uint8_t> value(x[3]);
+        if (!machine.readInto(x[2], value)) return uint64_t(-14);
+        attributes.insert_or_assign(name, std::move(value));
+    }
+    fileEvent(entry.path, fileAttributes, true);
+    return 0;
+}
+
 bool ProbeLinux::securityCall(Machine& machine) {
     auto& x = machine.cpu.x;
     if (x[8] != 8 && x[8] != 9 && x[8] != 10) return false; // getxattr, lgetxattr, fgetxattr
@@ -5593,6 +5633,21 @@ bool ProbeLinux::securityCall(Machine& machine) {
         if (!fd) { x[0] = uint64_t(-2); return true; }
     }
     std::span<const uint8_t> value;
+    bool present = false;
+    if (name->starts_with("user.") && *name != restoreconMarker) {
+        const auto directory = directories.find(fd->path);
+        if (fd->node == Node::directory && directory != directories.end() && dataPath(fd->path)) {
+            const auto& node = directory->second;
+            if (userId() != 0 && !(node.mode >> permissionShift(node.uid, node.gid) & 4)) {
+                x[0] = uint64_t(-13);
+                return true;
+            }
+            if (const auto attribute = node.userAttributes.find(*name); attribute != node.userAttributes.end()) {
+                value = attribute->second;
+                present = true;
+            }
+        }
+    }
     if (*name == restoreconMarker) {
         const auto directory = directories.find(fd->path);
         if (fd->node != Node::directory || directory == directories.end() || !dataPath(fd->path)) {
@@ -5633,7 +5688,7 @@ bool ProbeLinux::securityCall(Machine& machine) {
             value = {reinterpret_cast<const uint8_t*>(context.c_str()), context.size() + 1};
         }
     }
-    if (value.empty()) x[0] = uint64_t(-61);
+    if (value.empty()) x[0] = present ? 0 : uint64_t(-61);
     else if (!x[3]) x[0] = value.size();
     else if (value.size() > x[3]) x[0] = uint64_t(-34);
     else x[0] = machine.write(x[2], value) ? value.size() : uint64_t(-14);
