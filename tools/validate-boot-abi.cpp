@@ -3645,6 +3645,32 @@ int main() {
     }
 
     {
+        constexpr auto address = base + 0x300, data = base + 0x320, vector = base + 0x340;
+        constexpr auto message = base + 0x360, control = base + 0x3a0, optionLength = base + 0x3c0;
+        constexpr char socketAddress[] = "\x01\0/dev/nestvane-passcred";
+        assert(machine.write(address, {reinterpret_cast<const uint8_t*>(socketAddress), sizeof(socketAddress)}));
+        const auto listener = call(198, {1, 5, 0});
+        const auto sender = call(198, {1, 5, 0});
+        assert(listener < 256 && sender < 256);
+        assert(machine.store64(data, 1) && call(208, {listener, 1, 16, data, 4}) == 0);
+        assert(call(200, {listener, address, sizeof(socketAddress)}) == 0);
+        assert(call(201, {listener, 4}) == 0);
+        assert(call(203, {sender, address, sizeof(socketAddress)}) == 0);
+        assert(machine.store64(data, 'k') && call(206, {sender, data, 1, 0}) == 1);
+        const auto receiver = call(202, {listener, 0, 0});
+        assert(receiver < 256);
+        assert(machine.store64(optionLength, 4));
+        assert(call(209, {receiver, 1, 16, data, optionLength}) == 0 && load(data) == 1);
+        assert(machine.store64(vector, data) && machine.store64(vector + 8, 1));
+        const std::array<uint64_t, 7> header{0, 0, vector, 1, control, 32, 0};
+        assert(machine.write(message, {reinterpret_cast<const uint8_t*>(header.data()), sizeof(header)}));
+        assert(call(212, {receiver, message, 0x40}) == 1 && load(data) == 'k');
+        assert(load(control) == 28 && load(control + 8) == 0x200000001);
+        assert(load(control + 16) == 1 && uint32_t(load(control + 24)) == 0);
+        for (const auto descriptor : {receiver, sender, listener}) assert(call(57, {descriptor}) == 0);
+    }
+
+    {
         linux.captureAndroidLogs = true;
         unsigned snapshots = 0;
         linux.watchdogObserver = [&](std::string_view report) {

@@ -3137,6 +3137,7 @@ bool ProbeLinux::socketCall(Machine& machine) {
                         break;
                     }
                     auto server = std::make_shared<SocketState>(client->type);
+                    if (client->type == 5) server->passCredentials = endpoint->passCredentials;
                     server->connected = true;
                     server->credentials = endpoint->credentials;
                     server->context = endpoint->context;
@@ -3478,13 +3479,14 @@ bool ProbeLinux::socketCall(Machine& machine) {
                     ? 0 : uint64_t(-14);
                 break;
             }
-            if (x[2] == 2 || x[2] == 3 || x[2] == 7 || x[2] == 8 || x[2] == 38 || x[2] == 39) {
+            if (x[2] == 2 || x[2] == 3 || x[2] == 7 || x[2] == 8 || x[2] == 16 || x[2] == 38 || x[2] == 39) {
                 uint32_t value = 0;
                 switch (x[2]) {
                     case 2: value = endpoint.reuseAddress; break; // SO_REUSEADDR
                     case 3: value = endpoint.type; break; // SO_TYPE
                     case 7: value = endpoint.sendBuffer; break; // SO_SNDBUF
                     case 8: value = endpoint.netlink ? endpoint.netlink->receiveBuffer : endpoint.receiveBuffer; break;
+                    case 16: value = endpoint.passCredentials; break; // SO_PASSCRED
                     case 38: value = endpoint.protocol; break; // SO_PROTOCOL
                     case 39: value = endpoint.family; break; // SO_DOMAIN
                 }
