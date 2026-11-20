@@ -209,7 +209,8 @@ void changeRange(Machine& machine, uint64_t start, uint64_t end, std::optional<u
             if (segment.imageView) {
                 const auto* first = segment.imageView + (from - segment.address);
                 if (permissions & 2) {
-                    append({from, {first, first + (to - from)}, permissions, 0, false, {}, 0,
+                    append({from, std::vector<uint8_t>(first, first + (to - from)),
+                            permissions, 0, false, {}, 0,
                             false, false, false, true});
                 } else {
                     auto fragment = segment;
@@ -4710,7 +4711,7 @@ uint64_t ProbeLinux::map(Machine& machine) {
         if (!segment.anonymousPages) return noMemory;
     } else if (!sparse && copiedLength) {
         segment.bytes.resize(copiedLength);
-        std::copy(bytes.begin() + imageLength, bytes.end(), segment.bytes.begin());
+        std::copy(bytes.begin() + imageLength, bytes.end(), segment.bytes.mutableData());
     }
     if (atAddress) changeRange(machine, start, end, {});
     if (!atAddress || (x[3] & fixedNoReplace)) nextMapping = std::max(nextMapping, end);
@@ -5215,7 +5216,8 @@ bool ProbeLinux::forkProcess(Machine& machine) {
     std::map<const AnonymousPages*, std::shared_ptr<AnonymousPages>> privateCopies;
     for (auto& segment : child.process->segments) {
         if (!segment.anonymousPages) {
-            if (segment.wipeOnFork) std::fill(segment.bytes.begin(), segment.bytes.end(), 0);
+            if (segment.wipeOnFork && !segment.bytes.empty())
+                segment.bytes = std::vector<uint8_t>(segment.bytes.size());
             continue;
         }
         const auto& source = segment.anonymousPages;
@@ -6558,6 +6560,7 @@ std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedPr
     tasks << "  guest tasks: " << active << " active, " << threads.size()
           << " tracked, limit " << maxGuestTasks << '\n';
     std::set<const SharedFileBytes*> countedShared;
+    std::set<const uint8_t*> countedDense;
     size_t privateBytes = 0, sharedBytes = 0;
     const auto countShared = [&](const SharedFileBytes* storage) {
         if (storage && countedShared.insert(storage).second) sharedBytes += storage->pages.capacity();
@@ -6567,7 +6570,8 @@ std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedPr
         const auto& process = *thread.process;
         if (thread.wait == Wait::exited || !countedProcesses.insert(process.id).second) continue;
         for (const auto& area : process.id == processId() ? machine.segments : process.segments) {
-            privateBytes += area.bytes.capacity();
+            if (!area.bytes.empty() && countedDense.insert(area.bytes.data()).second)
+                privateBytes += area.bytes.capacity();
             countShared(area.shared.get());
         }
         for (const auto& [_, fd] : process.descriptors) {
@@ -6883,7 +6887,7 @@ uint64_t ProbeLinux::signalRestorer(Machine& machine) {
     // Guest Linux trampoline. The leading NOP matches the ARM64 vDSO unwinding convention.
     constexpr std::array<uint32_t, 4> code{0xd503201f, 0x52801168, 0xd4000001, 0xd4200000};
     Segment page{address, std::vector<uint8_t>(pageSize), 5};
-    std::memcpy(page.bytes.data(), code.data(), sizeof(code));
+    std::memcpy(page.bytes.mutableData(), code.data(), sizeof(code));
     machine.insertSegment(std::move(page));
     process.signalTrampoline = address + sizeof(code[0]);
     address += pageSize;
@@ -9798,7 +9802,7 @@ bool ProbeLinux::syscall(Machine& machine) {
                         const auto offset = part->address - source;
                         if (offset >= newSize) break;
                         const auto count = std::min<uint64_t>(part->bytes.size(), newSize - offset);
-                        std::copy_n(part->bytes.begin(), count, moved.bytes.begin() + offset);
+                        std::copy_n(part->bytes.begin(), count, moved.bytes.mutableData() + offset);
                     }
                 }
             }

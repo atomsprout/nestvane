@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 #include <optional>
 #include <memory>
 #include <span>
@@ -64,9 +65,30 @@ private:
     uint8_t* mapping = nullptr;
 };
 
+class DenseBytes {
+public:
+    DenseBytes() = default;
+    DenseBytes(std::vector<uint8_t> bytes);
+    DenseBytes(std::initializer_list<uint8_t> bytes);
+    DenseBytes(std::vector<uint8_t>::const_iterator first, std::vector<uint8_t>::const_iterator last);
+
+    size_t size() const { return storage ? storage->size() : 0; }
+    size_t capacity() const { return storage ? storage->capacity() : 0; }
+    bool empty() const { return size() == 0; }
+    const uint8_t* data() const { return storage ? storage->data() : nullptr; }
+    std::vector<uint8_t>::const_iterator begin() const;
+    std::vector<uint8_t>::const_iterator end() const;
+    uint8_t* mutableData();
+    void resize(size_t size);
+    bool operator==(const DenseBytes& other) const;
+
+private:
+    std::shared_ptr<std::vector<uint8_t>> storage;
+};
+
 struct Segment {
     uint64_t address;
-    std::vector<uint8_t> bytes;
+    DenseBytes bytes;
     unsigned flags;
     uint64_t reservedSize = 0;
     bool beyondFileEnd = false;

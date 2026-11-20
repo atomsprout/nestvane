@@ -245,7 +245,7 @@ ELFImage readELF(std::span<const uint8_t> elf, uint64_t bias, ImageKind kind) {
             }
         }
         auto& segment = image.segments.emplace_back(Segment{address, std::vector<uint8_t>(memsz), flags});
-        std::copy_n(elf.data() + offset, filesz, segment.bytes.data());
+        std::copy_n(elf.data() + offset, filesz, segment.bytes.mutableData());
     }
     if (image.entry % 4 || std::none_of(image.segments.begin(), image.segments.end(), [&](const Segment& segment) {
         return (segment.flags & executable) && contains(segment, image.entry, 4);
@@ -460,6 +460,48 @@ bool AnonymousPages::copyTo(AnonymousPages& target, uint64_t source, uint64_t de
     return true;
 }
 
+DenseBytes::DenseBytes(std::vector<uint8_t> bytes) {
+    if (!bytes.empty()) storage = std::make_shared<std::vector<uint8_t>>(std::move(bytes));
+}
+
+DenseBytes::DenseBytes(std::initializer_list<uint8_t> bytes)
+    : DenseBytes(std::vector<uint8_t>(bytes)) {}
+
+DenseBytes::DenseBytes(std::vector<uint8_t>::const_iterator first, std::vector<uint8_t>::const_iterator last)
+    : DenseBytes(std::vector<uint8_t>(first, last)) {}
+
+std::vector<uint8_t>::const_iterator DenseBytes::begin() const {
+    return storage ? storage->cbegin() : std::vector<uint8_t>::const_iterator{};
+}
+
+std::vector<uint8_t>::const_iterator DenseBytes::end() const {
+    return storage ? storage->cend() : std::vector<uint8_t>::const_iterator{};
+}
+
+uint8_t* DenseBytes::mutableData() {
+    if (!storage) return nullptr;
+    if (storage.use_count() != 1) storage = std::make_shared<std::vector<uint8_t>>(*storage);
+    return storage->data();
+}
+
+void DenseBytes::resize(size_t length) {
+    if (!length) {
+        storage.reset();
+    } else if (!storage) {
+        storage = std::make_shared<std::vector<uint8_t>>(length);
+    } else if (length != storage->size()) {
+        if (storage.use_count() != 1)
+            storage = std::make_shared<std::vector<uint8_t>>(storage->begin(),
+                storage->begin() + std::min(length, storage->size()));
+        storage->resize(length);
+    }
+}
+
+bool DenseBytes::operator==(const DenseBytes& other) const {
+    return storage == other.storage || (empty() && other.empty()) ||
+        (storage && other.storage && *storage == *other.storage);
+}
+
 uint64_t Segment::accessibleSize() const {
     if (anonymousPages || imageView) return mappedSize();
     if (!shared) return bytes.size();
@@ -474,11 +516,21 @@ const uint8_t* Segment::data() const {
 }
 
 uint8_t* Segment::data() {
+    if (!anonymousPages && !imageView && !shared) return bytes.mutableData();
     return const_cast<uint8_t*>(static_cast<const Segment&>(*this).data());
 }
 
 bool Segment::prepareWrite(uint64_t offset, uint64_t length) {
-    return !imageView && (!anonymousPages || anonymousPages->prepareWrite(fileOffset + offset, length));
+    if (imageView) return false;
+    if (anonymousPages) return anonymousPages->prepareWrite(fileOffset + offset, length);
+    if (!shared && length) {
+        try {
+            bytes.mutableData();
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
+    }
+    return true;
 }
 
 void Machine::insertSegment(Segment segment) {

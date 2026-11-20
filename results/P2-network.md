@@ -466,3 +466,4 @@
 - Mac 在应用启动期间仍出现 Settings 的 `TopResumedActivityChangeItem` 找不到客户端 Activity 记录。仿真 Binder 现在按目标 Binder 对象串行分派单向事务，在前一笔缓冲区释放后才投递同一对象的下一笔。同步事务可以独立推进，延迟的单向事务仍占接收预算。宿主回归覆盖先提交单向请求、同步请求推进和缓冲区释放后按序恢复，iPhoneOS Release 构建通过。完整系统仍在复测。[Android Binder 单向分发](https://android.googlesource.com/kernel/common/+/refs/heads/android-mainline/drivers/android/binder.c)
 - Mac 客体在 420 秒快照中显示 Launcher3 的原生返回地址落在新生成的 `Launcher3QuickStep.odex`，确认 ART 正在执行 AOT 代码。独立预编译和完整镜像生成流程均产出了匹配参考类加载上下文的 Launcher 编译产物。
 - iPhone 11 进程 9650 在 86.849 秒呈现开机画面，508.317 秒完成 `startHomeOnAllDisplays`。480 秒时采样到物理内存约 2.087 GB，峰值约 2.115 GB，系统报告进程剩余约 113 MB。随后 CoreDevice 控制台报告进程被信号 9 终止，尚未验证 Launcher 绘制。客体快照新增匿名脏页、私有段和共享缓冲容量分类，宿主测试、快照输出和 iPhoneOS Release 构建通过。
+- 客体进程 fork 后共享仍未修改的私有段后备缓冲区，首次写入时复制该段。显式共享映射和匿名分页继续走原有路径，内存快照按后备缓冲区去重。宿主 ABI 回归验证父子在首次写入前共享缓冲区，子进程写入后父进程内容及缓冲区不变。iPhoneOS Release 构建和开发签名校验通过，尚需真机对照确认物理内存与桌面首帧。

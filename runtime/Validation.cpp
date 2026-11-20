@@ -147,7 +147,7 @@ Validation validate(const std::string& directory) {
         auto changed = arithmetic;
         auto& code = changed.segments.front().bytes;
         uint32_t addFour = 0x91001000; // Replace the first hot instruction, ADD X0, X0, #3.
-        std::memcpy(code.data() + 8, &addFour, sizeof(addFour));
+        std::memcpy(code.mutableData() + 8, &addFour, sizeof(addFour));
         runCase(report, "changed instruction", "arithmetic", changed,
                 {Stop::exit, 1'250'225'000, 0, false}, 1);
 

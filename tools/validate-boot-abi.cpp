@@ -176,6 +176,29 @@ int main() {
         assert(call(67, {childScore, output, 16, 0}) == uint64_t(-3));
     }
     {
+        ProbeLinux guest(1, 0);
+        constexpr uint64_t base = 0x2000, data = base + pageSize;
+        Machine task(Image{base, {{base, std::vector<uint8_t>(pageSize), 6},
+                                  {data, std::vector<uint8_t>(pageSize), 6}}, {}});
+        assert(task.store64(data, 31));
+        const auto* parentBytes = task.read(data, sizeof(uint64_t), 4);
+        task.cpu.x[0] = 0x1200011;
+        task.cpu.x[4] = base + 0x20;
+        task.cpu.x[8] = 220;
+        assert(guest.syscall(task));
+        const auto child = task.cpu.x[0];
+        assert(child > 1 && guest.schedule(task) && guest.processId() == child);
+        assert(task.read(data, sizeof(uint64_t), 4) == parentBytes);
+        assert(task.store64(data, 42));
+        uint64_t value = 0;
+        assert(task.load64(data, value) && value == 42);
+        assert(task.read(data, sizeof(uint64_t), 4) != parentBytes);
+        task.cpu.retired += 4096;
+        assert(guest.schedule(task) && guest.processId() == 1);
+        assert(task.read(data, sizeof(uint64_t), 4) == parentBytes);
+        assert(task.load64(data, value) && value == 31);
+    }
+    {
         using Result = GuestApkInbox::Result;
         GuestApkInbox inbox;
         std::vector<Result> outcomes;
