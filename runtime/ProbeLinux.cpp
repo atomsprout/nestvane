@@ -6805,7 +6805,8 @@ std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedPr
                 const auto outstanding = binder->replies.find(tid);
                 return outstanding != binder->replies.end() && !outstanding->second.empty();
             });
-        if (launcherThread || handlingBinderCall || (tid == process.id &&
+        const bool stoppingThread = tid == currentTid && process.id == observedProcess && cpu.stop != Stop::running;
+        if (stoppingThread || launcherThread || handlingBinderCall || (tid == process.id &&
             (process.id == observedProcess || process.context == "u:r:system_server:s0"))) {
             describeCode(process, cpu.pc, "pc-file");
             describeCode(process, cpu.x[30], "lr-file");

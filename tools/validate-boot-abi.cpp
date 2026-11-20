@@ -590,6 +590,14 @@ int main() {
         assert(std::memcmp(permute.cpu.v[16].data(), quietedNaNs.data(), sizeof(quietedNaNs)) == 0 &&
                permute.cpu.fpsr == (fpsrSaturation | 1));
         permute.cpu.fpsr = 0;
+        const std::array<float, 4> scalarInput{-0.5f, 2.5f, 3.5f, 4.5f}, scalarRounded{-0.0f, 0, 0, 0};
+        std::memcpy(permute.cpu.v[17].data(), scalarInput.data(), sizeof(scalarInput));
+        assert(executeStartupInstruction(permute, 0x1e244231)); // frintn s17, s17
+        assert(std::memcmp(permute.cpu.v[17].data(), scalarRounded.data(), sizeof(scalarRounded)) == 0);
+        const std::array<double, 2> scalarDoubleInput{3.5, 2.5}, scalarDoubleRounded{4, 0};
+        std::memcpy(permute.cpu.v[17].data(), scalarDoubleInput.data(), sizeof(scalarDoubleInput));
+        assert(executeStartupInstruction(permute, 0x1e644231)); // frintn d17, d17
+        assert(std::memcmp(permute.cpu.v[17].data(), scalarDoubleRounded.data(), sizeof(scalarDoubleRounded)) == 0);
         const std::array<uint64_t, 2> negateDoubles{0, 0xfff0000000000000ULL};
         const std::array<uint64_t, 2> negateDoublesResult{0x8000000000000000ULL, 0x7ff0000000000000ULL};
         std::memcpy(permute.cpu.v[0].data(), negateDoubles.data(), sizeof(negateDoubles));
@@ -3256,6 +3264,19 @@ int main() {
         assert(report.find("caller 2 PC") == std::string::npos);
         assert(report.find("pc-file=/system/boot-trace-probe.so+0x1010") != std::string::npos);
         assert(report.find("lr-file=/system/boot-trace-probe.so+0x1020") != std::string::npos);
+
+        const auto worker = invoke(220, {0x3d0f00, base + 0x800, base + 0x88, 0, base + 0x90});
+        assert(worker == 2 && guest.schedule(task) && guest.threadId() == worker);
+        task.cpu.pc = mapping + 0x50;
+        task.cpu.x[30] = mapping + 0x60;
+        task.cpu.x[29] = 0;
+        task.cpu.stop = Stop::unsupported;
+        const auto stopped = guest.workerReport(task, 1);
+        const auto line = stopped.find("guest task 1/2 ");
+        assert(line != std::string::npos);
+        const auto workerReport = std::string_view(stopped).substr(line, stopped.find('\n', line) - line);
+        assert(workerReport.find("pc-file=/system/boot-trace-probe.so+0x1050") != std::string::npos);
+        assert(workerReport.find("lr-file=/system/boot-trace-probe.so+0x1060") != std::string::npos);
     }
     {
         ProbeLinux guest(1, 0);

@@ -369,6 +369,24 @@ Float floatingMinMax(CPU& cpu, Float left, Float right, bool minimum, bool numer
     return minimum ? std::min(left, right) : std::max(left, right);
 }
 
+template <class Float>
+Float roundToNearestEven(CPU& cpu, Float value) {
+    using UInt = std::conditional_t<sizeof(Float) == 4, uint32_t, uint64_t>;
+    if (std::isnan(value)) {
+        constexpr UInt quietBit = UInt{1} << (std::numeric_limits<Float>::digits - 2);
+        const auto bits = std::bit_cast<UInt>(value);
+        if (!(bits & quietBit)) cpu.fpsr |= 1; // Invalid Operation (IOC).
+        return std::bit_cast<Float>(bits | quietBit);
+    }
+    if (!std::isfinite(value)) return value;
+    const auto magnitude = std::abs(value);
+    const auto integral = std::floor(magnitude);
+    const auto fraction = magnitude - integral;
+    const bool increment = fraction > Float{0.5} ||
+        (fraction == Float{0.5} && std::fmod(integral, Float{2}) != 0);
+    return std::copysign(integral + increment, value);
+}
+
 bool vectorArithmetic(CPU& cpu, uint32_t word) {
     const unsigned rd = word & 31, rn = (word >> 5) & 31, rm = (word >> 16) & 31;
     const auto& source = cpu.v[rn];
@@ -557,21 +575,7 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
             if (rounding == 0x0ea18800) return std::ceil(value);
             if (rounding == 0x2e218800) return std::round(value);
 
-            using Float = decltype(value);
-            using UInt = std::conditional_t<sizeof(Float) == 4, uint32_t, uint64_t>;
-            if (std::isnan(value)) {
-                constexpr UInt quietBit = UInt{1} << (std::numeric_limits<Float>::digits - 2);
-                const auto bits = std::bit_cast<UInt>(value);
-                if (!(bits & quietBit)) cpu.fpsr |= 1; // Invalid Operation (IOC).
-                return std::bit_cast<Float>(bits | quietBit);
-            }
-            if (!std::isfinite(value)) return value;
-            const auto magnitude = std::abs(value);
-            const auto integral = std::floor(magnitude);
-            const auto fraction = magnitude - integral;
-            const bool increment = fraction > Float{0.5} ||
-                (fraction == Float{0.5} && std::fmod(integral, Float{2}) != 0);
-            return std::copysign(integral + increment, value);
+            return roundToNearestEven(cpu, value);
         };
         const bool wide = word & 0x400000;
         if (wide && width == 8) return false;
@@ -1059,6 +1063,8 @@ bool floatInstruction(CPU& cpu, uint32_t word) {
         const auto a = get(rn), b = get(rm);
         cpu.nzcv = !condition(cpu.nzcv, (word >> 12) & 15) ? word & 15 :
             std::isunordered(a, b) ? 3 : a < b ? 8 : a == b ? 6 : 2;
+    } else if ((word & 0xffbffc00) == 0x1e244000) { // FRINTN.
+        store(roundToNearestEven(cpu, get(rn)));
     } else if ((word & 0xffbffc00) == 0x1e24c000) { // FRINTP.
         store(std::ceil(get(rn)));
     } else if ((word & 0xffbffc00) == 0x1e254000) { // FRINTM.

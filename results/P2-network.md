@@ -506,3 +506,5 @@
 - eBPF 修复版 iPhone 11 进程 9762 于 662.143 秒完成用户解锁，747.495 秒完成 Android `BOOT_COMPLETED` 广播，对照组的 ActivityManager SIGABRT 未再出现。完整报告确认客体在 815.788 秒停于 Launcher 的 `uqadd`（`0x2e210c90`），未确认 Launcher 完成绘制或 `sys.boot_completed=1`。此轮峰值物理占用 1,877,712,888 字节。客体数据库备份经 SQLite `quick_check` 校验。
 - 真机换装 UQADD 修复版后，iPhone 11 进程 9770 于 94.612 秒提交 640×960 像素。导出的 PNG 确认为 Android 开机动画。Mac 上同版越过 UQADD 和上轮停止的位置，完成 `BOOT_COMPLETED` 广播，随后 Launcher 的 launcher-loader 停于 `frintn v16.2s, v16.2s`（`0x0e218a10`）。
 - 实现向量 FRINTN，覆盖最接近偶数舍入、负零、无穷、NaN 载荷及 FPSR 的无效操作位。宿主 ABI 回归包含真机所需的单精度编码和双精度向量，12,000 组原生 ARM64 差分及 iPhoneOS Release 构建通过。新版 Mac 联测已启动，Launcher 绘制还在验证。
+- Mac 向量 FRINTN 修复版越过原停点并完成 `BOOT_COMPLETED` 广播，随后 Launcher 的 launcher-loader 在 `frintn s17, s17`（`0x1e244231`）停止。同版原厂 `libhwui.so` 的像素转换循环中，这条标量指令紧接向量 FRINTN。共享原有舍入实现并支持单、双精度标量形式。直接运行原厂像素循环，1 至 32 像素的透明和不透明样本均产生正确的通道转换。原生 ARM64 对照覆盖 20,000 组标量和向量值及 FPSR，宿主回归与 iPhoneOS Release 构建通过。
+- 客体终止报告现在为真正停下的线程输出映射路径、ELF 偏移与调用栈，包含 Launcher 的后台 loader 线程。宿主回归覆盖在同一进程的非主线程停止时输出该线程的 PC 和 LR 映射。已启动包含标量修复的 Mac 联测，iPhone 11 仍保留进行中的 UQADD 复测。
