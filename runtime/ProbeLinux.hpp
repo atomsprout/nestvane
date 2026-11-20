@@ -680,6 +680,8 @@ private:
     uint64_t unmountFilesystem(Machine& machine);
     bool writablePath(std::string_view path) const;
     bool directoryExists(std::string_view path) const;
+    const Thread* visibleProcThread(uint64_t tid) const;
+    const Process* procTaskDirectory(std::string_view path) const;
     static std::string mountList(const MountNamespace& group);
     uint64_t writableAllocation() const;
     uint64_t statFilesystem(Machine& machine, uint64_t address, std::string_view path) const;

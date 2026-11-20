@@ -898,16 +898,50 @@ uint64_t ProbeLinux::unmountFilesystem(Machine& machine) {
     return 0;
 }
 
+static uint64_t procId(std::string_view text) {
+    if (text.empty()) return 0;
+    uint64_t value = 0;
+    const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value);
+    return error == std::errc{} && end == text.end() ? value : 0;
+}
+
+const ProbeLinux::Thread* ProbeLinux::visibleProcThread(uint64_t tid) const {
+    const auto found = threads.find(tid);
+    if (found == threads.end() || found->second.wait == Wait::exited) return nullptr;
+    const auto& target = *found->second.process;
+    const auto& reader = *current->process;
+    // Android mounts procfs with hidepid=invisible and grants the readproc group access.
+    constexpr uint32_t readproc = 3009;
+    constexpr uint64_t capSysPtrace = 1ULL << 19;
+    const bool mayRead = &target == &reader || userId() == 0 || (reader.effectiveCaps & capSysPtrace) ||
+        groupId() == readproc || std::ranges::find(reader.groups, readproc) != reader.groups.end() ||
+        std::ranges::all_of(target.userIds, [&](uint32_t uid) { return uid == userId(); });
+    return mayRead ? &found->second : nullptr;
+}
+
+const ProbeLinux::Process* ProbeLinux::procTaskDirectory(std::string_view path) const {
+    constexpr std::string_view prefix = "/proc/", suffix = "/task";
+    if (!path.starts_with(prefix) || !path.ends_with(suffix) || path.size() <= prefix.size() + suffix.size())
+        return nullptr;
+    const auto id = path.substr(prefix.size(), path.size() - prefix.size() - suffix.size());
+    if (id == "self") return current->process.get();
+    const auto tid = procId(id);
+    const auto* subject = visibleProcThread(tid);
+    return subject && subject->process->id == tid ? subject->process.get() : nullptr;
+}
+
 bool ProbeLinux::directoryExists(std::string_view path) const {
-    constexpr std::string_view taskPrefix = "/proc/self/task/";
-    if (path.starts_with(taskPrefix)) {
-        const auto id = path.substr(taskPrefix.size());
-        uint64_t tid = 0;
-        const auto result = std::from_chars(id.data(), id.data() + id.size(), tid);
-        if (result.ec != std::errc{} || result.ptr != id.data() + id.size()) return false;
-        const auto thread = threads.find(tid);
-        return thread != threads.end() && thread->second.process == current->process &&
-               thread->second.wait != Wait::exited;
+    if (path.starts_with("/proc/")) {
+        const auto id = path.substr(sizeof("/proc/") - 1);
+        if (const auto tid = procId(id)) return visibleProcThread(tid) != nullptr;
+        if (procTaskDirectory(path)) return true;
+        const auto slash = path.rfind('/');
+        if (const auto tid = procId(path.substr(slash + 1))) {
+            if (const auto* owner = procTaskDirectory(path.substr(0, slash))) {
+                const auto* subject = visibleProcThread(tid);
+                return subject && subject->process.get() == owner;
+            }
+        }
     }
     if (path == "/" || directories.contains(path)) return true;
     const std::string prefix = std::string(path) + "/";
@@ -1224,9 +1258,9 @@ std::optional<ProbeLinux::Descriptor> ProbeLinux::find(std::string_view path, ui
     }
     if (path == "/sys/fs/selinux/context" && (!currentContextTransitions.empty() || !appDataLabelTypes.empty() || !appTransitionDomains.empty()))
         return Descriptor{std::string(path), {}, flags, Node::securityValidate};
-    constexpr std::string_view scoreSuffix = "/oom_score_adj";
-    const bool isOomScore = path.ends_with(scoreSuffix);
-    const std::string_view procSuffix = isOomScore ? scoreSuffix : "/status";
+    const bool isOomScore = path.ends_with("/oom_score_adj");
+    const bool isCmdline = path.ends_with("/cmdline");
+    const std::string_view procSuffix = isOomScore ? "/oom_score_adj" : isCmdline ? "/cmdline" : "/status";
     if (path.starts_with("/proc/") && path.size() > 6 + procSuffix.size() && path.ends_with(procSuffix)) {
         auto task = path.substr(6);
         task.remove_suffix(procSuffix.size());
@@ -1236,21 +1270,24 @@ std::optional<ProbeLinux::Descriptor> ProbeLinux::find(std::string_view path, ui
         } else if (task == "thread-self") {
             tid = currentTid;
         } else {
-            const auto [end, error] = std::from_chars(task.begin(), task.end(), tid);
-            if (error != std::errc{} || end != task.end() || !tid) return {};
+            tid = procId(task);
+            if (const auto separator = task.rfind('/'); !tid && separator != std::string_view::npos) {
+                const auto* owner = procTaskDirectory(path.substr(0, separator + sizeof("/proc/") - 1));
+                tid = procId(task.substr(separator + 1));
+                const auto* subject = visibleProcThread(tid);
+                if (!owner || !subject || subject->process.get() != owner) return {};
+            }
         }
-        const auto subject = threads.find(tid);
-        if (subject == threads.end() || subject->second.wait == Wait::exited) return {};
-        const auto& thread = subject->second;
+        const auto* subject = visibleProcThread(tid);
+        if (!subject) return {};
+        const auto& thread = *subject;
         const auto& process = *thread.process;
-        // Android mounts procfs with hidepid=invisible and grants the readproc group access.
-        constexpr uint32_t readproc = 3009;
-        constexpr uint64_t capSysPtrace = 1ULL << 19;
-        const auto& reader = *current->process;
-        const bool mayReadOtherProcesses = userId() == 0 || (reader.effectiveCaps & capSysPtrace) ||
-            groupId() == readproc || std::ranges::find(reader.groups, readproc) != reader.groups.end();
-        if (&process != &reader && !mayReadOtherProcesses &&
-            !std::ranges::all_of(process.userIds, [&](uint32_t uid) { return uid == userId(); })) return {};
+        if (isCmdline) {
+            Descriptor entry{std::string(path), {}, flags, Node::regular};
+            entry.snapshot = std::make_shared<std::string>(process.commandLine);
+            entry.bytes = {reinterpret_cast<const uint8_t*>(entry.snapshot->data()), entry.snapshot->size()};
+            return entry;
+        }
         if (isOomScore) {
             Descriptor entry{std::string(path), {}, flags, Node::oomScoreAdjustment};
             entry.targetProcess = process.id;
@@ -1273,12 +1310,6 @@ std::optional<ProbeLinux::Descriptor> ProbeLinux::find(std::string_view path, ui
         listing << '\n';
         Descriptor entry{std::string(path), {}, flags, Node::regular};
         entry.snapshot = std::make_shared<std::string>(std::move(listing).str());
-        entry.bytes = {reinterpret_cast<const uint8_t*>(entry.snapshot->data()), entry.snapshot->size()};
-        return entry;
-    }
-    if (path == "/proc/self/cmdline") {
-        Descriptor entry{std::string(path), {}, flags, Node::regular};
-        entry.snapshot = std::make_shared<std::string>(current->process->commandLine);
         entry.bytes = {reinterpret_cast<const uint8_t*>(entry.snapshot->data()), entry.snapshot->size()};
         return entry;
     }
@@ -1357,6 +1388,7 @@ std::optional<ProbeLinux::Descriptor> ProbeLinux::find(std::string_view path, ui
     if (path == "/dev/kmsg") return Descriptor{std::string(path), {}, flags, Node::kernelLog};
     if (directoryExists(path)) {
         Descriptor result{std::string(path), {}, flags, Node::directory};
+        if (const auto* subject = procTaskDirectory(path)) result.targetProcess = subject->id;
         if (path == cgroupRoot || inside(path, cgroupRoot)) {
             const auto node = cgroupFiles.find(result.path + std::string(cgroupProcs));
             if (node != cgroupFiles.end()) result.cgroupDirectory = node->second;
@@ -3852,9 +3884,13 @@ uint64_t ProbeLinux::readDirectory(Machine& machine, const Descriptor& fd) const
     add(ueventTriggers, 8);
     add(kernelSettings, 8);
     add(cgroupFiles, 8);
-    if (fd.path == "/proc/self/task") {
+    if (fd.path == "/proc") {
+        for (const auto& [pid, process] : processes)
+            if (visibleProcThread(pid)) entries.emplace(std::to_string(pid), 4);
+    }
+    if (fd.targetProcess && fd.path.starts_with("/proc/") && fd.path.ends_with("/task")) {
         for (const auto& [tid, task] : threads) {
-            if (task.process == current->process && task.wait != Wait::exited)
+            if (task.process->id == fd.targetProcess && task.wait != Wait::exited)
                 entries.emplace(std::to_string(tid), 4);
         }
     }

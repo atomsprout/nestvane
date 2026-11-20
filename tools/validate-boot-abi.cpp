@@ -477,6 +477,10 @@ int main() {
         assert(call(56, {uint32_t(-100), path, 0}) == uint64_t(-2));
         copy(path, "/proc/99999/status");
         assert(call(56, {uint32_t(-100), path, 0}) == uint64_t(-2));
+        copy(path, "/proc/1/task");
+        assert(call(56, {uint32_t(-100), path, 0x4000}) == uint64_t(-2));
+        copy(path, "/proc/1/cmdline");
+        assert(call(56, {uint32_t(-100), path, 0}) == uint64_t(-2));
         assert(write(current, "u:r:platform_app:s0:c512,c768") == uint64_t(-13));
         assert(call(63, {current, reply, 128}) == target.size() + 1);
         assert(std::memcmp(task.read(reply, target.size(), 4), target.data(), target.size()) == 0);
@@ -4048,6 +4052,45 @@ int main() {
         const auto workerReport = std::string_view(stopped).substr(line, stopped.find('\n', line) - line);
         assert(workerReport.find("pc-file=/system/boot-trace-probe.so+0x1050") != std::string::npos);
         assert(workerReport.find("lr-file=/system/boot-trace-probe.so+0x1060") != std::string::npos);
+    }
+    {
+        ProbeLinux guest(1, 0);
+        Machine task(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
+        const auto call = [&](uint64_t number, std::array<uint64_t, 6> args) {
+            std::ranges::copy(args, task.cpu.x.begin());
+            task.cpu.x[8] = number;
+            assert(guest.syscall(task));
+            return task.cpu.x[0];
+        };
+        const auto open = [&](const std::string& path, uint64_t flags = 0) {
+            assert(task.write(base, {reinterpret_cast<const uint8_t*>(path.c_str()), path.size() + 1}));
+            return call(56, {uint32_t(-100), base, flags});
+        };
+        const auto thread = call(220, {0x3d0f00, base + 0x800, base + 0x88, 0, base + 0x90});
+        assert(thread > 1);
+        const auto directory = open("/proc/1/task", 0x4000);
+        assert(directory < 256);
+        const auto size = call(61, {directory, base + 256, 256});
+        assert(size > 0 && size <= 256);
+        const auto* bytes = task.read(base + 256, size, 4);
+        assert(bytes);
+        std::set<std::string> names;
+        for (size_t offset = 0; offset < size;) {
+            uint16_t recordSize;
+            std::memcpy(&recordSize, bytes + offset + 16, sizeof(recordSize));
+            assert(recordSize >= 20 && recordSize <= size - offset);
+            names.emplace(reinterpret_cast<const char*>(bytes + offset + 19));
+            offset += recordSize;
+        }
+        assert(names.contains("1") && names.contains(std::to_string(thread)));
+        const auto threadPath = "/proc/1/task/" + std::to_string(thread);
+        const auto status = open(threadPath + "/status");
+        assert(status < 256 && open("/proc/1/cmdline") < 256);
+        const auto length = call(63, {status, base + 256, 256});
+        assert(length > 0 && length <= 256);
+        const std::string_view text(reinterpret_cast<const char*>(task.read(base + 256, length, 4)), length);
+        assert(text.find("Tgid:\t1\n") != text.npos && text.find("Pid:\t" + std::to_string(thread) + "\n") != text.npos);
+        assert(open("/proc/99999/task", 0x4000) == uint64_t(-2));
     }
     {
         ProbeLinux guest(1, 0);
