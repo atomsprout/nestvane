@@ -3307,7 +3307,7 @@ bool ProbeLinux::socketCall(Machine& machine) {
             }
             SocketRights rights;
             if (message.controlLength) {
-                if (endpoint->family != 1 || endpoint->type != 1) { x[0] = uint64_t(-95); break; }
+                if (endpoint->family != 1) { x[0] = uint64_t(-95); break; }
                 try {
                     if (const auto error = readSocketRights(machine, message.control, message.controlLength, rights)) {
                         x[0] = error;
@@ -3317,6 +3317,8 @@ bool ProbeLinux::socketCall(Machine& machine) {
                     x[0] = noMemory;
                     break;
                 }
+                // Android's LocalSocket emits SCM_RIGHTS even when it has no files to pass.
+                if (!rights.empty() && endpoint->type != 1) { x[0] = uint64_t(-95); break; }
             }
             if (endpoint->netlink) {
                 x[0] = sendKernelNetlink(machine, endpoint, vectors, message.name, message.nameLength);
@@ -3358,8 +3360,10 @@ bool ProbeLinux::socketCall(Machine& machine) {
             }
             constexpr uint64_t peek = 0x2, trunc = 0x20, dontWait = 0x40, cloexec = 0x40000000;
             const bool unixCredentials = endpoint.family == 1 && endpoint.passCredentials;
+            constexpr uint64_t ignoredUnixReceiveFlags = 0x8 | 0x4000; // MSG_CTRUNC and MSG_NOSIGNAL
+            const auto ignored = endpoint.family == 1 ? ignoredUnixReceiveFlags : 0;
             if (endpoint.type == 1 || (endpoint.passCredentials && !unixCredentials) ||
-                (x[2] & ~(peek | trunc | dontWait | cloexec))) return false;
+                (x[2] & ~(peek | trunc | dontWait | cloexec | ignored))) return false;
             SocketMessage message{};
             std::vector<SocketVector> vectors;
             if (const auto error = readSocketMessage(machine, x[1], message, vectors)) {

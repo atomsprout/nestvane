@@ -3672,7 +3672,12 @@ int main() {
         assert(call(200, {listener, address, sizeof(socketAddress)}) == 0);
         assert(call(201, {listener, 4}) == 0);
         assert(call(203, {sender, address, sizeof(socketAddress)}) == 0);
-        assert(machine.store64(data, 'k') && call(206, {sender, data, 1, 0}) == 1);
+        assert(machine.store64(data, 'k'));
+        assert(machine.store64(vector, data) && machine.store64(vector + 8, 1));
+        const std::array<uint64_t, 7> outbound{0, 0, vector, 1, control, 16, 0};
+        assert(machine.write(message, {reinterpret_cast<const uint8_t*>(outbound.data()), sizeof(outbound)}));
+        assert(machine.store64(control, 16) && machine.store64(control + 8, 0x100000001));
+        assert(call(211, {sender, message, 0x4000}) == 1); // Android libbase's empty SCM_RIGHTS.
         const auto receiver = call(202, {listener, 0, 0});
         assert(receiver < 256);
         assert(machine.store64(optionLength, 4));
@@ -3680,9 +3685,13 @@ int main() {
         assert(machine.store64(vector, data) && machine.store64(vector + 8, 1));
         const std::array<uint64_t, 7> header{0, 0, vector, 1, control, 32, 0};
         assert(machine.write(message, {reinterpret_cast<const uint8_t*>(header.data()), sizeof(header)}));
-        assert(call(212, {receiver, message, 0x40}) == 1 && load(data) == 'k');
+        assert(call(212, {receiver, message, 0x40004028}) == 1 && load(data) == 'k');
+        assert(load(message + 40) == 32 && load(message + 48) == 0);
         assert(load(control) == 28 && load(control + 8) == 0x200000001);
         assert(load(control + 16) == 1 && uint32_t(load(control + 24)) == 0);
+        assert(machine.write(message, {reinterpret_cast<const uint8_t*>(outbound.data()), sizeof(outbound)}));
+        assert(machine.store64(control, 12) && machine.store64(control + 8, 0x100000001));
+        assert(call(211, {sender, message, 0x4000}) == uint64_t(-22)); // A malformed header still fails.
         for (const auto descriptor : {receiver, sender, listener}) assert(call(57, {descriptor}) == 0);
     }
 
