@@ -3797,8 +3797,18 @@ int main() {
     assert(std::memcmp(machine.read(base + 516, 4, 4), "disk", 4) == 0);
     assert(call(68, {file, base + 340, 4, UINT64_MAX}) == uint64_t(-22));
     assert(machine.store64(base + 520, 0x40000000));
-    assert(call(29, {file, 0x80086601, base + 520}) == 0 && load(base + 520) == 0);
-    assert(call(29, {file, 0x40086602, base + 520}) == uint64_t(-95));
+    constexpr uint64_t getInodeFlags = 0x80086601, setInodeFlags = 0x40086602;
+    assert(call(29, {file, getInodeFlags, base + 520}) == 0 && load(base + 520) == 0);
+    assert(call(29, {file, setInodeFlags, base + 520}) == uint64_t(-95));
+    assert(call(29, {file, getInodeFlags, 0}) == uint64_t(-14));
+    const auto pathOnlyFile = call(56, {uint32_t(-100), base + 72, 0x200000});
+    assert(pathOnlyFile < 256 && call(29, {pathOnlyFile, getInodeFlags, base + 520}) == uint64_t(-9));
+    assert(call(57, {pathOnlyFile}) == 0);
+    assert(call(59, {base + 512, 0}) == 0);
+    const auto pipeFlags = load(base + 512);
+    assert(call(29, {uint32_t(pipeFlags), getInodeFlags, base + 520}) == uint64_t(-25));
+    assert(call(29, {uint32_t(pipeFlags), setInodeFlags, base + 520}) == uint64_t(-25));
+    assert(call(57, {uint32_t(pipeFlags)}) == 0 && call(57, {pipeFlags >> 32}) == 0);
     assert(call(29, {file, 0x40806685, base + 520}) == uint64_t(-25)); // FS_IOC_ENABLE_VERITY
     assert(call(29, {file, 0xc0046686, base + 520}) == uint64_t(-25)); // FS_IOC_MEASURE_VERITY
     assert(call(29, {file, 0xc0286687, base + 520}) == uint64_t(-25)); // FS_IOC_READ_VERITY_METADATA

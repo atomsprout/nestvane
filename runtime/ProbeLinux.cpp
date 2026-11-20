@@ -6696,6 +6696,11 @@ std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedPr
         const auto end = std::find(thread.name.begin(), thread.name.end(), uint8_t{0});
         return {reinterpret_cast<const char*>(thread.name.data()), size_t(end - thread.name.begin())};
     };
+    const auto descriptorName = [](const Descriptor& descriptor) {
+        if (!descriptor.visiblePath.empty()) return std::string_view(descriptor.visiblePath);
+        if (descriptor.path.find('\0') == std::string::npos) return std::string_view(descriptor.path);
+        return std::string_view("(guest namespace)");
+    };
     for (const auto& [tid, thread] : threads) {
         const auto& process = *thread.process;
         if (thread.wait == Wait::exited) continue;
@@ -6714,11 +6719,6 @@ std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedPr
             case Wait::none: tasks << " runnable"; break;
             case Wait::poll: {
                 tasks << " poll syscall=" << cpu.x[8] << " arg0=" << cpu.x[0];
-                const auto descriptorName = [](const Descriptor& descriptor) {
-                    if (!descriptor.visiblePath.empty()) return std::string_view(descriptor.visiblePath);
-                    if (descriptor.path.find('\0') == std::string::npos) return std::string_view(descriptor.path);
-                    return std::string_view("(guest namespace)");
-                };
                 const auto fd = process.descriptors.find(uint32_t(cpu.x[0]));
                 if (fd == process.descriptors.end()) break;
                 if (cpu.x[8] == 22 && fd->second.node == Node::poller) {
@@ -6768,6 +6768,10 @@ std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedPr
                 tasks << " suspended syscall=" << cpu.x[8] << std::hex
                       << " arg0=0x" << cpu.x[0] << " arg1=0x" << cpu.x[1]
                       << " arg2=0x" << cpu.x[2] << " arg3=0x" << cpu.x[3] << std::dec;
+                if (cpu.x[8] == 29) {
+                    const auto fd = process.descriptors.find(uint32_t(cpu.x[0]));
+                    if (fd != process.descriptors.end()) tasks << " fd=" << descriptorName(fd->second);
+                }
                 break;
             case Wait::exited: break;
         }
@@ -9240,15 +9244,12 @@ bool ProbeLinux::syscall(Machine& machine) {
                 x[0] = descriptor->second.pathOnly() ? uint64_t(-9) : uint64_t(-25);
                 break;
             }
-            if (x[1] == 0x80086601 && (descriptor->second.temporary ||
-                                      descriptor->second.node == Node::directory)) { // FS_IOC_GETFLAGS
-                x[0] = descriptor->second.pathOnly() ? uint64_t(-9) :
-                    writeGuest(machine, x[2], uint32_t{0}) ? 0 : uint64_t(-14);
-                break;
-            }
-            if (x[1] == 0x40086602 && (descriptor->second.temporary ||
-                                      descriptor->second.node == Node::directory)) { // FS_IOC_SETFLAGS
-                x[0] = descriptor->second.pathOnly() ? uint64_t(-9) : uint64_t(-95);
+            if (x[1] == 0x80086601 || x[1] == 0x40086602) { // FS_IOC_GETFLAGS / FS_IOC_SETFLAGS
+                const auto& fd = descriptor->second;
+                if (fd.pathOnly()) { x[0] = uint64_t(-9); break; }
+                if (!fd.temporary && fd.node != Node::directory) { x[0] = uint64_t(-25); break; }
+                if (x[1] == 0x40086602) { x[0] = uint64_t(-95); break; }
+                x[0] = writeGuest(machine, x[2], uint32_t{0}) ? 0 : uint64_t(-14);
                 break;
             }
             if (x[1] == 0x541b && (descriptor->second.temporary ||
