@@ -873,13 +873,21 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
             const auto sum = lane(source, i, size * 2) + lane(other, i, size * 2) + rounding;
             setLane(result, start + i, size, sum >> bits);
         }
-    } else if ((word & 0xbf3ffc00) == 0x0e212800) { // XTN / XTN2.
+    } else if (const auto narrow = word & 0xbf3ffc00;
+               narrow == 0x0e212800 || narrow == 0x2e214800) { // XTN / XTN2, UQXTN / UQXTN2.
         if (size == 8) return false;
         const unsigned count = 8 / size;
         const unsigned start = width == 16 ? count : 0;
+        const auto maximum = (uint64_t{1} << (size * 8)) - 1;
         if (start) result = cpu.v[rd];
-        for (unsigned i = 0; i < count; ++i)
-            setLane(result, start + i, size, lane(source, i, size * 2));
+        for (unsigned i = 0; i < count; ++i) {
+            auto value = lane(source, i, size * 2);
+            if (narrow == 0x2e214800 && value > maximum) {
+                value = maximum;
+                cpu.fpsr |= fpsrSaturation;
+            }
+            setLane(result, start + i, size, value);
+        }
     } else if ((word & 0xbf80fc00) == 0x0f008400) { // SHRN / SHRN2.
         const unsigned immediate = (word >> 16) & 127;
         if (immediate < 8 || immediate >= 64) return false;

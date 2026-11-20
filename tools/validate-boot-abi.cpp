@@ -794,6 +794,26 @@ int main() {
         assert(std::memcmp(permute.cpu.v[28].data(), wideMulHigh.data(), sizeof(wideMulHigh)) == 0);
         assert(executeStartupInstruction(permute, 0xd51b443f) && !permute.cpu.fpsr);
         assert(!executeStartupInstruction(permute, 0x6e3fb795)); // reserved byte lanes
+        const std::array<uint16_t, 8> narrowBytesSource{0, 254, 255, 256, 257, 1, 32768, 65535};
+        const std::array<uint8_t, 16> narrowBytesResult{0, 254, 255, 255, 255, 1, 255, 255};
+        std::memcpy(permute.cpu.v[0].data(), narrowBytesSource.data(), sizeof(narrowBytesSource));
+        permute.cpu.v[16].fill(0x51);
+        assert(executeStartupInstruction(permute, 0x2e214810)); // uqxtn v16.8b, v0.8h
+        assert(permute.cpu.v[16] == narrowBytesResult && permute.cpu.fpsr == fpsrSaturation);
+        const std::array<uint64_t, 2> narrowWordsSource{0x1'0000'0000, 0x8765'4321};
+        const std::array<uint32_t, 4> narrowWordsResult{0, 1, UINT32_MAX, 0x8765'4321};
+        std::memcpy(permute.cpu.v[7].data(), narrowWordsSource.data(), sizeof(narrowWordsSource));
+        assert(executeStartupInstruction(permute, 0x6ea148e7)); // uqxtn2 v7.4s, v7.2d
+        assert(std::memcmp(permute.cpu.v[7].data(), narrowWordsResult.data(), sizeof(narrowWordsResult)) == 0);
+        const std::array<uint32_t, 4> narrowHalvesSource{1, 65535, 42, 0};
+        const std::array<uint16_t, 8> narrowHalvesResult{1, 65535, 42, 0};
+        std::memcpy(permute.cpu.v[0].data(), narrowHalvesSource.data(), sizeof(narrowHalvesSource));
+        assert(executeStartupInstruction(permute, 0x2e614810)); // uqxtn v16.4h, v0.4s
+        assert(std::memcmp(permute.cpu.v[16].data(), narrowHalvesResult.data(), sizeof(narrowHalvesResult)) == 0);
+        assert(permute.cpu.fpsr == fpsrSaturation); // An in-range conversion preserves the sticky flag.
+        assert(executeStartupInstruction(permute, 0xd51b443f) && !permute.cpu.fpsr);
+        assert(executeStartupInstruction(permute, 0x2e614810) && !permute.cpu.fpsr);
+        assert(!executeStartupInstruction(permute, 0x2ee14810)); // reserved 64-bit destinations
         const std::array<float, 4> leftAdd{1, -2, 3, 4}, rightAdd{3, 1, 6, -4}, expectedSum{4, -1, 9, 0};
         std::memcpy(permute.cpu.v[0].data(), leftAdd.data(), sizeof(leftAdd));
         std::memcpy(permute.cpu.v[2].data(), rightAdd.data(), sizeof(rightAdd));
