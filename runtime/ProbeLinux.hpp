@@ -156,9 +156,11 @@ private:
         PendingSignals pendingSignals;
         std::array<uint8_t, 16> name{};
         std::array<uint64_t, 3> alternateStack{0, 2, 0};
+        std::chrono::nanoseconds cpuTime{};
     };
 
     bool switchThread(Machine& machine, std::chrono::steady_clock::time_point deadline, const std::stop_token& stop);
+    void accountGuestCpu();
     bool cloneThread(Machine& machine);
     bool forkProcess(Machine& machine);
     bool execProcess(Machine& machine);
@@ -770,6 +772,7 @@ private:
         uint64_t signalTrampoline = 0;
         struct ChildSignal { uint32_t pid, uid, status, code; };
         std::optional<ChildSignal> childSignal;
+        std::chrono::nanoseconds cpuTime{}, reapedCpuTime{};
     };
     auto& descriptors() { return current->process->descriptors; }
     const auto& descriptors() const { return current->process->descriptors; }
@@ -839,7 +842,11 @@ private:
     unsigned permissionShift(uint32_t uid, uint32_t gid) const;
     uint64_t pid, memoryLimit;
     std::shared_ptr<AnonymousBudget> anonymousBudget;
-    struct ChildExit { uint64_t parent; uint32_t status, uid, code; };
+    struct ChildExit {
+        uint64_t parent;
+        uint32_t status, uid, code;
+        std::chrono::nanoseconds cpuTime;
+    };
     std::map<uint64_t, ChildExit> childExits;
     std::map<uint64_t, Thread> threads;
     std::map<uint64_t, Process*> processes; // The live threads own each process.
@@ -849,6 +856,7 @@ private:
     bool imageReplaced = false;
     bool signalContextRestored = false;
     uint64_t sliceEnd = UINT64_MAX;
+    std::optional<std::chrono::nanoseconds> hostCpuSample;
 };
 
 } // namespace nestvane

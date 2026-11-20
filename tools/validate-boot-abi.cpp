@@ -3470,7 +3470,18 @@ int main() {
         invoke(139);
         assert(task.cpu.pc == blockedPc + 4 && task.cpu.x[0] == uint64_t(-4));
         assert(invoke(135, {0, 0, word, 8}) == 0 && task.load64(word, info) && info == signalMask);
-        assert(invoke(260, {child, word}) == child && task.load64(word, info) && uint32_t(info) == 42U << 8);
+        constexpr uint64_t childUsage = base + 0x580, allUsage = base + 0x640;
+        assert(invoke(165, {uint32_t(-1), allUsage}) == 0);
+        assert(task.load64(allUsage + 8, info) && info == 0);
+        assert(invoke(260, {child, word, 0, 1}) == uint64_t(-14));
+        assert(invoke(260, {child, word, 0xb, childUsage}) == child);
+        assert(task.load64(word, info) && uint32_t(info) == 42U << 8);
+        assert(invoke(165, {uint32_t(-1), allUsage}) == 0);
+        assert(std::memcmp(task.read(childUsage, 144, 4), task.read(allUsage, 144, 4), 144) == 0);
+        assert(invoke(165, {0, allUsage}) == 0);
+        assert(invoke(165, {1, allUsage}) == 0 && task.load64(allUsage + 8, info) && info < 1'000'000);
+        assert(invoke(165, {2, allUsage}) == uint64_t(-22));
+        assert(invoke(165, {0, 1}) == uint64_t(-14));
     }
     {
         ProbeLinux guest(1, 0);

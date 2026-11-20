@@ -5157,6 +5157,22 @@ std::optional<std::chrono::steady_clock::time_point> ProbeLinux::refreshTimers(
     return next;
 }
 
+void ProbeLinux::accountGuestCpu() {
+    using namespace std::chrono;
+    timespec time{};
+    if (::clock_gettime(CLOCK_THREAD_CPUTIME_ID, &time) != 0) {
+        hostCpuSample.reset();
+        return;
+    }
+    const auto sample = seconds(time.tv_sec) + nanoseconds(time.tv_nsec);
+    if (hostCpuSample && sample >= *hostCpuSample && current->wait != Wait::exited) {
+        const auto elapsed = sample - *hostCpuSample;
+        current->cpuTime += elapsed;
+        current->process->cpuTime += elapsed;
+    }
+    hostCpuSample = sample;
+}
+
 bool ProbeLinux::switchThread(Machine& machine, std::chrono::steady_clock::time_point deadline, const std::stop_token& stop) {
     using namespace std::chrono;
     auto now = steady_clock::now();
@@ -5235,6 +5251,7 @@ bool ProbeLinux::switchThread(Machine& machine, std::chrono::steady_clock::time_
         if (next == threads.end()) next = threads.begin();
         if (next->second.wait != Wait::none || next->second.nextSliceAfter) { ++next; continue; }
         if (next->first != currentTid) {
+            accountGuestCpu();
             const auto retired = machine.cpu.retired;
             auto output = std::move(machine.cpu.output);
             machine.cpu.exclusiveSize = 0;
@@ -5317,6 +5334,7 @@ bool ProbeLinux::forkProcess(Machine& machine) {
     if (child.process->mdwe & mdweNoInherit) child.process->mdwe = 0;
     child.process->childSignal.reset();
     child.process->pendingSignals.clear();
+    child.process->cpuTime = child.process->reapedCpuTime = {};
     child.process->segments = machine.segments;
     std::erase_if(child.process->segments, [](const Segment& segment) { return segment.omitOnFork; });
     std::map<const AnonymousPages*, std::shared_ptr<AnonymousPages>> privateCopies;
@@ -6274,13 +6292,14 @@ bool ProbeLinux::futex(Machine& machine) {
 }
 
 void ProbeLinux::finishProcess(Process& process, uint32_t status, bool killed) {
+    if (current->process.get() == &process) accountGuestCpu();
     processes.erase(process.id);
     *binderDeathsDirty = true;
     const uint32_t code = killed ? 2 : 1; // CLD_KILLED, CLD_EXITED
     const auto uid = process.userIds[0];
     const auto parent = process.parent;
     if (parent) {
-        childExits.emplace(process.id, ChildExit{parent, status, uid, code});
+        childExits.emplace(process.id, ChildExit{parent, status, uid, code, process.cpuTime + process.reapedCpuTime});
         for (auto& [tid, task] : threads) {
             if (task.process->id != parent || task.wait == Wait::exited) continue;
             const auto handler = task.process->signalActions[sigChild][0];
@@ -6317,6 +6336,8 @@ bool ProbeLinux::exitThread(Machine& machine) {
                    task.second.wait != Wait::exited;
         }))
         finishProcess(*current->process, uint32_t(machine.cpu.x[0]) & 255, false);
+    else
+        accountGuestCpu();
     current->wait = Wait::exited;
     sliceEnd = 0;
     return true;
@@ -6327,13 +6348,23 @@ ProbeLinux::Process* ProbeLinux::liveProcess(uint64_t id) const {
     return found == processes.end() ? nullptr : found->second;
 }
 
+static bool writeGuestRusage(Machine& machine, uint64_t address, std::chrono::nanoseconds cpuTime) {
+    // Guest work runs on one host CPU thread. Charge its work as user CPU time.
+    // Guest system CPU time and the other Linux rusage counters are unaccounted.
+    std::array<int64_t, 18> usage{};
+    const auto microseconds = std::chrono::duration_cast<std::chrono::microseconds>(cpuTime).count();
+    usage[0] = microseconds / 1'000'000;
+    usage[1] = microseconds % 1'000'000;
+    return writeGuest(machine, address, usage);
+}
+
 bool ProbeLinux::waitChild(Machine& machine) {
     auto& x = machine.cpu.x;
-    constexpr uint64_t noHang = 1, exited = 4, noWait = 0x1000000;
+    constexpr uint64_t noHang = 1, untraced = 2, exited = 4, continued = 8, noWait = 0x1000000;
     const bool wait4 = x[8] == 260;
     int32_t target = wait4 ? int32_t(x[0]) : x[0] == 1 ? int32_t(x[1]) : -1;
-    if (wait4 ? ((target <= 0 && target != -1) || x[3] || (x[2] & ~noHang)) :
-                (x[0] == 2 || x[0] > 3 || x[4] || (x[3] & ~(noHang | exited | noWait)))) return false;
+    if (wait4 ? ((target <= 0 && target != -1) || (x[2] & ~(noHang | untraced | continued))) :
+                (x[0] == 2 || x[0] > 3 || (x[3] & ~(noHang | exited | noWait)))) return false;
     if (!wait4 && x[0] == 3) { // P_PIDFD
         const auto fd = descriptors().find(uint32_t(x[1]));
         if (fd == descriptors().end() || fd->second.node != Node::processHandle) {
@@ -6357,12 +6388,21 @@ bool ProbeLinux::waitChild(Machine& machine) {
         if (!hasChild) { x[0] = uint64_t(-10); return true; }
         if (!((wait4 ? x[2] : x[3]) & noHang)) return waitForEvents();
     }
+    const auto usage = wait4 ? x[3] : x[4];
+    if (child != childExits.end() && usage && !writeGuestRusage(machine, usage, child->second.cpuTime)) {
+        x[0] = uint64_t(-14);
+        return true;
+    }
+    const auto reap = [&] {
+        current->process->reapedCpuTime += child->second.cpuTime;
+        childExits.erase(child);
+    };
     if (wait4) {
         if (child == childExits.end()) { x[0] = 0; return true; }
         const auto status = child->second.code == 1 ? child->second.status << 8 : child->second.status;
         if (x[1] && !writeGuest(machine, x[1], status)) { x[0] = uint64_t(-14); return true; }
         x[0] = child->first;
-        childExits.erase(child);
+        reap();
         return true;
     }
     std::array<uint32_t, 32> info{}; // Linux AArch64 siginfo_t, 128 bytes.
@@ -6374,7 +6414,7 @@ bool ProbeLinux::waitChild(Machine& machine) {
         info[6] = child->second.status;
     }
     if (x[2] && !writeGuest(machine, x[2], info)) { x[0] = uint64_t(-14); return true; }
-    if (child != childExits.end() && !(x[3] & noWait)) childExits.erase(child);
+    if (child != childExits.end() && !(x[3] & noWait)) reap();
     x[0] = 0;
     return true;
 }
@@ -9052,6 +9092,7 @@ uint64_t ProbeLinux::createBpfToken(Machine& machine) {
 }
 
 bool ProbeLinux::syscall(Machine& machine) {
+    if (!hostCpuSample) accountGuestCpu();
     auto& x = machine.cpu.x;
     const uint64_t number = x[8];
     current->hostEventRetry.reset();
@@ -9628,16 +9669,23 @@ bool ProbeLinux::syscall(Machine& machine) {
                 now = std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now().time_since_epoch());
             } else if (x[0] == 2 || x[0] == 3) {
-                timespec ticks{};
-                const auto clock = x[0] == 2 ? CLOCK_PROCESS_CPUTIME_ID : CLOCK_THREAD_CPUTIME_ID;
-                if (::clock_gettime(clock, &ticks) != 0) { x[0] = invalid; break; }
-                now = std::chrono::seconds(ticks.tv_sec) + std::chrono::nanoseconds(ticks.tv_nsec);
+                accountGuestCpu();
+                now = x[0] == 2 ? current->process->cpuTime : current->cpuTime;
             } else {
                 x[0] = invalid;
                 break;
             }
             const std::array<int64_t, 2> time{now.count() / 1'000'000'000, now.count() % 1'000'000'000};
             x[0] = writeGuest(machine, x[1], time) ? 0 : uint64_t(-14);
+            break;
+        }
+        case 165: { // getrusage
+            const auto who = int32_t(x[0]);
+            if (who != -1 && who != 0 && who != 1) { x[0] = invalid; break; }
+            accountGuestCpu();
+            const auto& process = *current->process;
+            const auto usage = who == -1 ? process.reapedCpuTime : who == 0 ? process.cpuTime : current->cpuTime;
+            x[0] = writeGuestRusage(machine, x[1], usage) ? 0 : uint64_t(-14);
             break;
         }
         case 163: case 164: case 261: { // getrlimit, setrlimit, prlimit64
