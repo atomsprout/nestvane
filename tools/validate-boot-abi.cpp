@@ -4156,6 +4156,7 @@ int main() {
         assert(length > 0 && length <= 256);
         const std::string_view text(reinterpret_cast<const char*>(task.read(base + 256, length, 4)), length);
         assert(text.find("Tgid:\t1\n") != text.npos && text.find("Pid:\t" + std::to_string(thread) + "\n") != text.npos);
+        assert(text.find("\nTracerPid:\t0\n") != text.npos);
         assert(open("/proc/99999/task", 0x4000) == uint64_t(-2));
     }
     {

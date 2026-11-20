@@ -1326,6 +1326,7 @@ std::optional<ProbeLinux::Descriptor> ProbeLinux::find(std::string_view path, ui
                 << "Tgid:\t" << process.id << '\n'
                 << "Pid:\t" << tid << '\n'
                 << "PPid:\t" << process.parent << '\n'
+                << "TracerPid:\t0\n" // Guest ptrace attachments are unsupported.
                 << "Uid:\t" << process.userIds[0] << '\t' << process.userIds[1] << '\t'
                 << process.userIds[2] << '\t' << process.userIds[1] << '\n'
                 << "Gid:\t" << process.groupIds[0] << '\t' << process.groupIds[1] << '\t'
