@@ -537,3 +537,4 @@
 - Smoke 启动 fork 失败的 Mac 联测进程中，调试器读到稀疏虚拟地址保留 4,025,270,272 字节，上限为 4,294,967,296 字节。脏页仅 209,043,456 字节，低于 536,870,912 字节的上限。读数取得于失败之后，不能单独判定失败分支。新版把完整客体稀疏虚拟地址额度从 4 GiB 调到 8 GiB，脏页上限仍为 512 MiB，并在 EAGAIN 时区分任务数、预留地址、宿主映射和脏页额度。宿主回归验证了超过旧额度的稀疏映射可在 fork 后保留数据和隔离父子写入，iPhoneOS Release 构建通过。完整客体复测已启动。
 - 更新 Binder 后，Mac 同版采样确认开机动画图层已从原版 SurfaceFlinger 中移除。动画退出后的首次延时快照中，HWC 合成列表包含 Settings 的 FallbackHome。下一次快照中 QuickstepLauncher 已 resumed，但仍无窗口焦点或可见合成图层。尚未读回 Launcher 首帧。
 - 在当前运行时中使用可控测试图案作为摄像头源，原版 ARM64 环境内的 Goldfish 相机探针读取了 1,228,800 字节 RGBA 和 460,800 字节 YUV420。宿主记录到租用、两种帧格式的请求及最终释放。该轮未接入物理相机，也未测试 Camera2 API 或 JPEG。
+- Binder 修复版的两次合成快照最初为 powerMode=On。后一份快照中 WindowManager 的 mAwake、mScreenOnEarly 和 mScreenOnFully 均为 false，原版 SurfaceFlinger 为 powerMode=Off，正在输出 ColorFade。开机广播后实际读回的 640×960 帧为黑色。新对照在临时镜像内使用标准 PowerManager 唤醒及 Settings 屏幕超时命令，增加电源快照，并让 Launcher 独立取得前台，以区分休眠和首帧停滞。正式客体的电源设置暂未修改。
