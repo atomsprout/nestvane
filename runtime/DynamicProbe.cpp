@@ -571,7 +571,8 @@ service nestvane-apk-install /system/bin/nestvane-apk-install
         };
         linux.setBootContext("u:r:init:s0");
         for (const auto path : {"/apex", "/bootstrap-apex", "/linkerconfig", "/dev/socket",
-                                "/mnt/vendor", "/mnt/product", "/storage"}) linux.addDirectory(path, 0755);
+                                "/mnt/vendor", "/mnt/product", "/storage", "/data_mirror"})
+            linux.addDirectory(path, 0755);
         linux.addBootTmpfs("/mnt", 0755, 1000, 14);
         linux.addBootTmpfs("/debug_ramdisk", 0755, 0, 14);
         linux.addBootTmpfs("/second_stage_resources", 0755, 0, 6);

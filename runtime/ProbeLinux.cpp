@@ -670,21 +670,22 @@ uint64_t ProbeLinux::mountFilesystem(Machine& machine) {
     if (x[3] & ~15ULL) return uint64_t(-95);
     if (mounts.contains(path)) return uint64_t(-16);
     if (mounts.size() >= 128) return uint64_t(-28);
-    uint32_t mode = 01777;
+    uint32_t mode = 01777, uid = 0, gid = 0;
     auto remaining = std::string_view(*options);
     while (!remaining.empty()) {
         const auto comma = remaining.find(',');
-        auto option = remaining.substr(0, comma);
-        if (option.starts_with("mode=")) {
-            option.remove_prefix(5);
-            uint32_t parsed = 0;
-            const auto result = std::from_chars(option.data(), option.data() + option.size(), parsed, 8);
-            if (result.ec != std::errc{} || result.ptr != option.data() + option.size() || parsed > 01777)
-                return invalid;
-            mode = parsed;
-        } else if (option != "uid=0" && option != "gid=0") {
-            return invalid;
-        }
+        const auto option = remaining.substr(0, comma);
+        const auto separator = option.find('=');
+        if (separator == std::string_view::npos) return invalid;
+        const auto key = option.substr(0, separator);
+        const auto value = option.substr(separator + 1);
+        uint32_t parsed = 0;
+        const auto result = std::from_chars(value.data(), value.data() + value.size(), parsed, key == "mode" ? 8 : 10);
+        if (result.ec != std::errc{} || result.ptr != value.data() + value.size()) return invalid;
+        if (key == "mode" && parsed <= 01777) mode = parsed;
+        else if (key == "uid" && parsed != UINT32_MAX) uid = parsed;
+        else if (key == "gid" && parsed != UINT32_MAX) gid = parsed;
+        else return invalid;
         if (comma == std::string_view::npos) break;
         remaining.remove_prefix(comma + 1);
     }
@@ -698,8 +699,8 @@ uint64_t ProbeLinux::mountFilesystem(Machine& machine) {
     }
     std::string backing("/\0", 2);
     backing += std::to_string(nextMountBacking++);
-    directories.emplace(backing, Directory{mode});
-    MountView view{x[3], mode, 0, inherited, std::move(backing), {}, bpf ? "bpf" : ""};
+    directories.emplace(backing, Directory{mode, uid, gid});
+    MountView view{x[3], mode, gid, inherited, std::move(backing), {}, bpf ? "bpf" : ""};
     auto child = mounts.lower_bound(path + "/");
     if (child != mounts.end() && inside(child->first, path)) {
         // A new filesystem hides mounts attached to the previous directory tree.
