@@ -205,7 +205,7 @@ def collect(serial, readelf, destination, small_art_heap):
                                 "/system/lib64/libsoundpool.so", "/system/lib64/libaudioeffect_jni.so",
                                 "/system/lib64/librtp_jni.so", "/system/lib64/libvintf_jni.so",
                                 "/system/lib64/librs_jni.so", "/system/lib64/libcompiler_rt.so",
-                                "/system/lib64/libwebviewchromium_loader.so"))
+                                "/system/lib64/libwebviewchromium_loader.so", "/system/lib64/libfdtrack.so"))
                 for name in public_preload_libraries(shell("cat", "/system/etc/public.libraries.txt")):
                     if name in apex_libraries or name in {"libc.so", "libm.so", "libdl.so"}:
                         continue
