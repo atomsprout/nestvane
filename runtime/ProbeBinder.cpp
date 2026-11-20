@@ -118,7 +118,7 @@ void ProbeLinux::refreshBinderReferences() {
             owner->localNodes.erase(node->object.value);
         }
     }
-    if (queued) wakePollers();
+    if (queued) wakeBinderPollers();
 }
 
 bool ProbeLinux::binderAvailableForProcessWork(const BinderConnection& connection, uint64_t tid) {
@@ -191,7 +191,7 @@ bool ProbeLinux::freeBinderBuffer(BinderConnection& connection, uint64_t address
         } else {
             connection.incoming.push_back(std::move(pending->second.front()));
             pending->second.pop_front();
-            wakePollers();
+            wakeBinderPollers();
         }
     }
     connection.allocations.erase(buffer);
@@ -223,7 +223,7 @@ void ProbeLinux::refreshBinderDeaths() {
         }
         return connection->deaths.empty();
     });
-    if (queued) wakePollers();
+    if (queued) wakeBinderPollers();
 }
 
 uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint32_t command,
@@ -339,7 +339,7 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
                 failed.completesCall = true;
                 caller->directed[route.thread].push_back(std::move(failed));
                 notices.push_back({brComplete});
-                wakePollers();
+                wakeBinderPollers();
                 return uint64_t{0};
             }
         }
@@ -640,7 +640,7 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
     }
     if (replying) outstanding.pop_back();
     notices.push_back({brComplete});
-    wakePollers();
+    wakeBinderPollers();
     return 0;
 }
 
@@ -706,7 +706,7 @@ uint64_t ProbeLinux::binderWriteRead(Machine& machine, const Descriptor& fd) {
             next.completesCall = true;
         } else {
             queue.pop_front();
-            wakePollers();
+            wakeBinderPollers();
             return writeGuest(machine, argument, request) ? uint64_t(-11) : fault;
         }
     }
@@ -807,7 +807,7 @@ uint64_t ProbeLinux::binderIoctl(Machine& machine, const Descriptor& fd) {
                 connection.managerAcceptsFiles = value.flags & acceptNodeFiles;
             }
             node.manager = fd.binder;
-            wakePollers();
+            wakeBinderPollers();
             return 0;
         }
         case 0x40046208: // BINDER_THREAD_EXIT

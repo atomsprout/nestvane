@@ -180,7 +180,8 @@ private:
                  std::shared_ptr<SharedFileBytes> backing, uint32_t value);
     unsigned wakeFutex(uint64_t address, unsigned count, uint32_t mask,
                        const std::shared_ptr<SharedFileBytes>& backing = {});
-    void wakePollers(const EventState* changedEvent = nullptr);
+    void wakePollers(const EventState* changedEvent = nullptr, bool binderOnly = false);
+    void wakeBinderPollers() { wakePollers(nullptr, true); }
     bool waitForEvents();
     bool waitForHostEvents();
     bool poll(Machine& machine);

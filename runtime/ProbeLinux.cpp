@@ -6834,7 +6834,7 @@ bool ProbeLinux::readInotify(Machine& machine, const Descriptor& fd) {
     return true;
 }
 
-void ProbeLinux::wakePollers(const EventState* changedEvent) {
+void ProbeLinux::wakePollers(const EventState* changedEvent, bool binderOnly) {
     for (auto& [tid, thread] : threads) {
         if (thread.wait != Wait::poll) continue;
         if (changedEvent) {
@@ -6844,6 +6844,14 @@ void ProbeLinux::wakePollers(const EventState* changedEvent) {
             if (poller && poller.get() != changedEvent &&
                 std::ranges::none_of(poller->watches, [changedEvent](const auto& entry) {
                     return entry.second.source.lock().get() == changedEvent;
+                })) continue;
+        }
+        if (binderOnly) {
+            const auto poller = thread.waitingEpoll.lock();
+            if (poller && std::ranges::none_of(poller->watches, [&](const auto& entry) {
+                    if (!(entry.second.mask & 1)) return false;
+                    const auto binder = entry.second.binder.lock();
+                    return binder && binderReadable(*binder, thread.process->id, tid);
                 })) continue;
         }
         if (auto binder = thread.waitingBinder.lock()) {

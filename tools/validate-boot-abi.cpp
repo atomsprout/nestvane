@@ -6015,6 +6015,68 @@ int main() {
         assert(call(57, {endpoint}) == 0);
     }
 
+    {
+        ProbeLinux guest(1, 0);
+        constexpr uint64_t directory = base + 0x40, fsName = base + 0x80, device = base + 0xc0;
+        constexpr uint64_t watch = base + 0x100, events = base + 0x120;
+        constexpr uint64_t commands = base + 0x180, args = base + 0x240, data = base + 0x300;
+        Machine task(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
+        const auto invoke = [&](uint64_t number, std::array<uint64_t, 6> values) {
+            std::ranges::copy(values, task.cpu.x.begin());
+            task.cpu.x[8] = number;
+            assert(guest.syscall(task));
+            return task.cpu.x[0];
+        };
+        const auto write = [&](uint64_t address, const auto& value) {
+            assert(task.write(address, {reinterpret_cast<const uint8_t*>(&value), sizeof(value)}));
+        };
+        write(directory, "/dev/binder-watch");
+        write(fsName, "binder");
+        write(device, "/dev/binder-watch/binder");
+        assert(invoke(34, {uint32_t(-100), directory, 0755}) == 0);
+        assert(invoke(40, {fsName, directory, fsName}) == 0);
+        guest.setBootContext("u:r:servicemanager:s0");
+        const auto manager = invoke(56, {uint32_t(-100), device, 2});
+        assert(manager < 256 && invoke(29, {manager, 0x40046207}) == 0);
+        assert(invoke(222, {0, 8 * pageSize, 1, 0x4002, manager}) < uint64_t(-4095));
+        write(commands, uint32_t{0x630c}); // BC_ENTER_LOOPER.
+        write(args, std::array<uint64_t, 6>{4, 0, commands});
+        assert(invoke(29, {manager, 0xc0306201, args}) == 0);
+
+        const auto binderPoller = invoke(20, {0});
+        const auto eventPoller = invoke(20, {0});
+        const auto event = invoke(19, {0, 0});
+        assert(binderPoller < 256 && eventPoller < 256 && event < 256);
+        write(watch, std::array<uint64_t, 2>{1, 0xb1});
+        assert(invoke(21, {binderPoller, 1, manager, watch}) == 0);
+        assert(invoke(21, {eventPoller, 1, event, watch}) == 0);
+
+        const auto waiter = invoke(220, {0x3d0f00, base + 0x900, base + 0x400, 0, base + 0x408});
+        const auto client = invoke(220, {0x1200011, 0, 0, 0, base + 0x410});
+        assert(waiter == 2 && client == 3);
+        invoke(22, {binderPoller, events, 1, UINT64_MAX});
+        assert(guest.blocked() && guest.schedule(task) && guest.threadId() == waiter);
+        invoke(22, {eventPoller, events, 1, UINT64_MAX});
+        assert(guest.blocked() && guest.schedule(task) && guest.processId() == client);
+
+        guest.setBootContext("u:r:vold:s0");
+        const auto channel = invoke(56, {uint32_t(-100), device, 2});
+        assert(channel < 256);
+        write(commands, uint32_t{0x40406300}); // BC_TRANSACTION.
+        write(commands + 4, std::array<uint64_t, 8>{0, 0, (uint64_t{1} << 32) | 77, 0, 1, 0, data, 0});
+        write(data, uint8_t{1});
+        write(args, std::array<uint64_t, 6>{68, 0, commands});
+        assert(invoke(29, {channel, 0xc0306201, args}) == 0);
+        const auto report = guest.workerReport(task, 1);
+        assert(report.find("  guest task 1/1   runnable") != std::string::npos);
+        assert(report.find("  guest task 1/2   poll syscall=22") != std::string::npos);
+        task.cpu.retired += 4096;
+        assert(guest.schedule(task) && guest.threadId() == 1);
+        assert(invoke(22, {binderPoller, events, 1, 0}) == 1);
+        uint64_t returned = 0;
+        assert(task.load64(events + 8, returned) && returned == 0xb1);
+    }
+
     put(base + 200, "/dev/binder-abi");
     put(base + 230, "binder");
     put(base + 260, "/dev/binder-abi/binder");
