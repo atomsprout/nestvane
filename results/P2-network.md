@@ -482,3 +482,6 @@
 - 进程 9694 在 742.827 秒进入 `prepareUserData-0`，随后进程内的 Android 开机动画重新开始，Settings 日志记录 `DeadSystemException`。765.002 秒仍能采到同一个 iOS 进程，进程物理内存峰值为 1,638,260,328 字节。真机已越过前一轮的宿主内存终止点，当前失败发生在客体解锁。已备份并校验客体数据库，换装包含 POSIX ACL 的版本。
 - Mac 启动后期的 5 秒采样中，解释器主线程 2,024 个样本中有 434 个落在 Binder 死亡通知检查中，其中 237 个是进程存活查询。客体现在按 PID 索引进程，保留主线程退出后仍有工作线程的情况，进程结束时移除索引。400 个客体进程、25 万次缺失 PID 查询的宿主对照为 882.0 毫秒和 7.8 毫秒。宿主 Binder 生命周期回归通过，整机时间收益待测。
 - iOS 启用现有的首帧诊断选项时，观察到 Launcher 的实际绘制日志后另保存后续非单色合成帧及时间，便于拿到桌面像素证据。iPhoneOS Release 构建通过，真机帧仍待验证。
+- ACL 修复版在 Mac 绘制了原版 Settings FallbackHome，继续完成 `prepareUserData-0` 与 `finishUserUnlocked-0`。客体数据库包含 `/data/media/0` 的 44 字节默认 ACL。随后 Launcher 主线程持续在 Binder 同步调用中等待，绘制线程已回到事件轮询。Mac 在 1,260 秒诊断期限结束时未报告 Launcher 已绘制，`sys.boot_completed` 未验证。
+- 同版在 iPhone 11 进程 9700 于 824.097 秒完成用户 0 数据准备，850.346 秒完成 79 个包的数据核对，873.982 秒完成 `finishUserUnlocked-0`。960.077 秒时 Launcher 主线程仍在 `libhwui` 执行，系统报告还有 395,763,880 字节内存余量。XCTest 截图 runner 两次在建立连接前退出，尚未取得 Launcher 屏幕截图或交互证据。
+- Binder 同步等待报告增加目标进程、事务码、正在处理事务的线程和目标进程队列长度。宿主双进程回归覆盖排队中和被服务线程接收后的快照，iPhoneOS Release 构建通过。

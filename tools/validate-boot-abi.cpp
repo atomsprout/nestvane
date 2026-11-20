@@ -4992,6 +4992,7 @@ int main() {
     assert(bindRequest(channel, 0x40406300, oneway | 41, "unrelated", true) == 0);
     assert(uint32_t(load(base + 0x720)) == 0x7206);
     assert(bindRequest(channel, 0, 0, "", true) == channel && linux.blocked());
+    assert(linux.workerReport(machine, binderChild).find("binder-target=1 code=42") != std::string::npos);
     assert(linux.schedule(machine) && linux.processId() == 1);
     const auto unrelatedEvent = call(19, {0, 0});
     assert(unrelatedEvent < 256 && machine.store64(base + 512, 1));
@@ -5009,6 +5010,8 @@ int main() {
     std::memcpy(fields.data(), transaction, sizeof fields);
     assert(fields[2] == 42 && fields[3] == binderChild && fields[4] == 7 && fields[6] == managerMap);
     assert(std::memcmp(machine.read(managerMap, 7, 4), "request", 7) == 0);
+    assert(linux.workerReport(machine, binderChild).find("binder-target=1 code=42 binder-server-tid=1") !=
+           std::string::npos);
     assert(call(25, {manager, 4, 0x800}) == 0);
     assert(bindRequest(manager, 0, 0, "", true) == uint64_t(-11));
     assert(bindRequest(manager, 0x40406301, 0, "reply", true) == 0);

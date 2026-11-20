@@ -482,7 +482,7 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
     } else {
         destination.push_back(std::move(packet));
     }
-    if (synchronousCall) ++connection.pendingCalls[currentTid];
+    if (synchronousCall) connection.pendingCalls[currentTid].push_back({target, target->owner, transaction.code});
     if (binderTrace.size() < 8192) {
         binderTrace += "  guest binder " + std::string(replying ? "reply" : "transaction") +
             " sender=" + std::to_string(processId()) + " target=" + std::to_string(target->owner) +
@@ -613,8 +613,10 @@ uint64_t ProbeLinux::binderWriteRead(Machine& machine, const Descriptor& fd) {
     if (next.reply) connection.replies[currentTid].push_back(*next.reply);
     if (next.completesCall) {
         const auto calls = connection.pendingCalls.find(currentTid);
-        if (calls != connection.pendingCalls.end() && !--calls->second)
-            connection.pendingCalls.erase(calls);
+        if (calls != connection.pendingCalls.end()) {
+            calls->second.pop_back();
+            if (calls->second.empty()) connection.pendingCalls.erase(calls);
+        }
     }
     queue.pop_front();
     return 0;

@@ -6737,6 +6737,23 @@ std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedPr
                     tasks << ']';
                 } else if (cpu.x[8] == 29 || cpu.x[8] == 63 || cpu.x[8] == 64) {
                     tasks << " fd=" << descriptorName(fd->second);
+                    if (const auto& binder = fd->second.binder; cpu.x[8] == 29 && binder) {
+                        const auto pending = binder->pendingCalls.find(tid);
+                        if (pending != binder->pendingCalls.end()) {
+                            const auto& call = pending->second.back();
+                            tasks << " binder-target=" << call.pid << " code=" << call.code;
+                            if (const auto target = call.target.lock()) {
+                                for (const auto& [serverTid, stack] : target->replies) {
+                                    if (std::ranges::any_of(stack, [&](const BinderRoute& route) {
+                                            return route.thread == tid && route.connection.lock() == binder;
+                                        })) tasks << " binder-server-tid=" << serverTid;
+                                }
+                                tasks << " target-queued=" << target->incoming.size();
+                            } else {
+                                tasks << " binder-target-closed";
+                            }
+                        }
+                    }
                 }
                 break;
             }

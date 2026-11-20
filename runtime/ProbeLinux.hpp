@@ -521,7 +521,12 @@ private:
         uint32_t nextHandle = 1;
         std::map<uint64_t, std::deque<BinderPacket>> directed;
         std::map<uint64_t, std::vector<BinderRoute>> replies;
-        std::map<uint64_t, size_t> pendingCalls;
+        struct PendingCall {
+            std::weak_ptr<BinderConnection> target;
+            uint64_t pid;
+            uint32_t code;
+        };
+        std::map<uint64_t, std::vector<PendingCall>> pendingCalls;
         std::deque<BinderPacket> incoming;
         std::map<uint64_t, std::deque<BinderPacket>> pendingAsync; // Present while this node has a live transaction.
         std::map<uint64_t, bool> loopers; // Whether the looper was requested by the driver.
