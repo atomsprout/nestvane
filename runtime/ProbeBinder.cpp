@@ -18,6 +18,8 @@ constexpr uint32_t binderObject = 0x73622a85, binderHandle = 0x73682a85;
 constexpr uint32_t binderBuffer = 0x70742a85, hasParent = 1;
 constexpr uint32_t brIncrefs = 0x80107207, brAcquire = 0x80107208;
 constexpr uint32_t brDeadBinder = 0x8008720f, brClearDeath = 0x80087210;
+// Android 17 service managers keep references to hundreds of registered objects.
+constexpr size_t binderObjectLimit = 4096;
 
 template <class T>
 bool readGuest(Machine& machine, uint64_t address, T& value) {
@@ -264,8 +266,17 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
             break;
         }
     }
+    const auto capacityReached = [&](std::string_view resource, size_t count) {
+        if (androidLogObserver && binderCapacityReports < 16) {
+            ++binderCapacityReports;
+            androidLogObserver("Binder capacity: " + std::string(resource) + " count=" + std::to_string(count) +
+                               ", sender=" + std::to_string(processId()) + ", target=" +
+                               std::to_string(target->owner) + ", code=" + std::to_string(transaction.code));
+        }
+        return fail(brFailedReply);
+    };
     auto& destination = replyThread ? target->directed[replyThread] : target->incoming;
-    if (destination.size() >= 32) return fail(brFailedReply);
+    if (destination.size() >= 32) return capacityReached("receive queue", destination.size());
     const auto label = sendLabel ? std::string_view(current->process->context) : std::string_view{};
 
     struct Translation {
@@ -351,8 +362,9 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
                 node = std::make_shared<BinderNode>(BinderNode{fd.binder, object});
                 newNodes.emplace(object.value, node);
             }
-            if (node->object.cookie != object.cookie || connection.localNodes.size() + newNodes.size() > 256)
-                return fail(brFailedReply);
+            if (node->object.cookie != object.cookie) return fail(brFailedReply);
+            const auto localObjectCount = connection.localNodes.size() + newNodes.size();
+            if (localObjectCount > binderObjectLimit) return capacityReached("local objects", localObjectCount);
         } else if (object.type == binderHandle && object.value <= UINT32_MAX) {
             const auto ref = connection.handles.find(uint32_t(object.value));
             if (ref == connection.handles.end() || ref->second.node->owner.expired()) return fail(brFailedReply);
@@ -365,7 +377,9 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
             continue;
         }
         if (!knownHandles.contains(node.get())) {
-            if (!nextHandle || target->handles.size() + newHandles.size() >= 256) return fail(brFailedReply);
+            const auto remoteObjectCount = target->handles.size() + newHandles.size();
+            if (!nextHandle || remoteObjectCount >= binderObjectLimit)
+                return capacityReached("remote handles", remoteObjectCount);
             knownHandles.emplace(node.get(), nextHandle);
             newHandles.emplace(nextHandle++, BinderReference{node});
         }
@@ -375,7 +389,7 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
     if (notices.size() + 2 * newNodes.size() + 1 > 64) return fail(brFailedReply);
     const auto address = storeBinderBuffer(*target, {bytes, size_t(transaction.dataSize)},
                                           {offsets, size_t(transaction.offsetsSize)}, extra, label);
-    if (!address) return fail(brFailedReply);
+    if (!address) return capacityReached("receive buffers", target->allocations.size());
     target->nextHandle = nextHandle;
     target->handles.merge(newHandles);
     auto& allocation = target->allocations.at(address - target->address);

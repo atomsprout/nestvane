@@ -540,7 +540,7 @@ service nestvane-apk-install /system/bin/nestvane-apk-install
                 "Resources: Preloading resources",
                 "nativeloader: Load libperfetto_framework_jni.so", "nativeloader: Load libcompiler_rt.so",
                 "SystemServer: Entered the Android system server", "SystemServerTiming: ",
-                "PackageManagerTiming: ", "EventHub: New device:", "HealthLoop: ",
+                "PackageManagerTiming: ", "EventHub: New device:", "HealthLoop: ", "Binder capacity: ",
                 "mmap APK: ", "PackageManager: Failed to parse", "PackageManager: Time to scan packages",
                 "PackageManager: Failed to create app data", "PackageManager: reconcileAppsData",
                 "installd: Failed to restorecon", "ActivityTaskManager: Displayed com.android.launcher3/",

@@ -737,6 +737,7 @@ private:
     std::vector<std::weak_ptr<BinderConnection>> binderDeathSubscribers;
     bool refreshBinderDeaths();
     std::string binderTrace;
+    unsigned binderCapacityReports = 0;
     std::map<std::string, std::string, std::less<>> bootFileLabels;
     std::map<std::string, BinderDevice, std::less<>> binderDevices;
     uint32_t nextBinderMinor = 0;

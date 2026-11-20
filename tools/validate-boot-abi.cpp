@@ -4404,6 +4404,39 @@ int main() {
     assert(uint32_t(load(base + 0x720)) == 0x8008720f && load(base + 0x724) == 0);
     assert(bindRequest(manager, 0x40086310, 0, "", false) == 0);
 
+    put(base + 260, "/dev/binder-abi/binder");
+    const auto registeringPeer = call(220, {0x1200011, 0, 0, 0, base + 0x848});
+    assert(registeringPeer > binderChild);
+    assert(linux.schedule(machine) && linux.processId() == registeringPeer);
+    linux.setBootContext("u:r:vold:s0");
+    const auto registeringBinder = call(56, {uint32_t(-100), base + 260, 2});
+    assert(registeringBinder < 256);
+    for (uint64_t index = 0; index < 320; ++index) {
+        const std::array<uint64_t, 3> service{flatBinder, objectPtr + index * 8, objectCookie + index * 8};
+        const std::string_view bytes(reinterpret_cast<const char*>(service.data()), sizeof service);
+        constexpr uint64_t registerOneWay = (uint64_t{1} << 32) | 48;
+        assert(bindRequest(registeringBinder, 0x40406300, registerOneWay, bytes, true, objectOffset) == 0);
+        assert(uint32_t(load(base + 0x720)) == 0x80107207); // BR_INCREFS
+        assert(bindRequest(registeringBinder, 0, 0, "", true) == 0);
+        assert(uint32_t(load(base + 0x720)) == 0x80107208); // BR_ACQUIRE
+        assert(bindRequest(registeringBinder, 0, 0, "", true) == 0);
+        assert(uint32_t(load(base + 0x720)) == 0x7206); // BR_TRANSACTION_COMPLETE
+        machine.cpu.retired += 4096;
+        assert(linux.schedule(machine) && linux.processId() == 1);
+        assert(bindRequest(manager, 0, 0, "", true) == 0);
+        assert(uint32_t(load(base + 0x720)) == 0x80407202);
+        const auto serviceBuffer = load(base + 0x724 + 6 * 8);
+        const auto serviceHandle = load(serviceBuffer + 8);
+        assert(serviceHandle && uint32_t(load(serviceBuffer)) == flatHandle);
+        assert(bindRequest(manager, 0x40046305, 0, "", false, {}, serviceHandle) == 0);
+        assert(bindRequest(manager, 0x40086303, 0, "", false, {}, serviceBuffer) == 0);
+        if (index + 1 < 320) {
+            machine.cpu.retired += 4096;
+            assert(linux.schedule(machine) && linux.processId() == registeringPeer);
+        }
+    }
+    assert(call(129, {registeringPeer, 9}) == 0);
+
     Startup commandLine{};
     commandLine.filename = "/system/bin/app_process64";
     commandLine.argv0 = "app_process";
