@@ -3019,6 +3019,17 @@ int main() {
     }
     {
         constexpr auto buffer = base + 96;
+        put(base, "/proc/config.gz");
+        const auto config = call(56, {uint32_t(-100), base, 0});
+        assert(config < 256);
+        assert(call(80, {config, buffer}) == 0 && uint32_t(load(buffer + 16)) == 0100444);
+        const auto size = load(buffer + 48);
+        assert(size > 18 && size <= 128);
+        assert(call(63, {config, buffer, 128}) == size);
+        assert((load(buffer) & 0xffffff) == 0x088b1f); // gzip with deflate
+        assert(call(63, {config, buffer, 128}) == 0);
+        assert(call(57, {config}) == 0);
+        assert(call(56, {uint32_t(-100), base, 1}) == uint64_t(-30));
         put(base, "/proc/sys/kernel/random/boot_id");
         const auto bootId = call(56, {uint32_t(-100), base, 0});
         assert(bootId < 256 && call(63, {bootId, buffer, 37}) == 37);
@@ -3248,6 +3259,39 @@ int main() {
         const bool restarts = wait == 98 && restart;
         assert(task.cpu.pc == blockedPc + (restarts ? 0 : 4));
         assert(task.cpu.x[0] == (restarts ? word : uint64_t(-4)));
+    }
+    {
+        ProbeLinux guest(1, 0);
+        constexpr auto handler = base + 0x200, stopped = base + 0x300, action = base + 0x440;
+        constexpr uint64_t forkTid = base + 0x480, signal = 33;
+        constexpr uint64_t unsupported = 65535, argument = 0x1234;
+        Machine task(Image{base, {{base, std::vector<uint8_t>(8 * pageSize), 7}}, {}});
+        task.cpu.sp = base + 4 * pageSize;
+        const auto invoke = [&](uint64_t number, std::array<uint64_t, 6> args = {}) {
+            std::ranges::copy(args, task.cpu.x.begin());
+            task.cpu.x[8] = number;
+            assert(guest.syscall(task));
+            return task.cpu.x[0];
+        };
+        assert(task.store64(action, handler) && task.store64(action + 8, 4));
+        assert(invoke(134, {signal, action, 0, 8}) == 0);
+        const auto child = invoke(220, {0x1200011, 0, 0, 0, forkTid});
+        assert(child > 1 && guest.schedule(task) && guest.processId() == child);
+        task.cpu.pc = stopped;
+        task.cpu.x[0] = argument;
+        task.cpu.x[8] = unsupported;
+        assert(!guest.syscall(task) && guest.suspendChild());
+        assert(guest.schedule(task) && guest.processId() == 1);
+        assert(invoke(131, {child, child, signal}) == 0);
+        assert(guest.schedule(task) && guest.processId() == child);
+        assert(task.cpu.pc == handler && task.cpu.x[0] == signal);
+        uint64_t signalInfo = 0;
+        assert(task.load64(task.cpu.x[1] + 8, signalInfo) && uint32_t(signalInfo) == uint32_t(-6));
+        invoke(139);
+        assert(guest.restoredSignalContext() && task.cpu.pc == stopped);
+        assert(task.cpu.x[8] == unsupported && task.cpu.x[0] == argument);
+        assert(!guest.syscall(task) && guest.suspendChild());
+        assert(guest.schedule(task) && guest.processId() == 1);
     }
     {
         ProbeLinux guest(1, 0);
@@ -3788,6 +3832,13 @@ int main() {
     assert(call(40, {base, base + 16, base, 14, base + 40}) == 0);
     assert(call(43, {base + 16, base + 512}) == 0);
     assert(load(base + 512 + 80) == 0x2e);
+    put(base + 390, ".");
+    assert(call(49, {base + 16}) == 0);
+    assert(call(43, {base + 390, base + 512}) == 0 && load(base + 512) == 0x01021994);
+    put(base + 390, "");
+    assert(call(43, {base + 390, base + 512}) == uint64_t(-2));
+    put(base + 390, "/");
+    assert(call(49, {base + 390}) == 0);
     auto file = call(56, {uint32_t(-100), base + 72, 0x42, 0600});
     assert(file == 3);
     put(base + 340, "disk");

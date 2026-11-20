@@ -34,6 +34,22 @@ constexpr size_t maxWritableFiles = 1024;
 constexpr size_t maxGuestDirectories = 2048;
 // Even the reference system_server alone exceeds 256 threads after boot.
 constexpr size_t maxGuestTasks = 1024;
+// /proc/config.gz reports this guest's ABI, including the absence of VMAP_STACK.
+// Contents of the fixed gzip stream
+// CONFIG_ARM64=y
+// CONFIG_64BIT=y
+// CONFIG_IKCONFIG=y
+// CONFIG_IKCONFIG_PROC=y
+// # CONFIG_VMAP_STACK is not set
+constexpr uint8_t guestKernelConfig[] = {
+    0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0x73, 0xf6,
+    0xf7, 0x73, 0xf3, 0x74, 0x8f, 0x77, 0x0c, 0xf2, 0x35, 0x33, 0xb1, 0xad,
+    0xe4, 0x72, 0x86, 0x70, 0xcd, 0x4c, 0x9c, 0x3c, 0x43, 0x10, 0x5c, 0x4f,
+    0x6f, 0x08, 0x03, 0x53, 0x24, 0x3e, 0x20, 0xc8, 0xdf, 0x19, 0x28, 0xac,
+    0xac, 0x00, 0xe5, 0x87, 0xf9, 0x3a, 0x06, 0xc4, 0x07, 0x87, 0x38, 0x3a,
+    0x7b, 0x2b, 0x64, 0x16, 0x2b, 0xe4, 0xe5, 0x97, 0x28, 0x14, 0xa7, 0x96,
+    0x70, 0x01, 0x00, 0x3d, 0x2c, 0xce, 0x1f, 0x66, 0x00, 0x00, 0x00,
+};
 constexpr uint32_t guestLoopbackIndex = 1;
 constexpr uint32_t guestLoopbackMtu = 65536;
 constexpr uint32_t niceLimitResource = 13; // RLIMIT_NICE
@@ -419,6 +435,8 @@ ProbeLinux::ProbeLinux(uint64_t pid, uint64_t uid, uint64_t memoryLimit)
     ashmemBootPath = "/dev/ashmem" + bootId;
     bootId.push_back('\n');
     kernelFiles.emplace("/proc/sys/kernel/random/boot_id", std::move(bootId));
+    kernelFiles.emplace("/proc/config.gz", std::string(
+        reinterpret_cast<const char*>(guestKernelConfig), sizeof guestKernelConfig));
     kernelFiles.emplace("/proc/filesystems", "nodev\ttmpfs\nnodev\tproc\nnodev\tbinder\nnodev\tbpf\next4\n");
     addDirectory("/dev/pts", 0755);
     addDirectory("/sys/devices", 0555);
@@ -4606,8 +4624,12 @@ bool ProbeLinux::fileCall(Machine& machine) {
         case 43: { // statfs by guest pathname
             const auto path = readPath(machine, x[0]);
             if (!path) { x[0] = uint64_t(-14); break; }
-            const auto target = resolve(*path);
-            x[0] = find(backingPath(target ? *target : *path), 0) ? statFilesystem(machine, x[1], target ? *target : *path) : uint64_t(-2);
+            if (path->empty()) { x[0] = uint64_t(-2); break; }
+            const auto target = followLinks(absolutePath(*path));
+            if (!target) { x[0] = uint64_t(-40); break; }
+            const auto backing = backingPath(*target);
+            if (!canAccessParent(backing, false)) { x[0] = uint64_t(-13); break; }
+            x[0] = find(backing, 0) ? statFilesystem(machine, x[1], *target) : uint64_t(-2);
             break;
         }
         case 44: // fstatfs by guest descriptor
@@ -7127,7 +7149,9 @@ void ProbeLinux::deliverPendingCaughtSignal(Machine& machine) {
     pending.erase(found);
 
     const auto interrupted = std::exchange(thread.signalInterruptedWait, Wait::none);
-    if (interrupted != Wait::none) {
+    // A diagnostic stop leaves the guest instruction unexecuted. Let the handler
+    // inspect that context and let the runtime retry the instruction on return.
+    if (interrupted != Wait::none && interrupted != Wait::suspended) {
         const auto flags = thread.process->signalActions[signal][1];
         const auto syscall = cpu.x[8], futexOp = cpu.x[1] & 127;
         const bool restartable = interrupted == Wait::futex
@@ -10383,8 +10407,8 @@ bool ProbeLinux::syscall(Machine& machine) {
             const bool scheduleHandler = caught && !masked && !waiting;
             if ((!caught && signal >= 32 && !waiting) ||
                 (!waiting && !masked && !fatalResend && !caught)) return false;
-            if (scheduleHandler && target.wait != Wait::none &&
-                target.wait != Wait::poll && target.wait != Wait::futex && target.wait != Wait::signal) return false;
+            if (scheduleHandler && target.wait != Wait::none && target.wait != Wait::poll &&
+                target.wait != Wait::futex && target.wait != Wait::signal && target.wait != Wait::suspended) return false;
             if (signal >= 32 && target.pendingSignals.size() >= 1024) { x[0] = uint64_t(-11); break; }
             info[0] = signal;
             if (!queued) {
