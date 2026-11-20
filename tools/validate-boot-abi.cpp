@@ -2883,7 +2883,14 @@ int main() {
         assert(mapping >= 0x100000000 && mapping < 0x2000000000);
         task.cpu.pc = mapping + 0x10;
         task.cpu.x[30] = mapping + 0x20;
+        task.cpu.sp = base + 0x80;
+        task.cpu.x[29] = base + 0x100;
+        assert(task.store64(base + 0x100, base + 0x110) && task.store64(base + 0x108, mapping + 0x34));
+        assert(task.store64(base + 0x110, base + 0x100) && task.store64(base + 0x118, mapping + 0x44));
         const auto report = guest.workerReport(task, 1);
+        assert(report.find("pc-file=/system/boot-trace-probe.so+0x1030") != std::string::npos);
+        assert(report.find("pc-file=/system/boot-trace-probe.so+0x1040") != std::string::npos);
+        assert(report.find("caller 2 PC") == std::string::npos);
         assert(report.find("pc-file=/system/boot-trace-probe.so+0x1010") != std::string::npos);
         assert(report.find("lr-file=/system/boot-trace-probe.so+0x1020") != std::string::npos);
     }

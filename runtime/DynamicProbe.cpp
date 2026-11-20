@@ -547,6 +547,8 @@ service nestvane-apk-install /system/bin/nestvane-apk-install
                 "installd: Failed to restorecon", "ActivityTaskManager: Displayed com.android.launcher3/",
                 "CameraProviderManager: Adding new camera device:", "CameraService: addStates",
                 "NestvaneSmoke: ", "ActivityTaskManager: Displayed dev.nestvane.smoke/",
+                "ActivityTaskManager: Displayed com.android.settings/.FallbackHome",
+                "SystemUIFactory: Failed to initialize WMComponent", "libc: Fatal signal ",
                 "SurfaceFlinger: SurfaceFlinger is starting", "SurfaceFlinger: Using HWComposer service",
                 "SurfaceFlinger: OpenGL ES informations", "mapper.ranchu: GoldfishAddressSpace",
                 "SurfaceFlinger: Can't create AidlComposerClient", "SurfaceFlinger: Loaded AIDL composer3 HAL",
@@ -559,7 +561,7 @@ service nestvane-apk-install /system/bin/nestvane-apk-install
             };
             if (message.starts_with("Zygote: System zygote died") ||
                 message.starts_with("SystemServer: Failure") ||
-                message.starts_with("AndroidRuntime: FATAL EXCEPTION IN SYSTEM PROCESS")) {
+                message.starts_with("AndroidRuntime: FATAL EXCEPTION")) {
                 progress(message.substr(0, 2048));
                 return;
             }

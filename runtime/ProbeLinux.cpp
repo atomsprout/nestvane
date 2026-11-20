@@ -6467,15 +6467,16 @@ std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedPr
         report += "  guest worker " + std::to_string(tid) + " waited in epoll for " + path + "\n";
     }
     std::ostringstream tasks;
-    const auto describeCode = [&](const Process& process, uint64_t address, const char* field) {
+    const auto segmentAt = [&](const Process& process, uint64_t address) -> const Segment* {
         const auto& segments = process.id == processId() ? machine.segments : process.segments;
         const auto next = std::upper_bound(segments.begin(), segments.end(), address,
             [](uint64_t pc, const Segment& segment) { return pc < segment.address; });
-        if (next == segments.begin()) return;
-        const auto& segment = *std::prev(next);
-        const auto offset = address - segment.address;
-        if (!segment.imageView || offset >= segment.mappedSize()) return;
-        const auto pointer = reinterpret_cast<uintptr_t>(segment.imageView) + offset;
+        return next == segments.begin() ? nullptr : &*std::prev(next);
+    };
+    const auto describeCode = [&](const Process& process, uint64_t address, const char* field) {
+        const auto* segment = segmentAt(process, address);
+        if (!segment || !segment->imageView || address - segment->address >= segment->mappedSize()) return;
+        const auto pointer = reinterpret_cast<uintptr_t>(segment->imageView) + address - segment->address;
         const auto describe = [&](std::string_view path, std::span<const uint8_t> bytes) {
             const auto beginning = reinterpret_cast<uintptr_t>(bytes.data());
             if (pointer < beginning || pointer - beginning >= bytes.size()) return false;
@@ -6558,6 +6559,25 @@ std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedPr
             (process.id == observedProcess || process.context == "u:r:system_server:s0")) {
             describeCode(process, cpu.pc, "pc-file");
             describeCode(process, cpu.x[30], "lr-file");
+            // Native AArch64 frame records contain the previous FP and the saved LR.
+            auto frame = cpu.x[29];
+            for (unsigned depth = 0; depth < 12 && frame >= cpu.sp && frame - cpu.sp < 8 * 1024 * 1024; ++depth) {
+                if (!frame || (frame & 15)) break;
+                const auto* segment = segmentAt(process, frame);
+                if (!segment || !(segment->flags & 4)) break;
+                const auto offset = frame - segment->address;
+                const auto size = segment->accessibleSize();
+                std::array<uint64_t, 2> record;
+                if (offset >= size || sizeof(record) > size - offset) break;
+                std::memcpy(record.data(), segment->data() + offset, sizeof(record));
+                const auto [previous, returnAddress] = record;
+                if (returnAddress < 4 || (returnAddress & 3)) break;
+                const auto caller = returnAddress - 4;
+                tasks << "\n    caller " << depth << " PC=0x" << std::hex << caller << std::dec;
+                describeCode(process, caller, "pc-file");
+                if (previous <= frame) break;
+                frame = previous;
+            }
         }
         tasks << '\n';
     }
