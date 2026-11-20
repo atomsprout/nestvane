@@ -149,7 +149,7 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
     struct NativeLoop {
         const uint8_t* entry = nullptr;
         uint64_t entries = 0, instructions = 0;
-    } dexAot, dexVerifierAot, artReturnAot, bionicFillAot, bionicCopyAot, fontScanAot;
+    } dexAot, dexVerifierAot, artReturnAot, artBitmapAot, bionicFillAot, bionicCopyAot, fontScanAot;
     const auto runNativeLoop = [&]<typename Loop>(NativeLoop& stats, const uint8_t* bytes) {
         if (cpu.pc % pageSize != Loop::fileOffset % pageSize || !androidLoopMatches(machine, bytes, Loop::words))
             return false;
@@ -179,7 +179,7 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
     uint64_t previousSnapshotRetired = 0, previousSnapshotAot = 0;
     const auto aotInstructions = [&] {
         return sha256AotInstructions + dexAot.instructions + dexVerifierAot.instructions + artReturnAot.instructions +
-               bionicFillAot.instructions + bionicCopyAot.instructions + fontScanAot.instructions;
+               artBitmapAot.instructions + bionicFillAot.instructions + bionicCopyAot.instructions + fontScanAot.instructions;
     };
     const auto appendRanking = [](std::ostream& out, const CodeSamples& histogram, size_t limit) {
         std::vector<std::pair<CodeLocation, uint64_t>> ranked(histogram.begin(), histogram.end());
@@ -207,6 +207,8 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
                 << ", guest instructions: " << dexVerifierAot.instructions << '\n'
                 << "  Android ART collector return AOT entries: " << artReturnAot.entries
                 << ", guest instructions: " << artReturnAot.instructions << '\n'
+                << "  Android ART collector bitmap AOT entries: " << artBitmapAot.entries
+                << ", guest instructions: " << artBitmapAot.instructions << '\n'
                 << "  Android Bionic fill AOT entries: " << bionicFillAot.entries
                 << ", guest instructions: " << bionicFillAot.instructions << '\n'
                 << "  Android Bionic copy AOT entries: " << bionicCopyAot.entries
@@ -364,6 +366,8 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
                 runNativeLoop.operator()<AndroidDexAsciiVerifierLoop>(dexVerifierAot, bytes)) continue;
             if (word == AndroidFontFamilyScan::words.front() &&
                 runNativeLoop.operator()<AndroidFontFamilyScan>(fontScanAot, bytes)) continue;
+            if (word == AndroidArtGcBitmap::words.front() &&
+                runNativeLoop.operator()<AndroidArtGcBitmap>(artBitmapAot, bytes)) continue;
             if (word == AndroidArtGcReturn::words.front() &&
                 runNativeLoop.operator()<AndroidArtGcReturn>(artReturnAot, bytes)) continue;
             if (word == AndroidBionicFillLoop::words.front() &&

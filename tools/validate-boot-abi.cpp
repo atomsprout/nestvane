@@ -265,6 +265,51 @@ int main() {
         assert(!Loop::execute(native, 16) && native.cpu == mutableCode);
     }
     {
+        using Block = AndroidArtGcBitmap;
+        constexpr uint64_t entry = 0x5b7c, data = 0x9000;
+        std::vector<uint8_t> code(sizeof(Block::words)), bytes(pageSize);
+        std::memcpy(code.data(), Block::words.data(), code.size());
+        const Image image{entry, {{entry, code, 5}, {data, bytes, 6}}, {}};
+        Machine native(image), reference(image);
+        for (unsigned example = 0; example < 256; ++example) {
+            CPU cpu;
+            cpu.pc = entry;
+            cpu.retired = example;
+            cpu.nzcv = example & 15;
+            cpu.x[8] = example % 5;
+            cpu.x[9] = data + 64;
+            cpu.x[10] = example;
+            cpu.x[11] = UINT64_MAX;
+            cpu.x[12] = UINT64_MAX - 1;
+            const auto address = cpu.x[9] + cpu.x[8] * 8;
+            const auto mask = uint64_t{1} << (example & 63);
+            const uint64_t bitmap = (example & 64) ? 0x55aa55aa55aa55aaULL | mask : 0x55aa55aa55aa55aaULL & ~mask;
+            assert(native.store64(address, bitmap) && reference.store64(address, bitmap));
+            cpu.exclusiveAddress = address;
+            cpu.exclusiveSize = 8;
+            native.cpu = reference.cpu = cpu;
+            const auto retired = Block::execute(native, 1);
+            assert(retired == ((bitmap & mask) ? Block::maxIterationInstructions : 0));
+            for (uint64_t i = 0; i < retired; ++i) {
+                const auto word = Block::words[(reference.cpu.pc - entry) / sizeof(uint32_t)];
+                const auto decoded = decode(word);
+                if (decoded.op == Op::unsupported) assert(executeStartupInstruction(reference, word));
+                else executeDecoded(reference, decoded);
+            }
+            assert(native.cpu == reference.cpu);
+            uint64_t nativeBitmap, referenceBitmap;
+            assert(native.load64(address, nativeBitmap) && reference.load64(address, referenceBitmap));
+            assert(nativeBitmap == referenceBitmap && nativeBitmap == bitmap);
+        }
+        native.cpu.pc = entry;
+        native.cpu.x[8] = 0;
+        native.cpu.x[9] = data;
+        native.cpu.x[10] = 1;
+        native.segments[1].flags = 0;
+        const auto initial = native.cpu;
+        assert(!Block::execute(native, 1) && native.cpu == initial);
+    }
+    {
         using Block = AndroidArtGcReturn;
         constexpr uint64_t entry = 0x4dcc, stack = 0x6000, tls = 0x8000;
         std::vector<uint8_t> code(sizeof(Block::words)), data(pageSize);

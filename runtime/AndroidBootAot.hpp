@@ -221,6 +221,35 @@ struct AndroidDexAsciiVerifierLoop {
     }
 };
 
+// Fast path for an already marked heap bitmap bit in the Android 17
+// copying collector. The interpreter handles first-time marks and faults.
+struct AndroidArtGcBitmap {
+    static constexpr std::string_view moduleSuffix = "/lib64/libart.so";
+    static constexpr uint64_t fileOffset = 0x835b7c;
+    static constexpr std::array<uint32_t, 9> words{
+        0x5280002b, 0xf868792c, 0x9aca216b, 0xea0c016a, 0x54000061,
+        0xaa0c016b, 0xf828792b, 0xf100015f, 0x1a9f07e0,
+    };
+    static constexpr uint64_t batchSize = 1, maxIterationInstructions = words.size() - 2;
+
+    static uint64_t execute(Machine& machine, uint64_t) {
+        auto& cpu = machine.cpu;
+        const auto address = cpu.x[9] + (cpu.x[8] << 3);
+        const uint64_t mask = uint64_t{1} << (cpu.x[10] & 63);
+        uint64_t bitmap;
+        if (!machine.load64(address, bitmap) || !(bitmap & mask)) return 0;
+
+        cpu.x[0] = 1;
+        cpu.x[10] = mask;
+        cpu.x[11] = mask;
+        cpu.x[12] = bitmap;
+        cpu.nzcv = (mask >> 63 ? 8 : 0) | 2;
+        cpu.pc += sizeof(words);
+        cpu.retired += maxIterationInstructions;
+        return maxIterationInstructions;
+    }
+};
+
 // The canary-checked return block of a frequently sampled Android 17 ART
 // collector routine. A bad canary or unreadable stack stays on the guest path.
 struct AndroidArtGcReturn {
