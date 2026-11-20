@@ -435,7 +435,7 @@ void ProbeLinux::mount(std::string path, std::span<const uint8_t> bytes) {
 }
 
 void ProbeLinux::alias(std::string path, std::string target) {
-    links.emplace(std::move(path), std::move(target));
+    links.emplace(std::move(path), Link{std::move(target), {}});
 }
 
 std::string ProbeLinux::absolutePath(std::string_view path) const {
@@ -484,7 +484,7 @@ std::optional<std::string> ProbeLinux::resolve(std::string_view path) const {
     if (path == "/proc/self/cwd") return current->process->workingDirectory;
     if (path == "/proc/self/exe" && !current->process->executable.empty())
         return current->process->executable;
-    if (auto found = links.find(backingPath(path)); found != links.end()) return found->second;
+    if (auto found = links.find(backingPath(path)); found != links.end()) return found->second.target;
     constexpr std::string_view fdPrefix = "/proc/self/fd/";
     if (!path.starts_with(fdPrefix)) return {};
     path.remove_prefix(fdPrefix.size());
@@ -3665,7 +3665,10 @@ bool ProbeLinux::fileCall(Machine& machine) {
             else if (!writablePath(logical)) x[0] = uint64_t(-30);
             else if (userId() != 0) x[0] = uint64_t(-13);
             else if (links.size() - ext4LinkCount >= 512) x[0] = uint64_t(-28);
-            else { links.emplace(backing, *target); x[0] = 0; }
+            else {
+                links.emplace(backing, Link{*target, current->fsCreateContext});
+                x[0] = 0;
+            }
             break;
         }
         case 38: case 276: // renameat / renameat2
@@ -4279,6 +4282,7 @@ bool ProbeLinux::fileCall(Machine& machine) {
             const bool removing = x[8] >= 14;
             std::optional<Descriptor> pathEntry;
             const Descriptor* entry = nullptr;
+            Link* link = nullptr;
             if (x[8] == 7 || x[8] == 16) {
                 if (descriptor == descriptors().end() || descriptor->second.pathOnly()) {
                     x[0] = uint64_t(-9);
@@ -4296,7 +4300,13 @@ bool ProbeLinux::fileCall(Machine& machine) {
                     x[0] = uint64_t(-13);
                     break;
                 }
-                pathEntry = find(backing, 0);
+                if (const auto found = links.find(backing);
+                    (x[8] == 6 || x[8] == 15) && found != links.end()) {
+                    link = &found->second;
+                    pathEntry.emplace(Descriptor{backing, {}, 0, Node::symbolicLink});
+                } else {
+                    pathEntry = find(backing, 0);
+                }
                 if (!pathEntry) { x[0] = uint64_t(-2); break; }
                 pathEntry->visiblePath = *logical;
                 entry = &*pathEntry;
@@ -4346,12 +4356,12 @@ bool ProbeLinux::fileCall(Machine& machine) {
                 auto& value = attributes[*name];
                 if (x[3]) value.assign(bytes, bytes + x[3]);
                 else value.clear();
-            } else if (entry->node == Node::directory) {
+            } else if (link || entry->node == Node::directory) {
                 const auto& visible = entry->visiblePath.empty() ? entry->path : entry->visiblePath;
                 if (!writablePath(visible)) { x[0] = uint64_t(-30); break; }
                 const auto directory = directories.find(entry->path);
-                if (directory == directories.end()) { x[0] = uint64_t(-95); break; }
-                auto& context = directory->second.securityContext;
+                if (!link && directory == directories.end()) { x[0] = uint64_t(-95); break; }
+                auto& context = link ? link->securityContext : directory->second.securityContext;
                 if (x[4] == 1 && !context.empty()) { x[0] = uint64_t(-17); break; }
                 if (x[4] == 2 && context.empty()) { x[0] = uint64_t(-61); break; }
                 std::string_view label = bytes
@@ -5458,6 +5468,7 @@ bool ProbeLinux::securityCall(Machine& machine) {
     const auto name = readPath(machine, x[1]);
     if (!name) { x[0] = uint64_t(-14); return true; }
     std::optional<Descriptor> fd;
+    const Link* link = nullptr;
     std::string logical;
     if (x[8] == 10) {
         const auto found = descriptors().find(uint32_t(x[0]));
@@ -5472,7 +5483,12 @@ bool ProbeLinux::securityCall(Machine& machine) {
         logical = *target;
         const auto backing = backingPath(logical);
         if (dataPath(backing) && !canAccessParent(backing, false)) { x[0] = uint64_t(-13); return true; }
-        fd = find(backing, 0);
+        if (const auto found = links.find(backing); x[8] == 9 && found != links.end()) {
+            link = &found->second;
+            fd.emplace(Descriptor{backing, {}, 0, Node::symbolicLink});
+        } else {
+            fd = find(backing, 0);
+        }
         if (!fd) { x[0] = uint64_t(-2); return true; }
     }
     std::span<const uint8_t> value;
@@ -5510,6 +5526,10 @@ bool ProbeLinux::securityCall(Machine& machine) {
         if (const auto transition = bootTransitions.find(logical); transition != bootTransitions.end()) {
             const auto& label = transition->second.file;
             value = {reinterpret_cast<const uint8_t*>(label.c_str()), label.size() + 1};
+        }
+        if (link && !link->securityContext.empty()) {
+            const auto& context = link->securityContext;
+            value = {reinterpret_cast<const uint8_t*>(context.c_str()), context.size() + 1};
         }
     }
     if (value.empty()) x[0] = uint64_t(-61);

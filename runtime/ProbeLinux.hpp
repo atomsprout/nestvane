@@ -174,7 +174,7 @@ private:
     uint64_t installSeccomp(Machine& machine, uint64_t address);
     bool enforceSeccomp(Machine& machine);
 
-    enum class Node { regular, temporary, directory, input, output, error, null, entropy, kernelLog, poller, event, inotify, signal, socket, keySocket, mountNamespace, pipeRead, pipeWrite, execLabel, fsCreateLabel, socketCreateLabel, securityInfo, securityCreate, securityAccess, securityValidate, loopControl, loopDevice, timer, ptyMaster, ptySlave, ueventTrigger, kernelSetting, binder, processHandle, cgroupProcs, ashmem, graphicsPipe, graphicsAddressSpace, touchDevice, bpfMap, bpfProgram, bpfBtf };
+    enum class Node { regular, temporary, directory, symbolicLink, input, output, error, null, entropy, kernelLog, poller, event, inotify, signal, socket, keySocket, mountNamespace, pipeRead, pipeWrite, execLabel, fsCreateLabel, socketCreateLabel, securityInfo, securityCreate, securityAccess, securityValidate, loopControl, loopDevice, timer, ptyMaster, ptySlave, ueventTrigger, kernelSetting, binder, processHandle, cgroupProcs, ashmem, graphicsPipe, graphicsAddressSpace, touchDevice, bpfMap, bpfProgram, bpfBtf };
     struct RecordLock {
         uint64_t owner, start, end;
         int16_t type;
@@ -688,7 +688,11 @@ private:
     std::map<std::string, const Ext4Node*, std::less<>> ext4Nodes;
     size_t ext4DirectoryCount = 0, ext4LinkCount = 0;
     std::map<std::string, std::span<const uint8_t>, std::less<>> files;
-    std::map<std::string, std::string, std::less<>> links;
+    struct Link {
+        std::string target;
+        std::string securityContext;
+    };
+    std::map<std::string, Link, std::less<>> links;
     struct Process {
         bool expeditedMembarrier = false;
         uint64_t id;

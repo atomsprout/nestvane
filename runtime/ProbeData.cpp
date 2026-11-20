@@ -126,9 +126,9 @@ void ProbeLinux::mountData(const std::string& databasePath) {
                                                         std::vector<uint8_t>(label.begin(), label.end()));
             loadedFiles.emplace(path, std::move(file));
             nextPersistentInode = std::max(nextPersistentInode, uint64_t(inode) + 1);
-        } else if (kind == 2 && !bytes.empty() && label.empty() && bytes.size() < 4096 &&
-                   bytes.find('\0') == std::string_view::npos) {
-            loadedLinks.emplace(path, bytes);
+        } else if (kind == 2 && !bytes.empty() && bytes.size() < 4096 &&
+                   bytes.find('\0') == std::string_view::npos && label.find('\0') == std::string_view::npos) {
+            loadedLinks.emplace(path, Link{std::string(bytes), std::string(label)});
         } else {
             throw std::runtime_error("invalid guest data record");
         }
@@ -245,9 +245,11 @@ bool ProbeLinux::syncData() {
                      std::span(file->storage->pages).first(file->storage->size), label) ||
                 !writeTimes(path, file->times)) return false;
         }
-        for (const auto& [path, target] : links) {
+        for (const auto& [path, link] : links) {
             if (dataPath(path) && !row(path, 2, 0, 0, 0, 0,
-                                     {reinterpret_cast<const uint8_t*>(target.data()), target.size()})) return false;
+                                     {reinterpret_cast<const uint8_t*>(link.target.data()), link.target.size()},
+                                     {reinterpret_cast<const uint8_t*>(link.securityContext.data()),
+                                      link.securityContext.size()})) return false;
         }
         return execute(database, "UPDATE state SET generation=generation+1 WHERE singleton=1");
     };
