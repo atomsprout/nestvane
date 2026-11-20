@@ -396,3 +396,5 @@
 - 采用新任务上限的 Mac 完整启动用 591 毫秒通过 `StartMediaProjectionManager`，随后达到框架阶段 480。快照记录 269 个活跃客体任务和 269 个跟踪项。
 - 验收镜像加入同版 Android 17 的原版 LatinIME 和产品分区 JNI 库。参考 Android 在 Editor 新建草稿中显示该输入法，进程映射确认使用同一原生库。实际验收镜像内两个文件与参考文件逐字节一致，未加入会自动安装和启动的冒烟 APK。真机软键盘、文件选择和安装仍待联测。
 - Mac 的原版框架在阶段 480 等待 FontManagerService。连续快照显示初始化线程停在 ARM64 调用 291（`statx`）。客体实现该接口，复用现有文件元数据，验证了相对路径、文件描述符、符号链接、同步标志和 Linux 错误码。同一 Bionic 探针在参考 Android 17 和 Mac 客体中核对原版字体配置的 `statx` 与 `fstat`，均通过。完整 FontManager 启动仍在复测。
+- 带 `statx` 的 Mac 完整启动越过 FontManagerService，原版 `system_server` 完成阶段 480 和 500，并进入包管理器就绪阶段。
+- iPhone 11 进程 8761 的原生「文件」选择器通过 UI 测试。三个 APK 位于「在我的 iPhone 上」的 `Nestvane Test APKs` 测试目录，从真机回读逐字节一致。实际点选 `Nestvane-Smoke.apk` 后，Nestvane 显示正在等待 Android 安装，请求已入队。包管理器的安装结果、Launcher 启动和跨重启验收仍待取得。
