@@ -106,6 +106,7 @@ private:
         bool binder = false;
         bool hostData = false;
         std::shared_ptr<const std::map<std::string, MountView, std::less<>>> obscuredMounts{};
+        uint64_t peerGroup = 0;
     };
     struct MountNamespace {
         uint64_t id = 1;
@@ -592,6 +593,7 @@ private:
     std::string backingPath(std::string_view path) const;
     static std::string backingPath(std::string_view path, const MountNamespace& mountNamespace);
     const MountView* mountFor(std::string_view path) const;
+    void setMountPropagation(MountView& mount, uint64_t propagation);
     uint64_t bindMount(std::string_view from, const std::string& to, bool recursive);
     uint64_t mountFilesystem(Machine& machine);
     uint64_t mountBinder(const std::string& path, uint64_t flags, std::string_view options);
@@ -777,6 +779,7 @@ private:
                          std::span<const std::string_view> permissions);
     uint64_t nextNamespace = 2;
     uint64_t nextMountBacking = 1;
+    uint64_t nextMountPeerGroup = 1;
     uint64_t nextInode = 65536;
     uint64_t nextFutexPiOrder = 1;
     uint32_t userId() const { return current->process->userIds[1]; }

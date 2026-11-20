@@ -531,7 +531,8 @@ void ProbeLinux::addBootTmpfs(std::string path, uint32_t mode, uint32_t gid, uin
     addDirectory(path, mode);
     directories.at(path).gid = gid;
     auto& group = *current->mountNamespace;
-    group.mounts.emplace(path, MountView{flags, mode, gid, group.rootPropagation, path});
+    auto& view = group.mounts.emplace(path, MountView{flags, mode, gid, 0, path}).first->second;
+    setMountPropagation(view, group.rootPropagation);
 }
 
 void ProbeLinux::addBootCgroups() {
@@ -587,6 +588,16 @@ bool ProbeLinux::writablePath(std::string_view path) const {
     return view && !(view->flags & 1);
 }
 
+void ProbeLinux::setMountPropagation(MountView& mount, uint64_t propagation) {
+    constexpr uint64_t shared = 0x100000; // MS_SHARED
+    mount.propagation = propagation;
+    if (propagation == shared) {
+        if (!mount.peerGroup) mount.peerGroup = nextMountPeerGroup++;
+    } else {
+        mount.peerGroup = 0;
+    }
+}
+
 uint64_t ProbeLinux::bindMount(std::string_view from, const std::string& to, bool recursive) {
     const auto source = backingPath(from);
     const auto dest = backingPath(to);
@@ -600,7 +611,7 @@ uint64_t ProbeLinux::bindMount(std::string_view from, const std::string& to, boo
     auto view = sourceMount ? *sourceMount : MountView{1, 0755};
     view.backing = source;
     if (const auto mode = directories.find(source); mode != directories.end()) view.mode = mode->second.mode;
-    view.propagation = propagation;
+    setMountPropagation(view, view.peerGroup ? view.propagation : propagation);
     view.covered.reset();
     view.obscuredMounts.reset();
     const auto overlay = [&](const std::string& path, MountView entry) {
@@ -608,6 +619,16 @@ uint64_t ProbeLinux::bindMount(std::string_view from, const std::string& to, boo
             entry.covered = std::make_shared<MountView>(old->second);
         mounts.insert_or_assign(path, std::move(entry));
     };
+    std::vector<std::string> destinations{to};
+    if (targetMount && targetMount->peerGroup) {
+        for (const auto& [mountpoint, peer] : mounts) {
+            if (&peer == targetMount || peer.peerGroup != targetMount->peerGroup ||
+                !inside(dest, peer.backing)) continue;
+            auto path = mountpoint + dest.substr(peer.backing.size());
+            // A private overmount can hide the receiving directory in an otherwise shared tree.
+            if (mountFor(path) == &peer) destinations.push_back(std::move(path));
+        }
+    }
     std::vector<std::pair<std::string, MountView>> children;
     if (recursive) {
         const std::string prefix = std::string(from) + "/";
@@ -615,12 +636,14 @@ uint64_t ProbeLinux::bindMount(std::string_view from, const std::string& to, boo
             auto entry = it->second;
             entry.covered.reset();
             entry.obscuredMounts.reset();
-            children.emplace_back(to + it->first.substr(from.size()), std::move(entry));
+            children.emplace_back(it->first.substr(from.size()), std::move(entry));
         }
     }
-    if (mounts.size() + children.size() + 1 > 128) return uint64_t(-28);
-    overlay(to, std::move(view));
-    for (auto& [path, entry] : children) overlay(path, std::move(entry));
+    if (mounts.size() + destinations.size() * (children.size() + 1) > 128) return uint64_t(-28);
+    for (const auto& path : destinations) {
+        overlay(path, view);
+        for (const auto& [relative, entry] : children) overlay(path + relative, entry);
+    }
     ++current->mountNamespace->generation;
     wakePollers();
     return 0;
@@ -647,10 +670,10 @@ uint64_t ProbeLinux::mountFilesystem(Machine& machine) {
         const auto mount = mounts.find(path);
         if (mount == mounts.end() && path != "/") return invalid;
         if (path == "/") group.rootPropagation = propagation;
-        else mount->second.propagation = propagation;
+        else setMountPropagation(mount->second, propagation);
         if (x[3] & 0x4000) { // MS_REC
             for (auto& [mountpoint, entry] : mounts) {
-                if (path == "/" || inside(mountpoint, path)) entry.propagation = propagation;
+                if (path == "/" || inside(mountpoint, path)) setMountPropagation(entry, propagation);
             }
         }
         ++current->mountNamespace->generation;
@@ -700,7 +723,8 @@ uint64_t ProbeLinux::mountFilesystem(Machine& machine) {
     std::string backing("/\0", 2);
     backing += std::to_string(nextMountBacking++);
     directories.emplace(backing, Directory{mode, uid, gid});
-    MountView view{x[3], mode, gid, inherited, std::move(backing), {}, bpf ? "bpf" : ""};
+    MountView view{x[3], mode, gid, 0, std::move(backing), {}, bpf ? "bpf" : ""};
+    setMountPropagation(view, inherited);
     auto child = mounts.lower_bound(path + "/");
     if (child != mounts.end() && inside(child->first, path)) {
         // A new filesystem hides mounts attached to the previous directory tree.
@@ -729,8 +753,9 @@ uint64_t ProbeLinux::mountBinder(const std::string& path, uint64_t flags, std::s
     for (const auto name : {"binder", "hwbinder", "vndbinder"}) {
         binderDevices.emplace(backing + "/" + name, BinderDevice{{0600}, nextBinderMinor++});
     }
-    group.mounts.emplace(path, MountView{flags | 8, 0755, 0, inherited, std::move(backing),
-                                         {}, "binder", nullptr, true});
+    auto& view = group.mounts.emplace(path, MountView{flags | 8, 0755, 0, 0, std::move(backing),
+                                                       {}, "binder", nullptr, true}).first->second;
+    setMountPropagation(view, inherited);
     ++group.generation;
     wakePollers();
     return 0;
@@ -794,8 +819,9 @@ uint64_t ProbeLinux::mountExt4(const std::string& device, const std::string& pat
     const auto& root = volume.image.nodes.at("");
     const auto* parent = mountFor(path);
     const auto propagation = parent ? parent->propagation : group.rootPropagation;
-    group.mounts.emplace(path, MountView{flags, uint32_t(root.mode & 0777), root.gid,
-                                        propagation, volume.backing, {}, device, &volume.image});
+    auto& view = group.mounts.emplace(path, MountView{flags, uint32_t(root.mode & 0777), root.gid,
+                                                       0, volume.backing, {}, device, &volume.image}).first->second;
+    setMountPropagation(view, propagation);
     ++group.generation;
     wakePollers();
     return 0;

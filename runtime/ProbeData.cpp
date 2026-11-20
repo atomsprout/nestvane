@@ -179,7 +179,8 @@ void ProbeLinux::mountData(const std::string& databasePath) {
     auto& group = *current->mountNamespace;
     const auto& directory = directories.at("/data");
     auto& view = group.mounts.emplace("/data", MountView{6, directory.mode, directory.gid,
-                                                         group.rootPropagation, "/data"}).first->second;
+                                                         0, "/data"}).first->second;
+    setMountPropagation(view, group.rootPropagation);
     view.hostData = true;
     dataDatabase = database.release();
     ++group.generation;

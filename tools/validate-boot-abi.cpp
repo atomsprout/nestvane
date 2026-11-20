@@ -3848,6 +3848,49 @@ int main() {
     }
 
     {
+        ProbeLinux guest(1, 0);
+        guest.addBootTmpfs("/data", 0771, 1000, 6);
+        guest.addBootTmpfs("/mirror", 0700, 0, 14);
+        guest.addDirectory("/data/data", 0771);
+        guest.addDirectory("/data/user", 0771);
+        guest.addDirectory("/data/user/0", 0771);
+        guest.addDirectory("/data/user/1", 0771);
+        guest.addDirectory("/mirror/ce", 0700);
+        constexpr std::array<uint8_t, 1> marker{42};
+        guest.mount("/data/data/marker", marker);
+        Machine task(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
+        const auto invoke = [&](uint64_t number, std::array<uint64_t, 5> args) {
+            std::ranges::copy(args, task.cpu.x.begin());
+            task.cpu.x[8] = number;
+            assert(guest.syscall(task));
+            return task.cpu.x[0];
+        };
+        const auto path = [&](uint64_t offset, const auto& text) {
+            assert(task.write(base + offset, {reinterpret_cast<const uint8_t*>(text), sizeof(text)}));
+            return base + offset;
+        };
+        const auto dataMount = path(0, "/data");
+        const auto data = path(32, "/data/data");
+        const auto users = path(64, "/data/user");
+        const auto userZero = path(96, "/data/user/0");
+        const auto mirror = path(128, "/mirror/ce");
+        const auto zeroMarker = path(160, "/mirror/ce/0/marker");
+        const auto userOne = path(192, "/data/user/1");
+        const auto oneMarker = path(224, "/mirror/ce/1/marker");
+        constexpr auto atCwd = uint32_t(-100);
+        assert(invoke(40, {0, dataMount, 0, 0x100000}) == 0); // MS_SHARED
+        assert(invoke(40, {users, mirror, 0, 0x5000}) == 0);
+        assert(invoke(56, {atCwd, zeroMarker, 0}) == uint64_t(-2));
+        assert(invoke(40, {data, userZero, 0, 0x1000}) == 0);
+        const auto mirrored = invoke(56, {atCwd, zeroMarker, 0});
+        assert(mirrored < 256 && invoke(63, {mirrored, base + 512, 1}) == 1);
+        assert(*task.read(base + 512, 1, 4) == marker.front());
+        assert(invoke(40, {0, mirror, 0, 0x40000}) == 0); // MS_PRIVATE
+        assert(invoke(40, {data, userOne, 0, 0x1000}) == 0);
+        assert(invoke(56, {atCwd, oneMarker, 0}) == uint64_t(-2));
+    }
+
+    {
         ProbeLinux mounts(1, 0);
         mounts.addBootTmpfs("/data", 0771, 1000, 6);
         mounts.addDirectory("/data/data", 0771);
