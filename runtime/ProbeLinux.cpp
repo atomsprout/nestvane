@@ -7080,6 +7080,7 @@ std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedPr
     std::set<const SharedFileBytes*> countedShared;
     std::set<const uint8_t*> countedDense;
     size_t privateBytes = 0, sharedBytes = 0;
+    size_t anonymousDenseBytes = 0, fileDenseBytes = 0;
     const auto countShared = [&](const SharedFileBytes* storage) {
         if (storage && countedShared.insert(storage).second) sharedBytes += storage->pages.capacity();
     };
@@ -7090,8 +7091,12 @@ std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedPr
         if (thread.wait == Wait::exited || !countedProcesses.insert(process.id).second) continue;
         activeProcesses.push_back(&process);
         for (const auto& area : process.id == processId() ? machine.segments : process.segments) {
-            if (!area.bytes.empty() && countedDense.insert(area.bytes.data()).second)
-                privateBytes += area.bytes.capacity();
+            if (!area.bytes.empty() && countedDense.insert(area.bytes.data()).second) {
+                const auto capacity = area.bytes.capacity();
+                privateBytes += capacity;
+                if (area.anonymous) anonymousDenseBytes += capacity;
+                else if (area.fileMapping) fileDenseBytes += capacity;
+            }
             countShared(area.shared.get());
         }
         for (const auto& [_, fd] : process.descriptors) {
@@ -7100,11 +7105,24 @@ std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedPr
             if (fd.binder) countShared(fd.binder->mapped.get());
         }
     }
-    for (const auto& [_, file] : writableFiles) countShared(file->storage.get());
+    size_t persistentFiles = 0, transientFiles = 0, pinnedObjects = 0;
+    for (const auto& [_, file] : writableFiles) {
+        countShared(file->storage.get());
+        if (file->pinnedBpfObject()) ++pinnedObjects;
+        else if (file->persistent) ++persistentFiles;
+        else ++transientFiles;
+    }
     for (const auto& file : memoryFiles) countShared(file.lock().get());
     tasks << "  guest memory bytes: anonymous dirty=" << anonymousBudget->dirty
           << " dense private capacity=" << privateBytes << " shared capacity=" << sharedBytes
           << " anonymous reserved=" << anonymousBudget->reserved << '/' << anonymousBudget->reservedLimit << '\n';
+    tasks << "  guest dense mapping bytes: anonymous=" << anonymousDenseBytes
+          << " file backed=" << fileDenseBytes
+          << " other=" << privateBytes - anonymousDenseBytes - fileDenseBytes << '\n';
+    tasks << "  guest filesystem entries: persistent files=" << persistentFiles << '/' << maxWritableFiles
+          << " transient files=" << transientFiles << '/' << maxWritableFiles
+          << " bpffs pins=" << pinnedObjects << '/' << maxBpfPins
+          << " directories=" << directories.size() - ext4DirectoryCount << '/' << maxGuestDirectories << '\n';
     const auto top = activeProcesses.begin() + std::min<size_t>(activeProcesses.size(), 8);
     std::partial_sort(activeProcesses.begin(), top, activeProcesses.end(),
                       [](const Process* a, const Process* b) { return a->cpuTime > b->cpuTime; });

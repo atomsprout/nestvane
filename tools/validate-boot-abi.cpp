@@ -3448,6 +3448,9 @@ int main() {
         assert(invoke(35, {uint32_t(-100), base, 0}) == 0);
         assert(createFile("/test/replacement") < 256);
         assert(createFile("/test/overflow") == uint64_t(-28));
+        const auto report = storage.workerReport(task);
+        assert(report.find("persistent files=1024/1024 transient files=1024/1024 bpffs pins=2048/2048") !=
+               std::string::npos);
     }
     {
         constexpr auto attr = base + 96, code = base + 256, license = base + 280, address = base + 384;
