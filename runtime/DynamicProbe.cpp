@@ -136,6 +136,17 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
                  << " ms, " << cpu.retired << " guest instructions, "
                  << syscallCount << " guest syscalls\n";
         snapshot << linux.workerReport(machine, linux.processId());
+        constexpr size_t androidTailLimit = 16 * 1024;
+        const std::string_view android = linux.recentAndroidOutput.empty()
+            ? linux.androidOutput : linux.recentAndroidOutput;
+        if (!android.empty()) {
+            size_t start = android.size() > androidTailLimit ? android.size() - androidTailLimit : 0;
+            if (start) {
+                if (const auto lineBreak = android.find('\n', start - 1); lineBreak != std::string_view::npos &&
+                    lineBreak + 1 < android.size()) start = lineBreak + 1;
+            }
+            snapshot << "  recent guest Android log:\n" << android.substr(start);
+        }
         liveSnapshot(snapshot.str());
         nextSnapshot = now + snapshotInterval;
         scheduleDeadline = std::min(deadline, nextSnapshot);
