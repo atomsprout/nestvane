@@ -1170,6 +1170,50 @@ std::optional<ProbeLinux::Descriptor> ProbeLinux::find(std::string_view path, ui
     }
     if (path == "/sys/fs/selinux/context" && (!currentContextTransitions.empty() || !appDataLabelTypes.empty() || !appTransitionDomains.empty()))
         return Descriptor{std::string(path), {}, flags, Node::securityValidate};
+    if (path.size() > sizeof("/proc//status") - 1 && path.starts_with("/proc/") && path.ends_with("/status")) {
+        auto task = path.substr(6);
+        task.remove_suffix(7);
+        uint64_t tid = 0;
+        if (task == "self") {
+            tid = processId();
+        } else if (task == "thread-self") {
+            tid = currentTid;
+        } else {
+            const auto [end, error] = std::from_chars(task.begin(), task.end(), tid);
+            if (error != std::errc{} || end != task.end() || !tid) return {};
+        }
+        const auto subject = threads.find(tid);
+        if (subject == threads.end() || subject->second.wait == Wait::exited) return {};
+        const auto& thread = subject->second;
+        const auto& process = *thread.process;
+        // Android mounts procfs with hidepid=invisible and grants the readproc group access.
+        constexpr uint32_t readproc = 3009;
+        constexpr uint64_t capSysPtrace = 1ULL << 19;
+        const auto& reader = *current->process;
+        const bool mayReadOtherProcesses = userId() == 0 || (reader.effectiveCaps & capSysPtrace) ||
+            groupId() == readproc || std::ranges::find(reader.groups, readproc) != reader.groups.end();
+        if (&process != &reader && !mayReadOtherProcesses &&
+            !std::ranges::all_of(process.userIds, [&](uint32_t uid) { return uid == userId(); })) return {};
+        const auto state = thread.wait == Wait::none ? "R (running)" :
+            thread.wait == Wait::suspended ? "T (stopped)" : "S (sleeping)";
+        std::ostringstream listing;
+        listing << "Name:\t" << reinterpret_cast<const char*>(thread.name.data()) << '\n'
+                << "State:\t" << state << '\n'
+                << "Tgid:\t" << process.id << '\n'
+                << "Pid:\t" << tid << '\n'
+                << "PPid:\t" << process.parent << '\n'
+                << "Uid:\t" << process.userIds[0] << '\t' << process.userIds[1] << '\t'
+                << process.userIds[2] << '\t' << process.userIds[1] << '\n'
+                << "Gid:\t" << process.groupIds[0] << '\t' << process.groupIds[1] << '\t'
+                << process.groupIds[2] << '\t' << process.groupIds[1] << '\n'
+                << "Groups:\t";
+        for (const auto group : process.groups) listing << group << ' ';
+        listing << '\n';
+        Descriptor entry{std::string(path), {}, flags, Node::regular};
+        entry.snapshot = std::make_shared<std::string>(std::move(listing).str());
+        entry.bytes = {reinterpret_cast<const uint8_t*>(entry.snapshot->data()), entry.snapshot->size()};
+        return entry;
+    }
     if (path == "/proc/self/cmdline") {
         Descriptor entry{std::string(path), {}, flags, Node::regular};
         entry.snapshot = std::make_shared<std::string>(current->process->commandLine);
