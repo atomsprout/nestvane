@@ -553,3 +553,4 @@
 - 正式 APK 就绪脚本从空数据卷运行后，Mac 上的原版包管理器安装了 Smoke，落盘的 8,619 字节与输入一致。ActivityTaskManager 记录 MainActivity Displayed（67,243 毫秒）。另一轮从已安装数据卷启动后，Mac 的 GuestTouch 向 640×960 Smoke 画面的 Increment 提交点按，画面由 Count: 0 变为 Could not save count，尚无 state.xml。
 - Android 17 参考系统的 DocumentsUI 和 Downloads 运行在各自的应用数据隔离挂载空间中，/data/user/0 为指向 /data/data 的符号链接。客体 mkdirat 现先解析父路径链接并检查搜索权限，保留对最终符号链接的 EEXIST。回归用相同挂载覆盖和符号链接结构复现创建目录失败，修复后以应用身份创建了目录和数据库文件。实机与完整启动复测待验证。
 - 同一个应用目录的保存流程会用到备份文件重命名和删除。客体 renameat 和 unlinkat 现在通过父路径链接进入应用挂载，允许在同一 bind mount 内重命名，同时维持跨挂载的 EXDEV。宿主 ABI 回归覆盖隔离挂载中的文件创建、改名、经另一挂载查看和删除。
+- Mac 联测确认目录修复后的原版 DocumentsUI 创建了 16,384 字节的 search_history.db，原版 Downloads 创建了 24,576 字节的 downloads.db。从持久化数据卷导出两份数据库，PRAGMA quick_check 均返回 ok。已安装的 Smoke 从数据卷启动并收到了 GuestTouch 点按，落盘 state.xml 的 count 从缺省值变为 1。该轮的部分宿主合成帧只在左上角呈现缩小内容，计数以数据卷为准。已用包含该值的校验通过的 SQLite 副本开始重启复测。
