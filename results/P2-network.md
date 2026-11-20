@@ -538,3 +538,4 @@
 - 更新 Binder 后，Mac 同版采样确认开机动画图层已从原版 SurfaceFlinger 中移除。动画退出后的首次延时快照中，HWC 合成列表包含 Settings 的 FallbackHome。下一次快照中 QuickstepLauncher 已 resumed，但仍无窗口焦点或可见合成图层。尚未读回 Launcher 首帧。
 - 在当前运行时中使用可控测试图案作为摄像头源，原版 ARM64 环境内的 Goldfish 相机探针读取了 1,228,800 字节 RGBA 和 460,800 字节 YUV420。宿主记录到租用、两种帧格式的请求及最终释放。该轮未接入物理相机，也未测试 Camera2 API 或 JPEG。
 - Binder 修复版的两次合成快照最初为 powerMode=On。后一份快照中 WindowManager 的 mAwake、mScreenOnEarly 和 mScreenOnFully 均为 false，原版 SurfaceFlinger 为 powerMode=Off，正在输出 ColorFade。开机广播后实际读回的 640×960 帧为黑色。新对照在临时镜像内使用标准 PowerManager 唤醒及 Settings 屏幕超时命令，增加电源快照，并让 Launcher 独立取得前台，以区分休眠和首帧停滞。正式客体的电源设置暂未修改。
+- 8 GiB 稀疏地址额度的完整 Mac 联测在安装 Smoke 后记录实际保留 4,982,554,624 字节、脏页 211,927,040 字节，越过旧的 4 GiB 上限。随后原版 SystemServer 的 UserBackupManagerService 在处理 PACKAGE_ADDED 时访问空的 DelayedRestoreJournal，导致系统进程退出。该轮未见旧的 fork EAGAIN，也没有确认 Smoke Activity 执行。已通过 SQLite quick_check 核对包含已安装 Smoke 的数据库副本，使用无自动安装动作的临时镜像重启，并延迟启动已安装的应用，以隔离安装广播和应用启动。
