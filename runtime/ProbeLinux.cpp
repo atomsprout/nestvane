@@ -30,6 +30,7 @@ constexpr uint64_t lowMappingFloor = 0x10000;
 constexpr uint64_t mappingLimit = 0x20'0000'0000; // 128 GiB guest arena; includes 24 randomized page bits.
 constexpr uint64_t maxGuestFileBytes = 2 * 1024 * 1024;
 constexpr size_t maxWritableFiles = 1024;
+constexpr size_t maxBpfPins = 2048;
 // Leave space for boot-created directories alongside a restored /data tree.
 constexpr size_t maxGuestDirectories = 2048;
 // Even the reference system_server alone exceeds 256 threads after boot.
@@ -1837,7 +1838,7 @@ uint64_t ProbeLinux::open(const Machine& machine, const std::string& path, uint3
         const bool persistent = dataPath(pathname);
         if (writableFiles.size() >= maxWritableFiles &&
             size_t(std::count_if(writableFiles.begin(), writableFiles.end(), [persistent](const auto& entry) {
-                return entry.second->persistent == persistent;
+                return !entry.second->pinnedBpfObject() && entry.second->persistent == persistent;
             })) >= maxWritableFiles) return uint64_t(-28);
         auto file = std::make_shared<WritableFile>();
         file->inode = nextInode++;
@@ -9518,7 +9519,14 @@ bool ProbeLinux::syscall(Machine& machine) {
                 if (!writablePath(*target)) { x[0] = uint64_t(-30); break; }
                 if (existing || resolve(*target)) { x[0] = uint64_t(-17); break; }
                 if (!directoryExists(backing.substr(0, backing.rfind('/')))) { x[0] = uint64_t(-2); break; }
-                if (writableFiles.size() >= 2 * maxWritableFiles) { x[0] = uint64_t(-28); break; }
+                // bpffs stores references to kernel objects, independently of regular file quotas.
+                if (writableFiles.size() >= maxBpfPins &&
+                    size_t(std::count_if(writableFiles.begin(), writableFiles.end(), [](const auto& entry) {
+                        return entry.second->pinnedBpfObject();
+                    })) >= maxBpfPins) {
+                    x[0] = uint64_t(-28);
+                    break;
+                }
                 auto inode = std::make_shared<WritableFile>();
                 inode->inode = nextInode++;
                 inode->mode = 0600 & ~current->process->umask;

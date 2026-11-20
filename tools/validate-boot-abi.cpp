@@ -3395,6 +3395,61 @@ int main() {
         assert(call(57, {tokenRoot}) == 0);
     }
     {
+        // A restored /data tree and boot tmpfs entries must leave room for Android to pin BPF objects.
+        ProbeLinux storage(1, 0);
+        storage.mountData(":memory:");
+        storage.addDirectory("/test", 0755);
+        Machine task(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
+        const auto invoke = [&](uint64_t number, std::array<uint64_t, 6> args) {
+            std::ranges::copy(args, task.cpu.x.begin());
+            task.cpu.x[8] = number;
+            assert(storage.syscall(task));
+            return task.cpu.x[0];
+        };
+        const auto writePath = [&](uint64_t address, const std::string& path) {
+            assert(task.write(address, {reinterpret_cast<const uint8_t*>(path.c_str()), path.size() + 1}));
+        };
+        constexpr auto type = base + 128, target = base + 256, attr = base + 512;
+        writePath(type, "tmpfs");
+        writePath(target, "/test");
+        assert(invoke(40, {type, target, type, 14}) == 0);
+        writePath(type, "bpf");
+        writePath(target, "/sys/fs/bpf");
+        assert(invoke(40, {type, target, type, 14}) == 0);
+        const auto createFile = [&](const std::string& path) {
+            writePath(base, path);
+            const auto fd = invoke(56, {uint32_t(-100), base, 0xc1, 0600});
+            if (fd < 256) assert(invoke(57, {fd}) == 0);
+            return fd;
+        };
+        for (unsigned i = 0; i < 1024; ++i) {
+            assert(createFile("/data/f" + std::to_string(i)) < 256);
+            assert(createFile("/test/f" + std::to_string(i)) < 256);
+        }
+        assert(createFile("/data/overflow") == uint64_t(-28));
+        assert(createFile("/test/overflow") == uint64_t(-28));
+
+        constexpr std::array<uint32_t, 5> createMap{2, 4, 8, 2, 0};
+        assert(task.write(attr, {reinterpret_cast<const uint8_t*>(createMap.data()), sizeof(createMap)}));
+        const auto map = invoke(280, {0, attr, sizeof(createMap)});
+        assert(map < 256);
+        const auto pin = [&](const std::string& name) {
+            writePath(target, "/sys/fs/bpf/" + name);
+            assert(task.store64(attr, target) && task.store64(attr + 8, map));
+            return invoke(280, {6, attr, 16});
+        };
+        for (unsigned i = 0; i < 2048; ++i) assert(pin("map" + std::to_string(i)) == 0);
+        assert(pin("overflow") == uint64_t(-28));
+        writePath(target, "/sys/fs/bpf/map0");
+        assert(invoke(35, {uint32_t(-100), target, 0}) == 0);
+        assert(pin("overflow") == 0);
+
+        writePath(base, "/test/f0");
+        assert(invoke(35, {uint32_t(-100), base, 0}) == 0);
+        assert(createFile("/test/replacement") < 256);
+        assert(createFile("/test/overflow") == uint64_t(-28));
+    }
+    {
         constexpr auto attr = base + 96, code = base + 256, license = base + 280, address = base + 384;
         constexpr auto message = base + 512, buffers = base + 600, packet = base + 640;
         put(license, "Apache 2.0");

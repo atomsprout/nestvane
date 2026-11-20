@@ -651,3 +651,5 @@
 - 同一 iPhone 14 进程按 Android Back 退出相机页面，再打开 Camera2，实体后摄重新获取并显示预览，XCUITest 通过。另一轮重新打开实体预览后将 Nestvane 切到 iOS 后台，确认系统 Camera 位于前台、Nestvane 在后台且系统快门可用，XCUITest 通过。系统 Camera 未拍照。
 - iPhone 14 全屏版进程 1441 从原版 Launcher 触控打开 OpenCalc 3.2.0，按计算器的 7、×、8、= 键后，实际屏幕显示 56，XCUITest 通过。导出的客体数据库 quick_check 通过，OpenCalc 应用偏好记录 HISTORY_ELEMENTS 含同一条 7×8 → 56。跨重启历史回读仍待验证。
 - Mac 使用已安装 ScriptWidget 官方 APK 的数据重启。BOOTING、RUNNING_LOCKED 时找不到 Launcher Activity，RUNNING_UNLOCKING 时开始可解析，RUNNING_UNLOCKED 后由 Android 的标准活动管理器启动。日志记录 ScriptWidget MainActivity 的 Displayed，客体导出画面显示 My Widgets 和模板列表。该画面中模板预览仍在加载，真机安装和模板渲染尚待验证。
+- iPhone 14 进程 1479 连续冷启动，原版 QuickstepLauncher 在 957.928 秒报告 Displayed，UIKit 在 958.019 秒呈现 578 × 1064 客体画面。经 iOS「文件」导入官方 ScriptWidget APK，Android 返回安装成功。结束该进程后备份的客体数据库通过 SQLite quick_check，正式安装路径中的 28,533,228 字节与官方 APK 的 SHA-256 一致。Launcher 上拉进入了桌面长按菜单，后续 XCUITest 测试进程退出，未确认 ScriptWidget 首屏。
+- 以上述数据重新启动 iPhone 14 进程 1498，47.151 秒时 Android bpfloader 因固定 test_ringbuf 返回 ENOSPC 而中止。Mac 使用同一客体数据副本复现同一错误。bpffs 对象现有独立条目上限。宿主回归填满 /data 和临时普通文件的条目后仍可固定 BPF 对象，达到 bpffs 自身上限会拒绝新条目，释放后可重新固定。该回归在前一版运行时于首次固定时报错，新版通过。
