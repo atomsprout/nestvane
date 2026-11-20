@@ -485,3 +485,4 @@
 - ACL 修复版在 Mac 绘制了原版 Settings FallbackHome，继续完成 `prepareUserData-0` 与 `finishUserUnlocked-0`。客体数据库包含 `/data/media/0` 的 44 字节默认 ACL。随后 Launcher 主线程持续在 Binder 同步调用中等待，绘制线程已回到事件轮询。Mac 在 1,260 秒诊断期限结束时未报告 Launcher 已绘制，`sys.boot_completed` 未验证。
 - 同版在 iPhone 11 进程 9700 于 824.097 秒完成用户 0 数据准备，850.346 秒完成 79 个包的数据核对，873.982 秒完成 `finishUserUnlocked-0`。960.077 秒时 Launcher 主线程仍在 `libhwui` 执行，系统报告还有 395,763,880 字节内存余量。XCTest 截图 runner 两次在建立连接前退出，尚未取得 Launcher 屏幕截图或交互证据。
 - Binder 同步等待报告增加目标进程、事务码、正在处理事务的线程和目标进程队列长度。宿主双进程回归覆盖排队中和被服务线程接收后的快照，iPhoneOS Release 构建通过。
+- iPhone 11 的 ACL 修复版在 1,140.077 秒快照中，原版 Launcher 主线程同样停在 Binder ioctl。此时宿主物理内存为 1,861,705,640 字节，余量为 338,206,808 字节。通过显式诊断开关可随现有快照导出 App 当前正在显示的客体合成帧，方便在 XCTest 无法连接时核对画面。iPhoneOS Release 构建通过。

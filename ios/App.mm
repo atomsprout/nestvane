@@ -78,6 +78,12 @@ std::jthread StartDisplayReader(const nestvane::GfxstreamSession& renderer, bool
         }
     });
 }
+void WriteGuestDisplayPNG(NSData* png, NSURL* destination) {
+    NSError* error = nil;
+    if (!png || ![png writeToURL:destination options:NSDataWritingAtomic error:&error])
+        NSLog(@"Unable to export display capture: %@", error);
+}
+
 void AppendMemoryUsage(std::string& report) {
     rusage usage{};
     if (getrusage(RUSAGE_SELF, &usage) == 0)
@@ -413,10 +419,21 @@ static NSString* ThermalState() {
                 exportReport(watchdogURL, std::string(threads));
             };
             NSURL* liveURL = [documents URLByAppendingPathComponent:@"guest-live.txt"];
+            const BOOL captureLiveFrame = [NSProcessInfo.processInfo.environment[@"NESTVANE_CAPTURE_LIVE_FRAME"]
+                isEqualToString:@"1"];
+            NSString* liveFrameName = [NSString stringWithFormat:@"display-live-%d.png",
+                NSProcessInfo.processInfo.processIdentifier];
+            NSURL* liveFrameURL = [documents URLByAppendingPathComponent:liveFrameName];
             const auto exportLiveSnapshot = [&](std::string_view threads) {
                 std::string report(threads);
                 AppendMemoryUsage(report);
                 exportReport(liveURL, report);
+                if (captureLiveFrame) {
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        if (UIImage* frame = self.display.image)
+                            WriteGuestDisplayPNG(UIImagePNGRepresentation(frame), liveFrameURL);
+                    });
+                }
             };
             const auto runAndroid = [&]() -> nestvane::DynamicReport {
                 if (!ready) {
@@ -462,9 +479,7 @@ static NSString* ThermalState() {
                         NSData* png = UIImagePNGRepresentation(frame);
                         const auto save = [&](NSString* filename) {
                             NSURL* capture = [documents URLByAppendingPathComponent:filename];
-                            NSError* error = nil;
-                            if (!png || ![png writeToURL:capture options:NSDataWritingAtomic error:&error])
-                                NSLog(@"Unable to export %@: %@", filename, error);
+                            WriteGuestDisplayPNG(png, capture);
                         };
                         if (firstFrame) save(@"display-first-frame.png");
                         if (launcher) {
