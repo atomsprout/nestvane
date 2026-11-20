@@ -157,7 +157,7 @@ private:
         uint32_t futexMask = 0, ioPriority = 0;
         int nice = 0;
         std::optional<std::chrono::steady_clock::time_point> deadline;
-        std::optional<std::chrono::nanoseconds> realtimeFutexDeadline;
+        std::optional<std::chrono::nanoseconds> realtimeWaitDeadline;
         std::optional<std::chrono::steady_clock::time_point> hostEventRetry;
         std::optional<std::chrono::steady_clock::time_point> nextSliceAfter;
         uint64_t signalMask = 0;

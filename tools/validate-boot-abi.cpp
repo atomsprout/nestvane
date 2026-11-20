@@ -2769,6 +2769,20 @@ int main() {
         assert(!linux.schedule(machine, steady_clock::now() + milliseconds(10)) && linux.blocked());
         assert(linux.schedule(machine, steady_clock::now() + seconds(2)) && !linux.blocked());
         assert(call(101, {base, 0}) == 0);
+        assert(machine.store64(base, 0) && machine.store64(base + 8, 1'000'000'000));
+        assert(call(115, {1, 1, base, 0}) == uint64_t(-22) && !linux.blocked());
+        assert(call(115, {1, 1, 1, 0}) == uint64_t(-14) && !linux.blocked());
+        assert(machine.store64(base, 0) && machine.store64(base + 8, 0));
+        assert(call(115, {1, 1, base, 1}) == 0 && !linux.blocked());
+        assert(call(115, {1, 2, base, 0}) == uint64_t(-22) && !linux.blocked());
+        assert(call(113, {1, base}) == 0);
+        const auto future = load(base + 8) + 100'000'000;
+        assert(machine.store64(base, load(base) + future / 1'000'000'000));
+        assert(machine.store64(base + 8, future % 1'000'000'000));
+        assert(call(115, {1, 1, base, 1}) == 1 && linux.blocked());
+        assert(!linux.schedule(machine, steady_clock::now() + milliseconds(5)) && linux.blocked());
+        assert(linux.schedule(machine, steady_clock::now() + seconds(2)) && !linux.blocked());
+        assert(call(115, {1, 1, base, 1}) == 0);
         machine.cpu.retired += 4096;
     }
     {
@@ -3874,7 +3888,8 @@ int main() {
         assert(guest.syscall(task) && task.cpu.x[0] == 0 && dumpable(3) == 0);
     }
     for (const auto [wait, restart] : {std::pair{98, 0ULL}, std::pair{98, 0x10000000ULL},
-                                      std::pair{137, 0x10000000ULL}, std::pair{133, 0x10000000ULL}}) {
+                                      std::pair{137, 0x10000000ULL}, std::pair{133, 0x10000000ULL},
+                                      std::pair{115, 0x10000000ULL}}) {
         ProbeLinux guest(1, 0);
         constexpr auto handler = base + 0x200, blockedPc = base + 0x300;
         constexpr auto word = base + 0x400, action = base + 0x440, parentTid = base + 0x480;
@@ -3905,6 +3920,9 @@ int main() {
             // An unrelated handler interrupts rt_sigtimedwait even with SA_RESTART.
             assert(task.store64(word, 1ULL << (12 - 1)));
             assert(invoke(137, {word, 0, 0, 8}) == word);
+        } else if (wait == 115) {
+            assert(task.store64(word, 5) && task.store64(word + 8, 0));
+            assert(invoke(115, {1, 0, word, word + 16}) == 1);
         } else {
             assert(invoke(98, {word, 0x80, 0}) == word);
         }
@@ -3921,6 +3939,11 @@ int main() {
         const bool restarts = wait == 98 && restart;
         assert(task.cpu.pc == blockedPc + (restarts ? 0 : 4));
         assert(task.cpu.x[0] == (restarts ? word : uint64_t(-4)));
+        if (wait == 115) {
+            uint64_t seconds = 0, nanos = 0;
+            assert(task.load64(word + 16, seconds) && task.load64(word + 24, nanos));
+            assert(seconds > 0 && seconds < 5 && nanos < 1'000'000'000);
+        }
         if (wait == 133) {
             assert(invoke(135, {0, 0, word, 8}) == 0);
             uint64_t mask = 0;

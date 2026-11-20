@@ -5228,8 +5228,9 @@ void ProbeLinux::setRealtime(std::chrono::nanoseconds value) {
     if (offset == realtimeOffset) return;
     realtimeOffset = offset;
     for (auto& [_, task] : threads) {
-        if ((task.wait != Wait::futex && task.wait != Wait::futexPi) || !task.realtimeFutexDeadline) continue;
-        const auto delay = std::max(nanoseconds{}, *task.realtimeFutexDeadline - value);
+        if (!task.realtimeWaitDeadline ||
+            (task.wait != Wait::futex && task.wait != Wait::futexPi && task.wait != Wait::sleep)) continue;
+        const auto delay = std::max(nanoseconds{}, *task.realtimeWaitDeadline - value);
         task.deadline = now + std::min(delay, duration_cast<nanoseconds>(steady_clock::time_point::max() - now));
     }
     bool notify = false;
@@ -5339,6 +5340,7 @@ bool ProbeLinux::switchThread(Machine& machine, std::chrono::steady_clock::time_
                         state.x[0] = uint64_t(futexWait ? -110 : -11);
                         thread.signalWaitMask = 0;
                         thread.deadline.reset();
+                        thread.realtimeWaitDeadline.reset();
                         thread.futexBacking.reset();
                         thread.futexAddressSpace.reset();
                     }
@@ -6376,7 +6378,7 @@ bool ProbeLinux::futexPi(Machine& machine, uint64_t op, uint64_t address,
             next->futexBacking.reset();
             next->futexAddressSpace.reset();
             next->deadline.reset();
-            next->realtimeFutexDeadline.reset();
+            next->realtimeWaitDeadline.reset();
             next->saved.pc += 4;
             next->saved.x[0] = 0;
         }
@@ -6391,14 +6393,14 @@ bool ProbeLinux::futexPi(Machine& machine, uint64_t op, uint64_t address,
     }
     if (tryLock) { x[0] = uint64_t(-11); return true; }
     current->deadline.reset();
-    current->realtimeFutexDeadline.reset();
+    current->realtimeWaitDeadline.reset();
     if (timeout) {
         const auto now = steady_clock::now();
         const auto epoch = wallClock ? realtimeAt(now) : duration_cast<nanoseconds>(now.time_since_epoch());
         if (*timeout <= epoch) { x[0] = uint64_t(-110); return true; }
         const auto delay = std::min(*timeout - epoch, duration_cast<nanoseconds>(steady_clock::time_point::max() - now));
         current->deadline = now + duration_cast<steady_clock::duration>(delay);
-        if (wallClock) current->realtimeFutexDeadline = *timeout;
+        if (wallClock) current->realtimeWaitDeadline = *timeout;
     }
     current->wait = Wait::futexPi;
     current->futexAddress = address;
@@ -6472,7 +6474,7 @@ bool ProbeLinux::futex(Machine& machine) {
     uint32_t value = 0;
     std::memcpy(&value, bytes, sizeof(value));
     if (value != uint32_t(x[2])) { x[0] = uint64_t(-11); return true; }
-    current->realtimeFutexDeadline.reset();
+    current->realtimeWaitDeadline.reset();
     if (x[3]) {
         using namespace std::chrono;
         std::array<int64_t, 2> timeout{};
@@ -6491,7 +6493,7 @@ bool ProbeLinux::futex(Machine& machine) {
             const bool wallClock = x[1] & realtime;
             const auto epoch = wallClock ? realtimeAt(now) : duration_cast<nanoseconds>(now.time_since_epoch());
             if (remaining <= epoch) { x[0] = uint64_t(-110); return true; }
-            if (wallClock) current->realtimeFutexDeadline = remaining;
+            if (wallClock) current->realtimeWaitDeadline = remaining;
             remaining -= epoch;
         }
         if (!remaining.count()) { x[0] = uint64_t(-110); return true; }
@@ -7488,13 +7490,24 @@ void ProbeLinux::deliverPendingCaughtSignal(Machine& machine) {
             ? (!cpu.x[3] || futexOp == 9)
             : interrupted == Wait::poll && (syscall == 63 || syscall == 64 || syscall == 206 || syscall == 207);
         if (!(flags & saRestart) || !restartable) {
+            uint64_t error = uint64_t(-4); // EINTR
+            if (interrupted == Wait::sleep && thread.deadline) {
+                const auto remainingAddress = syscall == 101 ? cpu.x[1] : (cpu.x[1] & 1) ? 0 : cpu.x[3];
+                if (remainingAddress) {
+                    using namespace std::chrono;
+                    const auto time = std::max(nanoseconds{}, duration_cast<nanoseconds>(
+                        *thread.deadline - steady_clock::now()));
+                    const std::array<int64_t, 2> remaining{time.count() / 1'000'000'000, time.count() % 1'000'000'000};
+                    if (!writeGuest(machine, remainingAddress, remaining)) error = uint64_t(-14);
+                }
+            }
             cpu.pc += 4;
-            cpu.x[0] = uint64_t(-4); // EINTR
+            cpu.x[0] = error;
         }
         thread.deadline.reset();
         if (interrupted == Wait::signal) thread.signalWaitMask = 0;
         thread.hostEventRetry.reset();
-        thread.realtimeFutexDeadline.reset();
+        thread.realtimeWaitDeadline.reset();
         thread.futexBacking.reset();
         thread.futexAddressSpace.reset();
         thread.waitingBinder.reset();
@@ -10036,18 +10049,34 @@ bool ProbeLinux::syscall(Machine& machine) {
         }
         case 73: return poll(machine); // ppoll
         case 98: return futex(machine);
-        case 101: { // nanosleep
+        case 101: case 115: { // nanosleep / clock_nanosleep
             using namespace std::chrono;
             const auto now = steady_clock::now();
+            const bool explicitClock = number == 115;
+            constexpr uint32_t realtime = 0, monotonic = 1, boottime = 7, absoluteFlag = 1;
             if (!current->deadline) {
+                const auto clock = explicitClock ? uint32_t(x[0]) : monotonic;
+                const auto flags = explicitClock ? uint32_t(x[1]) : 0;
+                if (flags & ~absoluteFlag || clock == 3 || clock > 11) { x[0] = invalid; break; }
+                if (clock != realtime && clock != monotonic && clock != boottime) {
+                    x[0] = uint64_t(-95);
+                    break;
+                }
                 std::array<int64_t, 2> timeout{};
-                std::vector<uint8_t> dataScratch;
-                const auto* data = machine.read(x[0], sizeof(timeout), 4, dataScratch);
-                if (!data) { x[0] = uint64_t(-14); break; }
-                std::memcpy(timeout.data(), data, sizeof(timeout));
+                if (!machine.readInto(x[explicitClock ? 2 : 0],
+                        {reinterpret_cast<uint8_t*>(timeout.data()), sizeof timeout})) {
+                    x[0] = uint64_t(-14);
+                    break;
+                }
                 if (timeout[0] < 0 || timeout[1] < 0 || timeout[1] >= 1'000'000'000) { x[0] = invalid; break; }
-                if (timeout[0] > 3600) return false;
-                current->deadline = now + seconds(timeout[0]) + nanoseconds(timeout[1]);
+                auto delay = timeout[0] > (INT64_MAX - timeout[1]) / 1'000'000'000
+                    ? nanoseconds::max() : seconds(timeout[0]) + nanoseconds(timeout[1]);
+                if (flags & absoluteFlag) {
+                    const auto epoch = clock == realtime ? realtimeAt(now) : duration_cast<nanoseconds>(now.time_since_epoch());
+                    if (clock == realtime) current->realtimeWaitDeadline = delay;
+                    delay = std::max(nanoseconds{}, delay - epoch);
+                }
+                current->deadline = now + std::min(delay, duration_cast<nanoseconds>(steady_clock::time_point::max() - now));
             }
             if (*current->deadline > now) {
                 current->wait = Wait::sleep;
@@ -10055,6 +10084,7 @@ bool ProbeLinux::syscall(Machine& machine) {
                 return true;
             }
             current->deadline.reset();
+            current->realtimeWaitDeadline.reset();
             x[0] = 0;
             break;
         }
@@ -10779,7 +10809,7 @@ bool ProbeLinux::syscall(Machine& machine) {
                 (!waiting && !masked && !fatalResend && !caught)) return false;
             if (scheduleHandler && target.wait != Wait::none && target.wait != Wait::poll &&
                 target.wait != Wait::futex && target.wait != Wait::signal && target.wait != Wait::signalSuspend &&
-                target.wait != Wait::suspended) return false;
+                target.wait != Wait::sleep && target.wait != Wait::suspended) return false;
             if (signal >= 32 && target.pendingSignals.size() >= 1024) { x[0] = uint64_t(-11); break; }
             info[0] = signal;
             if (!queued) {
