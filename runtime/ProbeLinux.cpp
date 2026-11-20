@@ -8772,7 +8772,7 @@ bool ProbeLinux::syscall(Machine& machine) {
                 break;
             }
             if (descriptor == descriptors().end()) { x[0] = uint64_t(-9); break; }
-            if (x[1] == 0x8913 || x[1] == 0x8914 || x[1] == 0x8921 || x[1] == 0x8933) {
+            if (x[1] == 0x8910 || x[1] == 0x8913 || x[1] == 0x8914 || x[1] == 0x8921 || x[1] == 0x8933) {
                 if (!descriptor->second.socket) { x[0] = uint64_t(-25); break; }
                 struct Request {
                     std::array<char, 16> name;
@@ -8782,6 +8782,14 @@ bool ProbeLinux::syscall(Machine& machine) {
                 Request input{};
                 if (!machine.readInto(x[2], {reinterpret_cast<uint8_t*>(&input), sizeof(input)})) {
                     x[0] = uint64_t(-14);
+                    break;
+                }
+                if (x[1] == 0x8910) { // SIOCGIFNAME
+                    uint32_t index = 0;
+                    std::memcpy(&index, input.value.data(), sizeof(index));
+                    if (index != guestLoopbackIndex) { x[0] = uint64_t(-19); break; }
+                    constexpr std::array<char, 16> loopbackName{'l', 'o'};
+                    x[0] = writeGuest(machine, x[2], loopbackName) ? 0 : uint64_t(-14);
                     break;
                 }
                 auto name = std::string_view(input.name.data(), input.name.size());

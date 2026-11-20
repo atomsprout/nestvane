@@ -2846,6 +2846,11 @@ int main() {
         assert(task.load64(attr + 16, field) && field == 0x49);
         assert(invoke(29, {stream, 0x8933, attr}) == 0);
         assert(task.load64(attr + 16, field) && field == 1);
+        assert(write(attr, uint64_t{0}) && invoke(29, {stream, 0x8910, attr}) == 0);
+        constexpr std::array<char, 16> loopbackName{'l', 'o'};
+        assert(std::memcmp(task.read(attr, loopbackName.size(), 4), loopbackName.data(), loopbackName.size()) == 0);
+        assert(write(attr + 16, uint32_t{0}) && invoke(29, {stream, 0x8910, attr}) == uint64_t(-19));
+        assert(invoke(29, {stream, 0x8910, attr + pageSize}) == uint64_t(-14));
         assert(invoke(29, {stream, 0x8921, attr}) == 0);
         assert(task.load64(attr + 16, field) && field == 65536);
         assert(write(attr + 16, uint16_t(8)) && invoke(29, {stream, 0x8914, attr}) == 0);
