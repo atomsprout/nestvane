@@ -393,3 +393,5 @@
 - 保留原客体数据的 iPhone 11 覆盖安装验证中，新进程 8755 使用带 Gatekeeper 和工作目录修复的集成镜像。原版 SurfaceFlinger 在 71.244 秒启动，宿主在 108.614 秒呈现 640×960 的 Android 开机动画。225 秒时客体仍在运行并已进入 Zygote 类预加载。此轮未记录可交互的 Launcher。
 - Mac 在原版 PackageManager 启动期间采样，取指路径占主执行线程的 78/671 个样本。对内存映射的只读 ELF 代码，取指直接使用已核对执行权限和范围的映射索引。相同 Android 17 镜像从空数据库各执行 24 亿条客体指令，修改前两轮为 36.45、35.52 秒，修改后为 33.63、34.39 秒。宿主回归覆盖映射边界、执行权限变更及可写代码更新。此数据来自 Mac，完整 iPhone 启动收益待测。
 - Mac 完整启动用原版 Gatekeeper 越过 `StartBiometricService`（616 毫秒），随后在 `MediaProjectionManagerService` 创建线程时收到 `EAGAIN`。同版参考 Android 的 `system_server` 本身有 275 个线程。客体将总任务上限从 256 提至 1024，并在进程整组退出时回收同组任务。宿主回归连续两轮填满任务表、验证超限并回收。由原版 Bionic 驱动的测试，修改前创建到第 182 个线程后由 clone 返回 `EAGAIN`，修改后创建并回收全部 320 个线程。iPhoneOS Release 构建通过，整机启动仍在复测。
+- 采用新任务上限的 Mac 完整启动用 591 毫秒通过 `StartMediaProjectionManager`，随后达到框架阶段 480。快照记录 269 个活跃客体任务和 269 个跟踪项。
+- 验收镜像加入同版 Android 17 的原版 LatinIME 和产品分区 JNI 库。参考 Android 在 Editor 新建草稿中显示该输入法，进程映射确认使用同一原生库。实际验收镜像内两个文件与参考文件逐字节一致，未加入会自动安装和启动的冒烟 APK。真机软键盘、文件选择和安装仍待联测。

@@ -20,6 +20,7 @@ FRAMEWORK_APPS = (
     "com.android.documentsui",
     "com.android.externalstorage",
     "com.android.inputdevices",
+    "com.android.inputmethod.latin",
     "com.android.keychain",
     "com.android.launcher3",
     "com.android.packageinstaller",
@@ -33,6 +34,7 @@ FRAMEWORK_APPS = (
 )
 
 FRAMEWORK_APP_APEXES = ("com.android.extservices", "com.android.mediaprovider", "com.android.permission")
+LATIN_IME_LIBRARY = "/product/lib64/libjni_latinime.so"
 TETHERING_APEX = "/system/apex/com.android.tethering.apex"
 TETHERING_LOADER = "nestvane-metadata/tethering-netbpfload.elf"
 
@@ -56,6 +58,14 @@ def copy_framework_apps(adb, remote, active_modules, guest):
         with ZipFile(local) as apk:
             if "AndroidManifest.xml" not in apk.namelist():
                 raise SystemExit(f"Invalid factory APK: {path}")
+    # The factory keyboard loads its JNI library from the product namespace.
+    keyboard_library = guest / LATIN_IME_LIBRARY.lstrip("/")
+    keyboard_library.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(adb + ["pull", LATIN_IME_LIBRARY, str(keyboard_library)], check=True)
+    with keyboard_library.open("rb") as library:
+        header = library.read(20)
+    if header[:6] != b"\x7fELF\x02\x01" or int.from_bytes(header[18:20], "little") != 183:
+        raise SystemExit(f"Expected an ARM64 ELF for {LATIN_IME_LIBRARY}")
     for module in FRAMEWORK_APP_APEXES:
         path = active_modules.get(module, "")
         if not re.fullmatch(r"/system/apex/[A-Za-z0-9_.-]+\.apex", path):
