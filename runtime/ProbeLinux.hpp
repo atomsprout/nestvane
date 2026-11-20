@@ -634,7 +634,8 @@ private:
     static std::string mountList(const MountNamespace& group);
     uint64_t writableAllocation() const;
     uint64_t statFilesystem(Machine& machine, uint64_t address, std::string_view path) const;
-    static constexpr uint32_t descriptorCapacity = 4096, defaultDescriptorLimit = 1024;
+    static constexpr uint32_t descriptorCapacity = 512 * 1024, defaultDescriptorLimit = 1024;
+    static constexpr uint32_t resourceObjectCapacity = 4096;
     uint32_t descriptorLimit() const;
     uint32_t freeDescriptor(uint32_t minimum = 0) const;
     uint64_t recordLock(Machine& machine, const Descriptor& fd);

@@ -94,6 +94,33 @@ int main() {
         decision("vold_service", '0');
     }
     {
+        ProbeLinux guest(1, 0);
+        constexpr uint64_t base = 0x2000, limits = base + 0x20;
+        Machine task(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
+        const auto call = [&](uint64_t number, std::array<uint64_t, 6> args) {
+            std::copy(args.begin(), args.end(), task.cpu.x.begin());
+            task.cpu.x[8] = number;
+            assert(guest.syscall(task));
+            return task.cpu.x[0];
+        };
+        assert(task.store64(limits, 32768) && task.store64(limits + 8, 524288));
+        assert(call(164, {7, limits}) == 0); // Android init's early-init nofile limits.
+        const auto child = call(220, {0x1200011, 0, 0, 0, base + 0x40});
+        assert(child > 1 && guest.schedule(task) && guest.processId() == child);
+        assert(call(163, {7, limits}) == 0);
+        uint64_t soft = 0, hard = 0;
+        assert(task.load64(limits, soft) && task.load64(limits + 8, hard) && soft == 32768 && hard == 524288);
+        assert(call(25, {0, 1030, 32767}) == 32767);
+        assert(call(24, {0, 32768, 0}) == uint64_t(-9));
+        assert(call(57, {32767}) == 0);
+        assert(task.store64(limits, hard));
+        assert(call(164, {7, limits}) == 0);
+        assert(call(25, {0, 1030, 524287}) == 524287);
+        assert(call(24, {0, 524288, 0}) == uint64_t(-9));
+        assert(task.store64(limits + 8, hard + 1));
+        assert(call(164, {7, limits}) == uint64_t(-1));
+    }
+    {
         using Result = GuestApkInbox::Result;
         GuestApkInbox inbox;
         std::vector<Result> outcomes;

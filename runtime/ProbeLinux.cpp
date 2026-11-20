@@ -2148,7 +2148,7 @@ std::shared_ptr<ProbeLinux::GraphicsRegion> ProbeLinux::allocateGraphicsRegion(u
         backing.memoryFile = true;
         backing.storage = {region, &region->storage};
         if (resize(backing, size)) return {};
-        if (memoryFiles.size() >= descriptorCapacity) return {};
+        if (memoryFiles.size() >= resourceObjectCapacity) return {};
         memoryFiles.push_back(backing.storage);
         graphicsRegions.insert_or_assign(offset, region);
         return region;
@@ -2200,7 +2200,7 @@ uint64_t ProbeLinux::graphicsAddressIoctl(Machine& machine, const Descriptor& fd
             if (!candidate || candidate->released) return uint64_t(-6);
             const auto position = request.offset - candidate->offset;
             if (position > candidate->storage.size || request.size > candidate->storage.size - position) return invalid;
-            if (device.claims.size() >= descriptorCapacity) return uint64_t(-28);
+            if (device.claims.size() >= resourceObjectCapacity) return uint64_t(-28);
             if (!writeGuest(machine, x[2], request)) return uint64_t(-14);
             device.claims.emplace(request.offset, GraphicsAddressSpace::Claim{candidate, request.size});
             return 0;
@@ -2725,7 +2725,7 @@ uint64_t ProbeLinux::bindNetlink(const std::shared_ptr<SocketState>& endpoint, u
     }
     if (groups && endpoint->protocol != 0) return uint64_t(-95);
     std::erase_if(netlinkPorts, [](const auto& item) { return item.second.expired(); });
-    if (netlinkPorts.size() >= descriptorCapacity) return uint64_t(-28);
+    if (netlinkPorts.size() >= resourceObjectCapacity) return uint64_t(-28);
     const auto used = [&](uint32_t id) { return netlinkPorts.contains({endpoint->protocol, id}); };
     if (port && used(port)) return uint64_t(-98);
     if (!port) {
@@ -4620,7 +4620,7 @@ uint64_t ProbeLinux::map(Machine& machine) {
             if ((x[2] & 2) && !(fd.flags & 3)) return uint64_t(-13);
             if (!region.allocated) {
                 std::erase_if(memoryFiles, [](const auto& file) { return file.expired(); });
-                if (memoryFiles.size() >= descriptorCapacity) return uint64_t(-23);
+                if (memoryFiles.size() >= resourceObjectCapacity) return uint64_t(-23);
                 if (const auto error = resize(region.file, region.size); error) return error;
                 memoryFiles.push_back(region.file.storage);
                 region.allocated = true;
@@ -9494,7 +9494,7 @@ bool ProbeLinux::syscall(Machine& machine) {
             const auto fd = freeDescriptor();
             if (fd == descriptorCapacity) { x[0] = uint64_t(-24); break; }
             std::erase_if(memoryFiles, [](const auto& file) { return file.expired(); });
-            if (memoryFiles.size() >= descriptorCapacity) { x[0] = uint64_t(-23); break; }
+            if (memoryFiles.size() >= resourceObjectCapacity) { x[0] = uint64_t(-23); break; }
             auto file = std::make_shared<WritableFile>();
             file->inode = nextInode++;
             file->mode = 0777;
