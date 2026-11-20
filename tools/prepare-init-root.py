@@ -432,6 +432,11 @@ def collect(serial, readelf, destination, small_art_heap):
         manifest = root / "nestvane-metadata" / "selinux-process-transition.txt"
         manifest.parent.mkdir(parents=True)
         manifest.write_text("".join(transitions))
+        # Keep the policy interface version with the access decisions from the same kernel.
+        policy_version = int(shell("cat", "/sys/fs/selinux/policyvers"))
+        if not 1 <= policy_version <= 255:
+            raise SystemExit("Unexpected reference SELinux policy version")
+        (manifest.parent / "selinux-policyvers.txt").write_text(f"{policy_version}\n")
         # Connectivity checks these APEX and bpffs labels before it starts.
         clat = "/apex/com.android.tethering/bin/for-system"
         bpf = "/sys/fs/bpf"

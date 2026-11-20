@@ -5643,6 +5643,16 @@ std::string ProbeLinux::newFileContext(std::string_view path) const {
     return unlabeledFile;
 }
 
+bool ProbeLinux::loadSelinuxPolicyVersion(std::string_view manifest) {
+    if (manifest.ends_with('\n')) manifest.remove_suffix(1);
+    if (accessClasses.empty() || manifest.empty()) return false;
+    unsigned version = 0;
+    const auto [end, error] = std::from_chars(manifest.data(), manifest.data() + manifest.size(), version);
+    if (error != std::errc{} || end != manifest.data() + manifest.size() || !version || version > 255)
+        return false;
+    return kernelFiles.emplace("/sys/fs/selinux/policyvers", std::to_string(version)).second;
+}
+
 bool ProbeLinux::loadFsCreatePolicy(std::string_view manifest) {
     constexpr std::string_view permissions[] = {"setfscreate", "setsockcreate"};
     std::istringstream header{std::string(manifest.substr(0, manifest.find('\n')))};

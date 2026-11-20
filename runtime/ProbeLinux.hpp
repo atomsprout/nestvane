@@ -74,6 +74,7 @@ struct ProbeLinux {
     bool loadServicePolicy(std::string_view manifest, bool hardware);
     bool loadKeystorePolicy(std::string_view manifest, bool key = false);
     bool loadFsCreatePolicy(std::string_view manifest);
+    bool loadSelinuxPolicyVersion(std::string_view manifest);
     bool loadPackageRelabelPolicy(std::string_view manifest, bool directory);
     bool loadSeappContexts(std::string_view rules);
     bool loadAppTransitionDomains(std::string_view domains);

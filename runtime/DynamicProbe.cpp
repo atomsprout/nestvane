@@ -670,6 +670,11 @@ service nestvane-apk-install /system/bin/nestvane-apk-install
             if (!linux.loadKeystorePolicy({reinterpret_cast<const char*>(bytes.data()), bytes.size()}, key))
                 throw std::runtime_error("invalid reference SELinux Keystore decisions");
         }
+        if (const auto profile = files.find("/nestvane-metadata/selinux-policyvers.txt"); profile != files.end()) {
+            const auto bytes = profile->second.bytes();
+            if (!linux.loadSelinuxPolicyVersion({reinterpret_cast<const char*>(bytes.data()), bytes.size()}))
+                throw std::runtime_error("invalid reference SELinux policy version");
+        }
         if (const auto inputs = files.find("/nestvane-metadata/runtime-links.txt"); inputs != files.end()) {
             const auto bytes = inputs->second.bytes();
             std::istringstream manifest(std::string(bytes.begin(), bytes.end()));

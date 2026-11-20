@@ -6195,6 +6195,17 @@ int main() {
         "2 19 30\n"
         "u:r:init:s0 u:r:init:s0 20040000 ffffffff 0 ffffffff 1 0\n"
         "u:r:shell:s0 u:r:shell:s0 0 ffffffff 0 ffffffff 1 0\n"));
+    assert(!linux.loadSelinuxPolicyVersion("33 32\n"));
+    assert(!linux.loadSelinuxPolicyVersion("0\n"));
+    assert(linux.loadSelinuxPolicyVersion("33\n"));
+    assert(!linux.loadSelinuxPolicyVersion("34\n"));
+    put(base + 0x320, "/sys/fs/selinux/policyvers");
+    const auto policyVersion = call(56, {uint32_t(-100), base + 0x320, 0});
+    assert(policyVersion < 256 && call(63, {policyVersion, base + 0x360, 4}) == 2);
+    assert(std::memcmp(machine.read(base + 0x360, 2, 4), "33", 2) == 0);
+    assert(call(57, {policyVersion}) == 0);
+    assert(call(56, {uint32_t(-100), base + 0x320, 1}) == uint64_t(-30));
+
     put(base + 0x320, "/proc/thread-self/attr/sockcreate");
     constexpr char zygoteContext[] = "u:r:zygote:s0";
     put(base + 0x360, zygoteContext);
