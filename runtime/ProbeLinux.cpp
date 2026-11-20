@@ -601,7 +601,8 @@ uint64_t ProbeLinux::bindMount(std::string_view from, const std::string& to, boo
     view.backing = source;
     if (const auto mode = directories.find(source); mode != directories.end()) view.mode = mode->second.mode;
     view.propagation = propagation;
-    view.covered = {};
+    view.covered.reset();
+    view.obscuredMounts.reset();
     const auto overlay = [&](const std::string& path, MountView entry) {
         if (auto old = mounts.find(path); old != mounts.end())
             entry.covered = std::make_shared<MountView>(old->second);
@@ -612,7 +613,8 @@ uint64_t ProbeLinux::bindMount(std::string_view from, const std::string& to, boo
         const std::string prefix = std::string(from) + "/";
         for (auto it = mounts.lower_bound(prefix); it != mounts.end() && inside(it->first, from); ++it) {
             auto entry = it->second;
-            entry.covered = {};
+            entry.covered.reset();
+            entry.obscuredMounts.reset();
             children.emplace_back(to + it->first.substr(from.size()), std::move(entry));
         }
     }
@@ -697,7 +699,16 @@ uint64_t ProbeLinux::mountFilesystem(Machine& machine) {
     std::string backing("/\0", 2);
     backing += std::to_string(nextMountBacking++);
     directories.emplace(backing, Directory{mode});
-    mounts.emplace(path, MountView{x[3], mode, 0, inherited, std::move(backing), {}, bpf ? "bpf" : ""});
+    MountView view{x[3], mode, 0, inherited, std::move(backing), {}, bpf ? "bpf" : ""};
+    auto child = mounts.lower_bound(path + "/");
+    if (child != mounts.end() && inside(child->first, path)) {
+        // A new filesystem hides mounts attached to the previous directory tree.
+        auto obscured = std::make_shared<decltype(group.mounts)>();
+        while (child != mounts.end() && inside(child->first, path))
+            obscured->insert(mounts.extract(child++));
+        view.obscuredMounts = std::move(obscured);
+    }
+    mounts.emplace(path, std::move(view));
     ++current->mountNamespace->generation;
     wakePollers();
     return 0;
@@ -809,8 +820,10 @@ uint64_t ProbeLinux::unmountFilesystem(Machine& machine) {
     if ((nested != mounts.end() && inside(nested->first, visible)) ||
         (!found->second.ext4 && directory != directories.end() && inside(directory->first, backing)) ||
         (temporary != writableFiles.end() && inside(temporary->first, backing))) return uint64_t(-16);
+    const auto obscured = found->second.obscuredMounts;
     if (auto covered = found->second.covered) found->second = *covered;
     else mounts.erase(found);
+    if (obscured) mounts.insert(obscured->begin(), obscured->end());
     ++current->mountNamespace->generation;
     wakePollers();
     return 0;
@@ -1011,6 +1024,7 @@ uint64_t ProbeLinux::stat(Machine& machine, uint64_t address, const Descriptor& 
         return result(0, 5, 0020666, 0, 0, fd.path == "/dev/random" ? 0x108 : 0x109);
     if (kernelFiles.contains(fd.path))
         return result(fd.bytes.size(), std::hash<std::string>{}(fd.path) | 1, 0100444);
+    if (fd.node == Node::keySocket) return result(0, 3, 0140777);
     if (fd.node == Node::socket) {
         const auto bound = socketPaths.find(fd.path);
         if (bound != socketPaths.end()) {
@@ -2798,6 +2812,25 @@ bool ProbeLinux::socketCall(Machine& machine) {
     };
     switch (x[8]) {
         case 198: case 199: { // socket, socketpair
+            if (x[8] == 198 && x[0] == 15) { // AF_KEY
+                constexpr uint64_t closeOnExec = 0x80000, nonblock = 0x800, typeMask = 15;
+                constexpr uint64_t capNetAdmin = 1ULL << 12;
+                const std::string_view context = current->process->context;
+                if (x[1] & ~(closeOnExec | nonblock | typeMask)) { x[0] = invalid; break; }
+                if (!(current->process->effectiveCaps & capNetAdmin)) { x[0] = uint64_t(-1); break; }
+                if (context != "u:r:system_server:s0" && context != "u:r:network_stack:s0" &&
+                    context != "u:r:netd:s0") { x[0] = uint64_t(-13); break; }
+                if ((x[1] & typeMask) != 3) { x[0] = uint64_t(-94); break; } // SOCK_RAW
+                if (x[2] != 2) { x[0] = uint64_t(-93); break; } // PF_KEY_V2
+                const auto key = freeDescriptor();
+                if (key == descriptorCapacity) { x[0] = uint64_t(-24); break; }
+                // Android closes this socket for an RCU grace period after switching BPF maps.
+                // Guest BPF readers run synchronously on this worker, so close is already ordered after them.
+                Descriptor entry{"socket:[key]", {}, uint32_t(x[1] & (closeOnExec | nonblock)) | 2, Node::keySocket};
+                descriptors().emplace(key, std::move(entry));
+                x[0] = key;
+                break;
+            }
             const bool kernelNetlink = x[8] == 198 && x[0] == 16;
             const bool uevent = kernelNetlink && x[2] == 15; // NETLINK_KOBJECT_UEVENT
             const bool netfilter = kernelNetlink && x[2] == 12; // NETLINK_NETFILTER

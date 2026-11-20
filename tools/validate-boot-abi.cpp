@@ -1472,7 +1472,18 @@ int main() {
             request(type, netlinkRequest | netlinkDump, {});
             assert(readNetlink<int32_t>(receive(netlinkDone, netlinkMulti), 16) == 0);
         }
+        constexpr uint64_t keyFamily = 15, keyProtocol = 2, raw = 3, closeOnExec = 0x80000;
+        routing.setBootContext("u:r:shell:s0");
+        assert(syscall(198, {keyFamily, raw, keyProtocol}) == uint64_t(-13));
+        routing.setBootContext("u:r:system_server:s0");
+        assert(syscall(198, {keyFamily, 2, keyProtocol}) == uint64_t(-94));
+        assert(syscall(198, {keyFamily, raw, 0}) == uint64_t(-93));
+        const auto key = syscall(198, {keyFamily, raw | closeOnExec, keyProtocol});
+        assert(key < 256 && syscall(25, {key, 1}) == 1);
+        assert(syscall(57, {key}) == 0 && syscall(57, {key}) == uint64_t(-9));
+
         assert(syscall(146, {1000}) == 0);
+        assert(syscall(198, {keyFamily, raw, keyProtocol}) == uint64_t(-1));
         acknowledge(0x1d, 0, {}, -1);
         assert(syscall(57, {route}) == 0);
     }
@@ -3785,6 +3796,49 @@ int main() {
     assert(call(56, {uint32_t(-100), base + 160, 0}) == uint64_t(-2));
     assert(call(268, {secondNamespace, 0x20000}) == 0);
     assert(call(56, {uint32_t(-100), base + 160, 0}) < 256);
+
+    {
+        ProbeLinux mounts(1, 0);
+        mounts.addBootTmpfs("/data", 0771, 1000, 6);
+        mounts.addDirectory("/data/data", 0771);
+        mounts.addDirectory("/data/user", 0751);
+        mounts.addDirectory("/data/user/0", 0751);
+        constexpr std::array<uint8_t, 1> content{42};
+        mounts.mount("/data/data/marker", content);
+        Machine task(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
+        const auto invoke = [&](uint64_t number, std::array<uint64_t, 6> args) {
+            std::ranges::copy(args, task.cpu.x.begin());
+            task.cpu.x[8] = number;
+            assert(mounts.syscall(task));
+            return task.cpu.x[0];
+        };
+        const auto path = [&](uint64_t offset, const auto& text) {
+            assert(task.write(base + offset, {reinterpret_cast<const uint8_t*>(text), sizeof(text)}));
+            return base + offset;
+        };
+        const auto source = path(0, "/data/data");
+        const auto user = path(32, "/data/user");
+        const auto userZero = path(64, "/data/user/0");
+        const auto markerPath = path(96, "/data/user/0/marker");
+        const auto tmpfs = path(128, "tmpfs");
+        const auto namespacePath = path(160, "/proc/self/ns/mnt");
+        constexpr auto atCwd = uint32_t(-100);
+        assert(invoke(40, {source, userZero, 0, 0x5000}) == 0);
+        assert(invoke(56, {atCwd, markerPath, 0}) < 256);
+        const auto originalNamespace = invoke(56, {atCwd, namespacePath, 0});
+        assert(originalNamespace < 256 && invoke(97, {0x20000}) == 0);
+        const auto isolatedNamespace = invoke(56, {atCwd, namespacePath, 0});
+        assert(isolatedNamespace < 256 && invoke(40, {tmpfs, user, tmpfs, 14}) == 0);
+        assert(invoke(56, {atCwd, markerPath, 0}) == uint64_t(-2));
+        assert(invoke(36, {source, atCwd, userZero}) == 0);
+        assert(invoke(56, {atCwd, markerPath, 0}) < 256);
+        assert(invoke(268, {originalNamespace, 0x20000}) == 0);
+        assert(invoke(78, {atCwd, userZero, base + 256, 32}) == uint64_t(-22));
+        assert(invoke(268, {isolatedNamespace, 0x20000}) == 0);
+        assert(invoke(39, {user, 0}) == 0);
+        assert(invoke(78, {atCwd, userZero, base + 256, 32}) == uint64_t(-22));
+        assert(invoke(56, {atCwd, markerPath, 0}) < 256);
+    }
 
     assert(machine.store64(base + 0x840, 17));
     assert(machine.store64(base + 0x850, 1ULL << 16));
