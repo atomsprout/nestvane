@@ -994,7 +994,8 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
             }
             setLane(result, start + i, size, value);
         }
-    } else if ((word & 0xbf80fc00) == 0x0f008400) { // SHRN / SHRN2.
+    } else if ((word & 0xbf80f400) == 0x0f008400) { // SHRN and RSHRN, including the upper-half forms.
+        const bool round = word & 0x800;
         const unsigned immediate = (word >> 16) & 127;
         if (immediate < 8 || immediate >= 64) return false;
         const unsigned bits = 1U << (std::bit_width(immediate) - 1);
@@ -1002,8 +1003,11 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
         const unsigned count = 8 / size;
         const unsigned start = width == 16 ? count : 0;
         if (start) result = cpu.v[rd];
+        const unsigned shift = 2 * bits - immediate;
         for (unsigned i = 0; i < count; ++i) {
-            setLane(result, start + i, size, lane(source, i, size * 2) >> (2 * bits - immediate));
+            const auto value = lane(source, i, size * 2);
+            const auto rounding = round ? (value >> (shift - 1)) & 1 : 0;
+            setLane(result, start + i, size, (value >> shift) + rounding);
         }
     } else if (const auto rightShift = word & 0x9f80fc00;
                rightShift == 0x0f000400 || rightShift == 0x0f001400 ||

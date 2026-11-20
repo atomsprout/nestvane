@@ -1,4 +1,5 @@
 #include "AArch64.hpp"
+#include "AndroidBootAot.hpp"
 #include "BpfProgram.hpp"
 #include "GfxstreamPipe.hpp"
 #include "ProbeLinux.hpp"
@@ -18,6 +19,40 @@
 using namespace nestvane;
 
 int main() {
+    {
+        std::vector<uint8_t> module(AndroidSha256Block::fileOffset + sizeof(AndroidSha256Block::words));
+        auto* entry = module.data() + AndroidSha256Block::fileOffset;
+        std::memcpy(entry, AndroidSha256Block::words.data(), sizeof(AndroidSha256Block::words));
+        assert(AndroidSha256Block::bind(module) == entry);
+        entry[5] ^= 1;
+        assert(!AndroidSha256Block::bind(module));
+        uint64_t state = 0x8123456789abcdefULL;
+        Machine baseline(Image{0x8000, {}, {}});
+        for (unsigned example = 0; example < 64; ++example) {
+            CPU native;
+            native.pc = 0x8000;
+            native.retired = example * 4;
+            native.nzcv = example & 15;
+            native.fpsr = example & fpsrMask;
+            for (auto& value : native.x) {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                value = state;
+            }
+            baseline.cpu = native;
+            for (auto word : AndroidSha256Block::words) {
+                const auto instruction = decode(word);
+                if (instruction.op == Op::unsupported) {
+                    assert(executeStartupInstruction(baseline, word));
+                } else {
+                    executeDecoded(baseline, instruction);
+                }
+            }
+            AndroidSha256Block::execute(native);
+            assert(baseline.cpu == native);
+        }
+    }
     {
         ProbeLinux guest(1, 0);
         constexpr uint64_t base = 0x2000, path = base + 0x20, payload = base + 0x140, reply = base + 0x220;
@@ -1080,6 +1115,13 @@ int main() {
         assert(executeStartupInstruction(permute, 0x0f512238)); // smlal v24.4s, v17.4h, v1.h[1]
         const std::array<int32_t, 4> longAccumulated{6, -768, 196608, -196602};
         assert(std::memcmp(permute.cpu.v[24].data(), longAccumulated.data(), sizeof(longAccumulated)) == 0);
+        const std::array<int32_t, 4> roundedNarrowInput{-1025, -1024, 1023, 1024};
+        const std::array<int16_t, 8> roundedNarrowOutput{-1, 0, 0, 1, -1, 0, 0, 1};
+        std::memcpy(permute.cpu.v[20].data(), roundedNarrowInput.data(), sizeof(roundedNarrowInput));
+        std::memcpy(permute.cpu.v[7].data(), roundedNarrowInput.data(), sizeof(roundedNarrowInput));
+        assert(executeStartupInstruction(permute, 0x0f158e91)); // rshrn v17.4h, v20.4s, #11
+        assert(executeStartupInstruction(permute, 0x4f158cf1)); // rshrn2 v17.8h, v7.4s, #11
+        assert(std::memcmp(permute.cpu.v[17].data(), roundedNarrowOutput.data(), sizeof(roundedNarrowOutput)) == 0);
         const std::array<uint16_t, 8> narrowBytesSource{0, 254, 255, 256, 257, 1, 32768, 65535};
         const std::array<uint8_t, 16> narrowBytesResult{0, 254, 255, 255, 255, 1, 255, 255};
         std::memcpy(permute.cpu.v[0].data(), narrowBytesSource.data(), sizeof(narrowBytesSource));

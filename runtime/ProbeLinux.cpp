@@ -6921,6 +6921,23 @@ bool ProbeLinux::poll(Machine& machine) {
     return complete(!length || machine.write(x[0], bytes) ? ready : uint64_t(-14));
 }
 
+std::optional<std::pair<std::string_view, uint64_t>> ProbeLinux::guestCodeFile(const uint8_t* instruction) const {
+    const auto pointer = reinterpret_cast<uintptr_t>(instruction);
+    const auto offsetIn = [pointer](std::span<const uint8_t> bytes) -> std::optional<uint64_t> {
+        const auto base = reinterpret_cast<uintptr_t>(bytes.data());
+        if (pointer < base || pointer - base >= bytes.size()) return {};
+        return pointer - base;
+    };
+    // An APEX file view can overlap its containing image. Prefer the file inside the APEX.
+    for (const auto& [path, node] : ext4Nodes) {
+        const auto bytes = node->view.empty() ? std::span<const uint8_t>(node->owned) : node->view;
+        if (const auto offset = offsetIn(bytes)) return std::pair{std::string_view(path), *offset};
+    }
+    for (const auto& [path, bytes] : files)
+        if (const auto offset = offsetIn(bytes)) return std::pair{std::string_view(path), *offset};
+    return {};
+}
+
 std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedProcess) const {
     std::string report;
     for (const auto& [path, tid] : propertyPollers) {
@@ -6936,23 +6953,13 @@ std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedPr
     const auto describeCode = [&](const Process& process, uint64_t address, const char* field) {
         const auto* segment = segmentAt(process, address);
         if (!segment || !segment->imageView || address - segment->address >= segment->mappedSize()) return;
-        const auto pointer = reinterpret_cast<uintptr_t>(segment->imageView) + address - segment->address;
-        const auto describe = [&](std::string_view path, std::span<const uint8_t> bytes) {
-            const auto beginning = reinterpret_cast<uintptr_t>(bytes.data());
-            if (pointer < beginning || pointer - beginning >= bytes.size()) return false;
-            if (path.size() > 1 && path[1] == '\0') {
-                if (const auto slash = path.find('/', 2); slash != std::string_view::npos) path.remove_prefix(slash);
-            }
-            tasks << ' ' << field << '=' << path << "+0x" << std::hex << pointer - beginning << std::dec;
-            return true;
-        };
-        // An APEX extent may refer into its containing image. Prefer the ELF entry.
-        for (const auto& [path, node] : ext4Nodes) {
-            const auto bytes = node->view.empty() ? std::span<const uint8_t>(node->owned) : node->view;
-            if (describe(path, bytes)) return;
+        const auto location = guestCodeFile(segment->imageView + (address - segment->address));
+        if (!location) return;
+        auto [path, offset] = *location;
+        if (path.size() > 1 && path[1] == '\0') {
+            if (const auto slash = path.find('/', 2); slash != std::string_view::npos) path.remove_prefix(slash);
         }
-        for (const auto& [path, bytes] : files)
-            if (describe(path, bytes)) return;
+        tasks << ' ' << field << '=' << path << "+0x" << std::hex << offset << std::dec;
     };
     const auto active = std::ranges::count_if(threads, [](const auto& entry) {
         return entry.second.wait != Wait::exited;

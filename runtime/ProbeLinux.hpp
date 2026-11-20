@@ -67,7 +67,11 @@ struct ProbeLinux {
         if (!(machine.cpu.retired & 4095) && graphicsDma) serviceGraphicsDma();
         return machine.cpu.retired < sliceEnd || switchThread(machine, deadline, stop);
     }
+    bool hasSliceBudget(uint64_t retired, uint64_t count) const {
+        return retired <= sliceEnd && count <= sliceEnd - retired;
+    }
     std::string workerReport(const Machine& machine, uint64_t observedProcess = 0) const;
+    std::optional<std::pair<std::string_view, uint64_t>> guestCodeFile(const uint8_t* instruction) const;
     void setBootContext(std::string context);
     void setCommandLine(const Startup& startup);
     bool loadBootTransition(std::string_view manifest);

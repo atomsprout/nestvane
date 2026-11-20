@@ -1,5 +1,6 @@
 #include "DynamicProbe.hpp"
 #include "AArch64.hpp"
+#include "AndroidBootAot.hpp"
 #include "ProbeLinux.hpp"
 
 #include <algorithm>
@@ -71,7 +72,7 @@ uint64_t initLimit(const char* name, uint64_t fallback, uint64_t maximum) {
 }
 
 DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, std::string_view expectedGate = "true\n",
-                       std::stop_token stop = {}, const BootProgress& liveSnapshot = {}) {
+                       std::stop_token stop = {}, const BootProgress& liveSnapshot = {}, const uint8_t* sha256Block = nullptr) {
     const bool init = kind == ProbeKind::init;
     std::ostringstream report;
     switch (kind) {
@@ -130,11 +131,35 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
         ? initLimit("NESTVANE_INIT_SNAPSHOT_SECONDS", 0, UINT32_MAX) : 0);
     auto nextSnapshot = snapshotInterval.count() ? start + snapshotInterval : steady_clock::time_point::max();
     auto scheduleDeadline = std::min(deadline, nextSnapshot);
+    constexpr uint64_t sampleStride = 1'048'576;
+    const bool sampleBoot = init && initLimit("NESTVANE_INIT_SAMPLE_CODE", 0, 1);
+    uint64_t nextSample = sampleBoot ? sampleStride : UINT64_MAX;
+    uint64_t samples = 0, unattributedSamples = 0;
+    uint64_t sha256AotEntries = 0;
+    // The file offset survives ASLR. Group nearby instructions so hot loops are
+    // still visible when their samples fall on several different instructions.
+    using CodePage = std::pair<std::string, uint64_t>;
+    std::map<CodePage, uint64_t> codeSamples;
+    const auto appendCodeSamples = [&](std::ostream& out) {
+        if (sha256Block)
+            out << "  Android SHA-256 AOT entries: " << sha256AotEntries << '\n';
+        if (!sampleBoot) return;
+        out << "  guest instruction samples: " << samples << ", unattributed: " << unattributedSamples << '\n';
+        std::vector<std::pair<CodePage, uint64_t>> ranked(codeSamples.begin(), codeSamples.end());
+        const auto top = ranked.begin() + std::min<size_t>(ranked.size(), 20);
+        std::partial_sort(ranked.begin(), top, ranked.end(),
+                          [](const auto& a, const auto& b) { return a.second > b.second; });
+        for (auto entry = ranked.begin(); entry != top; ++entry) {
+            const auto& [page, count] = *entry;
+            out << "    " << count << ' ' << page.first << "+0x" << std::hex << page.second << std::dec << '\n';
+        }
+    };
     const auto captureSnapshot = [&](steady_clock::time_point now) {
         std::ostringstream snapshot;
         snapshot << "Android init at " << duration_cast<milliseconds>(now - start).count()
                  << " ms, " << cpu.retired << " guest instructions, "
                  << syscallCount << " guest syscalls\n";
+        appendCodeSamples(snapshot);
         snapshot << linux.workerReport(machine, linux.processId());
         constexpr size_t androidTailLimit = 16 * 1024;
         const std::string_view android = linux.recentAndroidOutput.empty()
@@ -209,6 +234,26 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
         const auto* bytes = machine.readInstruction(cpu.pc);
         if (!bytes) {
             machine.fault(cpu.pc, cpu.pc);
+            continue;
+        }
+        if (cpu.retired >= nextSample) {
+            ++samples;
+            nextSample = cpu.retired + sampleStride + ((samples * 0x9e37) & 0xffff);
+            if (const auto location = linux.guestCodeFile(bytes)) {
+                auto [path, offset] = *location;
+                if (path.size() > 1 && path[1] == '\0') {
+                    if (const auto slash = path.find('/', 2); slash != std::string_view::npos) path.remove_prefix(slash);
+                }
+                ++codeSamples[{std::string(path), offset & ~uint64_t(4095)}];
+            } else {
+                ++unattributedSamples;
+            }
+        }
+        if (sha256Block && bytes == sha256Block &&
+            linux.hasSliceBudget(cpu.retired, AndroidSha256Block::words.size()) &&
+            AndroidSha256Block::words.size() <= instructionLimit - cpu.retired) {
+            AndroidSha256Block::execute(cpu);
+            ++sha256AotEntries;
             continue;
         }
         std::memcpy(&word, bytes, sizeof(word));
@@ -329,6 +374,7 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
         }
     }
 
+    appendCodeSamples(report);
     if (suppressedLogs) report << "  omitted syscall log entries: " << suppressedLogs << '\n';
     if (deliveredFaults || restoredSignals)
         report << "  guest SIGSEGV deliveries: " << deliveredFaults << ", signal context returns: " << restoredSignals << '\n';
@@ -760,7 +806,12 @@ service nestvane-smoke /system/bin/sh /system/etc/nestvane/apk-ready.sh /system/
         linux.alias("/system/system_ext/etc/compatconfig", "/system_ext/etc/compatconfig");
         linux.alias("/proc/self/exe", filename);
         linux.alias("/system/bin/ueventd", "/system/bin/init");
-        auto result = runProbe(image, linux, ProbeKind::init, "true\n", stop, liveSnapshot);
+        const uint8_t* sha256Block = nullptr;
+        if (initLimit("NESTVANE_INIT_AOT", 1, 1)) {
+            if (const auto crypto = files.find("/system/lib64/libcrypto.so"); crypto != files.end())
+                sha256Block = AndroidSha256Block::bind(crypto->second.bytes());
+        }
+        auto result = runProbe(image, linux, ProbeKind::init, "true\n", stop, liveSnapshot, sha256Block);
         if (const auto reference = files.find("/nestvane-metadata/reference-classpath.txt"); reference != files.end()) {
             const auto expected = reference->second.bytes();
             const auto actual = linux.bootGuestFile("/data/system/environ/classpath");
