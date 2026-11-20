@@ -5220,7 +5220,6 @@ int main() {
     const auto newWork = load(base + 0x724 + 6 * 8);
     assert(bindRequest(manager, 0x40086303, 0, "", false, {}, newWork) == 0);
     assert(call(25, {manager, 4, 0}) == 0);
-    assert(bindRequest(manager, 0x40046306, 0, "", false, {}, handle) == 0);
     machine.cpu.retired += 4096;
     assert(linux.schedule(machine) && linux.processId() == binderChild);
     {
@@ -5412,14 +5411,20 @@ int main() {
     assert(linux.schedule(machine) && linux.processId() == binderChild && linux.threadId() == binderWorker);
     machine.cpu.retired += 4096;
     assert(linux.schedule(machine) && linux.processId() == 1);
+    assert(bindRequest(manager, 0x40406300, 78, "pending at exit", true, {}, handle) == 0);
+    assert(uint32_t(load(base + 0x720)) == 0x7206);
     assert(bindRequest(manager, 0, 0, "", true) == manager && linux.blocked());
     assert(linux.schedule(machine) && linux.threadId() == binderWorker);
+    assert(bindRequest(channel, 0x630c, 0, "", true) == 0);
+    assert(uint32_t(load(base + 0x720)) == 0x80407202 && uint32_t(load(base + 0x734)) == 78);
     call(94, {0});
     assert(linux.schedule(machine) && linux.processId() == 1);
 
     assert(bindRequest(manager, 0, 0, "", true) == 0);
     assert(uint32_t(load(base + 0x720)) == 0x8008720f && load(base + 0x724) == 0);
     assert(bindRequest(manager, 0x40086310, 0, "", false) == 0);
+    assert(bindRequest(manager, 0, 0, "", true) == 0 && uint32_t(load(base + 0x720)) == 0x7205);
+    assert(bindRequest(manager, 0x40046306, 0, "", false, {}, handle) == 0);
 
     put(base + 260, "/dev/binder-abi/binder");
     const auto registeringPeer = call(220, {0x1200011, 0, 0, 0, base + 0x848});
@@ -5428,6 +5433,7 @@ int main() {
     linux.setBootContext("u:r:vold:s0");
     const auto registeringBinder = call(56, {uint32_t(-100), base + 260, 2});
     assert(registeringBinder < 256);
+    assert(call(222, {0, 8 * pageSize, 1, 0x4002, registeringBinder, 0}) > 0x100000000);
     uint64_t closingHandle = 0;
     for (uint64_t index = 0; index < 320; ++index) {
         const std::array<uint64_t, 3> service{flatBinder, objectPtr + index * 8, objectCookie + index * 8};
@@ -5456,8 +5462,12 @@ int main() {
         }
     }
     assert(bindRequest(manager, 0x400c630e, 0, "", false, {}, closingHandle) == 0);
+    assert(bindRequest(manager, 0x40406300, 77, "pending reply", true, {}, closingHandle) == 0);
+    assert(uint32_t(load(base + 0x720)) == 0x7206);
     machine.cpu.retired += 4096;
     assert(linux.schedule(machine) && linux.processId() == registeringPeer);
+    assert(bindRequest(registeringBinder, 0x630c, 0, "", true) == 0);
+    assert(uint32_t(load(base + 0x720)) == 0x80407202 && uint32_t(load(base + 0x734)) == 77);
     const auto duplicatedBinder = call(25, {registeringBinder, 0, 0});
     assert(duplicatedBinder != registeringBinder && duplicatedBinder < 256);
     assert(call(57, {registeringBinder}) == 0);
@@ -5466,7 +5476,7 @@ int main() {
     assert(call(25, {manager, 4, 0x800}) == 0);
     assert(bindRequest(manager, 0, 0, "", true) == uint64_t(-11));
     assert(call(25, {manager, 4, 0}) == 0);
-    machine.cpu.retired += 4096;
+    assert(bindRequest(manager, 0, 0, "", true) == manager && linux.blocked());
     assert(linux.schedule(machine) && linux.processId() == registeringPeer);
     assert(call(57, {duplicatedBinder}) == 0);
     machine.cpu.retired += 4096;
@@ -5474,6 +5484,11 @@ int main() {
     assert(call(129, {registeringPeer, 0}) == 0);
     assert(bindRequest(manager, 0, 0, "", true) == 0);
     assert(uint32_t(load(base + 0x720)) == 0x8008720f);
+    assert(bindRequest(manager, 0, 0, "", true) == 0);
+    assert(uint32_t(load(base + 0x720)) == 0x7205); // The held Binder call lost its peer.
+    assert(call(25, {manager, 4, 0x800}) == 0);
+    assert(bindRequest(manager, 0, 0, "", true) == uint64_t(-11));
+    assert(call(25, {manager, 4, 0}) == 0);
     assert(call(129, {registeringPeer, 9}) == 0);
 
     Startup commandLine{};

@@ -75,7 +75,15 @@ bool ProbeLinux::binderReadable(const BinderConnection& connection, uint64_t pid
     if (connection.owner != pid) return false;
     const auto directed = connection.directed.find(tid);
     return (directed != connection.directed.end() && !directed->second.empty()) ||
-           (!connection.incoming.empty() && binderAvailableForProcessWork(connection, tid));
+           (!connection.incoming.empty() && binderAvailableForProcessWork(connection, tid)) ||
+           binderCallLostPeer(connection, tid);
+}
+
+bool ProbeLinux::binderCallLostPeer(const BinderConnection& connection, uint64_t tid) const {
+    const auto pending = connection.pendingCalls.find(tid);
+    if (pending == connection.pendingCalls.end()) return false;
+    const auto& call = pending->second.back();
+    return call.target.expired() || !processAlive(call.pid);
 }
 
 uint64_t ProbeLinux::storeBinderBuffer(BinderConnection& target, std::span<const uint8_t> data,
@@ -308,7 +316,7 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
         sendLabel = node.object.flags & sendSecurityContext;
         acceptsFiles = node.object.flags & acceptNodeFiles;
     }
-    if (!target) return fail(brDeadReply);
+    if (!target || !processAlive(target->owner)) return fail(brDeadReply);
     const bool asynchronous = !replying && (transaction.flags & oneWay);
     const bool synchronousCall = !replying && !asynchronous;
     if (synchronousCall && !outstanding.empty()) {
@@ -561,6 +569,11 @@ uint64_t ProbeLinux::binderWriteRead(Machine& machine, const Descriptor& fd) {
         return writeGuest(machine, argument, request) ? uint64_t(-11) : fault;
     }
     auto& directed = connection.directed[currentTid];
+    if (directed.empty() && binderCallLostPeer(connection, currentTid)) {
+        BinderPacket failed{brDeadReply};
+        failed.completesCall = true;
+        directed.push_back(std::move(failed));
+    }
     auto& queue = directed.empty() ? connection.incoming : directed;
     auto& next = queue.front();
     std::vector<uint32_t> fileNumbers;

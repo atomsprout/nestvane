@@ -642,6 +642,7 @@ private:
     uint64_t binderWriteRead(Machine& machine, const Descriptor& fd);
     static bool binderAvailableForProcessWork(const BinderConnection& connection, uint64_t tid);
     bool binderReadable(const BinderConnection& connection, uint64_t pid, uint64_t tid) const;
+    bool binderCallLostPeer(const BinderConnection& connection, uint64_t tid) const;
     bool freeBinderBuffer(BinderConnection& connection, uint64_t address, bool delivered);
     uint64_t storeBinderBuffer(BinderConnection& target, std::span<const uint8_t> data,
                               std::span<const uint8_t> offsets, std::span<const uint8_t> extra,
