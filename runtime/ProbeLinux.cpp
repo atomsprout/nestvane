@@ -6858,6 +6858,7 @@ bool ProbeLinux::installSignalFrame(Machine& machine, uint32_t signal, const Sig
     saved.pstate = uint64_t(cpu.nzcv) << 28;
     saved.fp.magic = fpsimdMagic;
     saved.fp.size = sizeof(saved.fp);
+    saved.fp.fpsr = cpu.fpsr;
     saved.fp.regs = cpu.v;
     frame.frameRecord = {cpu.x[29], cpu.x[30]};
     const auto returnAddress = flags & saRestorer ? restorer : signalRestorer(machine);
@@ -6957,6 +6958,7 @@ bool ProbeLinux::restoreSignalContext(Machine& machine) {
     current->alternateStack[1] &= ~ssOnStack;
     cpu.x = saved.regs;
     cpu.v = saved.fp.regs;
+    cpu.fpsr = saved.fp.fpsr & fpsrMask;
     cpu.sp = saved.sp;
     cpu.pc = saved.pc;
     cpu.nzcv = (saved.pstate >> 28) & 15;
@@ -9934,6 +9936,28 @@ bool ProbeLinux::syscall(Machine& machine) {
                 break;
             }
             if (x[0] == 3) { x[0] = 1; break; } // PR_GET_DUMPABLE
+            if (x[0] == 4 && x[1] == 1 && androidLogObserver) { // debuggerd sets PR_SET_DUMPABLE.
+                // Bionic places this record at the beginning of its abort-message mapping.
+                constexpr uint64_t magic1 = 0xb18e40886ac388f0ULL;
+                constexpr uint64_t magic2 = 0xc6dfba755a1de0b5ULL;
+                for (const auto& area : machine.segments) {
+                    std::array<uint64_t, 3> header{};
+                    if (!(area.flags & 4) || area.accessibleSize() < sizeof(header)) continue;
+                    std::memcpy(header.data(), area.data(), sizeof(header));
+                    if (header[0] != magic1 || header[1] != magic2 || header[2] <= sizeof(header)) continue;
+                    std::array<uint8_t, 512> buffer{};
+                    const auto length = std::min<uint64_t>(buffer.size(), header[2] - sizeof(header));
+                    if (!machine.readInto(area.address + sizeof(header), std::span(buffer).first(length))) continue;
+                    std::string message = "Guest native abort: PID=" + std::to_string(processId()) +
+                        " TID=" + std::to_string(currentTid) + " " + process.context + ": ";
+                    for (const auto ch : std::span(buffer).first(length)) {
+                        if (!ch) break;
+                        message += ch >= 32 && ch < 127 ? char(ch) : ' ';
+                    }
+                    androidLogObserver(message);
+                    break;
+                }
+            }
             if (x[0] == 7) { x[0] = bool(process.secureBits & secureKeepCaps); break; }
             if (x[0] == 8) { // PR_SET_KEEPCAPS
                 if (x[1] > 1) { x[0] = invalid; break; }

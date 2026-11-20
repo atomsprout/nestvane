@@ -749,6 +749,24 @@ int main() {
         assert(executeStartupInstruction(permute, 0x6ea30442)); // uhadd v2.4s, v2.4s, v3.4s
         assert(std::memcmp(permute.cpu.v[2].data(), halfWords.data(), sizeof(halfWords)) == 0);
         assert(!executeStartupInstruction(permute, 0x6ee30442)); // reserved 64-bit lanes
+        const std::array<int16_t, 8> mulLeft{-32768, -32768, 16384, -16384, 32767, 1, -1, 12345};
+        const std::array<int16_t, 8> mulRight{-32768, 32767, 1, 1, 32767, 16384, 16384, -23456};
+        const std::array<int16_t, 8> mulHigh{32767, -32767, 1, 0, 32766, 1, 0, -8837};
+        std::memcpy(permute.cpu.v[28].data(), mulLeft.data(), sizeof(mulLeft));
+        std::memcpy(permute.cpu.v[31].data(), mulRight.data(), sizeof(mulRight));
+        assert(executeStartupInstruction(permute, 0xd51b443f)); // msr fpsr, xzr
+        assert(executeStartupInstruction(permute, 0x6e7fb795)); // sqrdmulh v21.8h, v28.8h, v31.8h
+        assert(std::memcmp(permute.cpu.v[21].data(), mulHigh.data(), sizeof(mulHigh)) == 0);
+        assert(executeStartupInstruction(permute, 0xd53b4425) && permute.cpu.x[5] == fpsrSaturation);
+        const std::array<int32_t, 4> wideMulLeft{INT32_MIN, INT32_MAX, -1, 1};
+        const std::array<int32_t, 4> wideMulRight{INT32_MIN, INT32_MAX, 1 << 30, 1 << 30};
+        const std::array<int32_t, 4> wideMulHigh{INT32_MAX, INT32_MAX - 1, 0, 1};
+        std::memcpy(permute.cpu.v[28].data(), wideMulLeft.data(), sizeof(wideMulLeft));
+        std::memcpy(permute.cpu.v[31].data(), wideMulRight.data(), sizeof(wideMulRight));
+        assert(executeStartupInstruction(permute, 0x6ebfb79c)); // sqrdmulh v28.4s, v28.4s, v31.4s
+        assert(std::memcmp(permute.cpu.v[28].data(), wideMulHigh.data(), sizeof(wideMulHigh)) == 0);
+        assert(executeStartupInstruction(permute, 0xd51b443f) && !permute.cpu.fpsr);
+        assert(!executeStartupInstruction(permute, 0x6e3fb795)); // reserved byte lanes
         const std::array<float, 4> leftAdd{1, -2, 3, 4}, rightAdd{3, 1, 6, -4}, expectedSum{4, -1, 9, 0};
         std::memcpy(permute.cpu.v[0].data(), leftAdd.data(), sizeof(leftAdd));
         std::memcpy(permute.cpu.v[2].data(), rightAdd.data(), sizeof(rightAdd));
@@ -2910,6 +2928,28 @@ int main() {
         assert(report.find("pc-file=/system/boot-trace-probe.so+0x1010") != std::string::npos);
         assert(report.find("lr-file=/system/boot-trace-probe.so+0x1020") != std::string::npos);
     }
+    {
+        ProbeLinux guest(1, 0);
+        Machine task(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
+        std::string report;
+        guest.androidLogObserver = [&](std::string_view message) { report = message; };
+        const auto abort = [&] {
+            task.cpu.x[0] = 4;
+            task.cpu.x[1] = 1;
+            task.cpu.x[8] = 167;
+            assert(!guest.syscall(task));
+        };
+        abort();
+        assert(report.empty());
+        constexpr std::string_view crash = "input initialization\nfailed";
+        const std::array<uint64_t, 3> header{0xb18e40886ac388f0ULL, 0xc6dfba755a1de0b5ULL,
+                                             3 * sizeof(uint64_t) + crash.size() + 1};
+        assert(task.write(base, {reinterpret_cast<const uint8_t*>(header.data()), sizeof(header)}));
+        assert(task.write(base + sizeof(header), {reinterpret_cast<const uint8_t*>(crash.data()), crash.size()}));
+        abort();
+        assert(report.starts_with("Guest native abort: PID=1 TID=1 "));
+        assert(report.ends_with("input initialization failed"));
+    }
     for (const auto [wait, restart] : {std::pair{98, 0ULL}, std::pair{98, 0x10000000ULL},
                                       std::pair{137, 0x10000000ULL}}) {
         ProbeLinux guest(1, 0);
@@ -2929,6 +2969,7 @@ int main() {
         const auto thread = invoke(220, {0x3d0f00, base + 8 * pageSize, parentTid, 0, parentTid + 8});
         assert(thread == 2 && guest.schedule(task) && guest.threadId() == thread);
         task.cpu.pc = blockedPc;
+        task.cpu.fpsr = fpsrSaturation;
         if (wait == 137) {
             // An unrelated handler interrupts rt_sigtimedwait even with SA_RESTART.
             assert(task.store64(word, 1ULL << (12 - 1)));
@@ -2942,8 +2983,10 @@ int main() {
         assert(guest.threadId() == thread && task.cpu.pc == handler && task.cpu.x[0] == signal);
         uint64_t signalInfo = 0;
         assert(task.load64(task.cpu.x[1] + 8, signalInfo) && uint32_t(signalInfo) == uint32_t(-6));
+        task.cpu.fpsr = 0;
         invoke(139);
         assert(guest.restoredSignalContext() && !guest.blocked());
+        assert(task.cpu.fpsr == fpsrSaturation);
         const bool restarts = wait == 98 && restart;
         assert(task.cpu.pc == blockedPc + (restarts ? 0 : 4));
         assert(task.cpu.x[0] == (restarts ? word : uint64_t(-4)));
@@ -4855,6 +4898,43 @@ int main() {
             }
         }
         assert(call(57, {fixedFd}) == 0);
+
+        assert(bindRequest(channel, 0x40406300, acceptFiles | 46, "input channel", true) == 0);
+        assert(uint32_t(load(base + 0x720)) == 0x7206);
+        assert(bindRequest(channel, 0, 0, "", true) == channel && linux.blocked());
+        assert(linux.schedule(machine) && linux.processId() == 1);
+        assert(bindRequest(manager, 0, 0, "", true) == 0);
+        assert(uint32_t(load(base + 0x720)) == 0x80407202);
+        const auto requestBuffer = load(base + 0x724 + 6 * 8);
+        constexpr uint64_t io = base + 0x900;
+        assert(call(199, {1, 5 | 0x800, 0, io}) == 0);
+        const auto server = uint32_t(load(io)), client = uint32_t(load(io) >> 32);
+        assert(call(24, {client, fixedFd, 0}) == fixedFd);
+        assert(bindRequest(manager, 0x40406301, 0, fileBytes, true, objectOffset) == 0);
+        assert(uint32_t(load(base + 0x720)) == 0x7206);
+        assert(call(57, {client}) == 0 && call(57, {fixedFd}) == 0);
+        assert(bindRequest(manager, 0x40086303, 0, "", false, {}, requestBuffer) == 0);
+        assert(machine.store64(io, 0x12345678));
+        assert(call(206, {server, io, 8, 0x4040}) == 8);
+        machine.cpu.retired += 4096;
+        assert(linux.schedule(machine) && linux.processId() == binderChild);
+        assert(bindRequest(channel, 0, 0, "", true) == 0);
+        assert(uint32_t(load(base + 0x720)) == 0x80407203);
+        const auto response = load(base + 0x724 + 6 * 8);
+        const auto received = load(response + 8);
+        assert(load(response) == fileType);
+        assert(call(25, {received, 1}) == 1 && (call(25, {received, 3}) & 0x800));
+        assert(bindRequest(channel, 0x40086303, 0, "", false, {}, response) == 0);
+        assert(call(207, {received, io, 8, 0x40}) == 8 && load(io) == 0x12345678);
+        assert(call(207, {received, io, 8, 0x40}) == uint64_t(-11));
+        assert(machine.store64(io, 0xaabbccdd) && call(206, {received, io, 8, 0x4040}) == 8);
+        assert(call(57, {received}) == 0);
+        machine.cpu.retired += 4096;
+        assert(linux.schedule(machine) && linux.processId() == 1);
+        assert(call(207, {server, io, 8, 0x40}) == 8 && load(io) == 0xaabbccdd);
+        assert(call(207, {server, io, 8, 0x40}) == 0 && call(57, {server}) == 0);
+        machine.cpu.retired += 4096;
+        assert(linux.schedule(machine) && linux.processId() == binderChild);
     }
     {
         constexpr size_t payloadLength = 72 * 1024, objectCount = 80;

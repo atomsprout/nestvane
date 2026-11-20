@@ -739,6 +739,18 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
         if (size == 8) return false;
         for (unsigned i = 0; i < width / size; ++i)
             setLane(result, i, size, (lane(source, i, size) + lane(other, i, size)) >> 1);
+    } else if (op == 0x2e20b400) { // SQRDMULH (vector).
+        if (size != 2 && size != 4) return false;
+        const unsigned shift = size * 8 - 1;
+        const auto maximum = (int64_t{1} << shift) - 1;
+        const auto rounding = int64_t{1} << (shift - 1);
+        for (unsigned i = 0; i < width / size; ++i) {
+            const auto a = int64_t(sx(lane(source, i, size), size * 8));
+            const auto b = int64_t(sx(lane(other, i, size), size * 8));
+            const auto rounded = (a * b + rounding) >> shift;
+            if (rounded > maximum) cpu.fpsr |= fpsrSaturation;
+            setLane(result, i, size, std::min(rounded, maximum));
+        }
     } else if (const auto comparison = op & ~0x10000000;
                comparison == 0x0e208c00 || comparison == 0x2e208c00 ||
                comparison == 0x2e203c00 || comparison == 0x2e203400 ||
@@ -1383,6 +1395,10 @@ bool values(CPU& cpu, uint32_t word) {
         put(cpu, rd, 0); // FPCR for the default guest floating-point environment.
     } else if ((word & 0xffffffe0) == 0xd51b4400) {
         if (reg(cpu, rd) != 0) return false;
+    } else if ((word & 0xffffffe0) == 0xd53b4420) { // MRS <Xt>, FPSR.
+        put(cpu, rd, cpu.fpsr);
+    } else if ((word & 0xffffffe0) == 0xd51b4420) { // MSR FPSR, <Xt>.
+        cpu.fpsr = uint32_t(reg(cpu, rd)) & fpsrMask;
     } else if ((word & 0xffffffe0) == 0xd53bd040) {
         put(cpu, rd, cpu.threadPointer);
     } else if ((word & 0xffffffe0) == 0xd51bd040) {

@@ -550,6 +550,7 @@ service nestvane-apk-install /system/bin/nestvane-apk-install
                 "NestvaneSmoke: ", "ActivityTaskManager: Displayed dev.nestvane.smoke/",
                 "ActivityTaskManager: Displayed com.android.settings/.FallbackHome",
                 "SystemUIFactory: Failed to initialize WMComponent", "libc: Fatal signal ",
+                "Guest native abort: ", "InputTransport: ", "InputDispatcher: ", "InputManager-JNI: ",
                 "SurfaceFlinger: SurfaceFlinger is starting", "SurfaceFlinger: Using HWComposer service",
                 "SurfaceFlinger: OpenGL ES informations", "mapper.ranchu: GoldfishAddressSpace",
                 "SurfaceFlinger: Can't create AidlComposerClient", "SurfaceFlinger: Loaded AIDL composer3 HAL",

@@ -123,6 +123,9 @@ std::vector<uint8_t> readFile(const std::string& path);
 enum class Stop { running, exit, fault, unsupported, fuelExhausted };
 enum class Mode { step, blocks, aot };
 
+// AArch64-only guest status fields: saturation and floating-point exceptions.
+inline constexpr uint32_t fpsrSaturation = 1U << 27;
+inline constexpr uint32_t fpsrMask = fpsrSaturation | 0x9f;
 struct CPU {
     std::array<uint64_t, 31> x{};
     std::array<std::array<uint8_t, 16>, 32> v{};
@@ -133,6 +136,7 @@ struct CPU {
     uint64_t threadPointer = 0;
     uint64_t exclusiveAddress = 0;
     unsigned exclusiveSize = 0;
+    uint32_t fpsr = 0;
     uint8_t nzcv = 0;
     int exitCode = 0;
     Stop stop = Stop::running;
