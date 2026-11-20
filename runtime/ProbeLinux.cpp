@@ -391,6 +391,7 @@ ProbeLinux::ProbeLinux(uint64_t pid, uint64_t uid, uint64_t memoryLimit)
       current(&threads[pid]), currentTid(pid), nextTid(pid + 1) {
     current->process = std::make_shared<Process>();
     current->process->id = pid;
+    processes.emplace(pid, current->process.get());
     current->process->userIds.fill(uint32_t(uid));
     current->process->groupIds.fill(uint32_t(uid));
     if (!uid) current->process->effectiveCaps = current->process->permittedCaps = Process::allCapabilities;
@@ -5310,7 +5311,8 @@ bool ProbeLinux::forkProcess(Machine& machine) {
     child.process->segments = std::move(machine.segments);
     machine.segments = std::move(parent);
     if (!wrote) { x[0] = uint64_t(-14); return true; }
-    threads.emplace(nextTid, std::move(child));
+    const auto task = threads.emplace(nextTid, std::move(child)).first;
+    processes.emplace(nextTid, task->second.process.get());
     x[0] = nextTid++;
     sliceEnd = cpu.retired;
     return true;
@@ -6222,6 +6224,7 @@ bool ProbeLinux::futex(Machine& machine) {
 }
 
 void ProbeLinux::finishProcess(Process& process, uint32_t status, bool killed) {
+    processes.erase(process.id);
     const uint32_t code = killed ? 2 : 1; // CLD_KILLED, CLD_EXITED
     const auto uid = process.userIds[0];
     const auto parent = process.parent;
@@ -6267,14 +6270,8 @@ bool ProbeLinux::exitThread(Machine& machine) {
 }
 
 ProbeLinux::Process* ProbeLinux::liveProcess(uint64_t id) const {
-    const auto leader = threads.find(id);
-    if (leader != threads.end() && leader->second.process->id == id && leader->second.wait != Wait::exited)
-        return leader->second.process.get();
-    // A process remains alive after its leader exits if it still has another thread.
-    const auto member = std::find_if(threads.begin(), threads.end(), [&](const auto& entry) {
-        return entry.second.process->id == id && entry.second.wait != Wait::exited;
-    });
-    return member == threads.end() ? nullptr : member->second.process.get();
+    const auto found = processes.find(id);
+    return found == processes.end() ? nullptr : found->second;
 }
 
 bool ProbeLinux::waitChild(Machine& machine) {
@@ -7264,7 +7261,10 @@ bool ProbeLinux::enforceSeccomp(Machine& machine) {
     const auto process = current->process;
     if (wholeProcess) removeSiblingThreads();
     current->wait = Wait::exited;
-    if (!processAlive(process->id)) finishProcess(*process, 31, true);
+    const bool memberAlive = !wholeProcess && std::ranges::any_of(threads, [&](const auto& task) {
+        return task.second.process == process && task.second.wait != Wait::exited;
+    });
+    if (!memberAlive) finishProcess(*process, 31, true);
     sliceEnd = 0;
     return true;
 }

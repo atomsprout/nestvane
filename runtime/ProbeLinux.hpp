@@ -825,6 +825,7 @@ private:
     struct ChildExit { uint64_t parent; uint32_t status, uid, code; };
     std::map<uint64_t, ChildExit> childExits;
     std::map<uint64_t, Thread> threads;
+    std::map<uint64_t, Process*> processes; // The live threads own each process.
     std::map<std::string, uint64_t, std::less<>> propertyPollers;
     Thread* current;
     uint64_t currentTid, nextTid;

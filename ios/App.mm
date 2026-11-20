@@ -8,6 +8,7 @@
 #include "IOSCamera.hpp"
 #include "Validation.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <mach/mach.h>
 #include <thread>
@@ -40,26 +41,32 @@ UIImage* GuestDisplayImage(std::span<const uint8_t> pixels, uint32_t width, uint
 }
 
 std::jthread StartDisplayReader(const nestvane::GfxstreamSession& renderer, bool captureContent,
-                                void (^present)(UIImage*, bool)) {
+                                const std::atomic_bool& launcherDrawn,
+                                void (^present)(UIImage*, bool, bool)) {
     if (!renderer.hasDisplayReadback()) return {};
-    return std::jthread([&renderer, captureContent, present](std::stop_token stop) mutable {
+    return std::jthread([&renderer, &launcherDrawn, captureContent, present](std::stop_token stop) mutable {
+        bool captureLauncher = captureContent;
         std::vector<uint8_t> pixels(size_t(guestWidth) * guestHeight * 4);
         const auto slot = dispatch_semaphore_create(1);
         uint64_t lastFrame = 0;
         while (!stop.stop_requested()) {
             @autoreleasepool {
                 if (dispatch_semaphore_wait(slot, DISPATCH_TIME_NOW) == 0) {
+                    const bool wantLauncher = captureLauncher && launcherDrawn.load(std::memory_order_relaxed);
                     uint32_t dimensions[2]{};
                     const auto frame = renderer.readDisplay(lastFrame, pixels, dimensions);
                     UIImage* image = frame ? GuestDisplayImage(pixels, dimensions[0], dimensions[1]) : nil;
                     if (image) {
                         lastFrame = frame;
                         const auto bytes = size_t(dimensions[0]) * dimensions[1] * 4;
-                        const bool content = captureContent &&
+                        const bool nonuniform = (captureContent || wantLauncher) &&
                             nestvane::guestDisplayHasColorVariation(std::span(pixels).first(bytes));
+                        const bool content = captureContent && nonuniform;
+                        const bool launcher = wantLauncher && nonuniform;
                         if (content) captureContent = false;
+                        if (launcher) captureLauncher = false;
                         dispatch_async(dispatch_get_main_queue(), ^{
-                            present(image, content);
+                            present(image, content, launcher);
                             dispatch_semaphore_signal(slot);
                         });
                     } else {
@@ -379,7 +386,7 @@ static NSString* ThermalState() {
             NSURL* progressURL = [documents URLByAppendingPathComponent:@"boot-progress.txt"];
             const auto bootStarted = NSProcessInfo.processInfo.systemUptime;
             std::string milestones;
-            bool launcherDisplayed = false;
+            std::atomic_bool launcherDisplayed{false};
             NSURL* launcherURL = [documents URLByAppendingPathComponent:@"launcher-displayed.txt"];
             const auto progress = [&](std::string_view event) {
                 const auto elapsedSeconds = NSProcessInfo.processInfo.systemUptime - bootStarted;
@@ -390,8 +397,8 @@ static NSString* ThermalState() {
                 if (milestones.size() > maxMilestoneBytes)
                     milestones.erase(0, milestones.find('\n', milestones.size() - maxMilestoneBytes) + 1);
                 exportReport(progressURL, milestones);
-                if (!launcherDisplayed && event.starts_with("ActivityTaskManager: Displayed com.android.launcher3/")) {
-                    launcherDisplayed = true;
+                if (event.starts_with("ActivityTaskManager: Displayed com.android.launcher3/") &&
+                    !launcherDisplayed.exchange(true, std::memory_order_relaxed)) {
                     const auto elapsed = (NSProcessInfo.processInfo.systemUptime - validationStarted) * 1000;
                     std::string report = "Android Launcher displayed after " +
                         std::to_string(static_cast<long long>(elapsed)) + " ms\n";
@@ -431,7 +438,8 @@ static NSString* ThermalState() {
                 NSURL* displayProgress = [documents URLByAppendingPathComponent:@"display-first-frame.txt"];
                 const BOOL captureFirstFrame = [NSProcessInfo.processInfo.environment[@"NESTVANE_CAPTURE_FIRST_FRAME"]
                     isEqualToString:@"1"];
-                auto displayReader = StartDisplayReader(renderer, captureFirstFrame, ^(UIImage* frame, bool content) {
+                auto displayReader = StartDisplayReader(renderer, captureFirstFrame, launcherDisplayed,
+                                                        ^(UIImage* frame, bool content, bool launcher) {
                     const BOOL firstFrame = self.display.hidden;
                     self.display.image = frame;
                     const auto writePresentationTime = [&](NSURL* url) {
@@ -450,7 +458,7 @@ static NSString* ThermalState() {
                         self.display.hidden = NO;
                         writePresentationTime(displayProgress);
                     }
-                    if (captureFirstFrame && (firstFrame || content)) {
+                    if (captureFirstFrame && (firstFrame || content || launcher)) {
                         NSData* png = UIImagePNGRepresentation(frame);
                         const auto save = [&](NSString* filename) {
                             NSURL* capture = [documents URLByAppendingPathComponent:filename];
@@ -459,6 +467,13 @@ static NSString* ThermalState() {
                                 NSLog(@"Unable to export %@: %@", filename, error);
                         };
                         if (firstFrame) save(@"display-first-frame.png");
+                        if (launcher) {
+                            NSString* name = [NSString stringWithFormat:@"display-after-launcher-%d",
+                                NSProcessInfo.processInfo.processIdentifier];
+                            writePresentationTime([documents URLByAppendingPathComponent:
+                                [name stringByAppendingPathExtension:@"txt"]]);
+                            save([name stringByAppendingPathExtension:@"png"]);
+                        }
                         if (content) {
                             NSString* name = [NSString stringWithFormat:@"display-first-content-%d",
                                 NSProcessInfo.processInfo.processIdentifier];
