@@ -1800,6 +1800,31 @@ int main() {
         assert(linux.dirtyAnonymousBytes() == dirty);
     }
     {
+        constexpr uint64_t physicalBudget = 20 * 1024 * 1024;
+        constexpr uint64_t sparseRange = 96 * 1024 * 1024;
+        ProbeLinux forkGuest(1, 0, physicalBudget);
+        auto parent = forkGuest.createMachine(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
+        const auto invoke = [&](uint64_t number, std::initializer_list<uint64_t> args) {
+            parent.cpu.x.fill(0);
+            std::ranges::copy(args, parent.cpu.x.begin());
+            parent.cpu.x[8] = number;
+            assert(forkGuest.syscall(parent));
+            return parent.cpu.x[0];
+        };
+        const auto mapping = invoke(222, {0, sparseRange, 3, 0x22, UINT64_MAX, 0});
+        assert(mapping < uint64_t(-4095));
+        assert(parent.store64(mapping + sparseRange - pageSize, 42));
+        const auto child = invoke(220, {0x1200011, 0, 0, 0, base + 8});
+        assert(child == 2 && forkGuest.dirtyAnonymousBytes() < physicalBudget);
+        assert(forkGuest.schedule(parent) && forkGuest.processId() == child);
+        uint64_t value = 0;
+        assert(parent.load64(mapping + sparseRange - pageSize, value) && value == 42);
+        assert(parent.store64(mapping + sparseRange - pageSize, 99));
+        parent.cpu.retired += 4096;
+        assert(forkGuest.schedule(parent) && forkGuest.processId() == 1);
+        assert(parent.load64(mapping + sparseRange - pageSize, value) && value == 42);
+    }
+    {
         static std::array<uint8_t, pageSize * 3 + 32> contents{};
         contents[pageSize] = 0x37;
         contents[2 * pageSize] = 0x72;

@@ -403,7 +403,8 @@ uint64_t statFile(Machine& machine, uint64_t address, bool extended, uint64_t si
 
 ProbeLinux::ProbeLinux(uint64_t pid, uint64_t uid, uint64_t memoryLimit)
     : pid(pid), memoryLimit(memoryLimit),
-      anonymousBudget(std::make_shared<AnonymousBudget>(AnonymousBudget{0, 0, 8 * memoryLimit, memoryLimit})),
+      // ART reserves large sparse address ranges per process. Limit physical writes separately.
+      anonymousBudget(std::make_shared<AnonymousBudget>(AnonymousBudget{0, 0, 16 * memoryLimit, memoryLimit})),
       current(&threads[pid]), currentTid(pid), nextTid(pid + 1) {
     current->process = std::make_shared<Process>();
     current->process->id = pid;
@@ -5353,7 +5354,19 @@ bool ProbeLinux::forkProcess(Machine& machine) {
     auto& x = cpu.x;
     // Bionic fork uses SIGCHLD, CLONE_CHILD_SETTID and CLONE_CHILD_CLEARTID.
     if (x[0] != 0x1200011 || x[1]) return false;
-    if (threads.size() >= maxGuestTasks) { x[0] = uint64_t(-11); return true; }
+    const auto retry = [&](std::string_view reason, uint64_t requested) {
+        if (androidLogObserver) {
+            std::ostringstream event;
+            event << "guest fork EAGAIN: pid=" << processId() << " reason=" << reason
+                  << " requested=" << requested << " tasks=" << threads.size() << '/' << maxGuestTasks
+                  << " sparse reserved=" << anonymousBudget->reserved << '/' << anonymousBudget->reservedLimit
+                  << " dirty=" << anonymousBudget->dirty << '/' << anonymousBudget->dirtyLimit;
+            androidLogObserver(event.str());
+        }
+        x[0] = uint64_t(-11);
+        return true;
+    };
+    if (threads.size() >= maxGuestTasks) return retry("task limit", 0);
     Thread child;
     child.process = std::make_shared<Process>(*current->process);
     if (child.process->mdwe & mdweNoInherit) child.process->mdwe = 0;
@@ -5372,11 +5385,14 @@ bool ProbeLinux::forkProcess(Machine& machine) {
         const auto& source = segment.anonymousPages;
         auto& copy = privateCopies[source.get()];
         if (!copy) copy = AnonymousPages::allocate(source->capacity(), anonymousBudget);
-        if (!copy || (!segment.wipeOnFork &&
-                      !source->copyTo(*copy, segment.fileOffset, segment.fileOffset, segment.mappedSize()))) {
-            x[0] = uint64_t(-11);
-            return true;
+        if (!copy) {
+            const auto reason = source->capacity() > anonymousBudget->reservedLimit - anonymousBudget->reserved
+                ? "sparse reservation limit" : "host mapping failed";
+            return retry(reason, source->capacity());
         }
+        if (!segment.wipeOnFork &&
+            !source->copyTo(*copy, segment.fileOffset, segment.fileOffset, segment.mappedSize()))
+            return retry("dirty page limit", segment.mappedSize());
         segment.anonymousPages = copy;
     }
     child.process->parent = processId();
@@ -6866,7 +6882,8 @@ std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedPr
     for (const auto& [_, file] : writableFiles) countShared(file->storage.get());
     for (const auto& file : memoryFiles) countShared(file.lock().get());
     tasks << "  guest memory bytes: anonymous dirty=" << anonymousBudget->dirty
-          << " dense private capacity=" << privateBytes << " shared capacity=" << sharedBytes << '\n';
+          << " dense private capacity=" << privateBytes << " shared capacity=" << sharedBytes
+          << " anonymous reserved=" << anonymousBudget->reserved << '/' << anonymousBudget->reservedLimit << '\n';
     const auto threadName = [](const Thread& thread) -> std::string_view {
         const auto end = std::find(thread.name.begin(), thread.name.end(), uint8_t{0});
         return {reinterpret_cast<const char*>(thread.name.data()), size_t(end - thread.name.begin())};
