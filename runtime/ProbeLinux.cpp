@@ -4486,6 +4486,24 @@ bool ProbeLinux::fileCall(Machine& machine) {
             }
             break;
         }
+        case 47: { // fallocate
+            if (x[2] > INT64_MAX || !x[3] || x[3] > INT64_MAX) { x[0] = invalid; break; }
+            if (x[1]) { x[0] = uint64_t(-95); break; }
+            if (descriptor == descriptors().end() || descriptor->second.pathOnly() ||
+                !(descriptor->second.effectiveFlags() & 3)) { x[0] = uint64_t(-9); break; }
+            const auto& entry = descriptor->second;
+            if (!entry.temporary) { x[0] = uint64_t(entry.pipe ? -29 : -95); break; }
+            if (x[3] > uint64_t(INT64_MAX) - x[2]) { x[0] = uint64_t(-27); break; }
+            auto& file = *entry.temporary;
+            const auto end = x[2] + x[3];
+            // Regular guest files use dense pages. An in-range extent is already allocated.
+            x[0] = end > file.storage->size ? resize(file, end) : 0;
+            if (!x[0]) {
+                markFileModified(file);
+                fileEvent(entry.path, fileModified);
+            }
+            break;
+        }
         case 52: case 55: { // fchmod, fchown
             if (descriptor == descriptors().end() || descriptor->second.pathOnly()) { x[0] = uint64_t(-9); break; }
             const auto& entry = descriptor->second;

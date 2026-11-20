@@ -5914,6 +5914,21 @@ int main() {
             const auto truncated = invoke(reopened, 56, {atCwd, firstPath, 0x202, 0});
             assert(truncated < 256 && invoke(reopened, 80, {truncated, stat}) == 0);
             assert(load(stat + 48) == 0 && load(stat + 88) > 100);
+
+            assert(machine.store64(payload, 0x12345678));
+            assert(invoke(reopened, 64, {truncated, payload, 8}) == 8);
+            assert(invoke(reopened, 47, {truncated, 0, 2, 1}) == 0);
+            assert(invoke(reopened, 80, {truncated, stat}) == 0 && load(stat + 48) == 8);
+            assert(invoke(reopened, 47, {truncated, 0, 4096, 32}) == 0);
+            assert(invoke(reopened, 80, {truncated, stat}) == 0 && load(stat + 48) == 4128);
+            assert(invoke(reopened, 62, {truncated, 0, 1}) == 8);
+            assert(invoke(reopened, 67, {truncated, payload, 16, 0}) == 16);
+            assert(load(payload) == 0x12345678 && load(payload + 8) == 0);
+            assert(invoke(reopened, 47, {truncated, 0, INT64_MAX, 1}) == uint64_t(-27));
+            assert(invoke(reopened, 47, {truncated, 0, 0, 0}) == uint64_t(-22));
+            assert(invoke(reopened, 47, {truncated, 1, 0, 8}) == uint64_t(-95));
+            const auto readOnly = invoke(reopened, 56, {atCwd, firstPath, 0});
+            assert(readOnly < 256 && invoke(reopened, 47, {readOnly, 0, 0, 8}) == uint64_t(-9));
         }
         {
             const auto journalDatabase = (cleanup.directory / "journal.sqlite3").string();
