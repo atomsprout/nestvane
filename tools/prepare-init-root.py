@@ -140,6 +140,8 @@ def collect(serial, readelf, destination, small_art_heap):
         service = "/system/bin/service"
         cmd = "/system/bin/cmd"
         installer_tools = ("/system/bin/sh", "/system/bin/dumpsys", "/system/bin/toybox")
+        tombstoned = "/system/bin/tombstoned"
+        debuggerd = "/system/bin/debuggerd"
         vdc = "/system/bin/vdc"
         keystore = "/system/bin/keystore2"
         casefold = "/system/bin/casefolding_remover"
@@ -178,7 +180,8 @@ def collect(serial, readelf, destination, small_art_heap):
         camera_provider = "/vendor/bin/hw/android.hardware.camera.provider.ranchu"
         audio_hal = "/vendor/bin/hw/android.hardware.audio.service"
         for programs, search_paths in (
-            ((vold, service, cmd, vdc, keystore, casefold, vold_prepare, odsign, bpfloader, iptables, *installer_tools),
+            ((vold, service, cmd, vdc, keystore, casefold, vold_prepare, odsign, bpfloader, iptables,
+              tombstoned, debuggerd, *installer_tools),
              ("/system/lib64",)),
             ((zygote, installd, system_suspend, surfaceflinger, bootanimation, aconfigd, netd, cameraserver, audioserver, gatekeeperd),
              ("/system/lib64", "/system_ext/lib64")),
@@ -402,7 +405,7 @@ def collect(serial, readelf, destination, small_art_heap):
         programs = ("/system/bin/apexd", system_self_test, vendor_self_test, vold, vdc, keystore, keymint,
                     casefold, vold_prepare, odsign, zygote, installd, system_suspend, lights, health, sensors, surfaceflinger,
                     bootanimation, composer, allocator, aconfigd, netd, iptables, cameraserver, camera_provider, audioserver, audio_hal,
-                    gatekeeperd,
+                    gatekeeperd, tombstoned,
                     "/apex/com.android.hardware.gatekeeper/bin/hw/android.hardware.gatekeeper-service.nonsecure",
                     f"{sdkext}/derive_sdk", f"{sdkext}/derive_classpath",
                     "/apex/com.android.art/bin/art_boot", "/apex/com.android.art/bin/artd",
