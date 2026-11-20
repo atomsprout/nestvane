@@ -735,6 +735,10 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
             else if (op == 0x2e208400) value = a - b;
             setLane(result, i, size, value);
         }
+    } else if (op == 0x2e200400) { // UHADD (vector).
+        if (size == 8) return false;
+        for (unsigned i = 0; i < width / size; ++i)
+            setLane(result, i, size, (lane(source, i, size) + lane(other, i, size)) >> 1);
     } else if (const auto comparison = op & ~0x10000000;
                comparison == 0x0e208c00 || comparison == 0x2e208c00 ||
                comparison == 0x2e203c00 || comparison == 0x2e203400 ||

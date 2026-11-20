@@ -733,6 +733,22 @@ int main() {
         const std::array<uint8_t, 16> insertedBytes{0x17, 0x17, 0x17, 0x17, 0x17, 0x17, 0x17, 0x17};
         assert(permute.cpu.v[2] == insertedBytes);
         assert(!executeStartupInstruction(permute, 0x2f7f5421)); // unallocated 1D vector form
+        permute.cpu.v[2] = {255, 255, 0, 1, 7, 11, 128, 2, 1, 2, 3, 4, 5, 6, 7, 8};
+        permute.cpu.v[3] = {255, 254, 1, 0, 11, 14, 129, 4, 9, 10, 11, 12, 13, 14, 15, 16};
+        assert(executeStartupInstruction(permute, 0x2e230442)); // uhadd v2.8b, v2.8b, v3.8b
+        const std::array<uint8_t, 16> halfBytes{255, 254, 0, 0, 9, 12, 128, 3};
+        assert(permute.cpu.v[2] == halfBytes);
+        const std::array<uint32_t, 4> wideLanes{UINT32_MAX, 1, 8, 0x80000000};
+        const std::array<uint32_t, 4> widePeer{UINT32_MAX - 1, UINT32_MAX, 7, 1};
+        const std::array<uint32_t, 4> halfWords{UINT32_MAX - 1, 0x80000000, 7, 0x40000000};
+        std::memcpy(permute.cpu.v[2].data(), wideLanes.data(), sizeof(wideLanes));
+        std::memcpy(permute.cpu.v[3].data(), widePeer.data(), sizeof(widePeer));
+        assert(executeStartupInstruction(permute, 0x6ea30462)); // uhadd v2.4s, v3.4s, v3.4s
+        assert(permute.cpu.v[2] == permute.cpu.v[3]);
+        std::memcpy(permute.cpu.v[2].data(), wideLanes.data(), sizeof(wideLanes));
+        assert(executeStartupInstruction(permute, 0x6ea30442)); // uhadd v2.4s, v2.4s, v3.4s
+        assert(std::memcmp(permute.cpu.v[2].data(), halfWords.data(), sizeof(halfWords)) == 0);
+        assert(!executeStartupInstruction(permute, 0x6ee30442)); // reserved 64-bit lanes
         const std::array<float, 4> leftAdd{1, -2, 3, 4}, rightAdd{3, 1, 6, -4}, expectedSum{4, -1, 9, 0};
         std::memcpy(permute.cpu.v[0].data(), leftAdd.data(), sizeof(leftAdd));
         std::memcpy(permute.cpu.v[2].data(), rightAdd.data(), sizeof(rightAdd));
