@@ -162,6 +162,7 @@ private:
     bool waitForEvents();
     bool waitForHostEvents();
     bool poll(Machine& machine);
+    void removeSiblingThreads();
     bool exitThread(Machine& machine);
     void finishProcess(Process& process, uint32_t status, bool killed);
     bool waitChild(Machine& machine);

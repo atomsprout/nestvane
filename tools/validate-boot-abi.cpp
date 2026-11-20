@@ -2682,10 +2682,21 @@ int main() {
             assert(guest.syscall(task));
             return task.cpu.x[0];
         };
-        for (uint64_t tid = 2; tid <= 256; ++tid)
-            assert(clone(0x3d0f00, base + 256) == tid);
-        assert(clone(0x3d0f00, base + 256) == uint64_t(-11));
-        assert(clone(0x1200011, 0) == uint64_t(-11));
+        for (uint64_t batch = 0; batch < 2; ++batch) {
+            const auto child = clone(0x1200011, 0);
+            assert(child >= 2 && child < 4096);
+            assert(guest.schedule(task) && guest.processId() == child);
+            for (uint64_t created = 1; created <= 1022; ++created)
+                assert(clone(0x3d0f00, base + 256) == child + created);
+            assert(clone(0x3d0f00, base + 256) == uint64_t(-11));
+            assert(clone(0x1200011, 0) == uint64_t(-11));
+            task.cpu.x[0] = 0;
+            task.cpu.x[8] = 94;
+            assert(guest.syscall(task) && guest.blocked());
+            assert(guest.schedule(task) && guest.processId() == 1);
+            const auto report = guest.workerReport(task, 1);
+            assert(report.find("1 active, 1 tracked, limit 1024") != std::string::npos);
+        }
     }
     {
         ProbeLinux guest(1, 0);

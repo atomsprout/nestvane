@@ -31,7 +31,8 @@ constexpr uint64_t maxGuestFileBytes = 2 * 1024 * 1024;
 constexpr size_t maxWritableFiles = 1024;
 // Leave space for boot-created directories alongside a restored /data tree.
 constexpr size_t maxGuestDirectories = 2048;
-constexpr size_t maxGuestTasks = 256;
+// Even the reference system_server alone exceeds 256 threads after boot.
+constexpr size_t maxGuestTasks = 1024;
 constexpr uint32_t guestLoopbackIndex = 1;
 constexpr uint32_t guestLoopbackMtu = 65536;
 constexpr size_t bpfMapBudget = 32 * 1024 * 1024;
@@ -5731,6 +5732,13 @@ void ProbeLinux::finishProcess(Process& process, uint32_t status, bool killed) {
     wakePollers();
 }
 
+void ProbeLinux::removeSiblingThreads() {
+    // Keep the current task until the scheduler saves its address space and advances.
+    std::erase_if(threads, [&](const auto& entry) {
+        return entry.first != currentTid && entry.second.process == current->process;
+    });
+}
+
 bool ProbeLinux::exitThread(Machine& machine) {
     const bool others = std::any_of(threads.begin(), threads.end(), [&](const auto& task) {
         return task.first != currentTid && task.second.wait != Wait::exited;
@@ -6121,6 +6129,11 @@ std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedPr
         report += "  guest worker " + std::to_string(tid) + " waited in epoll for " + path + "\n";
     }
     std::ostringstream tasks;
+    const auto active = std::ranges::count_if(threads, [](const auto& entry) {
+        return entry.second.wait != Wait::exited;
+    });
+    tasks << "  guest tasks: " << active << " active, " << threads.size()
+          << " tracked, limit " << maxGuestTasks << '\n';
     for (const auto& [tid, thread] : threads) {
         const auto& process = *thread.process;
         if (thread.wait == Wait::exited) continue;
@@ -6573,9 +6586,8 @@ bool ProbeLinux::enforceSeccomp(Machine& machine) {
     // The probe supports fatal SIGSYS. A guest SIGSYS handler needs signal-frame delivery.
     const bool wholeProcess = action != 0 && action != 0x00030000;
     const auto process = current->process;
-    for (auto& [tid, task] : threads) {
-        if (task.process == process && (wholeProcess || tid == currentTid)) task.wait = Wait::exited;
-    }
+    if (wholeProcess) removeSiblingThreads();
+    current->wait = Wait::exited;
     if (!processAlive(process->id)) finishProcess(*process, 31, true);
     sliceEnd = 0;
     return true;
@@ -8644,9 +8656,7 @@ bool ProbeLinux::syscall(Machine& machine) {
         case 93: return exitThread(machine);
         case 94:
             if (processId() == pid) return false;
-            for (auto& [tid, thread] : threads) {
-                if (tid != currentTid && thread.process == current->process) thread.wait = Wait::exited;
-            }
+            removeSiblingThreads();
             return exitThread(machine);
         case 174: case 175: case 176: case 177:
             x[0] = (number < 176 ? current->process->userIds : current->process->groupIds)[number & 1];
