@@ -56,23 +56,25 @@ struct AndroidSha256Block {
     }
 };
 
+inline bool androidLoopMatches(const Machine& machine, const uint8_t* bytes,
+                               std::span<const uint32_t> words) {
+    // Some loops straddle a page. Check every instruction in the current mapping.
+    for (uint64_t i = 1; i < words.size(); ++i) {
+        const auto* word = machine.readInstruction(machine.cpu.pc + i * sizeof(uint32_t));
+        if (!word || std::memcmp(word, &words[i], sizeof(uint32_t))) return false;
+    }
+    return std::memcmp(bytes, words.data(), sizeof(uint32_t)) == 0;
+}
+
 // ComputeModifiedUtf8Hash(const char*) in Android 17 libdexfile. Start at
 // the loop header, where w9 holds the current byte and x8 the next address.
 struct AndroidDexHashLoop {
+    static constexpr std::string_view moduleSuffix = "/lib64/libdexfile.so";
     static constexpr uint64_t fileOffset = 0x33ff8;
     static constexpr std::array<uint32_t, 4> words{
         0x4b00012a, 0x38401509, 0x0b001540, 0x35ffffa9,
     };
     static constexpr uint64_t batchSize = 16;
-
-    static bool matches(const Machine& machine, const uint8_t* bytes) {
-        // The loop straddles a page. Check both mappings before entering native code.
-        for (uint64_t i = 1; i < words.size(); ++i) {
-            const auto* word = machine.readInstruction(machine.cpu.pc + i * sizeof(uint32_t));
-            if (!word || std::memcmp(word, &words[i], sizeof(uint32_t))) return false;
-        }
-        return std::memcmp(bytes, words.data(), sizeof(uint32_t)) == 0;
-    }
 
     static uint64_t execute(Machine& machine, uint64_t iterations) {
         auto& cpu = machine.cpu;
@@ -101,6 +103,48 @@ struct AndroidDexHashLoop {
         cpu.x[10] = difference;
         if (!byte) cpu.pc += sizeof(words);
         const auto retired = consumed * words.size();
+        cpu.retired += retired;
+        return retired;
+    }
+};
+
+// Bionic's portable __memset_aarch64 loop with vector pair stores.
+struct AndroidBionicFillLoop {
+    static constexpr std::string_view moduleSuffix = "/lib64/bionic/libc.so";
+    static constexpr uint64_t fileOffset = 0x6f3c0;
+    static constexpr std::array<uint32_t, 5> words{
+        0xad010060, 0xad020060, 0x91010063, 0xf1010042, 0x54ffff88,
+    };
+    static constexpr uint64_t batchSize = 16;
+
+    static uint64_t execute(Machine& machine, uint64_t iterations) {
+        auto& cpu = machine.cpu;
+        // Keep the fast write in one guest page. The interpreter handles stores
+        // crossing a page or encountering a fault, including partial pair stores.
+        if (machine.read(cpu.pc, sizeof(uint32_t), 2)) return 0;
+        constexpr uint64_t blockBytes = 64;
+        const auto destination = cpu.x[3] + 32;
+        const auto pageRemaining = pageSize - (destination & (pageSize - 1));
+        const auto requested = cpu.x[2];
+        const auto toExit = std::max(uint64_t{1}, requested / blockBytes + (requested % blockBytes != 0));
+        const auto count = std::min({iterations, batchSize, toExit, pageRemaining / blockBytes});
+        if (!count) return 0;
+
+        std::array<uint8_t, batchSize * blockBytes> buffer;
+        const auto written = count * blockBytes;
+        const auto& pattern = cpu.v[0];
+        for (uint64_t offset = 0; offset < written; offset += pattern.size())
+            std::memcpy(buffer.data() + offset, pattern.data(), pattern.size());
+        if (!machine.write(destination, std::span(buffer).first(written))) return 0;
+
+        const auto previous = requested - (count - 1) * blockBytes;
+        const auto remaining = previous - blockBytes;
+        cpu.x[2] = remaining;
+        cpu.x[3] += written;
+        cpu.nzcv = ((remaining >> 63) << 3) | (remaining == 0 ? 4 : 0) |
+                   (previous >= blockBytes ? 2 : 0) | (((previous ^ remaining) & previous) >> 63);
+        if (previous <= blockBytes) cpu.pc += sizeof(words);
+        const auto retired = count * words.size();
         cpu.retired += retired;
         return retired;
     }

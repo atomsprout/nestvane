@@ -71,9 +71,9 @@ int main() {
         }, {}};
         Machine native(image), reference(image);
         const auto* instruction = native.readInstruction(entry);
-        assert(AndroidDexHashLoop::matches(native, instruction));
+        assert(androidLoopMatches(native, instruction, words));
         native.segments[1].flags = 4;
-        assert(!AndroidDexHashLoop::matches(native, instruction));
+        assert(!androidLoopMatches(native, instruction, words));
         native.segments[1].flags = 5;
         for (unsigned example = 0; example < 256; ++example) {
             CPU initial;
@@ -103,6 +103,50 @@ int main() {
         native.cpu.x[8] = data + pageSize;
         const CPU beforeFault = native.cpu;
         assert(!AndroidDexHashLoop::execute(native, 16) && native.cpu == beforeFault);
+    }
+    {
+        constexpr uint64_t entry = 0x53c0, data = 0x7000;
+        constexpr auto words = AndroidBionicFillLoop::words;
+        std::vector<uint8_t> code(sizeof(words)), input(pageSize, 0x55);
+        std::memcpy(code.data(), words.data(), code.size());
+        const Image image{entry, {{entry, code, 5}, {data, input, 6}}, {}};
+        Machine native(image), reference(image);
+        assert(androidLoopMatches(native, native.readInstruction(entry), words));
+        const std::array<uint64_t, 8> lengths{0, 1, 63, 64, 65, 1024, INT64_MAX, uint64_t{1} << 63};
+        for (size_t example = 0; example < 256; ++example) {
+            CPU initial;
+            initial.pc = entry;
+            initial.retired = 5 * example;
+            initial.nzcv = example % 16;
+            initial.x[2] = lengths[example % lengths.size()];
+            initial.x[3] = example % 2 ? data + pageSize - 128 : data;
+            initial.exclusiveAddress = initial.x[3] + (example % 4) * 32;
+            initial.exclusiveSize = 16;
+            for (size_t index = 0; index < initial.v[0].size(); ++index) initial.v[0][index] = example * 31 + index;
+            assert(native.write(data, input) && reference.write(data, input));
+            native.cpu = reference.cpu = initial;
+            const auto retired = AndroidBionicFillLoop::execute(native, 1 + example % 16);
+            assert(retired && retired <= (1 + example % 16) * words.size());
+            for (uint64_t i = 0; i < retired; ++i) {
+                const auto word = words[(reference.cpu.pc - entry) / sizeof(uint32_t)];
+                const auto decoded = decode(word);
+                if (decoded.op == Op::unsupported) assert(executeStartupInstruction(reference, word));
+                else executeDecoded(reference, decoded);
+            }
+            assert(native.cpu == reference.cpu);
+            assert(std::memcmp(native.read(data, pageSize, 4), reference.read(data, pageSize, 4), pageSize) == 0);
+        }
+        native.cpu.pc = entry;
+        native.cpu.x[3] = data + pageSize - 64;
+        const CPU beforeFault = native.cpu;
+        assert(!AndroidBionicFillLoop::execute(native, 16) && native.cpu == beforeFault);
+        native.cpu.x[3] = data;
+        native.segments[1].flags = 4;
+        const CPU readOnly = native.cpu;
+        assert(!AndroidBionicFillLoop::execute(native, 16) && native.cpu == readOnly);
+        native.segments[0].flags = 7;
+        native.segments[1].flags = 6;
+        assert(!AndroidBionicFillLoop::execute(native, 16) && native.cpu == readOnly);
     }
     {
         ProbeLinux guest(1, 0);

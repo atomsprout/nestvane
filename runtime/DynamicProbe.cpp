@@ -136,8 +136,30 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
     uint64_t nextSample = sampleBoot ? sampleStride : UINT64_MAX;
     uint64_t samples = 0, unattributedSamples = 0;
     uint64_t sha256AotEntries = 0, sha256AotInstructions = 0;
-    uint64_t dexAotEntries = 0, dexAotInstructions = 0;
-    const uint8_t* dexHashEntry = nullptr;
+    struct NativeLoop {
+        const uint8_t* entry = nullptr;
+        uint64_t entries = 0, instructions = 0;
+    } dexAot, bionicFillAot;
+    const auto runNativeLoop = [&]<typename Loop>(NativeLoop& stats, const uint8_t* bytes) {
+        if (cpu.pc % pageSize != Loop::fileOffset % pageSize || !androidLoopMatches(machine, bytes, Loop::words))
+            return false;
+        if (stats.entry != bytes) {
+            const auto location = linux.guestCodeFile(bytes);
+            if (!location || !location->first.ends_with(Loop::moduleSuffix) || location->second != Loop::fileOffset)
+                return false;
+            stats.entry = bytes;
+        }
+        const auto budget = std::min({instructionLimit - cpu.retired, nextSample - cpu.retired,
+                                      uint64_t{4096} - (cpu.retired & 4095)});
+        constexpr auto loopSize = Loop::words.size();
+        if (budget < loopSize || !linux.hasSliceBudget(cpu.retired, loopSize)) return false;
+        constexpr auto batch = Loop::batchSize * loopSize;
+        const auto iterations = budget >= batch && linux.hasSliceBudget(cpu.retired, batch) ? Loop::batchSize : 1;
+        const auto retired = Loop::execute(machine, iterations);
+        stats.entries += retired != 0;
+        stats.instructions += retired;
+        return retired != 0;
+    };
     // File offsets survive ASLR. Keep the cumulative page ranking and report
     // smaller regions for each snapshot interval so later boot phases stay visible.
     using CodeLocation = std::pair<std::string, uint64_t>;
@@ -157,12 +179,14 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
         }
     };
     const auto appendCodeSamples = [&](std::ostream& out, uint64_t elapsedMs) {
-        if (bootAot)
+        if (bootAot) {
             out << "  Android SHA-256 AOT entries: " << sha256AotEntries
-                << ", guest instructions: " << sha256AotInstructions << '\n';
-        if (bootAot)
-            out << "  Android DEX hash AOT entries: " << dexAotEntries
-                << ", guest instructions: " << dexAotInstructions << '\n';
+                << ", guest instructions: " << sha256AotInstructions << '\n'
+                << "  Android DEX hash AOT entries: " << dexAot.entries
+                << ", guest instructions: " << dexAot.instructions << '\n'
+                << "  Android Bionic fill AOT entries: " << bionicFillAot.entries
+                << ", guest instructions: " << bionicFillAot.instructions << '\n';
+        }
         if (!sampleBoot) return;
         out << "  guest instruction samples: " << samples << ", unattributed: " << unattributedSamples << '\n';
         appendRanking(out, codeSamples, 20);
@@ -283,27 +307,11 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
             continue;
         }
         std::memcpy(&word, bytes, sizeof(word));
-        if (bootAot && word == AndroidDexHashLoop::words.front() &&
-            (cpu.pc & (pageSize - 1)) == AndroidDexHashLoop::fileOffset % pageSize &&
-            AndroidDexHashLoop::matches(machine, bytes)) {
-            if (dexHashEntry != bytes) {
-                const auto location = linux.guestCodeFile(bytes);
-                if (location && location->first.ends_with("/lib64/libdexfile.so") &&
-                    location->second == AndroidDexHashLoop::fileOffset) dexHashEntry = bytes;
-            }
-            const auto budget = std::min({instructionLimit - cpu.retired, nextSample - cpu.retired,
-                                          uint64_t{4096} - (cpu.retired & 4095)});
-            constexpr auto loopSize = AndroidDexHashLoop::words.size();
-            if (dexHashEntry == bytes && budget >= loopSize && linux.hasSliceBudget(cpu.retired, loopSize)) {
-                constexpr auto batch = AndroidDexHashLoop::batchSize * loopSize;
-                const auto iterations = budget >= batch && linux.hasSliceBudget(cpu.retired, batch)
-                    ? AndroidDexHashLoop::batchSize : 1;
-                if (const auto retired = AndroidDexHashLoop::execute(machine, iterations)) {
-                    ++dexAotEntries;
-                    dexAotInstructions += retired;
-                    continue;
-                }
-            }
+        if (bootAot) {
+            if (word == AndroidDexHashLoop::words.front() &&
+                runNativeLoop.operator()<AndroidDexHashLoop>(dexAot, bytes)) continue;
+            if (word == AndroidBionicFillLoop::words.front() &&
+                runNativeLoop.operator()<AndroidBionicFillLoop>(bionicFillAot, bytes)) continue;
         }
         auto& decoded = decodedWords[((word ^ (word >> 16)) * 0x9e3779b9U) >> 21];
         if (decoded.word != word) {
