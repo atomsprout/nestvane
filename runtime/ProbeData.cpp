@@ -73,6 +73,8 @@ void ProbeLinux::mountData(const std::string& databasePath) {
         "CREATE TABLE IF NOT EXISTS restorecon_progress (path TEXT PRIMARY KEY, value INTEGER NOT NULL);"
         "CREATE TABLE IF NOT EXISTS directory_user_attributes (path TEXT NOT NULL, name TEXT NOT NULL,"
         " value BLOB NOT NULL, PRIMARY KEY(path,name));"
+        "CREATE TABLE IF NOT EXISTS inode_acls (path TEXT NOT NULL, defaults INTEGER NOT NULL,"
+        " value BLOB NOT NULL, PRIMARY KEY(path,defaults));"
         "CREATE TABLE IF NOT EXISTS inode_times (path TEXT PRIMARY KEY, a_sec INTEGER NOT NULL, a_ns INTEGER NOT NULL,"
         " m_sec INTEGER NOT NULL, m_ns INTEGER NOT NULL, c_sec INTEGER NOT NULL, c_ns INTEGER NOT NULL); BEGIN;"))
         throw std::runtime_error("cannot open guest data database");
@@ -167,6 +169,25 @@ void ProbeLinux::mountData(const std::string& databasePath) {
     }
     attributes.reset();
     if (result != SQLITE_DONE) throw std::runtime_error("cannot read guest directory attribute entries");
+    auto acls = prepare(raw, "SELECT path,defaults,value FROM inode_acls");
+    if (!acls) throw std::runtime_error("cannot read guest inode ACLs");
+    while ((result = sqlite3_step(acls.get())) == SQLITE_ROW) {
+        const auto path = columnBytes(acls.get(), 0), value = columnBytes(acls.get(), 2);
+        const auto defaults = sqlite3_column_int64(acls.get(), 1);
+        auto decoded = PosixAcl::decode({reinterpret_cast<const uint8_t*>(value.data()), value.size()});
+        if (!decoded || decoded->empty() || (defaults != 0 && defaults != 1) ||
+            sqlite3_column_type(acls.get(), 1) != SQLITE_INTEGER)
+            throw std::runtime_error("invalid guest inode ACL");
+        if (const auto dir = loadedDirectories.find(path); dir != loadedDirectories.end()) {
+            (defaults ? dir->second.defaultAcl : dir->second.accessAcl) = std::move(*decoded);
+        } else if (const auto file = loadedFiles.find(path); !defaults && file != loadedFiles.end()) {
+            file->second->accessAcl = std::move(*decoded);
+        } else {
+            throw std::runtime_error("ACL for missing or incompatible guest inode");
+        }
+    }
+    acls.reset();
+    if (result != SQLITE_DONE) throw std::runtime_error("cannot read guest inode ACL entries");
     auto inodeTimes = prepare(raw, "SELECT path,a_sec,a_ns,m_sec,m_ns,c_sec,c_ns FROM inode_times");
     if (!inodeTimes) throw std::runtime_error("cannot read guest inode times");
     while ((result = sqlite3_step(inodeTimes.get())) == SQLITE_ROW) {
@@ -216,13 +237,23 @@ bool ProbeLinux::syncData() {
             return false;
         check.reset();
         if (!execute(database, "DELETE FROM entries; DELETE FROM restorecon_progress; DELETE FROM inode_times;"
-                               "DELETE FROM directory_user_attributes;"))
+                               "DELETE FROM directory_user_attributes; DELETE FROM inode_acls;"))
             return false;
         auto insert = prepare(database, "INSERT INTO entries VALUES(?,?,?,?,?,?,?,?)");
         auto marker = prepare(database, "INSERT INTO restorecon_progress VALUES(?,?)");
         auto inodeTimes = prepare(database, "INSERT INTO inode_times VALUES(?,?,?,?,?,?,?)");
         auto attributes = prepare(database, "INSERT INTO directory_user_attributes VALUES(?,?,?)");
-        if (!insert || !marker || !inodeTimes || !attributes) return false;
+        auto acls = prepare(database, "INSERT INTO inode_acls VALUES(?,?,?)");
+        if (!insert || !marker || !inodeTimes || !attributes || !acls) return false;
+        const auto writeAcl = [&](const std::string& path, bool defaults, const PosixAcl& acl) {
+            if (acl.empty()) return true;
+            const auto value = acl.encode();
+            auto* cursor = acls.get();
+            return sqlite3_reset(cursor) == SQLITE_OK &&
+                sqlite3_bind_text(cursor, 1, path.data(), int(path.size()), SQLITE_TRANSIENT) == SQLITE_OK &&
+                sqlite3_bind_int(cursor, 2, defaults) == SQLITE_OK &&
+                bindBytes(cursor, 3, value) && sqlite3_step(cursor) == SQLITE_DONE;
+        };
         const auto writeTimes = [&](const std::string& path, const GuestInodeTimes& times) {
             if (times == GuestInodeTimes{}) return true;
             auto* cursor = inodeTimes.get();
@@ -251,7 +282,8 @@ bool ProbeLinux::syncData() {
             const auto& context = directory.securityContext;
             if (!row(path, 0, directory.mode, directory.uid, directory.gid, 0, {},
                      {reinterpret_cast<const uint8_t*>(context.data()), context.size()}) ||
-                !writeTimes(path, directory.times)) return false;
+                !writeTimes(path, directory.times) || !writeAcl(path, false, directory.accessAcl) ||
+                !writeAcl(path, true, directory.defaultAcl)) return false;
             if (directory.restoreconInProgress &&
                 (sqlite3_reset(marker.get()) != SQLITE_OK ||
                  sqlite3_bind_text(marker.get(), 1, path.data(), int(path.size()), SQLITE_TRANSIENT) != SQLITE_OK ||
@@ -272,7 +304,7 @@ bool ProbeLinux::syncData() {
                                std::span<const uint8_t>(attribute->second);
             if (!row(path, 1, file->mode, file->uid, file->gid, file->inode,
                      std::span(file->storage->pages).first(file->storage->size), label) ||
-                !writeTimes(path, file->times)) return false;
+                !writeTimes(path, file->times) || !writeAcl(path, false, file->accessAcl)) return false;
         }
         for (const auto& [path, link] : links) {
             if (dataPath(path) && !row(path, 2, 0, 0, 0, 0,

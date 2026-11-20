@@ -6,6 +6,7 @@
 #include "GuestRoute.hpp"
 #include "GuestTouch.hpp"
 #include "Runtime.hpp"
+#include "PosixAcl.hpp"
 #include "GuestFirewall.hpp"
 #include "Ext4.hpp"
 
@@ -198,6 +199,7 @@ private:
         std::vector<RecordLock> locks;
         std::shared_ptr<SharedFileBytes> storage = std::make_shared<SharedFileBytes>();
         std::map<std::string, std::vector<uint8_t>, std::less<>> attributes;
+        PosixAcl accessAcl{};
         std::shared_ptr<BpfMap> pinnedMap{};
         std::shared_ptr<const BpfProgram> pinnedProgram{};
         bool pinnedBpfObject() const { return pinnedMap || pinnedProgram; }
@@ -597,7 +599,10 @@ private:
     bool validAppProcessContext(std::string_view label) const;
     bool canSpecializeApp(std::string_view label) const;
     bool canAccessParent(std::string_view path, bool modify) const;
-    const Directory* setgidParent(std::string_view path) const;
+    const Directory* parentDirectory(std::string_view path) const;
+    PosixAcl inheritAcl(const Directory* parent, uint32_t& mode) const;
+    bool inodeAllows(const auto& node, unsigned requested) const;
+    uint64_t changePosixAcl(Machine& machine, const Descriptor& entry, bool defaults, bool removing);
     uint64_t chmodDirectory(Directory& directory, uint32_t mode) const;
     uint64_t changeDirectoryUserAttribute(Machine& machine, const Descriptor& entry,
                                           const std::string& name, bool removing);
@@ -767,6 +772,7 @@ private:
         GuestInodeTimes times{};
         static constexpr size_t maxUserAttributes = 8, maxUserAttributeValue = 4096;
         std::map<std::string, std::vector<uint8_t>, std::less<>> userAttributes{};
+        PosixAcl accessAcl{}, defaultAcl{};
     };
     struct BinderDevice : Directory {
         uint32_t minor;

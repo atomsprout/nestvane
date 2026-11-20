@@ -477,7 +477,7 @@ uint64_t ProbeLinux::changeWorkingDirectory(std::string path) {
     if (userId()) {
         if (const auto found = directories.find(backing); found != directories.end()) {
             const auto& node = found->second;
-            if (!(node.mode >> permissionShift(node.uid, node.gid) & 1)) return uint64_t(-13);
+            if (!inodeAllows(node, 1)) return uint64_t(-13);
         }
     }
     current->process->workingDirectory = *logical;
@@ -1368,9 +1368,30 @@ uint64_t ProbeLinux::writeFileBytes(WritableFile& file, uint64_t offset, std::sp
     return 0;
 }
 
-const ProbeLinux::Directory* ProbeLinux::setgidParent(std::string_view path) const {
+const ProbeLinux::Directory* ProbeLinux::parentDirectory(std::string_view path) const {
     const auto parent = directories.find(path.substr(0, path.rfind('/')));
-    return parent != directories.end() && (parent->second.mode & setgidMode) ? &parent->second : nullptr;
+    return parent != directories.end() ? &parent->second : nullptr;
+}
+
+PosixAcl ProbeLinux::inheritAcl(const Directory* parent, uint32_t& mode) const {
+    if (!parent || parent->defaultAcl.empty()) {
+        mode &= ~current->process->umask;
+        return {};
+    }
+    auto acl = parent->defaultAcl;
+    acl.updateMode(mode, true);
+    mode = (mode & ~0777U) | acl.modeBits();
+    return acl.extended() ? std::move(acl) : PosixAcl{};
+}
+
+bool ProbeLinux::inodeAllows(const auto& node, unsigned requested) const {
+    if (!userId()) return true;
+    if (node.accessAcl.empty())
+        return ((node.mode >> permissionShift(node.uid, node.gid)) & requested) == requested;
+    const auto inGroup = [&](uint32_t group) {
+        return groupId() == group || std::ranges::find(current->process->groups, group) != current->process->groups.end();
+    };
+    return node.accessAcl.allows(requested, userId() == node.uid, userId(), node.gid, inGroup);
 }
 
 uint64_t ProbeLinux::chmodDirectory(Directory& directory, uint32_t mode) const {
@@ -1380,6 +1401,7 @@ uint64_t ProbeLinux::chmodDirectory(Directory& directory, uint32_t mode) const {
     if (userId() != 0 && !(process.effectiveCaps & capFsetid) && groupId() != directory.gid &&
         std::ranges::find(process.groups, directory.gid) == process.groups.end()) mode &= ~setgidMode;
     directory.mode = mode & 03777;
+    directory.accessAcl.updateMode(directory.mode, false);
     return 0;
 }
 
@@ -1399,8 +1421,7 @@ bool ProbeLinux::canAccessParent(std::string_view path, bool modify) const {
         const auto requested = immediate && modify ? 3U : 1U;
         unsigned permission = 0;
         if (directory != directories.end()) {
-            const auto& metadata = directory->second;
-            permission = metadata.mode >> permissionShift(metadata.uid, metadata.gid);
+            permission = inodeAllows(directory->second, requested) ? requested : 0;
         } else if (view && parent == root) {
             permission = view->mode >> permissionShift(0, view->gid);
         }
@@ -1677,7 +1698,12 @@ uint64_t ProbeLinux::open(const Machine& machine, const std::string& path, uint3
     if (entry && entry->temporary && userId() != 0 && !(flags & pathOnly)) {
         const auto& file = *entry->temporary;
         const unsigned requested = (flags & 3) == 2 ? 6 : ((flags & 3) || (flags & truncate)) ? 2 : 4;
-        if (((file.mode >> permissionShift(file.uid, file.gid)) & requested) != requested) return uint64_t(-13);
+        if (!inodeAllows(file, requested)) return uint64_t(-13);
+    }
+    if (entry && entry->node == Node::directory && !(flags & pathOnly)) {
+        const auto directory = directories.find(pathname);
+        if (directory != directories.end() && !directory->second.accessAcl.empty() &&
+            !inodeAllows(directory->second, 4)) return uint64_t(-13);
     }
     const auto fd = freeDescriptor();
     if (fd == descriptorCapacity) return uint64_t(-24);
@@ -1695,10 +1721,11 @@ uint64_t ProbeLinux::open(const Machine& machine, const std::string& path, uint3
             })) >= maxWritableFiles) return uint64_t(-28);
         auto file = std::make_shared<WritableFile>();
         file->inode = nextInode++;
-        file->mode = mode & 0777 & ~current->process->umask;
+        file->mode = mode & 0777;
         file->uid = userId();
-        const auto* inherited = setgidParent(pathname);
-        file->gid = inherited ? inherited->gid : groupId();
+        const auto* parentMetadata = parentDirectory(pathname);
+        file->gid = parentMetadata && (parentMetadata->mode & setgidMode) ? parentMetadata->gid : groupId();
+        file->accessAcl = inheritAcl(parentMetadata, file->mode);
         file->persistent = persistent;
         markFileModified(*file);
         file->times[0] = file->times[2];
@@ -4045,8 +4072,10 @@ bool ProbeLinux::fileCall(Machine& machine) {
                     }
                     return uint64_t(0);
                 };
-                if (entry->temporary) x[0] = changeMetadata(*entry->temporary);
-                else if (entry->cgroupFile) x[0] = changeMetadata(*entry->cgroupFile);
+                if (entry->temporary) {
+                    x[0] = changeMetadata(*entry->temporary);
+                    if (!x[0] && x[8] == 53) entry->temporary->accessAcl.updateMode(entry->temporary->mode, false);
+                } else if (entry->cgroupFile) x[0] = changeMetadata(*entry->cgroupFile);
                 else if (auto socket = socketPaths.find(entry->path); socket != socketPaths.end())
                     x[0] = changeMetadata(socket->second);
                 else if (!writablePath(target ? *target : path)) x[0] = uint64_t(-30);
@@ -4067,11 +4096,14 @@ bool ProbeLinux::fileCall(Machine& machine) {
                 else if (!canAccessParent(backing, true)) x[0] = uint64_t(-13);
                 else if (directories.size() - ext4DirectoryCount >= maxGuestDirectories) x[0] = uint64_t(-28);
                 else {
-                    const auto* inherited = setgidParent(backing);
-                    const auto gid = inherited ? inherited->gid : groupId();
-                    auto mode = uint32_t(x[2] & 01777 & ~current->process->umask);
-                    if (inherited) mode |= setgidMode;
-                    directories.emplace(backing, Directory{mode, userId(), gid, newFileContext(backing)});
+                    const auto* parentMetadata = parentDirectory(backing);
+                    const bool setgid = parentMetadata && (parentMetadata->mode & setgidMode);
+                    const auto gid = setgid ? parentMetadata->gid : groupId();
+                    Directory directory{uint32_t(x[2] & 01777), userId(), gid, newFileContext(backing)};
+                    if (setgid) directory.mode |= setgidMode;
+                    directory.accessAcl = inheritAcl(parentMetadata, directory.mode);
+                    if (parentMetadata) directory.defaultAcl = parentMetadata->defaultAcl;
+                    directories.emplace(backing, std::move(directory));
                     if (const auto* view = mountFor(path); view && view->device == "cgroup2") {
                         cgroupFiles.emplace(backing + std::string(cgroupProcs),
                                             std::make_shared<Directory>(Directory{0644, userId(), gid}));
@@ -4088,7 +4120,13 @@ bool ProbeLinux::fileCall(Machine& machine) {
             } else if (!entry) {
                 x[0] = uint64_t(-2);
             } else if (x[8] == 48) {
-                x[0] = x[2] > 7 ? invalid : (x[2] & 2) && entry->node == Node::regular ? uint64_t(-13) : 0;
+                const auto directory = directories.find(entry->path);
+                if (x[2] > 7) x[0] = invalid;
+                else if (entry->temporary && !entry->temporary->accessAcl.empty())
+                    x[0] = inodeAllows(*entry->temporary, x[2]) ? 0 : uint64_t(-13);
+                else if (directory != directories.end() && !directory->second.accessAcl.empty())
+                    x[0] = inodeAllows(directory->second, x[2]) ? 0 : uint64_t(-13);
+                else x[0] = (x[2] & 2) && entry->node == Node::regular ? uint64_t(-13) : 0;
             } else {
                 if (x[3]) return false;
                 x[0] = stat(machine, x[2], *entry);
@@ -4435,7 +4473,10 @@ bool ProbeLinux::fileCall(Machine& machine) {
             const auto& file = entry.temporary;
             if (!file) { x[0] = uint64_t(-30); break; }
             if (userId() != 0 && userId() != file->uid) { x[0] = uint64_t(-1); break; }
-            if (x[8] == 52) file->mode = x[1] & 0777;
+            if (x[8] == 52) {
+                file->mode = x[1] & 0777;
+                file->accessAcl.updateMode(file->mode, false);
+            }
             else {
                 if (userId() != 0) { x[0] = uint64_t(-1); break; }
                 if (uint32_t(x[1]) != UINT32_MAX) file->uid = uint32_t(x[1]);
@@ -4490,7 +4531,7 @@ bool ProbeLinux::fileCall(Machine& machine) {
                 const auto& visible = entry->visiblePath.empty() ? entry->path : entry->visiblePath;
                 if (!writablePath(visible)) { x[0] = uint64_t(-30); break; }
                 auto& node = directory->second;
-                if (userId() != 0 && !(node.mode >> permissionShift(node.uid, node.gid) & 2)) {
+                if (!inodeAllows(node, 2)) {
                     x[0] = uint64_t(-13);
                     break;
                 }
@@ -4508,6 +4549,10 @@ bool ProbeLinux::fileCall(Machine& machine) {
                 }
                 fileEvent(entry->path, fileAttributes);
                 x[0] = 0;
+                break;
+            }
+            if (*name == accessAclName || *name == defaultAclName) {
+                x[0] = changePosixAcl(machine, *entry, *name == defaultAclName, removing);
                 break;
             }
             if (name->starts_with("user.")) {
@@ -5644,7 +5689,7 @@ uint64_t ProbeLinux::updateTimes(Machine& machine) {
         const bool touch = requested[1] == now && requested[3] == now;
         if (userId() != 0 && userId() != node.uid) {
             if (!touch) return uint64_t(-1);
-            if (!(node.mode >> permissionShift(node.uid, node.gid) & 2)) return uint64_t(-13);
+            if (!inodeAllows(node, 2)) return uint64_t(-13);
         }
         const auto currentTime = realtimeAt(steady_clock::now());
         const auto whole = floor<seconds>(currentTime);
@@ -5676,7 +5721,7 @@ uint64_t ProbeLinux::changeDirectoryUserAttribute(Machine& machine, const Descri
     if (userId() != 0) {
         if ((node.mode & 01000) && userId() != node.uid &&
             !(current->process->effectiveCaps & capFowner)) return uint64_t(-1);
-        if (!(node.mode >> permissionShift(node.uid, node.gid) & 2)) return uint64_t(-13);
+        if (!inodeAllows(node, 2)) return uint64_t(-13);
     }
     auto& attributes = node.userAttributes;
     const auto existing = attributes.find(name);
@@ -5697,6 +5742,49 @@ uint64_t ProbeLinux::changeDirectoryUserAttribute(Machine& machine, const Descri
     }
     fileEvent(entry.path, fileAttributes, true);
     return 0;
+}
+
+uint64_t ProbeLinux::changePosixAcl(Machine& machine, const Descriptor& entry, bool defaults, bool removing) {
+    if (!dataPath(entry.path)) return uint64_t(-95);
+    const auto& visible = entry.visiblePath.empty() ? entry.path : entry.visiblePath;
+    if (!writablePath(visible)) return uint64_t(-30);
+    const auto& x = machine.cpu.x;
+    constexpr uint64_t capFowner = 1ULL << 3;
+    const auto update = [&](PosixAcl& acl, uint32_t uid, uint32_t& mode) -> uint64_t {
+        if (userId() && userId() != uid && !(current->process->effectiveCaps & capFowner))
+            return uint64_t(-1);
+        if (removing) {
+            if (acl.empty()) return uint64_t(-61);
+            acl = {};
+        } else {
+            if (x[4] > 2) return invalid;
+            if (x[4] == 1 && !acl.empty()) return uint64_t(-17);
+            if (x[4] == 2 && acl.empty()) return uint64_t(-61);
+            if (x[3] > PosixAcl::maxBytes) return uint64_t(-7);
+            std::vector<uint8_t> bytes(x[3]);
+            if (!bytes.empty() && !machine.readInto(x[2], bytes)) return uint64_t(-14);
+            auto decoded = bytes.empty() ? std::optional<PosixAcl>(PosixAcl{}) : PosixAcl::decode(bytes);
+            if (!decoded) return invalid;
+            if (!defaults && !decoded->empty()) {
+                mode = (mode & ~0777U) | decoded->modeBits();
+                if (!decoded->extended()) decoded = PosixAcl{};
+            }
+            acl = std::move(*decoded);
+        }
+        fileEvent(entry.path, fileAttributes, entry.node == Node::directory);
+        return 0;
+    };
+    if (entry.node == Node::directory) {
+        const auto directory = directories.find(entry.path);
+        if (directory == directories.end()) return uint64_t(-95);
+        auto& node = directory->second;
+        return update(defaults ? node.defaultAcl : node.accessAcl, node.uid, node.mode);
+    }
+    if (entry.temporary && !defaults) {
+        auto& node = *entry.temporary;
+        return update(node.accessAcl, node.uid, node.mode);
+    }
+    return defaults && entry.temporary ? uint64_t(-13) : uint64_t(-95);
 }
 
 bool ProbeLinux::securityCall(Machine& machine) {
@@ -5729,12 +5817,24 @@ bool ProbeLinux::securityCall(Machine& machine) {
         if (!fd) { x[0] = uint64_t(-2); return true; }
     }
     std::span<const uint8_t> value;
+    std::vector<uint8_t> aclBytes;
     bool present = false;
+    if (*name == accessAclName || *name == defaultAclName) {
+        if (fd->pathOnly()) { x[0] = uint64_t(-9); return true; }
+        if (fd->node == Node::directory && dataPath(fd->path)) {
+            const auto directory = directories.find(fd->path);
+            if (directory != directories.end())
+                aclBytes = (*name == defaultAclName ? directory->second.defaultAcl : directory->second.accessAcl).encode();
+        } else if (fd->temporary && *name == accessAclName && dataPath(fd->path)) {
+            aclBytes = fd->temporary->accessAcl.encode();
+        }
+        value = aclBytes;
+    }
     if (name->starts_with("user.") && *name != restoreconMarker) {
         const auto directory = directories.find(fd->path);
         if (fd->node == Node::directory && directory != directories.end() && dataPath(fd->path)) {
             const auto& node = directory->second;
-            if (userId() != 0 && !(node.mode >> permissionShift(node.uid, node.gid) & 4)) {
+            if (!inodeAllows(node, 4)) {
                 x[0] = uint64_t(-13);
                 return true;
             }
@@ -5751,7 +5851,7 @@ bool ProbeLinux::securityCall(Machine& machine) {
             return true;
         }
         const auto& node = directory->second;
-        if (userId() != 0 && !(node.mode >> permissionShift(node.uid, node.gid) & 4)) {
+        if (!inodeAllows(node, 4)) {
             x[0] = uint64_t(-13);
             return true;
         }
@@ -6358,9 +6458,9 @@ bool ProbeLinux::inotify(Machine& machine) {
     if (!canAccessParent(watched, false)) { x[0] = uint64_t(-13); return true; }
     if (userId()) {
         const auto dir = directories.find(watched);
-        if ((dir != directories.end() && !((dir->second.mode >> permissionShift(dir->second.uid, dir->second.gid)) & 4)) ||
+        if ((dir != directories.end() && !inodeAllows(dir->second, 4)) ||
             (entry && entry->temporary &&
-             !((entry->temporary->mode >> permissionShift(entry->temporary->uid, entry->temporary->gid)) & 4))) {
+             !inodeAllows(*entry->temporary, 4))) {
             x[0] = uint64_t(-13);
             return true;
         }

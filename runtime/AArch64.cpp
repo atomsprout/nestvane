@@ -432,10 +432,13 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
         };
         if (wide) convert.operator()<double, uint64_t, int64_t>();
         else convert.operator()<float, uint32_t, int32_t>();
-    } else if ((word & 0xdfbffc00) == 0x5ea1b800 || (word & 0x9fbffc00) == 0x0ea1b800 ||
-               (word & 0xdf80fc00) == 0x5f00fc00 || (word & 0x9f80fc00) == 0x0f00fc00) {
-        // FCVTZS/FCVTZU in SIMD registers. The immediate form scales before rounding toward zero.
+    } else if (const auto conversion = word & 0x8fbffc00;
+               conversion == 0x0ea1b800 || conversion == 0x0e21a800 ||
+               (word & 0x8f80fc00) == 0x0f00fc00) {
+        // FCVT{N,Z}{S,U} in SIMD registers. Fixed-point immediates round toward zero.
+        const bool nearest = conversion == 0x0e21a800;
         const bool fixed = word & 0x01000000;
+        if (scalar && width != 16) return false;
         const auto immediate = (word >> 16) & 127;
         if (fixed && immediate < 32) return false;
         const bool wide = word & 0x400000;
@@ -449,7 +452,18 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
             const auto input = lane(source, i, size);
             const double number = wide ? std::bit_cast<double>(input) :
                 static_cast<double>(std::bit_cast<float>(uint32_t(input)));
-            const double value = fixed ? std::ldexp(number, scale) : number;
+            double value = fixed ? std::ldexp(number, scale) : number;
+            if (nearest) {
+                if (std::isfinite(number)) {
+                    const auto lower = std::floor(number);
+                    const auto fraction = number - lower;
+                    value = lower + (fraction > 0.5 || (fraction == 0.5 && std::fmod(lower, 2.0) != 0));
+                }
+                const bool invalid = std::isnan(value) || value >= limit ||
+                    value < (unsignedResult ? 0 : -limit);
+                if (invalid) cpu.fpsr |= 1; // IOC
+                else if (value != number) cpu.fpsr |= 1U << 4; // IXC
+            }
             uint64_t converted = 0;
             if (!std::isnan(value)) {
                 if (unsignedResult) {

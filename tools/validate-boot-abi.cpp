@@ -628,6 +628,29 @@ int main() {
         assert(executeStartupInstruction(permute, 0x4e61f441)); // fmax v1.2d, v2.2d, v1.2d
         assert(std::memcmp(permute.cpu.v[1].data(), expectedDoubleMax.data(), sizeof(expectedDoubleMax)) == 0);
         assert(!executeStartupInstruction(permute, 0x0e61f441)); // unallocated 1D vector form
+        const std::array<float, 4> nearestInput{0.5f, 1.5f, 2.5f, -0.5f};
+        const std::array<uint32_t, 4> nearestResult{0, 2, 2, 0};
+        std::memcpy(permute.cpu.v[16].data(), nearestInput.data(), sizeof(nearestInput));
+        permute.cpu.fpsr = fpsrSaturation;
+        assert(executeStartupInstruction(permute, 0x6e21aa10)); // fcvtnu v16.4s, v16.4s
+        assert(std::memcmp(permute.cpu.v[16].data(), nearestResult.data(), sizeof(nearestResult)) == 0);
+        assert(permute.cpu.fpsr == (fpsrSaturation | 16));
+        const std::array<double, 2> clippedInput{-0.75, 0x1p64};
+        const std::array<uint64_t, 2> clippedResult{0, UINT64_MAX};
+        std::memcpy(permute.cpu.v[2].data(), clippedInput.data(), sizeof(clippedInput));
+        permute.cpu.fpsr = 0;
+        assert(executeStartupInstruction(permute, 0x6e61a841)); // fcvtnu v1.2d, v2.2d
+        assert(std::memcmp(permute.cpu.v[1].data(), clippedResult.data(), sizeof(clippedResult)) == 0);
+        assert(permute.cpu.fpsr == 1);
+        assert(!executeStartupInstruction(permute, 0x2e61a841)); // unallocated 1D vector form
+        const std::array<float, 2> signedInput{-1.5f, -2.5f};
+        const std::array<int32_t, 4> signedResult{-2, -2, 0, 0};
+        std::memcpy(permute.cpu.v[2].data(), signedInput.data(), sizeof(signedInput));
+        permute.cpu.fpsr = 0;
+        assert(executeStartupInstruction(permute, 0x0e21a841)); // fcvtns v1.2s, v2.2s
+        assert(std::memcmp(permute.cpu.v[1].data(), signedResult.data(), sizeof(signedResult)) == 0);
+        assert(permute.cpu.fpsr == 16);
+        permute.cpu.fpsr = 0;
         const std::array<int64_t, 2> positiveAndNegative{1, INT64_MIN}, zeroAndPositive{0, INT64_MAX};
         const std::array<uint64_t, 2> firstGreater{UINT64_MAX, 0}, secondGreater{0, UINT64_MAX};
         std::memcpy(permute.cpu.v[2].data(), positiveAndNegative.data(), sizeof(positiveAndNegative));
@@ -5518,6 +5541,52 @@ int main() {
             std::array<uint8_t, length> saved{};
             assert(machine.readInto(mapping, saved) && saved == data);
             assert(invoke(guest, 215, {mapping, 2 * pageSize}) == 0);
+        }
+        {
+            const auto aclDatabase = (cleanup.directory / "acl.sqlite3").string();
+            const auto name = base + 0x710, value = base + 0x750, output = base + 0x7a0;
+            // AOSP vold writes owner/group IDs even though Linux ignores them on these ACL entries.
+            const std::array<uint32_t, 11> defaults{
+                2, 0x70001, 1023, 4, 1023, 0x70008, 1023, 0x70010, 0, 32, 0};
+            const auto aclBytes = std::as_bytes(std::span(defaults));
+            assert(machine.write(value, {reinterpret_cast<const uint8_t*>(aclBytes.data()), aclBytes.size()}));
+            {
+                ProbeLinux guest(1, 0);
+                guest.mountData(aclDatabase);
+                put(firstPath, "/data/acl-media");
+                put(name, "system.posix_acl_default");
+                assert(invoke(guest, 34, {atCwd, firstPath, 0755}) == 0);
+                assert(invoke(guest, 5, {firstPath, name, value, sizeof(defaults) - 1, 0}) == uint64_t(-22));
+                assert(invoke(guest, 5, {firstPath, name, value, sizeof(defaults), 1}) == 0);
+                assert(invoke(guest, 5, {firstPath, name, value, sizeof(defaults), 1}) == uint64_t(-17));
+                assert(invoke(guest, 166, {0077}) <= 0777);
+                put(firstPath, "/data/acl-media/child");
+                assert(invoke(guest, 34, {atCwd, firstPath, 0770}) == 0);
+                assert(invoke(guest, 8, {firstPath, name, output, sizeof(defaults) - 1}) == uint64_t(-34));
+                assert(invoke(guest, 8, {firstPath, name, output, sizeof(defaults)}) == sizeof(defaults));
+                assert(uint32_t(load(output + 8)) == UINT32_MAX);
+                put(firstPath, "/data/acl-media/child/file");
+                const auto fd = invoke(guest, 56, {atCwd, firstPath, 0x42, 0660});
+                assert(fd < 256 && invoke(guest, 52, {fd, 0640}) == 0);
+                assert(guest.syncData());
+            }
+            for (const auto gid : {1023U, 1024U}) {
+                ProbeLinux guest(1, 0);
+                guest.mountData(aclDatabase);
+                put(firstPath, "/data/acl-media/child/file");
+                put(name, "system.posix_acl_access");
+                assert(invoke(guest, 8, {firstPath, name, output, sizeof(defaults)}) == sizeof(defaults));
+                assert(invoke(guest, 149, {gid, gid, gid}) == 0);
+                assert(invoke(guest, 147, {12000, 12000, 12000}) == 0);
+                assert(invoke(guest, 56, {atCwd, firstPath, 2}) == uint64_t(-13));
+                const auto readOnly = invoke(guest, 56, {atCwd, firstPath, 0});
+                if (gid == 1023) {
+                    assert(readOnly < 256);
+                    assert(invoke(guest, 7, {readOnly, name, value, sizeof(defaults), 0}) == uint64_t(-1));
+                } else {
+                    assert(readOnly == uint64_t(-13));
+                }
+            }
         }
         assert(writer.loadFsCreatePolicy(
             "2 19\nu:r:init:s0 u:r:init:s0 40000 ffffffff 0 ffffffff 1 0\n"
