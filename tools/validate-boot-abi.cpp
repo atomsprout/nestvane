@@ -2894,7 +2894,8 @@ int main() {
         assert(report.find("pc-file=/system/boot-trace-probe.so+0x1010") != std::string::npos);
         assert(report.find("lr-file=/system/boot-trace-probe.so+0x1020") != std::string::npos);
     }
-    for (const uint64_t restart : {0ULL, 0x10000000ULL}) {
+    for (const auto [wait, restart] : {std::pair{98, 0ULL}, std::pair{98, 0x10000000ULL},
+                                      std::pair{137, 0x10000000ULL}}) {
         ProbeLinux guest(1, 0);
         constexpr auto handler = base + 0x200, blockedPc = base + 0x300;
         constexpr auto word = base + 0x400, action = base + 0x440, parentTid = base + 0x480;
@@ -2912,7 +2913,14 @@ int main() {
         const auto thread = invoke(220, {0x3d0f00, base + 8 * pageSize, parentTid, 0, parentTid + 8});
         assert(thread == 2 && guest.schedule(task) && guest.threadId() == thread);
         task.cpu.pc = blockedPc;
-        assert(invoke(98, {word, 0x80, 0}) == word && guest.blocked());
+        if (wait == 137) {
+            // An unrelated handler interrupts rt_sigtimedwait even with SA_RESTART.
+            assert(task.store64(word, 1ULL << (12 - 1)));
+            assert(invoke(137, {word, 0, 0, 8}) == word);
+        } else {
+            assert(invoke(98, {word, 0x80, 0}) == word);
+        }
+        assert(guest.blocked());
         assert(guest.schedule(task) && guest.threadId() == 1);
         assert(invoke(131, {1, thread, signal}) == 0 && guest.schedule(task));
         assert(guest.threadId() == thread && task.cpu.pc == handler && task.cpu.x[0] == signal);
@@ -2920,8 +2928,9 @@ int main() {
         assert(task.load64(task.cpu.x[1] + 8, signalInfo) && uint32_t(signalInfo) == uint32_t(-6));
         invoke(139);
         assert(guest.restoredSignalContext() && !guest.blocked());
-        assert(task.cpu.pc == blockedPc + (restart ? 0 : 4));
-        assert(task.cpu.x[0] == (restart ? word : uint64_t(-4)));
+        const bool restarts = wait == 98 && restart;
+        assert(task.cpu.pc == blockedPc + (restarts ? 0 : 4));
+        assert(task.cpu.x[0] == (restarts ? word : uint64_t(-4)));
     }
     {
         ProbeLinux guest(1, 0);

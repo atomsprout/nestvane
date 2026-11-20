@@ -6894,12 +6894,13 @@ void ProbeLinux::deliverPendingCaughtSignal(Machine& machine) {
         const auto syscall = cpu.x[8], futexOp = cpu.x[1] & 127;
         const bool restartable = interrupted == Wait::futex
             ? (!cpu.x[3] || futexOp == 9)
-            : syscall == 63 || syscall == 64 || syscall == 206 || syscall == 207;
+            : interrupted == Wait::poll && (syscall == 63 || syscall == 64 || syscall == 206 || syscall == 207);
         if (!(flags & saRestart) || !restartable) {
             cpu.pc += 4;
             cpu.x[0] = uint64_t(-4); // EINTR
         }
         thread.deadline.reset();
+        if (interrupted == Wait::signal) thread.signalWaitMask = 0;
         thread.hostEventRetry.reset();
         thread.realtimeFutexDeadline.reset();
         thread.futexBacking.reset();
@@ -10124,7 +10125,7 @@ bool ProbeLinux::syscall(Machine& machine) {
             if ((!caught && signal >= 32 && !waiting) ||
                 (!waiting && !masked && !fatalResend && !caught)) return false;
             if (scheduleHandler && target.wait != Wait::none &&
-                target.wait != Wait::poll && target.wait != Wait::futex) return false;
+                target.wait != Wait::poll && target.wait != Wait::futex && target.wait != Wait::signal) return false;
             if (signal >= 32 && target.pendingSignals.size() >= 1024) { x[0] = uint64_t(-11); break; }
             info[0] = signal;
             if (!queued) {
