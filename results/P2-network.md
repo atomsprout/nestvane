@@ -644,3 +644,4 @@
 - iPhone 14 进程 1345 使用 XCUITest 真实触屏长按 Launcher 打开 Apps list。应用列表可见 Calculator、Editor 和 Smoke。点击 Smoke 图标后，应用晚于首次自动化等待绘制。同轮继续点击 Increment，界面计数从 0 变为 1，导出的客体数据通过 quick_check，Smoke 的 shared_prefs/state.xml 记录 count=1。相机页面仍等待 Android 的 CAMERA 授权，未取得实体后摄预览。
 - 全屏布局版在 iPhone 14 进程 1441 使用 578 × 1064 客体画面，98,833 ms 时呈现 Android 启动动画的首帧，并在真机截图中看到底部的返回、主页、导入和停止按钮。该数字为启动动画首帧，桌面及重启后的 Smoke 交互正在独立测量。
 - ScriptWidget Android 1.0.0 官方 APK 经 SHA-256 和开发者发布证书核对。API 37 ARM64 SDK 参考机 CE2A.260420.051.A3 用 cmd package install -r -S 安装成功，打开应用并渲染 Datetime Current 模板，界面显示 Ran in 12 ms。同一 APK 在 iPhone 14 通过「文件」选中后显示 Android 安装失败，具体包管理器错误还在对照采集。
+- iPhone 14 全屏版进程 1441 连续冷启动，1,009.531 秒收到原版 QuickstepLauncher 的 Displayed 事件，1,009.825 秒由 UIKit 呈现 578 × 1064 客体画面，记录物理内存峰值 2,386,845,568 字节。真机触控打开应用列表并从列表重新打开 Smoke，界面读取升级前保存的计数 1，XCUITest 通过。该轮确认一次冷启动进入可操作桌面及 Smoke 的应用数据读回。第三方应用内操作与实体后摄仍待验收。
