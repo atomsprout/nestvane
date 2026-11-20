@@ -74,6 +74,7 @@ struct ProbeLinux {
     bool loadServicePolicy(std::string_view manifest, bool hardware);
     bool loadKeystorePolicy(std::string_view manifest, bool key = false);
     bool loadFsCreatePolicy(std::string_view manifest);
+    bool loadPackageRelabelPolicy(std::string_view manifest, bool directory);
     bool loadSeappContexts(std::string_view rules);
     bool loadAppTransitionDomains(std::string_view domains);
     bool hasChildEntryAt(uint64_t pc) const {
@@ -830,6 +831,9 @@ private:
     };
     std::map<uint32_t, AccessClass> accessClasses;
     uint32_t fsCreateClass = 0, fsCreatePermission = 0, socketCreatePermission = 0;
+    struct PackageRelabelClass { uint32_t index = 0, from = 0, to = 0; };
+    std::array<PackageRelabelClass, 2> packageRelabelClasses{};
+    bool canRelabelPackage(const Descriptor& entry, std::string_view label) const;
     bool loadAccessClass(std::string_view manifest, std::string_view name,
                          std::span<const std::string_view> permissions);
     uint64_t nextNamespace = 2;

@@ -46,6 +46,23 @@ def allowed(decision, mask):
     return int(decision.split()[0], 16) & mask
 
 
+def capture_package_relabel_policy(adb, remote, guest):
+    source = "u:r:system_server:s0"
+    targets = ("u:object_r:apk_data_file:s0", "u:object_r:apk_tmp_file:s0")
+    for name in ("dir", "file"):
+        path = f"/sys/fs/selinux/class/{name}"
+        index = int(remote("cat", path + "/index"))
+        positions = [int(remote("cat", path + "/perms/" + perm)) for perm in ("relabelfrom", "relabelto")]
+        if not 0 < index <= 65535 or any(not 1 <= bit <= 32 for bit in positions):
+            raise SystemExit(f"Invalid SELinux package relabel class or permission index: {name}")
+        mask = sum(1 << (bit - 1) for bit in set(positions))
+        decisions = query_access(adb, index, mask, [(source, target) for target in targets])
+        header = " ".join(map(str, (index, *positions)))
+        rows = (f"{caller} {target} {decision}\n" for (caller, target), decision in decisions.items())
+        manifest = guest / "nestvane-metadata" / f"selinux-package-relabel-{name}.txt"
+        manifest.write_text(header + "\n" + "".join(rows))
+
+
 def capture_framework_app_policy(adb, remote, guest):
     candidates = set()
     for path in SEAPP_CONTEXTS:
@@ -106,4 +123,5 @@ def capture_framework_app_policy(adb, remote, guest):
         manifest.write_text(header + "\n" + "".join(
             f"{source} {target} {decision}\n" for (source, target), decision in sorted(original.items())
         ))
+    capture_package_relabel_policy(adb, remote, guest)
     print(f"Captured reference zygote transitions and Binder service decisions for {len(admitted)} app domains", flush=True)

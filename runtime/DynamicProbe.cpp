@@ -544,6 +544,15 @@ service nestvane-apk-install /system/bin/nestvane-apk-install
                         {reinterpret_cast<const uint8_t*>(installer.data()), installer.size()});
             linux.alias("/dev/kmsg_debug", "/dev/kmsg");
         }
+        for (const bool directory : {false, true}) {
+            const auto manifest = directory ? "/nestvane-metadata/selinux-package-relabel-dir.txt" :
+                                              "/nestvane-metadata/selinux-package-relabel-file.txt";
+            if (const auto part = files.find(manifest); part != files.end()) {
+                const auto bytes = part->second.bytes();
+                if (!linux.loadPackageRelabelPolicy({reinterpret_cast<const char*>(bytes.data()), bytes.size()}, directory))
+                    throw std::runtime_error("invalid guest package relabel policy");
+            }
+        }
         const bool expectSmoke = files.contains("/system/etc/nestvane/smoke.apk");
         bool smokeActivityOpened = false;
         if (progress || expectSmoke) linux.androidLogObserver = [&](std::string_view message) {

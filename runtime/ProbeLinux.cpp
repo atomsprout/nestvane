@@ -4589,9 +4589,13 @@ bool ProbeLinux::fileCall(Machine& machine) {
             if (*name != "security.selinux") { x[0] = uint64_t(-95); break; }
             if (removing) { x[0] = uint64_t(-13); break; }
             if (x[3] > 4096 || x[4] > 2) { x[0] = invalid; break; }
-            if (userId() != 0) { x[0] = uint64_t(-1); break; }
             const auto* bytes = x[3] ? machine.read(x[2], x[3], 4) : nullptr;
             if (x[3] && !bytes) { x[0] = uint64_t(-14); break; }
+            if (userId() != 0) {
+                const auto label = bytes
+                    ? std::string_view(reinterpret_cast<const char*>(bytes), x[3]) : std::string_view{};
+                if (!canRelabelPackage(*entry, label)) { x[0] = uint64_t(-1); break; }
+            }
             if (entry->temporary) {
                 auto& attributes = entry->temporary->attributes;
                 const bool present = attributes.contains(*name);
@@ -5651,6 +5655,54 @@ bool ProbeLinux::loadFsCreatePolicy(std::string_view manifest) {
     fsCreatePermission = uint32_t{1} << (fileBit - 1);
     socketCreatePermission = hasSocket ? uint32_t{1} << (socketBit - 1) : 0;
     return true;
+}
+
+bool ProbeLinux::loadPackageRelabelPolicy(std::string_view manifest, bool directory) {
+    constexpr std::string_view permissions[] = {"relabelfrom", "relabelto"};
+    std::istringstream header{std::string(manifest.substr(0, manifest.find('\n')))};
+    uint32_t index = 0, from = 0, to = 0;
+    if (!(header >> index >> from >> to) || !from || from > 32 || !to || to > 32) return false;
+    auto& relabel = packageRelabelClasses[directory];
+    if (relabel.index || !loadAccessClass(manifest, directory ? "dir" : "file", permissions)) return false;
+    relabel = {index, uint32_t{1} << (from - 1), uint32_t{1} << (to - 1)};
+    return true;
+}
+
+bool ProbeLinux::canRelabelPackage(const Descriptor& entry, std::string_view label) const {
+    const auto& source = current->process->context;
+    if (userId() != 1000 || source != "u:r:system_server:s0" || !entry.path.starts_with("/data/app/"))
+        return false;
+    const auto& visible = entry.visiblePath.empty() ? entry.path : entry.visiblePath;
+    if (!writablePath(visible)) return false;
+
+    const bool directory = entry.node == Node::directory;
+    const auto& relabel = packageRelabelClasses[directory];
+    if (!relabel.index) return false;
+    std::string_view previous;
+    if (directory) {
+        const auto found = directories.find(entry.path);
+        if (found == directories.end() || found->second.uid != userId()) return false;
+        previous = found->second.securityContext;
+    } else if (entry.node == Node::temporary && entry.temporary && entry.temporary->uid == userId()) {
+        const auto found = entry.temporary->attributes.find("security.selinux");
+        if (found == entry.temporary->attributes.end() || found->second.empty()) return false;
+        previous = {reinterpret_cast<const char*>(found->second.data()), found->second.size()};
+    } else {
+        return false;
+    }
+    if (label.ends_with('\0')) label.remove_suffix(1);
+    if (previous.ends_with('\0')) previous.remove_suffix(1);
+    const auto& policy = accessClasses.at(relabel.index);
+    const auto permits = [&](std::string_view context, uint32_t permission) {
+        constexpr std::string_view installed = "u:object_r:apk_data_file:s0";
+        constexpr std::string_view staging = "u:object_r:apk_tmp_file:s0";
+        if (context != installed && context != staging) return false;
+        const auto rule = policy.decisions.find({source, std::string(context)});
+        uint32_t allowed = 0;
+        return rule != policy.decisions.end() && (std::istringstream(rule->second) >> std::hex >> allowed) &&
+            (allowed & permission);
+    };
+    return permits(previous, relabel.from) && permits(label, relabel.to);
 }
 
 bool ProbeLinux::loadAccessClass(std::string_view manifest, std::string_view name,

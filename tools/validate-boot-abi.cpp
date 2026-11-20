@@ -5814,6 +5814,56 @@ int main() {
             assert(persistent < 256 && invoke(quota, 57, {persistent}) == 0 && quota.syncData());
         }
         {
+            ProbeLinux installer(1, 0);
+            installer.mountData((cleanup.directory / "apk-labels.sqlite3").string());
+            constexpr auto cwd = uint32_t(-100);
+            constexpr auto path = base, name = base + 0x100, label = base + 0x180;
+            constexpr char installed[] = "u:object_r:apk_data_file:s0";
+            constexpr char staging[] = "u:object_r:apk_tmp_file:s0";
+            put(name, "security.selinux");
+            put(label, installed);
+            for (const char* directory : {"/data/app", "/data/outside"}) {
+                put(path, directory);
+                assert(invoke(installer, 34, {cwd, path, 0771}) == 0);
+                assert(invoke(installer, 5, {path, name, label, sizeof(installed), 0}) == 0);
+                assert(invoke(installer, 54, {cwd, path, 1000, 1000}) == 0);
+            }
+            put(path, "/data/app/foreign");
+            assert(invoke(installer, 34, {cwd, path, 0755}) == 0);
+            assert(invoke(installer, 146, {1000}) == 0);
+            installer.setBootContext("u:r:system_server:s0");
+            put(path, "/data/app/vmdl123.tmp");
+            assert(invoke(installer, 34, {cwd, path, 0775}) == 0);
+            put(label, staging);
+            assert(invoke(installer, 6, {path, name, label, sizeof(staging), 0}) == uint64_t(-1));
+            const std::string decisions =
+                "u:r:system_server:s0 u:object_r:apk_data_file:s0 180 ffffffff 0 ffffffff 1 0\n"
+                "u:r:system_server:s0 u:object_r:apk_tmp_file:s0 180 ffffffff 0 ffffffff 1 0\n";
+            assert(installer.loadPackageRelabelPolicy("8 8 9\n" + decisions, true));
+            assert(installer.loadPackageRelabelPolicy("6 8 9\n" + decisions, false));
+            installer.setBootContext("u:r:shell:s0");
+            assert(invoke(installer, 6, {path, name, label, sizeof(staging), 0}) == uint64_t(-1));
+            installer.setBootContext("u:r:system_server:s0");
+            assert(invoke(installer, 6, {path, name, label, sizeof(staging), 0}) == 0);
+            assert(invoke(installer, 9, {path, name, label, 128}) == sizeof(staging));
+            assert(std::memcmp(machine.read(label, sizeof(staging), 4), staging, sizeof(staging)) == 0);
+            put(path, "/data/app/vmdl123.tmp/base.apk");
+            const auto apk = invoke(installer, 56, {cwd, path, 0xc2, 0644});
+            assert(apk < 256);
+            put(label, installed);
+            assert(invoke(installer, 7, {apk, name, label, sizeof(installed), 0}) == 0);
+            assert(invoke(installer, 10, {apk, name, label, 128}) == sizeof(installed));
+            assert(std::memcmp(machine.read(label, sizeof(installed), 4), installed, sizeof(installed)) == 0);
+            constexpr char unrelated[] = "u:object_r:system_file:s0";
+            put(label, unrelated);
+            assert(invoke(installer, 7, {apk, name, label, sizeof(unrelated), 0}) == uint64_t(-1));
+            put(label, staging);
+            for (const char* directory : {"/data/app/foreign", "/data/outside"}) {
+                put(path, directory);
+                assert(invoke(installer, 6, {path, name, label, sizeof(staging), 0}) == uint64_t(-1));
+            }
+        }
+        {
             const auto directoryDatabase = (cleanup.directory / "boot-dirs.sqlite3").string();
             ProbeLinux seed(1, 0);
             seed.mountData(directoryDatabase);

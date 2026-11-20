@@ -525,3 +525,4 @@
 - 改用标准输入的 Smoke 夹具已在 Nestvane 客体进入安装助手，由原版 `cmd` 返回 255。当前日志未保留该错误的正文。新诊断轮次保留包管理器命令的完整输出，并在退出开机动画后导出窗口状态。
 - 补齐客体 `getrusage` 和原版 Android shell 使用的 `wait4` 选项。用原版 ARM64 shell 在 Nestvane 内创建和等待子进程，实测经过 `rt_sigsuspend`、`getrusage`、`wait4`，读回退出码 42，shell 进程自身退出 0。CPU 时间来源于实际执行客体的宿主 CPU 线程，当前计入用户时间，其他资源统计字段暂不单独计量。宿主回归和 iPhoneOS Release 编译通过。[Linux getrusage 实现](https://raw.githubusercontent.com/torvalds/linux/master/kernel/sys.c)
 - 上一轮标准输入安装错误已从原版包管理器堆栈定位。Nestvane 内 `PackageInstallerService.prepareStageDir` 对 `/data/app/vmdl306112139.tmp` 执行 `restorecon` 时失败。已读到暂存目录仍继承 `apk_data_file`，同版 Enforcing 参考内核允许 `system_server` 对目录及普通文件在 `apk_data_file` 与 `apk_tmp_file` 间重新打标签。
+- APK 暂存路径的重新打标签现使用镜像采集时从同版 Enforcing Android 17 参考系统取得的权限。对 UID 1000 的 system_server，要求它拥有 /data/app 子树中的目录或普通文件，且旧、新标签分别通过 relabelfrom 和 relabelto 检查。回归验证暂存目录、APK 文件及错误身份、所有者、路径和目标标签的拒绝行为。参考策略采集、宿主回归和 iPhoneOS Release 编译通过，端到端安装复测已启动。
