@@ -130,6 +130,7 @@ private:
     using SignalWords = std::array<uint32_t, 32>;
     using PendingSignals = std::multimap<uint32_t, SignalWords>;
     struct BinderConnection;
+    struct EventState;
     struct SeccompFilter {
         struct Instruction { uint16_t code; uint8_t yes, no; uint32_t value; };
         std::vector<Instruction> program;
@@ -144,6 +145,7 @@ private:
         std::weak_ptr<BinderConnection> idleBinder;
         std::weak_ptr<BinderConnection> waitingBinder;
         uint32_t waitingBinderFd = 0;
+        std::weak_ptr<EventState> waitingEpoll;
         std::weak_ptr<WritableFile> waitingRecordFile;
         std::weak_ptr<uint64_t> waitingRecordDescription;
         uint64_t recordLockBlocker = 0;
@@ -178,7 +180,7 @@ private:
                  std::shared_ptr<SharedFileBytes> backing, uint32_t value);
     unsigned wakeFutex(uint64_t address, unsigned count, uint32_t mask,
                        const std::shared_ptr<SharedFileBytes>& backing = {});
-    void wakePollers();
+    void wakePollers(const EventState* changedEvent = nullptr);
     bool waitForEvents();
     bool waitForHostEvents();
     bool poll(Machine& machine);
@@ -407,7 +409,6 @@ private:
     std::shared_ptr<GuestTouch> guestTouch;
     std::weak_ptr<GuestTouch::Reader> guestTouchReader;
     uint64_t touchIoctl(Machine& machine, const Descriptor& fd);
-    struct EventState;
     struct Pipe;
     struct Watch {
         uint32_t mask;

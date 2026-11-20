@@ -2047,7 +2047,7 @@ bool ProbeLinux::eventCall(Machine& machine) {
                                               target->second.node == Node::event, target->second.binder, target->second.graphics,
                                               target->second.pipe, target->second.pipeEnd, target->second.node == Node::pipeRead,
                                               target->second.touch, target->second.touchReader, ring});
-            if (mask & epollEdge) wakePollers();
+            wakePollers(descriptor->second.event.get());
             x[0] = 0;
             break;
         }
@@ -2123,7 +2123,11 @@ bool ProbeLinux::eventCall(Machine& machine) {
                 }
             }
             if (ready.empty()) {
-                const auto wait = [&] { return watchesHostEvents ? waitForHostEvents() : waitForEvents(); };
+                const auto wait = [&] {
+                    const auto waiting = watchesHostEvents ? waitForHostEvents() : waitForEvents();
+                    current->waitingEpoll = descriptor->second.event;
+                    return waiting;
+                };
                 if (uint32_t(x[3]) == UINT32_MAX) {
                     if (currentTid != pid) {
                         for (const auto& [path, bound] : socketPaths) {
@@ -4521,7 +4525,7 @@ bool ProbeLinux::fileCall(Machine& machine) {
                 fd.event->counter = 0;
                 if (fd.node == Node::event) {
                     ++fd.event->pollNotifications.writable;
-                    wakePollers();
+                    wakePollers(fd.event.get());
                 }
                 x[0] = 8;
                 break;
@@ -5160,7 +5164,7 @@ uint64_t ProbeLinux::writeDescriptor(Machine& machine, const Descriptor& fd, uin
         if (UINT64_MAX - fd.event->counter <= increment) return uint64_t(-11);
         fd.event->counter += increment;
         ++fd.event->pollNotifications.readable;
-        wakePollers();
+        wakePollers(fd.event.get());
         return 8;
     }
     if (!size || fd.node == Node::null) return size;
@@ -5239,7 +5243,6 @@ std::optional<std::chrono::steady_clock::time_point> ProbeLinux::refreshTimers(
     std::chrono::steady_clock::time_point now) {
     using namespace std::chrono;
     std::optional<steady_clock::time_point> next;
-    bool expired = false;
     for (const auto& timer : timers) {
         const auto event = timer.lock();
         if (!event || !event->timer->next) continue;
@@ -5256,7 +5259,7 @@ std::optional<std::chrono::steady_clock::time_point> ProbeLinux::refreshTimers(
                 state.next.reset();
             }
             event->counter += std::min(count, UINT64_MAX - event->counter);
-            expired = true;
+            wakePollers(event.get());
         }
         if (state.next) {
             const auto remaining = *state.next - clock;
@@ -5264,7 +5267,6 @@ std::optional<std::chrono::steady_clock::time_point> ProbeLinux::refreshTimers(
             if (!next || deadline < *next) next = deadline;
         }
     }
-    if (expired) wakePollers();
     return next;
 }
 
@@ -6629,6 +6631,7 @@ bool ProbeLinux::waitChild(Machine& machine) {
 }
 
 bool ProbeLinux::waitForEvents() {
+    current->waitingEpoll.reset();
     current->wait = Wait::poll;
     sliceEnd = 0;
     return true;
@@ -6811,9 +6814,18 @@ bool ProbeLinux::readInotify(Machine& machine, const Descriptor& fd) {
     return true;
 }
 
-void ProbeLinux::wakePollers() {
+void ProbeLinux::wakePollers(const EventState* changedEvent) {
     for (auto& [tid, thread] : threads) {
         if (thread.wait != Wait::poll) continue;
+        if (changedEvent) {
+            const auto poller = thread.waitingEpoll.lock();
+            // Epoll waiters only need to recheck their own watch list when an
+            // individual timer or eventfd changes. Other wait APIs can share sources.
+            if (poller && poller.get() != changedEvent &&
+                std::ranges::none_of(poller->watches, [changedEvent](const auto& entry) {
+                    return entry.second.source.lock().get() == changedEvent;
+                })) continue;
+        }
         if (auto binder = thread.waitingBinder.lock()) {
             const auto& files = thread.process->descriptors;
             const auto fd = files.find(thread.waitingBinderFd);

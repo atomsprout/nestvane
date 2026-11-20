@@ -4723,6 +4723,62 @@ int main() {
         wait(0, 0);
         for (const auto descriptor : {poller, listener, accepted, other, second}) assert(call(57, {descriptor}) == 0);
     }
+    {
+        ProbeLinux guest(1, 0);
+        constexpr uint64_t page = 0x2000, watch = page + 0x80, events = page + 0x100;
+        constexpr uint64_t payload = page + 0x200, timerSpec = page + 0x280;
+        Machine task(Image{page, {{page, std::vector<uint8_t>(pageSize), 6}}, {}});
+        const auto invoke = [&](uint64_t number, std::array<uint64_t, 6> args) {
+            std::ranges::copy(args, task.cpu.x.begin());
+            task.cpu.x[8] = number;
+            assert(guest.syscall(task));
+            return task.cpu.x[0];
+        };
+        const auto poller = invoke(20, {0});
+        const auto event = invoke(19, {0, 0x800});
+        const auto otherEvent = invoke(19, {0, 0x800});
+        const auto timer = invoke(85, {1, 0x800});
+        const auto otherTimer = invoke(85, {1, 0x800});
+        assert(poller < 256 && event < 256 && otherEvent < 256 && timer < 256 && otherTimer < 256);
+        assert(task.store64(watch, 1) && task.store64(watch + 8, 0xa1));
+        assert(invoke(21, {poller, 1, event, watch}) == 0);
+        assert(task.store64(watch + 8, 0xa2));
+        assert(invoke(21, {poller, 1, timer, watch}) == 0);
+        assert(task.store64(payload, 1) && task.store64(timerSpec + 24, 1));
+        const auto writer = invoke(220, {0x3d0f00, page + 0x900, page + 0x300, page + 0x800, page + 0x300});
+        assert(writer > 1);
+        const auto block = [&] {
+            invoke(22, {poller, events, 1, UINT64_MAX});
+            assert(guest.blocked() && guest.schedule(task) && guest.threadId() == writer);
+        };
+        const auto waiting = [&] {
+            return guest.workerReport(task, 1).find("  guest task 1/1   poll syscall=22") != std::string::npos;
+        };
+        const auto wake = [&](uint64_t data) {
+            assert(!waiting());
+            task.cpu.retired += 4096;
+            assert(guest.schedule(task) && guest.threadId() == 1);
+            assert(invoke(22, {poller, events, 1, UINT64_MAX}) == 1);
+            uint64_t observed = 0;
+            assert(task.load64(events + 8, observed) && observed == data);
+        };
+        block();
+        assert(waiting());
+        assert(invoke(64, {otherEvent, payload, 8}) == 8 && waiting());
+        assert(invoke(86, {otherTimer, 1, timerSpec}) == 0 && waiting());
+        assert(invoke(64, {event, payload, 8}) == 8);
+        wake(0xa1);
+        assert(invoke(63, {event, payload, 8}) == 8);
+        block();
+        assert(invoke(86, {timer, 1, timerSpec}) == 0);
+        wake(0xa2);
+        assert(invoke(63, {timer, payload, 8}) == 8);
+        block();
+        // A ready level-triggered source registered after epoll_wait must wake it.
+        assert(task.store64(watch + 8, 0xa3));
+        assert(invoke(21, {poller, 1, otherEvent, watch}) == 0);
+        wake(0xa3);
+    }
     const auto poll = call(20, {0x80000});
     const auto event = call(19, {0, 0x80800});
     assert(poll == 3 && event == 4);
