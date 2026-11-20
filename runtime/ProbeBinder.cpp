@@ -92,7 +92,17 @@ bool ProbeLinux::freeBinderBuffer(BinderConnection& connection, uint64_t address
         auto& ref = it->second;
         if (!--ref.inBuffer && !ref.strong && !ref.weak) connection.handles.erase(it);
     }
-    connection.asyncBytes -= buffer->second.asyncCharge;
+    if (buffer->second.asyncCharge) {
+        connection.asyncBytes -= buffer->second.asyncCharge;
+        const auto pending = connection.pendingAsync.find(buffer->second.asyncTarget);
+        if (pending->second.empty()) {
+            connection.pendingAsync.erase(pending);
+        } else {
+            connection.incoming.push_back(std::move(pending->second.front()));
+            pending->second.pop_front();
+            wakePollers();
+        }
+    }
     connection.allocations.erase(buffer);
     return true;
 }
@@ -269,7 +279,8 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
         acceptsFiles = node.object.flags & acceptNodeFiles;
     }
     if (!target) return fail(brDeadReply);
-    const bool synchronousCall = !replying && !(transaction.flags & oneWay);
+    const bool asynchronous = !replying && (transaction.flags & oneWay);
+    const bool synchronousCall = !replying && !asynchronous;
     if (synchronousCall && !outstanding.empty()) {
         // Send a synchronous callback to the waiting caller, including callers
         // further up the chain. That thread need not be a registered looper.
@@ -414,7 +425,7 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
     if (notices.size() + 2 * newNodes.size() + 1 > 64) return fail(brFailedReply);
     const auto address = storeBinderBuffer(*target, {bytes, size_t(transaction.dataSize)},
                                           {offsets, size_t(transaction.offsetsSize)}, extra, label,
-                                          !replying && !synchronousCall);
+                                          asynchronous);
     if (!address) return capacityReached("receive buffers", target->allocations.size());
     target->nextHandle = nextHandle;
     target->handles.merge(newHandles);
@@ -460,14 +471,24 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
     }
     packet.files = std::move(files);
     packet.completesCall = replying;
-    destination.push_back(std::move(packet));
+    const auto fileCount = packet.files.size();
+    if (asynchronous) {
+        // Other worker threads may handle synchronous work or a different node.
+        // The next oneway for this node becomes readable when the current buffer is freed.
+        allocation.asyncTarget = targetPointer;
+        const auto [pending, first] = target->pendingAsync.try_emplace(targetPointer);
+        auto& queue = first ? destination : pending->second;
+        queue.push_back(std::move(packet));
+    } else {
+        destination.push_back(std::move(packet));
+    }
     if (synchronousCall) ++connection.pendingCalls[currentTid];
     if (binderTrace.size() < 8192) {
         binderTrace += "  guest binder " + std::string(replying ? "reply" : "transaction") +
             " sender=" + std::to_string(processId()) + " target=" + std::to_string(target->owner) +
             " code=" + std::to_string(transaction.code) + " objects=" +
             std::to_string(transaction.offsetsSize / sizeof(uint64_t)) + " files=" +
-            std::to_string(destination.back().files.size()) + "\n";
+            std::to_string(fileCount) + "\n";
     }
     if (replying) outstanding.pop_back();
     notices.push_back({brComplete});

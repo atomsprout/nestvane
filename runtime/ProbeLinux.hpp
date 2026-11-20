@@ -470,6 +470,7 @@ private:
         std::vector<uint32_t> handles;
         bool delivered = false;
         size_t asyncCharge = 0;
+        uint64_t asyncTarget = 0;
     };
     struct BinderTransaction {
         uint64_t target, cookie;
@@ -518,6 +519,7 @@ private:
         std::map<uint64_t, std::vector<BinderRoute>> replies;
         std::map<uint64_t, size_t> pendingCalls;
         std::deque<BinderPacket> incoming;
+        std::map<uint64_t, std::deque<BinderPacket>> pendingAsync; // Present while this node has a live transaction.
         std::map<uint64_t, bool> loopers; // Whether the looper was requested by the driver.
         explicit BinderConnection(uint64_t owner) : owner(owner) {}
     };

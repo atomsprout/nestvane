@@ -1476,7 +1476,9 @@ bool executeStartupInstruction(Machine& machine, uint32_t word) {
             const bool barrier = word == 0xd5033b9f || // DSB ISH, used by __clear_cache.
                                  word == 0xd50339bf || word == 0xd5033abf || word == 0xd5033bbf ||
                                  word == 0xd5033dbf || word == 0xd5033ebf || word == 0xd5033fbf || word == 0xd5033fdf;
-            const bool hint = barrier || word == 0xd503201f || word == 0xd503245f || word == 0xd503249f ||
+            // CHKFEAT is a NOP on the guest CPU, which does not implement FEAT_CHK.
+            const bool hint = barrier || word == 0xd503251f || word == 0xd503201f ||
+                              word == 0xd503245f || word == 0xd503249f ||
                               word == 0xd50324df || word == 0xd503233f || word == 0xd50323bf ||
                               word == 0xd503237f || word == 0xd50323ff || word == 0xd50320ff ||
                               word == 0xd503211f || word == 0xd503215f || word == 0xd503219f || word == 0xd50321df;

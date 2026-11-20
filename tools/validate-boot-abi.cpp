@@ -378,7 +378,7 @@ int main() {
         constexpr uint64_t address = base + 0x80;
         pairs.cpu.x[8] = address;
         assert(pairs.store64(address, 0x1122334455667788) && pairs.store64(address + 8, 0x99aabbccddeeff00));
-        for (const uint32_t hint : {0xd503211fU, 0xd503215fU, 0xd503219fU, 0xd50321dfU}) {
+        for (const uint32_t hint : {0xd503211fU, 0xd503215fU, 0xd503219fU, 0xd50321dfU, 0xd503251fU}) {
             auto expected = pairs.cpu;
             expected.pc += 4;
             ++expected.retired;
@@ -5204,21 +5204,27 @@ int main() {
         assert(uint32_t(load(base + 0x720)) == 0x7206);
         assert(bindRequest(channel, 0, 0, "", true) == channel && linux.blocked());
         assert(linux.schedule(machine) && linux.processId() == 1);
-        for (size_t index = 0; index < queued; ++index) {
+        const auto takeOneWay = [&](size_t index) {
             assert(bindRequest(manager, 0, 0, "", true) == 0);
             assert(uint32_t(load(base + 0x720)) == 0x80407202);
             assert(uint32_t(load(base + 0x724 + 2 * 8)) == 100 + index);
             const auto buffer = load(base + 0x724 + 6 * 8);
             assert(std::memcmp(machine.read(buffer, payload.size(), 4), payload.data(), payload.size()) == 0);
-            assert(bindRequest(manager, 0x40086303, 0, "", false, {}, buffer) == 0);
-        }
+            return buffer;
+        };
+        const auto firstBuffer = takeOneWay(0);
         assert(bindRequest(manager, 0, 0, "", true) == 0);
         assert(uint32_t(load(base + 0x720)) == 0x80407202);
-        assert(uint32_t(load(base + 0x724 + 2 * 8)) == 400);
+        assert(uint32_t(load(base + 0x724 + 2 * 8)) == 400); // Same-node oneways wait for the first buffer.
         const auto requestBuffer = load(base + 0x724 + 6 * 8);
         assert(bindRequest(manager, 0x40406301, 0, "response", true) == 0);
         assert(uint32_t(load(base + 0x720)) == 0x7206);
         assert(bindRequest(manager, 0x40086303, 0, "", false, {}, requestBuffer) == 0);
+        assert(bindRequest(manager, 0x40086303, 0, "", false, {}, firstBuffer) == 0);
+        for (size_t index = 1; index < queued; ++index) {
+            const auto buffer = takeOneWay(index);
+            assert(bindRequest(manager, 0x40086303, 0, "", false, {}, buffer) == 0);
+        }
         machine.cpu.retired += 4096;
         assert(linux.schedule(machine) && linux.processId() == binderChild);
         assert(bindRequest(channel, 0, 0, "", true) == 0);
