@@ -238,9 +238,13 @@ int main(int argc, char** argv) {
         }
         const auto report = [&] {
             auto display = watchGuestDisplay(module, 640, 960);
+            const auto printGuestState = [](std::string_view report) {
+                std::fwrite(report.data(), 1, report.size(), stderr);
+            };
             return nestvane::probeInit(argv[3], argc == 5 ? argv[4] : "", [](std::string_view event) {
                 std::fprintf(stderr, "[Android boot] %.*s\n", int(event.size()), event.data());
-            }, std::move(factory), std::make_shared<nestvane::GuestTouch>());
+            }, std::move(factory), std::make_shared<nestvane::GuestTouch>(), {}, {}, {},
+               printGuestState, printGuestState);
         }();
         std::fwrite(report.report.data(), 1, report.report.size(), stdout);
         std::fflush(stdout);
