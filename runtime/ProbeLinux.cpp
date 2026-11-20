@@ -8581,8 +8581,12 @@ uint64_t ProbeLinux::loadBpfProgram(Machine& machine) {
     std::memcpy(&flags, input.data() + 44, sizeof(flags));
     if (!BpfProgram::supports(type)) return uint64_t(-95);
     const auto caps = current->process->effectiveCaps;
-    if (type != BpfProgram::socketFilter && (!(caps & (capBpf | capSysAdmin)) || !(caps & (1ULL << 12))))
+    constexpr uint64_t capNetAdmin = 1ULL << 12, capPerfmon = 1ULL << 38;
+    if (type == BpfProgram::tracepoint) {
+        if (!(caps & capSysAdmin) && (!(caps & capBpf) || !(caps & capPerfmon))) return uint64_t(-1);
+    } else if (type != BpfProgram::socketFilter && (!(caps & (capBpf | capSysAdmin)) || !(caps & capNetAdmin))) {
         return uint64_t(-1);
+    }
     uint32_t ifindex = 0, attachType = 0;
     std::memcpy(&ifindex, input.data() + 64, sizeof(ifindex));
     std::memcpy(&attachType, input.data() + 68, sizeof(attachType));

@@ -297,6 +297,23 @@ int main() {
         assert(cache->hash.size() == 2 && cache->hash.contains(first) && !cache->hash.contains(second));
     }
     {
+        const std::array<uint8_t, 24> record{0x42, 0, 0, 0, 0, 0, 0, 0, 0x37};
+        BpfProgram program({}, {});
+        const auto load = [&](uint64_t instruction) {
+            const std::array<uint64_t, 2> code{instruction, 0x95};
+            return program.load(BpfProgram::tracepoint,
+                                {reinterpret_cast<const uint8_t*>(code.data()), sizeof(code)}, {});
+        };
+        assert(load(0x1061)); // LDXW r0, [r1]
+        assert(program.runTracepoint(record) == 0x42);
+        assert(load(0x81079)); // LDXDW r0, [r1 + 8]
+        assert(program.runTracepoint(record) == 0x37);
+        assert(!program.runTracepoint(std::span(record).first(15)));
+        assert(load(0x017b)); // STXDW [r1], r0
+        assert(!program.runTracepoint(record));
+        assert(!load((uint64_t{46} << 32) | 0x85)); // Socket helpers are unavailable.
+    }
+    {
         using Callback = BpfProgram::SocketOperations;
         const auto socket = std::make_shared<int>(0), other = std::make_shared<int>(1);
         auto storage = std::make_shared<BpfMap>();
@@ -2489,9 +2506,9 @@ int main() {
         constexpr auto attr = base + 96, code = base + 256, license = base + 280, address = base + 384;
         constexpr auto message = base + 512, buffers = base + 600, packet = base + 640;
         put(license, "Apache 2.0");
-        const auto program = [&](uint64_t first) {
+        const auto program = [&](uint64_t first, uint32_t type = BpfProgram::socketFilter) {
             assert(machine.store64(code, first) && machine.store64(code + 8, 0x95)); // EXIT
-            const std::array<uint64_t, 8> request{(2ULL << 32) | 1, code, license, 0, 0, 0, 0, 0};
+            const std::array<uint64_t, 8> request{(2ULL << 32) | type, code, license, 0, 0, 0, 0, 0};
             assert(machine.write(attr, {reinterpret_cast<const uint8_t*>(request.data()), sizeof(request)}));
             return call(280, {5, attr, sizeof(request)}); // BPF_PROG_LOAD
         };
@@ -2537,6 +2554,18 @@ int main() {
         assert(call(57, {control}) == 0 && call(57, {uevent}) == 0);
         assert(machine.store64(attr, 0) && machine.store64(attr + 8, 0));
         assert(call(280, {11, attr, 12}) == uint64_t(-2));
+
+        const auto tracepoint = program(0xb7, BpfProgram::tracepoint);
+        assert(tracepoint < 256);
+        constexpr auto tracePath = base + 920;
+        put(tracePath, "/sys/fs/bpf/prog_nestvane_tracepoint");
+        assert(machine.store64(attr, tracePath) && machine.store64(attr + 8, tracepoint) &&
+               machine.store64(attr + 16, 0));
+        assert(call(280, {6, attr, 24}) == 0 && call(57, {tracepoint}) == 0);
+        assert(machine.store64(attr + 8, 8ULL << 32));
+        const auto reopenedTracepoint = call(280, {7, attr, 24});
+        assert(reopenedTracepoint < 256 && call(57, {reopenedTracepoint}) == 0);
+        assert(call(35, {uint32_t(-100), tracePath, 0}) == 0);
 
         // Install a real pinned socket filter through the same xtables ABI netd uses.
         std::vector<uint8_t> savedScratch(pageSize);

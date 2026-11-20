@@ -179,7 +179,7 @@ struct BpfMap {
 
 class BpfProgram {
 public:
-    static constexpr uint32_t socketFilter = 1, classifier = 3, trafficAction = 4, cgroupPacket = 8, cgroupSocket = 9, socketOperations = 13, socketAddress = 18, socketOption = 25;
+    static constexpr uint32_t socketFilter = 1, classifier = 3, trafficAction = 4, tracepoint = 5, cgroupPacket = 8, cgroupSocket = 9, socketOperations = 13, socketAddress = 18, socketOption = 25;
     static constexpr uint32_t cgroupIngress = 0, cgroupEgress = 1;
     static constexpr uint32_t cgroupInetCreate = 2, cgroupSocketOperations = 3, cgroupInetRelease = 34;
     static constexpr uint32_t bind4 = 8, bind6 = 9, connect4 = 10, connect6 = 11;
@@ -287,7 +287,7 @@ public:
     static bool trafficControl(uint32_t type) { return type == classifier || type == trafficAction; }
     static bool packetProgram(uint32_t type) { return trafficControl(type) || type == cgroupPacket; }
     static bool supports(uint32_t type) {
-        return type == socketFilter || packetProgram(type) || type == cgroupSocket ||
+        return type == socketFilter || packetProgram(type) || type == tracepoint || type == cgroupSocket ||
             type == socketOperations || type == socketAddress || type == socketOption;
     }
 
@@ -328,6 +328,7 @@ public:
                 entries.emplace(target);
             } else if (i.code == 0x85) {
                 if (i.registers || i.offset) return false;
+                if (type == tracepoint && (i.immediate < 1 || i.immediate > 3)) return false;
                 switch (i.immediate) {
                     case 26: // skb_load_bytes
                         if (type == socketOperations || type == cgroupSocket || type == socketAddress || type == socketOption) return false;
@@ -437,6 +438,12 @@ public:
         return execute(packet.bytes, &packet);
     }
 
+    std::optional<uint32_t> runTracepoint(std::span<const uint8_t> record) const {
+        if (programType != tracepoint || record.empty() || record.size() > maxTracepointBytes)
+            return std::nullopt;
+        return execute({}, nullptr, nullptr, nullptr, record);
+    }
+
     std::optional<uint32_t> runSocketContext(const SocketContext& socket) const {
         if ((programType != cgroupSocket && programType != socketAddress && programType != socketOption) ||
             !socket.socket || (programType == socketAddress && !socket.address) ||
@@ -451,6 +458,8 @@ public:
     }
 
 private:
+    static constexpr size_t maxTracepointBytes = 4096;
+
     struct Instruction {
         uint8_t code, registers;
         int16_t offset;
@@ -606,11 +615,12 @@ private:
 
     std::optional<uint32_t> execute(std::span<const uint8_t> packet, Packet* classifierPacket,
                                     SocketOperations* sockOps = nullptr,
-                                    const SocketContext* socketContext = nullptr) const {
+                                    const SocketContext* socketContext = nullptr,
+                                    std::span<const uint8_t> traceRecord = {}) const {
         // Interpreter addresses identify bounded packet, stack and map regions. The guest never
         // receives host addresses. Guest execution is serialized, so an atomic ADD needs no lock.
         constexpr size_t maxDepth = 8;
-        constexpr uint64_t stackBase = 0x1000, stackStride = 0x1000, context = 0xf000, packetBase = 0x10000;
+        constexpr uint64_t stackBase = 0x1000, stackStride = 0x1000, context = 0xf000, packetBase = context + maxTracepointBytes;
         constexpr uint64_t socketHandle = 0xe000;
         auto* option = socketContext ? socketContext->option : nullptr;
         constexpr uint64_t callbackBase = 1ULL << 29, keyBase = 1ULL << 30;
@@ -655,6 +665,8 @@ private:
             return slice(std::span<uint8_t>(stacks[frame]), stackBase + frame * stackStride, address, size);
         };
         const auto readAt = [&](uint64_t address, uint64_t size, size_t depth) -> std::span<const uint8_t> {
+            if (!traceRecord.empty() && address >= context && address < packetBase)
+                return slice(traceRecord, context, address, size);
             if (address >= keyBase && address < keyBase + maxDepth * mapStride) {
                 const auto index = (address - keyBase) / mapStride;
                 if (index >= depth) return {};
@@ -1169,7 +1181,7 @@ private:
                             dst = hasSocket ? socketHandle : 0; // __sk_buff.sk
                             break;
                         }
-                        if (i.width() == 4 && address >= context && address < context + 180) {
+                        if (programType != tracepoint && i.width() == 4 && address >= context && address < context + 180) {
                             const auto field = skbField(address - context);
                             if (!field) return std::nullopt;
                             dst = *field;
