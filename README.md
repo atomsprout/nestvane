@@ -1,6 +1,6 @@
 # nestvane
 
-目标是在普通 iPhone 上无宿主 JIT、本地运行 Android 17。首版在 iPhone 11 验收 Android 桌面、APK 安装与运行，以及 Android 应用访问 iPhone 摄像头。
+目标是在普通 iPhone 上无宿主 JIT、本地运行 Android 17。首版在 iPhone 14 验收 Android 桌面、APK 安装与运行，以及 Android 应用访问 iPhone 摄像头。
 
 - [实施计划](PLAN.md) 包含首个真机原型、阶段验收和性能继续条件。
 - [AOT 设计记录](AOT.md) 包含出发点、nestvane 第一版的执行路径和验证方法。
