@@ -1434,6 +1434,34 @@ int main() {
         assert(permute.cpu.fpsr == fpsrSaturation); // An in-range conversion preserves the sticky flag.
         assert(executeStartupInstruction(permute, 0xd51b443f) && !permute.cpu.fpsr);
         assert(executeStartupInstruction(permute, 0x2e614810) && !permute.cpu.fpsr);
+        {
+            const std::array<int16_t, 8> signedBytes{INT16_MIN, -1, 0, 1, 254, 255, 256, INT16_MAX};
+            const std::array<uint8_t, 16> saturatedBytes{0, 0, 0, 1, 254, 255, 255, 255};
+            std::memcpy(permute.cpu.v[20].data(), signedBytes.data(), sizeof(signedBytes));
+            permute.cpu.v[1].fill(0x77);
+            assert(executeStartupInstruction(permute, 0x2e212a81)); // sqxtun v1.8b, v20.8h
+            assert(permute.cpu.v[1] == saturatedBytes && permute.cpu.fpsr == fpsrSaturation);
+            assert(executeStartupInstruction(permute, 0xd51b443f) && !permute.cpu.fpsr);
+            const std::array<int16_t, 8> inRange{255, 0, 3, 5, 254, 11, 17, 200};
+            const std::array<uint8_t, 16> bothBytes{0, 0, 0, 1, 254, 255, 255, 255,
+                                                   255, 0, 3, 5, 254, 11, 17, 200};
+            std::memcpy(permute.cpu.v[20].data(), inRange.data(), sizeof(inRange));
+            assert(executeStartupInstruction(permute, 0x6e212a81)); // sqxtun2 v1.16b, v20.8h
+            assert(permute.cpu.v[1] == bothBytes && !permute.cpu.fpsr);
+            const std::array<int32_t, 4> signedHalves{INT32_MIN, 65535, 65536, -1};
+            const std::array<uint16_t, 8> saturatedHalves{0, 65535, 65535, 0};
+            std::memcpy(permute.cpu.v[1].data(), signedHalves.data(), sizeof(signedHalves));
+            assert(executeStartupInstruction(permute, 0x2e612821)); // sqxtun v1.4h, v1.4s
+            assert(std::memcmp(permute.cpu.v[1].data(), saturatedHalves.data(), sizeof(saturatedHalves)) == 0);
+            assert(permute.cpu.fpsr == fpsrSaturation);
+            const std::array<int64_t, 2> signedWords{INT64_MIN, 0x1'0000'0000};
+            const std::array<uint32_t, 4> saturatedWords{0, 0x80000000, 0, UINT32_MAX};
+            std::memcpy(permute.cpu.v[1].data(), signedWords.data(), sizeof(signedWords));
+            assert(executeStartupInstruction(permute, 0x6ea12821)); // sqxtun2 v1.4s, v1.2d
+            assert(std::memcmp(permute.cpu.v[1].data(), saturatedWords.data(), sizeof(saturatedWords)) == 0);
+            assert(!executeStartupInstruction(permute, 0x2ee12a81)); // reserved lane width
+        }
+
         assert(!executeStartupInstruction(permute, 0x2ee14810)); // reserved 64-bit destinations
         const std::array<float, 4> signedFixedSource{1.78125f, -1.7890625f, 8, 9};
         const std::array<int32_t, 4> signedFixedResult{114, -114, 0, 0};

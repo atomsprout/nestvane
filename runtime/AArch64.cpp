@@ -983,7 +983,8 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
             setLane(result, i, size, shifted);
         }
     } else if (const auto narrow = word & 0xbf3ffc00;
-               narrow == 0x0e212800 || narrow == 0x2e214800) { // XTN / XTN2, UQXTN / UQXTN2.
+               narrow == 0x0e212800 || narrow == 0x2e214800 || narrow == 0x2e212800) {
+        // XTN, UQXTN and signed-to-unsigned SQXTUN, including upper-half forms.
         if (size == 8) return false;
         const unsigned count = 8 / size;
         const unsigned start = width == 16 ? count : 0;
@@ -991,8 +992,9 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
         if (start) result = cpu.v[rd];
         for (unsigned i = 0; i < count; ++i) {
             auto value = lane(source, i, size * 2);
-            if (narrow == 0x2e214800 && value > maximum) {
-                value = maximum;
+            const bool negative = narrow == 0x2e212800 && (value >> (size * 16 - 1));
+            if (narrow != 0x0e212800 && (negative || value > maximum)) {
+                value = negative ? 0 : maximum;
                 cpu.fpsr |= fpsrSaturation;
             }
             setLane(result, start + i, size, value);
