@@ -158,6 +158,33 @@ std::jthread watchGuestDisplay(void* module, uint32_t width, uint32_t height) {
     });
 }
 
+bool validateGraphicsProcessPipe(void* module) {
+    if (!dlsym(module, "gfxstream_guest_graphics_process_start")) return true;
+    const auto factory = nestvane::loadGfxstreamPipeFactory(module);
+    if (!factory) return false;
+    auto first = factory("GLProcessPipe"), second = factory("GLProcessPipe"), invalid = factory("GLProcessPipe");
+    if (!first || !second || !invalid) return false;
+    const auto identify = [](nestvane::GraphicsPipe& pipe) {
+        constexpr std::array<uint8_t, 4> confirm{100, 0, 0, 0};
+        std::array<uint8_t, 8> reply{};
+        if (pipe.pollEvents() != 4 || pipe.read(reply) != -11 ||
+            pipe.write(std::span(confirm).first(1)) != 1 ||
+            pipe.write(std::span(confirm).subspan(1)) != 3 || pipe.pollEvents() != 1 ||
+            pipe.read(std::span(reply).first(3)) != 3 ||
+            pipe.read(std::span(reply).subspan(3)) != 5 || pipe.pollEvents() != 0 ||
+            pipe.write(confirm) != -22) return uint64_t{0};
+        uint64_t id = 0;
+        std::memcpy(&id, reply.data(), sizeof(id));
+        return id;
+    };
+    const auto firstId = identify(*first), secondId = identify(*second);
+    constexpr std::array<uint8_t, 4> malformed{};
+    const bool passed = firstId && secondId && firstId != secondId &&
+        invalid->write(malformed) == -22 && invalid->pollEvents() == 8;
+    std::printf("Goldfish process pipe: distinct resource IDs and split handshake=%s\n", passed ? "yes" : "no");
+    return passed;
+}
+
 bool validatePostedDisplay(void* module, uint32_t handle, uint32_t side, std::span<const uint8_t> expected) {
     const auto read = load<uint64_t (*)(uint64_t, uint8_t*, size_t, uint32_t*)>(
         module, "gfxstream_guest_display_read");
@@ -295,7 +322,8 @@ int main(int argc, char** argv) {
     const bool matched = !wrote && !read && backing == expected;
     std::printf("RGBA8 upload: %d, readback: %d, matching bytes: %s (%u bytes)\n",
                 wrote, read, matched ? "yes" : "no", bytes);
-    const bool displayed = matched && validatePostedDisplay(module, resource.handle, side, expected);
+    const bool displayed = matched && validatePostedDisplay(module, resource.handle, side, expected)
+        && validateGraphicsProcessPipe(module);
     unref(resource.handle);
     destroy();
     return displayed ? 0 : 1;

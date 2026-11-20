@@ -1,0 +1,33 @@
+--- a/host/virtio_gpu_gfxstream_renderer.cpp
++++ b/host/virtio_gpu_gfxstream_renderer.cpp
+@@ -34,6 +34,7 @@
+ #include "host-common/opengles.h"
+ #endif
+ #include <algorithm>
++#include <atomic>
+ #include <cstring>
+
+ #include "render-utils/Renderer.h"
+@@ -379,6 +380,22 @@
+     }
+ }
+
++// Legacy Goldfish uses the process pipe to scope resources across render channels.
++VG_EXPORT uint64_t gfxstream_guest_graphics_process_start() {
++    auto* fb = FrameBuffer::getFB();
++    if (!fb) return 0;
++    constexpr uint64_t firstId = uint64_t{1} << 63;
++    static std::atomic<uint64_t> nextId{firstId};
++    const auto id = nextId.fetch_add(1, std::memory_order_relaxed);
++    if (id < firstId || id == UINT64_MAX) return 0;
++    fb->createGraphicsProcessResources(id);
++    return id;
++}
++
++VG_EXPORT void gfxstream_guest_graphics_process_stop(uint64_t id) {
++    if (auto* fb = FrameBuffer::getFB(); fb && id) fb->signalGuestProcessDead(id);
++}
++
+ // One nonblocking byte stream for a Goldfish opengles connection.
+ VG_EXPORT void* gfxstream_guest_pipe_open() {
+     auto channel = sFrontend()->openGuestRenderChannel();

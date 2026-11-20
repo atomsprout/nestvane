@@ -38,6 +38,53 @@ private:
     size_t received = 0;
 };
 
+class GfxstreamProcessPipe final : public GraphicsPipe {
+public:
+    GfxstreamProcessPipe(uint64_t (*start)(), void (*stop)(uint64_t)) : start(start), stop(stop) {}
+    ~GfxstreamProcessPipe() override {
+        if (id) stop(id);
+    }
+
+    int64_t read(std::span<uint8_t> bytes) override {
+        if (bytes.empty()) return 0;
+        if (failed) return -5;
+        if (!id || sent == sizeof(id)) return -11;
+        const auto count = std::min(bytes.size(), sizeof(id) - sent);
+        for (auto& byte : bytes.first(count)) byte = uint8_t(id >> (8 * sent++));
+        return count;
+    }
+
+    int64_t write(std::span<const uint8_t> bytes) override {
+        if (bytes.empty()) return 0;
+        if (failed) return -5;
+        if (received == sizeof(confirmation)) return -22;
+        const auto count = std::min(bytes.size(), sizeof(confirmation) - received);
+        for (const auto byte : bytes.first(count)) confirmation |= uint32_t(byte) << (8 * received++);
+        if (received == sizeof(confirmation)) {
+            if (confirmation == 100) id = start();
+            if (!id) {
+                failed = true;
+                return confirmation == 100 ? -5 : -22;
+            }
+        }
+        return count;
+    }
+
+    uint16_t pollEvents() const override {
+        if (failed) return 8;
+        if (received < sizeof(confirmation)) return 4;
+        return sent < sizeof(id) ? 1 : 0;
+    }
+
+private:
+    uint64_t (*start)();
+    void (*stop)(uint64_t);
+    uint64_t id = 0;
+    uint32_t confirmation = 0;
+    size_t received = 0, sent = 0;
+    bool failed = false;
+};
+
 // The module must stay loaded, with its renderer initialized, until all
 // guest descriptors using the returned factory have been closed.
 inline GraphicsPipeFactory loadGfxstreamPipeFactory(void* module) {
@@ -73,7 +120,14 @@ inline GraphicsPipeFactory loadGfxstreamPipeFactory(void* module) {
 
     const auto releaseColorBuffer = reinterpret_cast<void (*)(uint32_t)>(
         dlsym(module, "gfxstream_guest_color_buffer_release"));
-    return [api, releaseColorBuffer](std::string_view service) -> std::unique_ptr<GraphicsPipe> {
+    const auto startProcess = reinterpret_cast<uint64_t (*)()>(
+        dlsym(module, "gfxstream_guest_graphics_process_start"));
+    const auto stopProcess = reinterpret_cast<void (*)(uint64_t)>(
+        dlsym(module, "gfxstream_guest_graphics_process_stop"));
+    return [api, releaseColorBuffer, startProcess, stopProcess](std::string_view service)
+        -> std::unique_ptr<GraphicsPipe> {
+        if (service == "GLProcessPipe" && startProcess && stopProcess)
+            return std::make_unique<GfxstreamProcessPipe>(startProcess, stopProcess);
         if (service == "refcount" && releaseColorBuffer)
             return std::make_unique<GfxstreamRefcountPipe>(releaseColorBuffer);
         if (service != "opengles") return {};
