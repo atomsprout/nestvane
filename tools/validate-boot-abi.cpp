@@ -4618,6 +4618,16 @@ int main() {
     {
         const auto touch = std::make_shared<GuestTouch>();
         linux.setGuestTouch(touch);
+        put(base + 704, "/system/usr/idc/Nestvane_Touchscreen.idc");
+        const auto config = call(56, {uint32_t(-100), base + 704, 0});
+        assert(config < 256);
+        constexpr std::string_view touchConfig =
+            "touch.enableForInactiveViewport = 1\n"
+            "touch.wake = 1\n";
+        assert(call(63, {config, base + 768, 192}) == touchConfig.size());
+        const auto* configBytes = machine.read(base + 768, touchConfig.size(), 4);
+        assert(configBytes && std::string_view(reinterpret_cast<const char*>(configBytes), touchConfig.size()) == touchConfig);
+        assert(call(57, {config}) == 0);
         touch->submit(100, 100, true); // A tap on the boot screen has no guest reader.
         put(base + 704, "/dev/input");
         const auto directory = call(56, {uint32_t(-100), base + 704, 0x4000});

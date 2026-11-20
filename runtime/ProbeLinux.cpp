@@ -552,7 +552,17 @@ void ProbeLinux::addDirectory(std::string path, uint32_t mode) {
 
 void ProbeLinux::setGuestTouch(std::shared_ptr<GuestTouch> touch) {
     guestTouch = std::move(touch);
-    if (guestTouch) addDirectory("/dev/input", 0755);
+    constexpr auto configPath = "/system/usr/idc/Nestvane_Touchscreen.idc";
+    if (!guestTouch) {
+        files.erase(configPath);
+        return;
+    }
+    addDirectory("/dev/input", 0755);
+    // Let Android keep this virtual touchscreen available while its display sleeps.
+    static constexpr std::string_view config =
+        "touch.enableForInactiveViewport = 1\n"
+        "touch.wake = 1\n";
+    mount(configPath, {reinterpret_cast<const uint8_t*>(config.data()), config.size()});
 }
 
 void ProbeLinux::addBootTmpfs(std::string path, uint32_t mode, uint32_t gid, uint64_t flags) {
