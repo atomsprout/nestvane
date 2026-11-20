@@ -563,3 +563,5 @@
 - 同一轮 Android CameraService 的原版 dumpsys 报告 AIDL Ranchu provider 提供一颗 Facing: Back 摄像头。源为 Mac 合成测试图案，Smoke 的 CAMERA 权限记录仍为 granted=false。尚无预览、拍照或实体设备验收证据。
 - SHA-256 为 790bc2cbb87d93d941142d2acb4dc31ee1529ad323ae1cfe26ee2ea1156b41ad 的当前 Smoke APK 在 Android 17 参考模拟器上显示原版授权弹窗。选择使用期间允许后预览开始，应用和宿主均确认了 640×480 JPEG，退出后 CameraService 报告当前客户端为空。同一 APK 的隔离 Mac 测试版预授 Android 权限后通过原版 Camera2 获取了后置租约与 1,228,800 字节 RGBA 帧，应用报告收到预览，纹理区域仍为黑色，尚待验证 JPEG 与可见画面。
 - Android 原版启动命令对重启后的 Nestvane 返回 OpenCalc Activity 不存在。该数据卷中的 APK、packages.list、原版 ABX 安装记录和用户 0 的包状态均保留，参考模拟器能用同一命令启动同一组件。Editor 的原版启动命令返回 Status: ok，但该轮尚未取得应用实际画面。原版 ACTION_ALL_APPS 在参考模拟器显示两款应用，在 Nestvane 已投递到前台 QuickstepLauncher，真实列表画面待核对。
+- Mac 按下 Capture Photo 后，原版 Ranchu Camera HAL 的 RGBA 预览及 YUV420 拍照请求均被接收。运行时随后在 /vendor/lib64/libjpeg.so+0x15f9c 遇到 0x4f70c234，即 SQDMULH 向量按元素形式，整机执行停止，未写出 JPEG。已补齐向量 SQDMULH 和 SQRDMULH 按元素执行，回归覆盖原始机器码、16/32 位索引、舍入、饱和状态和窄向量清零。完整拍照仍待复验，宿主对预览纹理的 glTexSubImage2D 错误也待定位。
+- 另一次从相同安装数据卷重启后，原版包管理器在重装前就能解析 OpenCalc、Editor 和 Smoke 的启动组件。原版安装通道重新安装前两款后，解析结果保持一致。对保留的 OpenCalc APK 使用客体 pread64 和 mmap 逐字节核对，2,359,134 字节均一致。此前组件启动错误的触发条件仍待验证。

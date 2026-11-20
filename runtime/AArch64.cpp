@@ -347,6 +347,16 @@ void setLane(std::array<uint8_t, 16>& vector, unsigned index, unsigned size, uin
     std::memcpy(vector.data() + index * size, &value, size);
 }
 
+int64_t signedDoublingMultiplyHigh(CPU& cpu, uint64_t left, uint64_t right,
+                                   unsigned bits, bool round) {
+    const auto shift = bits - 1;
+    const auto maximum = (int64_t{1} << shift) - 1;
+    const auto rounding = round ? int64_t{1} << (shift - 1) : 0;
+    const auto high = (int64_t(sx(left, bits)) * int64_t(sx(right, bits)) + rounding) >> shift;
+    if (high > maximum) cpu.fpsr |= fpsrSaturation;
+    return std::min(high, maximum);
+}
+
 template<class Float, class UInt>
 Float floatingMinMax(CPU& cpu, Float left, Float right, bool minimum, bool numeric) {
     const auto leftBits = std::bit_cast<UInt>(left), rightBits = std::bit_cast<UInt>(right);
@@ -399,8 +409,10 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
     const bool scalar = word & 0x10000000;
     const auto integerElement = word & 0xbf00f400;
     const auto fpElement = word & 0xaf80f400;
-    if (integerElement == 0x0f008000 || integerElement == 0x2f000000 || integerElement == 0x2f004000) {
-        // MUL, MLA and MLS with an indexed element.
+    const bool doublingHighElement = integerElement == 0x0f00c000 || integerElement == 0x0f00d000;
+    if (integerElement == 0x0f008000 || integerElement == 0x2f000000 ||
+        integerElement == 0x2f004000 || doublingHighElement) {
+        // MUL, MLA, MLS, SQDMULH and SQRDMULH with an indexed element.
         if (size != 2 && size != 4) return false;
         const unsigned highIndex = (word >> 11) & 1;
         const unsigned lowIndex = (word >> 21) & 1;
@@ -408,7 +420,13 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
         const unsigned index = size == 2 ? highIndex * 4 + lowIndex * 2 + (rm >> 4) : highIndex * 2 + lowIndex;
         const auto multiplier = lane(cpu.v[size == 2 ? rm & 15 : rm], index, size);
         for (unsigned i = 0; i < width / size; ++i) {
-            const auto product = lane(source, i, size) * multiplier;
+            const auto left = lane(source, i, size);
+            if (doublingHighElement) {
+                setLane(result, i, size, signedDoublingMultiplyHigh(
+                    cpu, left, multiplier, size * 8, integerElement == 0x0f00d000));
+                continue;
+            }
+            const auto product = left * multiplier;
             auto value = product;
             if (integerElement == 0x2f000000) value = lane(cpu.v[rd], i, size) + product;
             if (integerElement == 0x2f004000) value = lane(cpu.v[rd], i, size) - product;
@@ -812,15 +830,9 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
         }
     } else if (op == 0x2e20b400) { // SQRDMULH (vector).
         if (size != 2 && size != 4) return false;
-        const unsigned shift = size * 8 - 1;
-        const auto maximum = (int64_t{1} << shift) - 1;
-        const auto rounding = int64_t{1} << (shift - 1);
         for (unsigned i = 0; i < width / size; ++i) {
-            const auto a = int64_t(sx(lane(source, i, size), size * 8));
-            const auto b = int64_t(sx(lane(other, i, size), size * 8));
-            const auto rounded = (a * b + rounding) >> shift;
-            if (rounded > maximum) cpu.fpsr |= fpsrSaturation;
-            setLane(result, i, size, std::min(rounded, maximum));
+            setLane(result, i, size, signedDoublingMultiplyHigh(
+                cpu, lane(source, i, size), lane(other, i, size), size * 8, true));
         }
     } else if (const auto comparison = op & ~0x10000000;
                comparison == 0x0e208c00 || comparison == 0x2e208c00 ||

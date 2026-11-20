@@ -1038,6 +1038,32 @@ int main() {
         assert(std::memcmp(permute.cpu.v[28].data(), wideMulHigh.data(), sizeof(wideMulHigh)) == 0);
         assert(executeStartupInstruction(permute, 0xd51b443f) && !permute.cpu.fpsr);
         assert(!executeStartupInstruction(permute, 0x6e3fb795)); // reserved byte lanes
+
+        const std::array<int16_t, 8> indexedHalfMultiplier{1, 2, 3, 16384};
+        const std::array<int16_t, 8> indexedHalfHigh{-16384, -16384, 8192, -8192, 16383, 0, -1, 6172};
+        std::memcpy(permute.cpu.v[17].data(), mulLeft.data(), sizeof(mulLeft));
+        std::memcpy(permute.cpu.v[0].data(), indexedHalfMultiplier.data(), sizeof(indexedHalfMultiplier));
+        assert(executeStartupInstruction(permute, 0x4f70c234)); // libjpeg: sqdmulh v20.8h, v17.8h, v0.h[3]
+        assert(std::memcmp(permute.cpu.v[20].data(), indexedHalfHigh.data(), sizeof(indexedHalfHigh)) == 0);
+        assert(!permute.cpu.fpsr && !executeStartupInstruction(permute, 0x4f30c234)); // reserved byte lanes
+
+        const std::array<int16_t, 8> indexedSaturatingMultiplier{1, 2, 3, 4, 5, 6, 7, INT16_MIN};
+        const std::array<int16_t, 8> indexedSaturatingHigh{32767, 32767, -16384, 16384};
+        std::memcpy(permute.cpu.v[15].data(), indexedSaturatingMultiplier.data(), sizeof(indexedSaturatingMultiplier));
+        std::memcpy(permute.cpu.v[10].data(), mulLeft.data(), sizeof(mulLeft));
+        permute.cpu.v[9].fill(0xaa);
+        assert(executeStartupInstruction(permute, 0x0f7fc949)); // sqdmulh v9.4h, v10.4h, v15.h[7]
+        assert(std::memcmp(permute.cpu.v[9].data(), indexedSaturatingHigh.data(), sizeof(indexedSaturatingHigh)) == 0);
+        assert(permute.cpu.fpsr == fpsrSaturation);
+
+        const std::array<int32_t, 4> indexedWideHigh{INT32_MIN / 2, INT32_MAX / 2, -1, 0};
+        const std::array<int32_t, 4> indexedWideRounded{INT32_MIN / 2, INT32_MAX / 2 + 1, 0, 1};
+        std::memcpy(permute.cpu.v[27].data(), wideMulLeft.data(), sizeof(wideMulLeft));
+        assert(executeStartupInstruction(permute, 0x4fbfcb72)); // sqdmulh v18.4s, v27.4s, v31.s[3]
+        assert(executeStartupInstruction(permute, 0x4fbfdb73)); // sqrdmulh v19.4s, v27.4s, v31.s[3]
+        assert(std::memcmp(permute.cpu.v[18].data(), indexedWideHigh.data(), sizeof(indexedWideHigh)) == 0);
+        assert(std::memcmp(permute.cpu.v[19].data(), indexedWideRounded.data(), sizeof(indexedWideRounded)) == 0);
+        assert(executeStartupInstruction(permute, 0xd51b443f));
         const std::array<uint16_t, 8> narrowBytesSource{0, 254, 255, 256, 257, 1, 32768, 65535};
         const std::array<uint8_t, 16> narrowBytesResult{0, 254, 255, 255, 255, 1, 255, 255};
         std::memcpy(permute.cpu.v[0].data(), narrowBytesSource.data(), sizeof(narrowBytesSource));
