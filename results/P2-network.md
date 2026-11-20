@@ -514,3 +514,6 @@
 - iPhone 11 进程 9786 于 716.558 秒完成 Android `BOOT_COMPLETED` 广播。解锁后导出的画面为黑屏，客体于 884.501 秒在 Launcher 的 `libandroidfw.so` PNG 单通道 ST4 停下（`0x0dbfa020`），峰值物理占用 1,899,339,608 字节。备份经 SQLite `quick_check` 校验，已换装 PNG 修复和周期日志构建。进程 9791 的周期快照可读取原版 Android 日志。
 - Mac PNG 修复版越过此前 ST4 停点并继续运行。直接检查同一进程的 Bionic 属性区，读到 `ro.build.version.sdk=37`、`sys.boot_completed=1`、`init.svc.bootanim=stopped`。Launcher 像素仍待确认。[AOSP Bionic 属性格式](https://raw.githubusercontent.com/aosp-mirror/platform_bionic/main/libc/system_properties/include/system_properties/prop_info.h)
 - 独立 Bionic 属性读取器曾因导出仅复制文件内容、遗漏 `/dev/__properties__` 父目录权限而得到 EACCES。现在一并保留源目录信息。宿主回归确认 uid 1000 可以读取可遍历目录里的属性文件、仍会被私有子目录拒绝。用同一 Android 17 镜像进行的限时引导验证了独立读取器能读回 SDK、servicemanager 和 ART 相关属性，iPhoneOS Release 构建通过。
+- Mac 上的 PNG 修复版跑满 1,260 秒，未再停在未实现指令。图形读回线程持有序号 3832 的 640×960 RGBA 帧，检查全部 614,400 像素，RGB 均为 0。该样本位于独立 Bionic 读取确认 `sys.boot_completed=1`、`init.svc.bootanim=stopped` 后，尚未读到 Launcher 完成绘制。
+- Mac 使用属性目录权限修复版（`7d74a4a`）另行跑完 900 秒，终止报告由独立读取器验证 `sys.boot_completed=1`。同一报告记录四个原版 `dumpsys` 和两个自有 APK 夹具调用的原版 `cmd` 已进入客体 ELF，运行期间读取到六个服务均已停止。现有报告未验证这些命令的结果，后续轮次把窗口、图层、活动和电源状态各自保存到客体文件。
+- iPhone 11 进程 9791 跑过 1,455 秒，实时快照仍能读到原版 Launcher 主线程执行。该轮新取回的 640×960 PNG 仍显示 Android 开机动画。真机桌面、APK 和摄像头仍待验收。
