@@ -512,7 +512,7 @@ static NSString* ThermalState() {
                 });
                 auto boot = nestvane::probeInit(initRoot.fileSystemRepresentation, database.fileSystemRepresentation,
                                                 progress, renderer.pipeFactory(), touch, nestvane::makeIOSCamera(),
-                                                apkInbox, stop, exportWatchdog, exportLiveSnapshot);
+                                                apkInbox, stop, exportWatchdog, exportLiveSnapshot, renderer.colorDma());
                 boot.report.insert(0, "Local Android renderer initialized\n");
                 return boot;
             };

@@ -4,6 +4,7 @@
 #include "GuestApkInbox.hpp"
 #include "GuestCamera.hpp"
 #include "GuestTouch.hpp"
+#include "GuestColorDma.hpp"
 
 #include <memory>
 #include <stop_token>
@@ -26,6 +27,7 @@ DynamicReport probeInit(const std::string& directory, const std::string& databas
                         GraphicsPipeFactory graphics = {}, std::shared_ptr<GuestTouch> touch = {},
                         std::shared_ptr<GuestCameraSource> camera = {},
                         std::shared_ptr<GuestApkInbox> apkInbox = {}, std::stop_token stop = {},
-                        const BootProgress& watchdog = {}, const BootProgress& liveSnapshot = {});
+                        const BootProgress& watchdog = {}, const BootProgress& liveSnapshot = {},
+                        std::shared_ptr<GuestColorDma> graphicsDma = {});
 
 } // namespace nestvane

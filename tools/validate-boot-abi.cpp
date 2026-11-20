@@ -8,6 +8,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <filesystem>
+#include <future>
 #include <iostream>
 #include <limits>
 #include <sstream>
@@ -2228,6 +2229,40 @@ int main() {
         assert(mapping < (1ULL << 45));
         assert(command(rear, "frame dim=640x480 pix=876758866 offset=" + std::to_string(offset)) == "ok");
         assert(word(mapping) == 0x9292929292929292ULL);
+        auto dma = std::make_shared<GuestColorDma>();
+        guest.setGraphicsDma(dma);
+        const auto waitOnRenderer = [&](auto request) {
+            using namespace std::chrono;
+            auto worker = std::async(std::launch::async, std::move(request));
+            const auto deadline = steady_clock::now() + seconds(3);
+            while (worker.wait_for(milliseconds(1)) != std::future_status::ready) {
+                assert(steady_clock::now() < deadline);
+                device.cpu.retired += 4096;
+                guest.schedule(device, steady_clock::now() + milliseconds(2));
+            }
+            return worker.get();
+        };
+        const auto physical = 0x800000000ULL + offset;
+        assert(waitOnRenderer([&] {
+            void* pixels = nullptr;
+            auto* token = GuestColorDma::acquire(dma.get(), physical, 8, false, &pixels);
+            if (!token) return false;
+            const auto view = std::span(static_cast<const uint8_t*>(pixels), 8);
+            const auto correct = std::ranges::all_of(view, [](uint8_t color) { return color == 0x92; });
+            return GuestColorDma::release(dma.get(), token, false) && correct;
+        }));
+        assert(waitOnRenderer([&] {
+            void* pixels = nullptr;
+            auto* token = GuestColorDma::acquire(dma.get(), physical + 2, 4, true, &pixels);
+            if (!token) return false;
+            std::memset(pixels, 0x4d, 4);
+            return GuestColorDma::release(dma.get(), token, true);
+        }));
+        assert(word(mapping) == 0x92924d4d4d4d9292ULL);
+        assert(waitOnRenderer([&] {
+            void* pixels = nullptr;
+            return !GuestColorDma::acquire(dma.get(), physical + length - 1, 2, false, &pixels);
+        }));
         assert(command(rear, "frame dim=640x480 pix=842093913 offset=" + std::to_string(offset)) == "ok");
         assert(word(mapping) == 0x3131313131313131ULL);
         assert(command(rear, "frame dim=640x480 pix=876758866 offset=" + std::to_string(offset + length)).starts_with("ko:"));

@@ -16,15 +16,14 @@ public:
             return;
         }
 
-        const auto start = reinterpret_cast<int (*)(uint32_t, uint32_t)>(dlsym(module, "gfxstream_guest_renderer_start"));
         shutdown = reinterpret_cast<void (*)()>(dlsym(module, "stream_renderer_teardown"));
         displayRead = reinterpret_cast<DisplayRead>(dlsym(module, "gfxstream_guest_display_read"));
         pipes = loadGfxstreamPipeFactory(module);
-        if (!start || !shutdown || !pipes) {
+        if (!shutdown || !pipes) {
             failure = "gfxstream is missing the Nestvane renderer interfaces";
             return;
         }
-        if (const int status = start(width, height)) {
+        if (const int status = startGfxstreamGuestRenderer(module, width, height, dma)) {
             failure = "gfxstream initialization failed with status " + std::to_string(status);
             return;
         }
@@ -33,6 +32,7 @@ public:
     }
 
     ~GfxstreamSession() {
+        if (dma) dma->stop();
         if (started) shutdown();
         if (module) dlclose(module);
     }
@@ -43,6 +43,7 @@ public:
     explicit operator bool() const { return started; }
     const std::string& error() const { return failure; }
     GraphicsPipeFactory pipeFactory() const { return started ? pipes : GraphicsPipeFactory{}; }
+    std::shared_ptr<GuestColorDma> colorDma() const { return dma; }
 
     bool hasDisplayReadback() const { return started && displayRead; }
     uint64_t readDisplay(uint64_t after, std::span<uint8_t> pixels, uint32_t (&dimensions)[2]) const {
@@ -55,6 +56,7 @@ private:
     void* module = nullptr;
     void (*shutdown)() = nullptr;
     GraphicsPipeFactory pipes;
+    std::shared_ptr<GuestColorDma> dma;
     std::string failure;
     bool started = false;
 };

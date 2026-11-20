@@ -2223,6 +2223,37 @@ std::shared_ptr<ProbeLinux::GraphicsRegion> ProbeLinux::GraphicsAddressSpace::ma
     return {};
 }
 
+void ProbeLinux::serviceGraphicsDma() {
+    if (graphicsDma) graphicsDma->service([this](auto& transfer) { return transferGraphicsDma(transfer); });
+}
+
+bool ProbeLinux::transferGraphicsDma(GuestColorDma::Transfer& transfer) {
+    if (transfer.address < graphicsAddressBase) return false;
+    const auto offset = transfer.address - graphicsAddressBase;
+    const auto end = graphicsRegions.upper_bound(offset);
+    if (end == graphicsRegions.begin()) return false;
+    const auto region = std::prev(end)->second.lock();
+    if (!region || region->released) return false;
+    const auto within = offset - region->offset;
+    const auto size = region->storage.size;
+    if (within >= size || transfer.pixels.size() > size - within) return false;
+
+    auto* pixels = region->storage.pages.data() + within;
+    switch (transfer.phase) {
+        case GuestColorDma::Phase::upload:
+            std::memcpy(transfer.pixels.data(), pixels, transfer.pixels.size());
+            return true;
+        case GuestColorDma::Phase::readback:
+            transfer.backing = std::shared_ptr<SharedFileBytes>(region, &region->storage);
+            return true;
+        case GuestColorDma::Phase::publish:
+            if (transfer.backing.get() != &region->storage) return false;
+            std::memcpy(pixels, transfer.pixels.data(), transfer.pixels.size());
+            return true;
+    }
+    return false;
+}
+
 std::shared_ptr<ProbeLinux::GraphicsRegion> ProbeLinux::allocateGraphicsRegion(uint64_t requested) {
     if (!requested || requested > maxDataFileBytes) return {};
     const auto size = (requested + graphicsAlignment - 1) & ~(graphicsAlignment - 1);
@@ -5245,6 +5276,7 @@ void ProbeLinux::accountGuestCpu() {
 
 bool ProbeLinux::switchThread(Machine& machine, std::chrono::steady_clock::time_point deadline, const std::stop_token& stop) {
     using namespace std::chrono;
+    serviceGraphicsDma();
     auto now = steady_clock::now();
     std::optional<steady_clock::time_point> nextDeadline;
     bool runnable = false;
@@ -5311,8 +5343,14 @@ bool ProbeLinux::switchThread(Machine& machine, std::chrono::steady_clock::time_
     if (!binderReferenceChanges->empty()) refreshBinderReferences();
     updateTimers();
     while (!runnable && nextDeadline && now < deadline && !stop.stop_requested()) {
-        const auto wake = std::min(*nextDeadline, deadline);
-        std::this_thread::sleep_until(stop.stop_possible() ? std::min(wake, now + milliseconds(100)) : wake);
+        auto wake = std::min(*nextDeadline, deadline);
+        if (stop.stop_possible()) wake = std::min(wake, now + milliseconds(100));
+        if (graphicsDma) {
+            graphicsDma->waitUntil(wake);
+            serviceGraphicsDma();
+        } else {
+            std::this_thread::sleep_until(wake);
+        }
         now = steady_clock::now();
         updateTimers();
     }

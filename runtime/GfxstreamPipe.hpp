@@ -1,6 +1,7 @@
 #pragma once
 
 #include "GraphicsPipe.hpp"
+#include "GuestColorDma.hpp"
 
 #include <algorithm>
 #include <dlfcn.h>
@@ -84,6 +85,21 @@ private:
     size_t received = 0, sent = 0;
     bool failed = false;
 };
+
+inline int startGfxstreamGuestRenderer(void* module, uint32_t width, uint32_t height,
+                                      std::shared_ptr<GuestColorDma>& dma) {
+    using StartDma = int (*)(uint32_t, uint32_t, void*, decltype(&GuestColorDma::acquire),
+                             decltype(&GuestColorDma::release));
+    if (const auto start = reinterpret_cast<StartDma>(dlsym(module, "gfxstream_guest_renderer_start_dma"))) {
+        auto queue = std::make_shared<GuestColorDma>();
+        const auto result = start(width, height, queue.get(), GuestColorDma::acquire, GuestColorDma::release);
+        if (!result) dma = std::move(queue);
+        return result;
+    }
+    const auto start = reinterpret_cast<int (*)(uint32_t, uint32_t)>(
+        dlsym(module, "gfxstream_guest_renderer_start"));
+    return start ? start(width, height) : -38;
+}
 
 // The module must stay loaded, with its renderer initialized, until all
 // guest descriptors using the returned factory have been closed.

@@ -1,0 +1,336 @@
+--- a/host/common/dma_device.cpp
++++ b/host/common/dma_device.cpp
+@@ -14,6 +14,8 @@
+ 
+ #include "gfxstream/host/dma_device.h"
+ 
++#include <utility>
++
+ namespace gfxstream {
+ namespace host {
+ namespace {
+@@ -24,11 +26,42 @@
+ 
+ static void DefaultGfxstreamDmaUnlock(uint64_t) { }
+ 
++void* guestColorBufferContext = nullptr;
++AcquireGuestColorBuffer guestColorBufferAcquire = nullptr;
++ReleaseGuestColorBuffer guestColorBufferRelease = nullptr;
++
+ }  // namespace
+ 
+ gfxstream_dma_get_host_addr_t g_gfxstream_dma_get_host_addr = DefaultGfxstreamGetHostAddr;
+ gfxstream_dma_unlock_t g_gfxstream_dma_unlock = DefaultGfxstreamDmaUnlock;
+ 
++void setGuestColorBufferDma(void* context, AcquireGuestColorBuffer acquire,
++                            ReleaseGuestColorBuffer release) {
++    guestColorBufferContext = context;
++    guestColorBufferAcquire = acquire;
++    guestColorBufferRelease = release;
++}
++
++bool hasGuestColorBufferDma() {
++    return guestColorBufferAcquire && guestColorBufferRelease;
++}
++
++GuestColorBufferLease::GuestColorBufferLease(uint64_t address, uint32_t size, bool readback) {
++    if (!size || !hasGuestColorBufferDma()) return;
++    release = guestColorBufferRelease;
++    context = guestColorBufferContext;
++    token = guestColorBufferAcquire(context, address, size, readback, &pixels);
++    if (!token) pixels = nullptr;
++}
++
++GuestColorBufferLease::~GuestColorBufferLease() {
++    finish(false);
++}
++
++bool GuestColorBufferLease::finish(bool publish) {
++    return !token || release(context, std::exchange(token, nullptr), publish);
++}
++
+ void set_gfxstream_dma_get_host_addr(gfxstream_dma_get_host_addr_t f) {
+     g_gfxstream_dma_get_host_addr = f;
+ }
+--- a/host/common/include/gfxstream/host/dma_device.h
++++ b/host/common/include/gfxstream/host/dma_device.h
+@@ -14,6 +14,8 @@
+ 
+ #pragma once
+ 
++#include <cstdint>
++
+ #include "render-utils/dma_device.h"
+ 
+ namespace gfxstream {
+@@ -25,5 +27,28 @@
+ void set_gfxstream_dma_get_host_addr(gfxstream_dma_get_host_addr_t);
+ void set_gfxstream_dma_unlock(gfxstream_dma_unlock_t);
+ 
++using AcquireGuestColorBuffer = void* (*)(void*, uint64_t, uint32_t, bool, void**);
++using ReleaseGuestColorBuffer = bool (*)(void*, void*, bool);
++
++// The guest renderer configures these before starting render threads.
++void setGuestColorBufferDma(void*, AcquireGuestColorBuffer, ReleaseGuestColorBuffer);
++bool hasGuestColorBufferDma();
++
++class GuestColorBufferLease {
++public:
++    GuestColorBufferLease(uint64_t address, uint32_t size, bool readback);
++    ~GuestColorBufferLease();
++    GuestColorBufferLease(const GuestColorBufferLease&) = delete;
++    GuestColorBufferLease& operator=(const GuestColorBufferLease&) = delete;
++    void* data() const { return pixels; }
++    bool finish(bool publish);
++
++private:
++    void* context = nullptr;
++    void* pixels = nullptr;
++    void* token = nullptr;
++    ReleaseGuestColorBuffer release = nullptr;
++};
++
+ }  // namespace host
+ }  // namespace gfxstream
+--- a/host/frame_buffer.cpp
++++ b/host/frame_buffer.cpp
+@@ -435,6 +435,9 @@
+     void readColorBuffer(HandleType p_colorbuffer, int x, int y, int width, int height,
+                          GfxstreamFormat pixelsFormat, void* pixels,
+                          uint64_t outPixelsSize = std::numeric_limits<uint64_t>::max());
++    bool transferGuestColorBufferDma(HandleType colorbuffer, int x, int y, int width,
++                                     int height, GLenum pixelsFormat, GLenum pixelsType,
++                                     void* pixels, uint32_t pixelsSize, bool readback);
+     void readColorBufferDeprecated(HandleType p_colorbuffer, int x, int y, int width, int height,
+                                    GLenum format, GLenum type, void* pixels,
+                                    uint64_t outPixelsSize = std::numeric_limits<uint64_t>::max());
+@@ -2664,6 +2667,30 @@
+     }
+ 
+     colorBuffer->readToBytes(x, y, width, height, pixelsFormat, outPixels, outPixelsSize);
++}
++
++bool FrameBuffer::Impl::transferGuestColorBufferDma(HandleType handle, int x, int y, int width,
++                                                   int height, GLenum pixelsFormat, GLenum pixelsType,
++                                                   void* pixels, uint32_t pixelsSize, bool readback) {
++    if (!pixels || x < 0 || y < 0 || width <= 0 || height <= 0) return false;
++    const auto format = GetGfxstreamFormat(m_features, pixelsFormat, pixelsType);
++    if (!format) return false;
++    const auto bytesPerPixel = GetBpp(*format);
++    if (!bytesPerPixel || uint64_t(width) * height > pixelsSize / *bytesPerPixel) return false;
++
++    AutoLock mutex(m_lock);
++    auto colorBuffer = std::dynamic_pointer_cast<ColorBuffer>(findColorBuffer(handle));
++    if (!colorBuffer || uint64_t(x) + width > colorBuffer->getWidth() ||
++        uint64_t(y) + height > colorBuffer->getHeight()) return false;
++
++    // A YUV upload can read a different layout than the guest's GL format.
++    // The legacy YUV operations carry their own layout information.
++    if (!readback) {
++        if (IsYuvFormat(colorBuffer->getFormat())) return false;
++        return colorBuffer->updateFromBytes(x, y, width, height, *format, pixels);
++    }
++    colorBuffer->readToBytes(x, y, width, height, *format, pixels, pixelsSize);
++    return true;
+ }
+ 
+ void FrameBuffer::Impl::readColorBufferDeprecated(HandleType colorbuffer, int x, int y, int width,
+@@ -4941,6 +4968,13 @@
+     mImpl->readColorBuffer(p_colorbuffer, x, y, width, height, pixelsFormat, pixels, outPixelsSize);
+ }
+ 
++bool FrameBuffer::transferGuestColorBufferDma(HandleType handle, int x, int y, int width,
++                                             int height, GLenum pixelsFormat, GLenum pixelsType,
++                                             void* pixels, uint32_t pixelsSize, bool readback) {
++    return mImpl->transferGuestColorBufferDma(handle, x, y, width, height, pixelsFormat, pixelsType,
++                                              pixels, pixelsSize, readback);
++}
++
+ void FrameBuffer::readColorBufferDeprecated(HandleType colorbuffer, int x, int y, int width,
+                                             int height, GLenum pixelsFormat, GLenum pixelsType,
+                                             void* pixels, uint64_t pixelsSize) {
+--- a/host/frame_buffer.h
++++ b/host/frame_buffer.h
+@@ -228,6 +228,9 @@
+     // |outPixelsSize| is the size of buffer
+     void readColorBuffer(HandleType p_colorbuffer, int x, int y, int width, int height,
+                          GfxstreamFormat pixelsFormat, void* pixels, uint64_t outPixelsSize);
++    bool transferGuestColorBufferDma(HandleType colorbuffer, int x, int y, int width,
++                                     int height, GLenum pixelsFormat, GLenum pixelsType,
++                                     void* pixels, uint32_t pixelsSize, bool readback);
+     void readColorBufferDeprecated(HandleType p_colorbuffer, int x, int y, int width, int height,
+                                    GLenum format, GLenum type, void* pixels,
+                                    uint64_t outPixelsSize);
+--- a/host/renderControl_dec/CMakeLists.txt
++++ b/host/renderControl_dec/CMakeLists.txt
+@@ -24,6 +24,7 @@
+     gfxstream_common_base
+     gfxstream_common_logging
+     gfxstream_host_iostream
++    gfxstream_host_common
+     gfxstream_opengl_headers
+     )
+ target_include_directories(
+--- a/host/renderControl_dec/renderControl_dec.cpp
++++ b/host/renderControl_dec/renderControl_dec.cpp
+@@ -24,6 +24,7 @@
+ #include "gfxstream/common/logging.h"
+ #include "gfxstream/host/ChecksumCalculatorThreadInfo.h"
+ #include "gfxstream/host/ProtocolUtils.h"
++#include "gfxstream/host/dma_device.h"
+ 
+ namespace gfxstream {
+ 
+@@ -754,20 +755,23 @@
+ 			GLenum var_format = Unpack<GLenum,uint32_t>(ptr + 8 + 4 + 4 + 4 + 4 + 4);
+ 			GLenum var_type = Unpack<GLenum,uint32_t>(ptr + 8 + 4 + 4 + 4 + 4 + 4 + 4);
+ 			uint64_t var_pixels_guest_paddr = Unpack<uint64_t,uint64_t>(ptr + 8 + 4 + 4 + 4 + 4 + 4 + 4 + 4);
+-			void* var_pixels = stream->getDmaForReading(var_pixels_guest_paddr);
+ 			uint32_t size_pixels __attribute__((unused)) = Unpack<uint32_t,uint32_t>(ptr + 8 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 8);
+ 			uint32_t var_pixels_size = Unpack<uint32_t,uint32_t>(ptr + 8 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 8);
+ 			if (useChecksum) {
+ 				ChecksumCalculatorThreadInfo::validOrDie(checksumCalc, ptr, 8 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 8 + 4, ptr + 8 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 8 + 4, checksumSize,
+ 					"renderControl_decoder_context_t::decode, OP_rcUpdateColorBufferDMA: GL checksumCalculator failure\n");
+ 			}
++			const bool guestDma = host::hasGuestColorBufferDma();
++			host::GuestColorBufferLease lease(var_pixels_guest_paddr, var_pixels_size, false);
++			void* var_pixels = guestDma ? lease.data() : stream->getDmaForReading(var_pixels_guest_paddr);
+ 			size_t totalTmpSize = sizeof(int);
+ 			totalTmpSize += checksumSize;
+ 			unsigned char *tmpBuf = stream->alloc(totalTmpSize);
+ 			DECODER_DEBUG_LOG("renderControl(%p): rcUpdateColorBufferDMA(colorbuffer:0x%08x x:0x%08x y:0x%08x width:0x%08x height:0x%08x format:0x%08x type:0x%08x pixels:%p(%u) pixels_size:0x%08x )", stream, var_colorbuffer, var_x, var_y, var_width, var_height, var_format, var_type, var_pixels, var_pixels_size);
+ 			int function_call_retval = 			this->rcUpdateColorBufferDMA(var_colorbuffer, var_x, var_y, var_width, var_height, var_format, var_type, var_pixels, var_pixels_size);
++			if (!lease.finish(false && !function_call_retval)) function_call_retval = -1;
+ 			std::memcpy(&tmpBuf[0], &function_call_retval, sizeof(int));
+-			stream->unlockDma(var_pixels_guest_paddr);
++			if (!guestDma) stream->unlockDma(var_pixels_guest_paddr);
+ 			if (useChecksum) {
+ 				ChecksumCalculatorThreadInfo::writeChecksum(checksumCalc, &tmpBuf[0], totalTmpSize - checksumSize, &tmpBuf[totalTmpSize - checksumSize], checksumSize);
+ 			}
+@@ -1394,20 +1398,23 @@
+ 			GLenum var_format = Unpack<GLenum,uint32_t>(ptr + 8 + 4 + 4 + 4 + 4 + 4);
+ 			GLenum var_type = Unpack<GLenum,uint32_t>(ptr + 8 + 4 + 4 + 4 + 4 + 4 + 4);
+ 			uint64_t var_pixels_guest_paddr = Unpack<uint64_t,uint64_t>(ptr + 8 + 4 + 4 + 4 + 4 + 4 + 4 + 4);
+-			void* var_pixels = stream->getDmaForReading(var_pixels_guest_paddr);
+ 			uint32_t size_pixels __attribute__((unused)) = Unpack<uint32_t,uint32_t>(ptr + 8 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 8);
+ 			uint32_t var_pixels_size = Unpack<uint32_t,uint32_t>(ptr + 8 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 8);
+ 			if (useChecksum) {
+ 				ChecksumCalculatorThreadInfo::validOrDie(checksumCalc, ptr, 8 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 8 + 4, ptr + 8 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 8 + 4, checksumSize,
+ 					"renderControl_decoder_context_t::decode, OP_rcReadColorBufferDMA: GL checksumCalculator failure\n");
+ 			}
++			const bool guestDma = host::hasGuestColorBufferDma();
++			host::GuestColorBufferLease lease(var_pixels_guest_paddr, var_pixels_size, true);
++			void* var_pixels = guestDma ? lease.data() : stream->getDmaForReading(var_pixels_guest_paddr);
+ 			size_t totalTmpSize = sizeof(int);
+ 			totalTmpSize += checksumSize;
+ 			unsigned char *tmpBuf = stream->alloc(totalTmpSize);
+ 			DECODER_DEBUG_LOG("renderControl(%p): rcReadColorBufferDMA(colorbuffer:0x%08x x:0x%08x y:0x%08x width:0x%08x height:0x%08x format:0x%08x type:0x%08x pixels:%p(%u) pixels_size:0x%08x )", stream, var_colorbuffer, var_x, var_y, var_width, var_height, var_format, var_type, var_pixels, var_pixels_size);
+ 			int function_call_retval = 			this->rcReadColorBufferDMA(var_colorbuffer, var_x, var_y, var_width, var_height, var_format, var_type, var_pixels, var_pixels_size);
++			if (!lease.finish(true && !function_call_retval)) function_call_retval = -1;
+ 			std::memcpy(&tmpBuf[0], &function_call_retval, sizeof(int));
+-			stream->unlockDma(var_pixels_guest_paddr);
++			if (!guestDma) stream->unlockDma(var_pixels_guest_paddr);
+ 			if (useChecksum) {
+ 				ChecksumCalculatorThreadInfo::writeChecksum(checksumCalc, &tmpBuf[0], totalTmpSize - checksumSize, &tmpBuf[totalTmpSize - checksumSize], checksumSize);
+ 			}
+--- a/host/render_control.cpp
++++ b/host/render_control.cpp
+@@ -38,6 +38,7 @@
+ #include "gfxstream/host/tracing.h"
+ #include "gfxstream/host/gl_enums.h"
+ #include "gfxstream/host/gfxstream_format.h"
++#include "gfxstream/host/dma_device.h"
+ #include "gfxstream/host/guest_operations.h"
+ #include "gfxstream/host/renderer_operations.h"
+ #include "gfxstream/host/sync_device.h"
+@@ -473,7 +474,8 @@
+     bool vulkanBatchedDescriptorSetUpdate = shouldEnableBatchedDescriptorSetUpdate(features);
+     bool syncBufferDataEnabled = true;
+     bool vulkanAsyncQsri = shouldEnableVulkanAsyncQsri(features);
+-    bool readColorBufferDma = directMemEnabled && hasSharedSlotsHostMemoryAllocatorEnabled;
++    bool readColorBufferDma = hasGuestColorBufferDma() ||
++                              (directMemEnabled && hasSharedSlotsHostMemoryAllocatorEnabled);
+     bool hwcMultiConfigs = features.HwcMultiConfigs.enabled();
+     bool hwcColorTransform = true;  // To ensure old host emulators won't advertise the support
+     bool hwcDisplayPowerMode = true;
+@@ -1044,13 +1046,16 @@
+         return -1;
+     }
+ 
+-    fb->updateColorBufferDeprecated(colorBuffer, x, y, width, height,
+-                                    format, type, pixels);
++    const bool guestDma = hasGuestColorBufferDma();
++    const bool updated = guestDma
++        ? fb->transferGuestColorBufferDma(colorBuffer, x, y, width, height, format, type,
++                                          pixels, pixels_size, false)
++        : fb->updateColorBufferDeprecated(colorBuffer, x, y, width, height, format, type, pixels);
+ 
+     GRSYNC_DPRINT("unlock gralloc cb lock");
+     sGrallocSync()->unlockColorBufferPrepare();
+ 
+-    return 0;
++    return guestDma && !updated ? -1 : 0;
+ }
+ 
+ static uint32_t rcCreateClientImage(uint32_t context, EGLenum target, GLuint buffer)
+@@ -1625,6 +1630,10 @@
+         return -1;
+     }
+ 
++    if (hasGuestColorBufferDma()) {
++        return fb->transferGuestColorBufferDma(colorBuffer, x, y, width, height, format, type,
++                                               pixels, pixels_size, true) ? 0 : -1;
++    }
+     fb->readColorBufferDeprecated(colorBuffer, x, y, width, height, format,
+                                   type, pixels, pixels_size);
+     return 0;
+--- a/host/virtio_gpu_gfxstream_renderer.cpp
++++ b/host/virtio_gpu_gfxstream_renderer.cpp
+@@ -26,6 +26,7 @@
+ #include "gfxstream/common/build_info.h"
+ #include "gfxstream/common/logging.h"
+ #include "gfxstream/host/features.h"
++#include "gfxstream/host/dma_device.h"
+ #include "gfxstream/host/tracing.h"
+ #include "gfxstream/host/address_space_graphics.h"
+ #include "gfxstream/memory/UdmabufCreator.h"
+@@ -349,7 +350,7 @@
+ extern "C" {
+ 
+ // Start the local EGL renderer independently of a virtio device or window.
+-VG_EXPORT int gfxstream_guest_renderer_start(uint32_t width, uint32_t height) {
++static int startGuestRenderer(uint32_t width, uint32_t height) {
+     if (!width || !height || width > 4096 || height > 4096) return -22;
+     const auto fence = +[](void*, stream_renderer_fence*) {};
+     // The legacy Goldfish transport has no /dev/dri render node.
+@@ -364,6 +365,22 @@
+         {STREAM_RENDERER_PARAM_WIN0_HEIGHT, height},
+     };
+     return stream_renderer_init(parameters, sizeof(parameters) / sizeof(parameters[0]));
++}
++
++VG_EXPORT int gfxstream_guest_renderer_start(uint32_t width, uint32_t height) {
++    gfxstream::host::setGuestColorBufferDma(nullptr, nullptr, nullptr);
++    return startGuestRenderer(width, height);
++}
++
++VG_EXPORT int gfxstream_guest_renderer_start_dma(
++        uint32_t width, uint32_t height, void* context,
++        gfxstream::host::AcquireGuestColorBuffer acquire,
++        gfxstream::host::ReleaseGuestColorBuffer release) {
++    if (!acquire || !release) return -22;
++    gfxstream::host::setGuestColorBufferDma(context, acquire, release);
++    const int status = startGuestRenderer(width, height);
++    if (status) gfxstream::host::setGuestColorBufferDma(nullptr, nullptr, nullptr);
++    return status;
+ }
+ 
+ // Copy the latest posted primary frame as tightly packed, bottom-up RGBA8.
+@@ -1016,6 +1033,7 @@
+ VG_EXPORT void stream_renderer_teardown() {
+     GFXSTREAM_INFO("Gfxstream shutting down.");
+     sFrontend()->teardown();
++    gfxstream::host::setGuestColorBufferDma(nullptr, nullptr, nullptr);
+     GFXSTREAM_INFO("Gfxstream shut down completed!");
+ }
+ 

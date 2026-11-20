@@ -478,7 +478,8 @@ DynamicReport probeArt(const std::string& directory) {
 DynamicReport probeInit(const std::string& directory, const std::string& databasePath, const BootProgress& progress,
                         GraphicsPipeFactory graphics, std::shared_ptr<GuestTouch> touch,
                         std::shared_ptr<GuestCameraSource> camera, std::shared_ptr<GuestApkInbox> apkInbox,
-                        std::stop_token stop, const BootProgress& watchdog, const BootProgress& liveSnapshot) {
+                        std::stop_token stop, const BootProgress& watchdog, const BootProgress& liveSnapshot,
+                        std::shared_ptr<GuestColorDma> graphicsDma) {
     try {
         if (progress) progress("Starting Android 17 init");
         namespace fs = std::filesystem;
@@ -516,6 +517,7 @@ DynamicReport probeInit(const std::string& directory, const std::string& databas
         ProbeLinux linux(1, 0, 512 * 1024 * 1024);
         const bool wakeGuestDisplay = graphics && touch && files.contains("/system/bin/cmd");
         linux.setGraphicsPipeFactory(std::move(graphics));
+        linux.setGraphicsDma(std::move(graphicsDma));
         linux.setCamera(std::move(camera));
         linux.setGuestTouch(std::move(touch));
         if (const auto loader = files.find("/nestvane-metadata/tethering-netbpfload.elf"); loader != files.end()) {

@@ -50,6 +50,7 @@ bool bindBytes(sqlite3_stmt* cursor, int index, std::span<const uint8_t> bytes) 
 } // namespace
 
 ProbeLinux::~ProbeLinux() {
+    if (graphicsDma) graphicsDma->stop();
     if (dataDatabase) sqlite3_close(dataDatabase);
 }
 

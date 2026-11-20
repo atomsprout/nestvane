@@ -248,9 +248,9 @@ int main(int argc, char** argv) {
         {STREAM_RENDERER_PARAM_WIN0_WIDTH, boot ? 640u : side},
         {STREAM_RENDERER_PARAM_WIN0_HEIGHT, boot ? 960u : side},
     };
-    const auto startGuestRenderer = load<int (*)(uint32_t, uint32_t)>(module, "gfxstream_guest_renderer_start");
-    const int initialized = boot && startGuestRenderer ? startGuestRenderer(640, 960)
-                                                       : init(params, std::size(params));
+    std::shared_ptr<nestvane::GuestColorDma> dma;
+    const int initialized = boot ? nestvane::startGfxstreamGuestRenderer(module, 640, 960, dma)
+                                 : init(params, std::size(params));
     if (initialized) {
         std::fprintf(stderr, "Gfxstream initialization failed (%d)\n", initialized);
         return 1;
@@ -271,7 +271,7 @@ int main(int argc, char** argv) {
             return nestvane::probeInit(argv[3], argc == 5 ? argv[4] : "", [](std::string_view event) {
                 std::fprintf(stderr, "[Android boot] %.*s\n", int(event.size()), event.data());
             }, std::move(factory), std::make_shared<nestvane::GuestTouch>(), {}, {}, {},
-               printGuestState, printGuestState);
+               printGuestState, printGuestState, dma);
         }();
         std::fwrite(report.report.data(), 1, report.report.size(), stdout);
         std::fflush(stdout);

@@ -5,6 +5,7 @@
 #include "GuestCamera.hpp"
 #include "GuestRoute.hpp"
 #include "GuestTouch.hpp"
+#include "GuestColorDma.hpp"
 #include "Runtime.hpp"
 #include "PosixAcl.hpp"
 #include "GuestFirewall.hpp"
@@ -47,6 +48,7 @@ struct ProbeLinux {
     void setTetheringLoader(std::span<const uint8_t> executable) { tetheringLoader = executable; }
     void setApkInbox(std::shared_ptr<GuestApkInbox> inbox) { apkInbox = std::move(inbox); }
     void setGuestTouch(std::shared_ptr<GuestTouch> touch);
+    void setGraphicsDma(std::shared_ptr<GuestColorDma> dma) { graphicsDma = std::move(dma); }
     bool syncData();
     Machine createMachine(const Image& image) const { return Machine(image, anonymousBudget); }
     uint64_t dirtyAnonymousBytes() const { return anonymousBudget->dirty; }
@@ -62,6 +64,7 @@ struct ProbeLinux {
     bool blocked() const { return current->wait != Wait::none; }
     bool schedule(Machine& machine, std::chrono::steady_clock::time_point deadline =
                   std::chrono::steady_clock::time_point::max(), const std::stop_token& stop = {}) {
+        if (!(machine.cpu.retired & 4095) && graphicsDma) serviceGraphicsDma();
         return machine.cpu.retired < sliceEnd || switchThread(machine, deadline, stop);
     }
     std::string workerReport(const Machine& machine, uint64_t observedProcess = 0) const;
@@ -387,6 +390,9 @@ private:
         std::shared_ptr<GraphicsRegion> mapping(uint64_t offset, uint64_t size) const;
     };
     std::map<uint64_t, std::weak_ptr<GraphicsRegion>> graphicsRegions;
+    std::shared_ptr<GuestColorDma> graphicsDma;
+    void serviceGraphicsDma();
+    bool transferGraphicsDma(GuestColorDma::Transfer& transfer);
     std::shared_ptr<GraphicsRegion> allocateGraphicsRegion(uint64_t requested);
     uint64_t graphicsAddressIoctl(Machine& machine, const Descriptor& fd);
     GraphicsPipeFactory graphicsPipeFactory;
