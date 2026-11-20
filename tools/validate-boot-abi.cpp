@@ -936,6 +936,20 @@ int main() {
         assert(executeStartupInstruction(permute, 0x6ea30442)); // uhadd v2.4s, v2.4s, v3.4s
         assert(std::memcmp(permute.cpu.v[2].data(), halfWords.data(), sizeof(halfWords)) == 0);
         assert(!executeStartupInstruction(permute, 0x6ee30442)); // reserved 64-bit lanes
+        permute.cpu.fpsr = 1U << 4;
+        permute.cpu.v[4] = {255, 254, 150, 0, 10, 30, 127, 255};
+        permute.cpu.v[1] = {1, 1, 106, 0, 20, 0, 128, 0};
+        permute.cpu.v[16].fill(0xaa);
+        assert(executeStartupInstruction(permute, 0x2e210c90)); // uqadd v16.8b, v4.8b, v1.8b
+        const std::array<uint8_t, 16> saturatedBytes{255, 255, 255, 0, 30, 30, 255, 255};
+        assert(permute.cpu.v[16] == saturatedBytes && permute.cpu.fpsr == (fpsrSaturation | 16));
+        const std::array<uint64_t, 2> saturatedLanes{UINT64_MAX, 5}, addition{1, 3};
+        const std::array<uint64_t, 2> saturatedSums{UINT64_MAX, 8};
+        std::memcpy(permute.cpu.v[4].data(), saturatedLanes.data(), sizeof(saturatedLanes));
+        std::memcpy(permute.cpu.v[1].data(), addition.data(), sizeof(addition));
+        assert(executeStartupInstruction(permute, 0x6ee10c84)); // uqadd v4.2d, v4.2d, v1.2d
+        assert(std::memcmp(permute.cpu.v[4].data(), saturatedSums.data(), sizeof(saturatedSums)) == 0);
+        assert(!executeStartupInstruction(permute, 0x2ee10c84)); // unallocated 1D vector form
         const std::array<int16_t, 8> mulLeft{-32768, -32768, 16384, -16384, 32767, 1, -1, 12345};
         const std::array<int16_t, 8> mulRight{-32768, 32767, 1, 1, 32767, 16384, 16384, -23456};
         const std::array<int16_t, 8> mulHigh{32767, -32767, 1, 0, 32766, 1, 0, -8837};

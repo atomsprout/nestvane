@@ -768,6 +768,15 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
         if (size == 8) return false;
         for (unsigned i = 0; i < width / size; ++i)
             setLane(result, i, size, (lane(source, i, size) + lane(other, i, size)) >> 1);
+    } else if (op == 0x2e200c00) { // UQADD (vector).
+        if (size == 8 && width == 8) return false;
+        const auto maximum = UINT64_MAX >> (64 - size * 8);
+        for (unsigned i = 0; i < width / size; ++i) {
+            const auto a = lane(source, i, size), b = lane(other, i, size);
+            const bool saturated = a > maximum - b;
+            if (saturated) cpu.fpsr |= fpsrSaturation;
+            setLane(result, i, size, saturated ? maximum : a + b);
+        }
     } else if (op == 0x2e20b400) { // SQRDMULH (vector).
         if (size != 2 && size != 4) return false;
         const unsigned shift = size * 8 - 1;
