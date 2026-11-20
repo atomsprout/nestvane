@@ -5520,8 +5520,14 @@ int main() {
             assert(bindRequest(channel, 0x40406300, oneway | (100 + index), payload, true) == 0);
             assert(uint32_t(load(base + 0x720)) == 0x7206);
         }
+        std::string capacityReport;
+        linux.androidLogObserver = [&](std::string_view message) { capacityReport = message; };
         assert(bindRequest(channel, 0x40406300, oneway | (100 + queued), payload, true) == 0);
         assert(uint32_t(load(base + 0x720)) == 0x7211);
+        linux.androidLogObserver = {};
+        assert(capacityReport.find("allocation-failure=async-quota") != std::string::npos);
+        assert(capacityReport.find("largest-oneway-queue=" + std::to_string(queued - 1)) != std::string::npos);
+        assert(capacityReport.find("queued-code=101") != std::string::npos);
         assert(bindRequest(channel, 0x40406300, synchronousCode, "synchronous", true) == 0);
         assert(uint32_t(load(base + 0x720)) == 0x7206);
         assert(bindRequest(channel, 0, 0, "", true) == channel && linux.blocked());

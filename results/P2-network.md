@@ -517,3 +517,4 @@
 - Mac 上的 PNG 修复版跑满 1,260 秒，未再停在未实现指令。图形读回线程持有序号 3832 的 640×960 RGBA 帧，检查全部 614,400 像素，RGB 均为 0。该样本位于独立 Bionic 读取确认 `sys.boot_completed=1`、`init.svc.bootanim=stopped` 后，尚未读到 Launcher 完成绘制。
 - Mac 使用属性目录权限修复版（`7d74a4a`）另行跑完 900 秒，终止报告由独立读取器验证 `sys.boot_completed=1`。同一报告记录四个原版 `dumpsys` 和两个自有 APK 夹具调用的原版 `cmd` 已进入客体 ELF，运行期间读取到六个服务均已停止。现有报告未验证这些命令的结果，后续轮次把窗口、图层、活动和电源状态各自保存到客体文件。
 - iPhone 11 进程 9791 跑过 1,455 秒，实时快照仍能读到原版 Launcher 主线程执行。该轮新取回的 640×960 PNG 仍显示 Android 开机动画。真机桌面、APK 和摄像头仍待验收。
+- iPhone 11 进程 9791 于 1,469.793 秒记录 SurfaceFlinger 的 Binder 接收缓冲区容量错误，随后 BootAnimation、SystemUI 状态栏和 Launcher 任务栏均因提交显示事务失败而触发 SIGABRT，错误码为 `FAILED_TRANSACTION`（`-2147483646`）。Binder 容量日志现在区分异步额度和连续空间不足，并显示接收缓冲区和最长的单向等待队列。宿主回归验证额度报错和队列诊断，原有同步事务及额度释放仍通过。

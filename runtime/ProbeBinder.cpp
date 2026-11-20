@@ -464,7 +464,37 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
     const auto address = storeBinderBuffer(*target, {bytes, size_t(transaction.dataSize)},
                                           {offsets, size_t(transaction.offsetsSize)}, extra, label,
                                           asynchronous);
-    if (!address) return capacityReached("receive buffers", target->allocations.size());
+    if (!address) {
+        std::string resource = "receive buffers";
+        if (androidLogObserver && binderCapacityReports < 16) {
+            const auto needed = std::max<uint64_t>(8, (extent + 7) & ~uint64_t{7});
+            const auto asyncLimit = target->mapped->size / 2;
+            const auto allocated = std::ranges::count_if(target->allocations, [](const auto& entry) {
+                return entry.second.delivered;
+            });
+            const auto interface = binderInterface({bytes, size_t(transaction.dataSize)});
+            resource += " needed=" + std::to_string(needed) +
+                " mapping=" + std::to_string(target->mapped->size) +
+                " async-bytes=" + std::to_string(target->asyncBytes) + '/' + std::to_string(asyncLimit) +
+                " delivered=" + std::to_string(allocated) +
+                " allocation-failure=" + (asynchronous && target->asyncBytes + needed > asyncLimit
+                    ? "async-quota" : "no-contiguous-space");
+            if (!interface.empty()) resource += " interface=" + interface;
+
+            const auto backlog = std::ranges::max_element(target->pendingAsync, {},
+                [](const auto& entry) { return entry.second.size(); });
+            if (backlog != target->pendingAsync.end() && !backlog->second.empty()) {
+                const auto& pending = backlog->second.front().transaction;
+                const auto pendingOffset = pending.buffer - target->address;
+                const auto pendingBytes = std::span(target->mapped->pages).subspan(pendingOffset, pending.dataSize);
+                resource += " largest-oneway-queue=" + std::to_string(backlog->second.size()) +
+                    " queued-code=" + std::to_string(pending.code);
+                if (const auto queuedInterface = binderInterface(pendingBytes); !queuedInterface.empty())
+                    resource += " queued-interface=" + queuedInterface;
+            }
+        }
+        return capacityReached(resource, target->allocations.size());
+    }
     target->nextHandle = nextHandle;
     target->handles.merge(newHandles);
     auto& allocation = target->allocations.at(address - target->address);
