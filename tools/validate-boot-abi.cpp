@@ -171,6 +171,53 @@ int main() {
         assert(!Loop::execute(native, 16) && native.cpu == mutableCode);
     }
     {
+        using Block = AndroidArtGcReturn;
+        constexpr uint64_t entry = 0x4dcc, stack = 0x6000, tls = 0x8000;
+        std::vector<uint8_t> code(sizeof(Block::words)), data(pageSize);
+        std::memcpy(code.data(), Block::words.data(), code.size());
+        const Image image{entry, {{entry, code, 5}, {stack, data, 6}, {tls, data, 6}}, {}};
+        Machine native(image), reference(image);
+        assert(androidLoopMatches(native, native.readInstruction(entry), Block::words));
+        for (unsigned example = 0; example < 256; ++example) {
+            CPU initial;
+            initial.pc = entry;
+            initial.sp = stack + example * 8;
+            initial.x[22] = tls;
+            initial.x[29] = initial.sp + 0x40;
+            initial.retired = example * 37;
+            initial.nzcv = example & 15;
+            initial.exclusiveAddress = stack;
+            initial.exclusiveSize = 8;
+            const auto canary = example * 0xba95'a55a'ef03'4951ULL;
+            for (auto* machine : {&native, &reference}) {
+                for (uint64_t slot = 0; slot < 8; ++slot)
+                    assert(machine->store64(initial.sp + 0x40 + slot * 8, (canary + slot) ^ 0x7654'3210ULL));
+                assert(machine->store64(initial.x[29] - 8, canary));
+                assert(machine->store64(tls + 0x28, canary));
+                machine->cpu = initial;
+            }
+            assert(Block::execute(native, 1) == Block::words.size());
+            for (const auto word : Block::words) {
+                const auto decoded = decode(word);
+                if (decoded.op == Op::unsupported) assert(executeStartupInstruction(reference, word));
+                else executeDecoded(reference, decoded);
+            }
+            assert(native.cpu == reference.cpu);
+            native.cpu = initial;
+            assert(native.store64(tls + 0x28, ~canary));
+            assert(Block::execute(native, 1) == 0 && native.cpu == initial);
+        }
+        native.cpu.x[22] = 0;
+        const auto unreadableCanary = native.cpu;
+        assert(Block::execute(native, 1) == 0 && native.cpu == unreadableCanary);
+        native.cpu.x[22] = tls;
+        native.cpu.x[29] = stack + 8;
+        native.cpu.sp = stack + pageSize - 0x50;
+        assert(native.store64(tls + 0x28, 0) && native.store64(stack, 0));
+        const auto unreadableFrame = native.cpu;
+        assert(Block::execute(native, 1) == 0 && native.cpu == unreadableFrame);
+    }
+    {
         constexpr uint64_t entry = 0x53c0, data = 0x7000;
         constexpr auto words = AndroidBionicFillLoop::words;
         std::vector<uint8_t> code(sizeof(words)), input(pageSize, 0x55);

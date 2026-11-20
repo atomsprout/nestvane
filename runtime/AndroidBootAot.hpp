@@ -183,6 +183,45 @@ struct AndroidDexAsciiVerifierLoop {
     }
 };
 
+// The canary-checked return block of a frequently sampled Android 17 ART
+// collector routine. A bad canary or unreadable stack stays on the guest path.
+struct AndroidArtGcReturn {
+    static constexpr std::string_view moduleSuffix = "/lib64/libart.so";
+    static constexpr uint64_t fileOffset = 0x838dcc;
+    static constexpr std::array<uint32_t, 11> words{
+        0xf94016c8, 0xf85f83a9, 0xeb09011f, 0x54000aa1, 0xa9474ff4, 0xf9402bf7,
+        0xa94657f6, 0xa9447bfd, 0x910203ff, 0xd50323bf, 0xd65f03c0,
+    };
+    static constexpr uint64_t batchSize = 1, maxIterationInstructions = words.size();
+
+    static uint64_t execute(Machine& machine, uint64_t) {
+        auto& cpu = machine.cpu;
+        uint64_t expectedCanary, stackCanary;
+        if (!machine.load64(cpu.x[22] + 0x28, expectedCanary) ||
+            !machine.load64(cpu.x[29] - 8, stackCanary) || expectedCanary != stackCanary) return 0;
+        std::array<uint64_t, 8> saved;
+        const auto* frame = machine.read(cpu.sp + 0x40, sizeof(saved), 4);
+        if (!frame) return 0;
+        std::memcpy(saved.data(), frame, sizeof(saved));
+
+        cpu.x[8] = expectedCanary;
+        cpu.x[9] = stackCanary;
+        cpu.x[29] = saved[0];
+        cpu.x[30] = saved[1];
+        cpu.x[23] = saved[2];
+        cpu.x[22] = saved[4];
+        cpu.x[21] = saved[5];
+        cpu.x[20] = saved[6];
+        cpu.x[19] = saved[7];
+        cpu.nzcv = 6;
+        cpu.sp += 0x80;
+        // Guest PAC is disabled, so AUTIASP leaves the guest return PC unchanged.
+        cpu.pc = cpu.x[30];
+        cpu.retired += words.size();
+        return words.size();
+    }
+};
+
 inline constexpr uint64_t bionicMemoryStep = 64;
 
 inline uint64_t bionicMemoryIterations(uint64_t remaining) {

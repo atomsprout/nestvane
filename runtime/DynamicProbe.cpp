@@ -149,7 +149,7 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
     struct NativeLoop {
         const uint8_t* entry = nullptr;
         uint64_t entries = 0, instructions = 0;
-    } dexAot, dexVerifierAot, bionicFillAot, bionicCopyAot;
+    } dexAot, dexVerifierAot, artReturnAot, bionicFillAot, bionicCopyAot;
     const auto runNativeLoop = [&]<typename Loop>(NativeLoop& stats, const uint8_t* bytes) {
         if (cpu.pc % pageSize != Loop::fileOffset % pageSize || !androidLoopMatches(machine, bytes, Loop::words))
             return false;
@@ -178,7 +178,7 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
     uint64_t intervalStart = 0, intervalSamples = 0, intervalUnattributed = 0;
     uint64_t previousSnapshotRetired = 0, previousSnapshotAot = 0;
     const auto aotInstructions = [&] {
-        return sha256AotInstructions + dexAot.instructions + dexVerifierAot.instructions +
+        return sha256AotInstructions + dexAot.instructions + dexVerifierAot.instructions + artReturnAot.instructions +
                bionicFillAot.instructions + bionicCopyAot.instructions;
     };
     const auto appendRanking = [](std::ostream& out, const CodeSamples& histogram, size_t limit) {
@@ -205,6 +205,8 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
                 << ", guest instructions: " << dexAot.instructions << '\n'
                 << "  Android DEX ASCII verifier AOT entries: " << dexVerifierAot.entries
                 << ", guest instructions: " << dexVerifierAot.instructions << '\n'
+                << "  Android ART collector return AOT entries: " << artReturnAot.entries
+                << ", guest instructions: " << artReturnAot.instructions << '\n'
                 << "  Android Bionic fill AOT entries: " << bionicFillAot.entries
                 << ", guest instructions: " << bionicFillAot.instructions << '\n'
                 << "  Android Bionic copy AOT entries: " << bionicCopyAot.entries
@@ -358,6 +360,8 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
                 runNativeLoop.operator()<AndroidDexHashLoop>(dexAot, bytes)) continue;
             if (word == AndroidDexAsciiVerifierLoop::words.front() &&
                 runNativeLoop.operator()<AndroidDexAsciiVerifierLoop>(dexVerifierAot, bytes)) continue;
+            if (word == AndroidArtGcReturn::words.front() &&
+                runNativeLoop.operator()<AndroidArtGcReturn>(artReturnAot, bytes)) continue;
             if (word == AndroidBionicFillLoop::words.front() &&
                 runNativeLoop.operator()<AndroidBionicFillLoop>(bionicFillAot, bytes)) continue;
             if (word == AndroidBionicCopyLoop::words.front() &&
