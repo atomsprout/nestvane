@@ -468,6 +468,7 @@ private:
         size_t size;
         std::vector<uint32_t> handles;
         bool delivered = false;
+        size_t asyncCharge = 0;
     };
     struct BinderTransaction {
         uint64_t target, cookie;
@@ -506,6 +507,7 @@ private:
         std::shared_ptr<SharedFileBytes> mapped{};
         uint64_t address = 0, target = 0, cookie = 0;
         bool sendSecurityContext = false, managerAcceptsFiles = true;
+        size_t asyncBytes = 0;
         std::map<uint64_t, BinderAllocation> allocations;
         std::map<uint32_t, BinderReference> handles;
         std::map<uint32_t, BinderDeath> deaths;
@@ -620,7 +622,8 @@ private:
     bool binderReadable(const BinderConnection& connection, uint64_t pid, uint64_t tid) const;
     bool freeBinderBuffer(BinderConnection& connection, uint64_t address, bool delivered);
     uint64_t storeBinderBuffer(BinderConnection& target, std::span<const uint8_t> data,
-                              std::span<const uint8_t> offsets, std::span<const uint8_t> extra, std::string_view context);
+                              std::span<const uint8_t> offsets, std::span<const uint8_t> extra,
+                              std::string_view context, bool asynchronous);
     uint64_t mountExt4(const std::string& device, const std::string& path, uint64_t flags);
     uint64_t loopIoctl(Machine& machine, const Descriptor& fd);
     uint64_t ptyIoctl(Machine& machine, const Descriptor& fd);

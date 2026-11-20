@@ -56,20 +56,24 @@ bool ProbeLinux::binderReadable(const BinderConnection& connection, uint64_t pid
 
 uint64_t ProbeLinux::storeBinderBuffer(BinderConnection& target, std::span<const uint8_t> data,
                                       std::span<const uint8_t> offsets, std::span<const uint8_t> extra,
-                                      std::string_view context) {
+                                      std::string_view context, bool asynchronous) {
     if (!target.mapped) return 0;
     const auto endPayload = (data.size() + size_t{7}) & ~size_t{7};
     const auto endOffsets = endPayload + offsets.size();
     const auto endBuffers = endOffsets + extra.size();
     const auto size = (endBuffers + (context.empty() ? 0 : context.size() + 1) + size_t{7}) & ~size_t{7};
     const auto needed = std::max(size_t{8}, size);
+    // Reserve half of the mapping for synchronous traffic and charge queued packet storage.
+    const auto asyncCharge = asynchronous ? needed + sizeof(BinderPacket) : 0;
+    if (asyncCharge && target.asyncBytes + asyncCharge > target.mapped->size / 2) return 0;
     uint64_t offset = 0;
     for (const auto& [start, buffer] : target.allocations) {
         if (start - offset >= needed) break;
         offset = start + buffer.size;
     }
     if (needed > target.mapped->size || offset > target.mapped->size - needed) return 0;
-    target.allocations.emplace(offset, BinderAllocation{needed, {}});
+    target.allocations.emplace(offset, BinderAllocation{needed, {}, false, asyncCharge});
+    target.asyncBytes += asyncCharge;
     auto begin = target.mapped->pages.begin() + offset;
     std::fill_n(begin, needed, 0);
     std::copy(data.begin(), data.end(), begin);
@@ -88,6 +92,7 @@ bool ProbeLinux::freeBinderBuffer(BinderConnection& connection, uint64_t address
         auto& ref = it->second;
         if (!--ref.inBuffer && !ref.strong && !ref.weak) connection.handles.erase(it);
     }
+    connection.asyncBytes -= buffer->second.asyncCharge;
     connection.allocations.erase(buffer);
     return true;
 }
@@ -286,7 +291,6 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
         return fail(brFailedReply);
     };
     auto& destination = replyThread ? target->directed[replyThread] : target->incoming;
-    if (destination.size() >= 32) return capacityReached("receive queue", destination.size());
     const auto label = sendLabel ? std::string_view(current->process->context) : std::string_view{};
     const auto endPayload = (transaction.dataSize + 7) & ~uint64_t{7};
     const auto extraOffset = endPayload + transaction.offsetsSize;
@@ -409,7 +413,8 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
     }
     if (notices.size() + 2 * newNodes.size() + 1 > 64) return fail(brFailedReply);
     const auto address = storeBinderBuffer(*target, {bytes, size_t(transaction.dataSize)},
-                                          {offsets, size_t(transaction.offsetsSize)}, extra, label);
+                                          {offsets, size_t(transaction.offsetsSize)}, extra, label,
+                                          !replying && !synchronousCall);
     if (!address) return capacityReached("receive buffers", target->allocations.size());
     target->nextHandle = nextHandle;
     target->handles.merge(newHandles);

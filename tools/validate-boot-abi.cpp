@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <unistd.h>
 
@@ -814,6 +815,29 @@ int main() {
         assert(executeStartupInstruction(permute, 0xd51b443f) && !permute.cpu.fpsr);
         assert(executeStartupInstruction(permute, 0x2e614810) && !permute.cpu.fpsr);
         assert(!executeStartupInstruction(permute, 0x2ee14810)); // reserved 64-bit destinations
+        const std::array<float, 4> signedFixedSource{1.78125f, -1.7890625f, 8, 9};
+        const std::array<int32_t, 4> signedFixedResult{114, -114, 0, 0};
+        std::memcpy(permute.cpu.v[0].data(), signedFixedSource.data(), sizeof(signedFixedSource));
+        permute.cpu.v[2].fill(0x51);
+        assert(executeStartupInstruction(permute, 0x0f3afc02)); // fcvtzs v2.2s, v0.2s, #6
+        assert(std::memcmp(permute.cpu.v[2].data(), signedFixedResult.data(), sizeof(signedFixedResult)) == 0);
+        const std::array<double, 2> wideFixedSource{0.125, -1};
+        const std::array<int64_t, 2> wideFixedResult{int64_t{1} << 61, INT64_MIN};
+        std::memcpy(permute.cpu.v[4].data(), wideFixedSource.data(), sizeof(wideFixedSource));
+        assert(executeStartupInstruction(permute, 0x4f40fc84)); // fcvtzs v4.2d, v4.2d, #64
+        assert(std::memcmp(permute.cpu.v[4].data(), wideFixedResult.data(), sizeof(wideFixedResult)) == 0);
+        const std::array<float, 4> unsignedFixedSource{0.5f, -1, 1, std::numeric_limits<float>::quiet_NaN()};
+        const std::array<uint32_t, 4> unsignedFixedResult{uint32_t{1} << 31, 0, UINT32_MAX, 0};
+        std::memcpy(permute.cpu.v[3].data(), unsignedFixedSource.data(), sizeof(unsignedFixedSource));
+        assert(executeStartupInstruction(permute, 0x6f20fc63)); // fcvtzu v3.4s, v3.4s, #32
+        assert(std::memcmp(permute.cpu.v[3].data(), unsignedFixedResult.data(), sizeof(unsignedFixedResult)) == 0);
+        const std::array<double, 2> scalarFixedSource{-2.875, 3};
+        const std::array<int64_t, 2> scalarFixedResult{-5, 0};
+        std::memcpy(permute.cpu.v[6].data(), scalarFixedSource.data(), sizeof(scalarFixedSource));
+        assert(executeStartupInstruction(permute, 0x5f7ffcc6)); // fcvtzs d6, d6, #1
+        assert(std::memcmp(permute.cpu.v[6].data(), scalarFixedResult.data(), sizeof(scalarFixedResult)) == 0);
+        assert(!executeStartupInstruction(permute, 0x0f40fc84)); // reserved 1D vector form
+        assert(!executeStartupInstruction(permute, 0x0f1afc02)); // reserved element width
         const std::array<float, 4> leftAdd{1, -2, 3, 4}, rightAdd{3, 1, 6, -4}, expectedSum{4, -1, 9, 0};
         std::memcpy(permute.cpu.v[0].data(), leftAdd.data(), sizeof(leftAdd));
         std::memcpy(permute.cpu.v[2].data(), rightAdd.data(), sizeof(rightAdd));
@@ -4718,7 +4742,7 @@ int main() {
     linux.setBootContext("u:r:servicemanager:s0");
     assert(call(29, {manager, 0x40046207}) == 0);
     assert(call(29, {manager, 0x40046207}) == uint64_t(-16));
-    const auto managerMap = call(222, {0, pageSize, 1, 0x4002, manager, 0});
+    const auto managerMap = call(222, {0, 8 * pageSize, 1, 0x4002, manager, 0});
     assert(managerMap >= 0x100000000 && managerMap < 0x2000000000);
     assert(!machine.store64(managerMap, 0));
     assert(call(226, {managerMap, pageSize, 3}) == uint64_t(-13));
@@ -5037,6 +5061,51 @@ int main() {
                 assert(uint32_t(load(output)) == 0x7211);
             }
         }
+    }
+    {
+        const std::string payload(64, 'a');
+        size_t queued = 0;
+        for (; queued < 256; ++queued) {
+            assert(bindRequest(channel, 0x40406300, oneway | (100 + queued), payload, true) == 0);
+            const auto response = uint32_t(load(base + 0x720));
+            if (response == 0x7211) break; // Asynchronous allocation budget exhausted.
+            assert(response == 0x7206);
+        }
+        assert(queued > 32 && queued < 256);
+        assert(bindRequest(channel, 0x40406300, 400, "synchronous", true) == 0);
+        assert(uint32_t(load(base + 0x720)) == 0x7206);
+        assert(bindRequest(channel, 0, 0, "", true) == channel && linux.blocked());
+        assert(linux.schedule(machine) && linux.processId() == 1);
+        for (size_t index = 0; index < queued; ++index) {
+            assert(bindRequest(manager, 0, 0, "", true) == 0);
+            assert(uint32_t(load(base + 0x720)) == 0x80407202);
+            assert(uint32_t(load(base + 0x724 + 2 * 8)) == 100 + index);
+            const auto buffer = load(base + 0x724 + 6 * 8);
+            assert(std::memcmp(machine.read(buffer, payload.size(), 4), payload.data(), payload.size()) == 0);
+            assert(bindRequest(manager, 0x40086303, 0, "", false, {}, buffer) == 0);
+        }
+        assert(bindRequest(manager, 0, 0, "", true) == 0);
+        assert(uint32_t(load(base + 0x720)) == 0x80407202);
+        assert(uint32_t(load(base + 0x724 + 2 * 8)) == 400);
+        const auto requestBuffer = load(base + 0x724 + 6 * 8);
+        assert(bindRequest(manager, 0x40406301, 0, "response", true) == 0);
+        assert(uint32_t(load(base + 0x720)) == 0x7206);
+        assert(bindRequest(manager, 0x40086303, 0, "", false, {}, requestBuffer) == 0);
+        machine.cpu.retired += 4096;
+        assert(linux.schedule(machine) && linux.processId() == binderChild);
+        assert(bindRequest(channel, 0, 0, "", true) == 0);
+        assert(uint32_t(load(base + 0x720)) == 0x80407203);
+        assert(bindRequest(channel, 0x40086303, 0, "", false, {}, load(base + 0x724 + 6 * 8)) == 0);
+        assert(bindRequest(channel, 0x40406300, oneway | 401, payload, true) == 0);
+        assert(uint32_t(load(base + 0x720)) == 0x7206);
+        machine.cpu.retired += 4096;
+        assert(linux.schedule(machine) && linux.processId() == 1);
+        assert(bindRequest(manager, 0, 0, "", true) == 0);
+        assert(uint32_t(load(base + 0x720)) == 0x80407202);
+        assert(uint32_t(load(base + 0x724 + 2 * 8)) == 401);
+        assert(bindRequest(manager, 0x40086303, 0, "", false, {}, load(base + 0x724 + 6 * 8)) == 0);
+        machine.cpu.retired += 4096;
+        assert(linux.schedule(machine) && linux.processId() == binderChild);
     }
     const auto binderWorker = call(220, {0x3d0f00, base + 0x900, base + 0x810, base + 0xa00, base + 0x810});
     assert(binderWorker > binderChild);

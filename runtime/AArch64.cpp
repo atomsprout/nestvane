@@ -428,18 +428,24 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
         };
         if (wide) convert.operator()<double, uint64_t, int64_t>();
         else convert.operator()<float, uint32_t, int32_t>();
-    } else if ((word & 0xdfbffc00) == 0x5ea1b800 ||
-               (word & 0x9fbffc00) == 0x0ea1b800) { // FCVTZS/FCVTZU in SIMD registers.
+    } else if ((word & 0xdfbffc00) == 0x5ea1b800 || (word & 0x9fbffc00) == 0x0ea1b800 ||
+               (word & 0xdf80fc00) == 0x5f00fc00 || (word & 0x9f80fc00) == 0x0f00fc00) {
+        // FCVTZS/FCVTZU in SIMD registers. The immediate form scales before rounding toward zero.
+        const bool fixed = word & 0x01000000;
+        const auto immediate = (word >> 16) & 127;
+        if (fixed && immediate < 32) return false;
         const bool wide = word & 0x400000;
         if (!scalar && wide && width == 8) return false;
         const bool unsignedResult = word & 0x20000000;
         size = wide ? 8 : 4;
         const unsigned bits = size * 8;
+        const auto scale = fixed ? int(2 * bits - immediate) : 0;
         const auto limit = std::ldexp(1.0, unsignedResult ? bits : bits - 1);
         for (unsigned i = 0; i < (scalar ? 1 : width / size); ++i) {
             const auto input = lane(source, i, size);
-            const double value = wide ? std::bit_cast<double>(input) :
+            const double number = wide ? std::bit_cast<double>(input) :
                 static_cast<double>(std::bit_cast<float>(uint32_t(input)));
+            const double value = fixed ? std::ldexp(number, scale) : number;
             uint64_t converted = 0;
             if (!std::isnan(value)) {
                 if (unsignedResult) {
