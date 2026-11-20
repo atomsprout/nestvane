@@ -4999,7 +4999,12 @@ int main() {
     constexpr uint64_t clientMapSize = 128 * 1024;
     const auto clientMap = call(222, {0, clientMapSize, 1, 0x4002, channel, 0});
     assert(channel < 256 && clientMap != managerMap);
-    assert(bindRequest(channel, 0x40406300, 42, "request", true) == 0);
+    constexpr std::u16string_view interfaceName = u"test.binder.IExample";
+    constexpr std::array<uint32_t, 4> interfaceHeader{0, UINT32_MAX, 0x53595354, interfaceName.size()};
+    std::string request(reinterpret_cast<const char*>(interfaceHeader.data()), sizeof interfaceHeader);
+    request.append(reinterpret_cast<const char*>(interfaceName.data()),
+                   (interfaceName.size() + 1) * sizeof(char16_t));
+    assert(bindRequest(channel, 0x40406300, 42, request, true) == 0);
     assert(uint32_t(load(base + 0x720)) == 0x7206);
     constexpr uint64_t oneway = uint64_t{1} << 32;
     assert(bindRequest(channel, 0x40406300, oneway | 41, "unrelated", true) == 0);
@@ -5021,10 +5026,11 @@ int main() {
     assert(transaction);
     std::array<uint64_t, 8> fields{};
     std::memcpy(fields.data(), transaction, sizeof fields);
-    assert(fields[2] == 42 && fields[3] == binderChild && fields[4] == 7 && fields[6] == managerMap);
-    assert(std::memcmp(machine.read(managerMap, 7, 4), "request", 7) == 0);
-    assert(linux.workerReport(machine, binderChild).find("binder-target=1 code=42 binder-server-tid=1") !=
-           std::string::npos);
+    assert(fields[2] == 42 && fields[3] == binderChild && fields[4] == request.size() && fields[6] == managerMap);
+    assert(std::memcmp(machine.read(managerMap, request.size(), 4), request.data(), request.size()) == 0);
+    const auto report = linux.workerReport(machine, binderChild);
+    assert(report.find("binder-target=1 code=42 binder-server-tid=1") != std::string::npos);
+    assert(report.find("interface=test.binder.IExample") != std::string::npos);
     assert(call(25, {manager, 4, 0x800}) == 0);
     assert(bindRequest(manager, 0, 0, "", true) == uint64_t(-11));
     assert(bindRequest(manager, 0x40406301, 0, "reply", true) == 0);

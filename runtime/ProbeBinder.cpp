@@ -34,6 +34,30 @@ const uint8_t* readBinderBytes(Machine& machine, uint64_t address, size_t size,
     return machine.readInto(address, storage) ? storage.data() : nullptr;
 }
 
+std::string binderInterface(std::span<const uint8_t> parcel) {
+    constexpr size_t headerSize = 4 * sizeof(uint32_t);
+    constexpr uint32_t system = 0x53595354, vendor = 0x564e4452, recovery = 0x5245434f;
+    if (parcel.size() < headerSize) return {};
+    uint32_t header, length;
+    std::memcpy(&header, parcel.data() + 2 * sizeof(uint32_t), sizeof header);
+    std::memcpy(&length, parcel.data() + 3 * sizeof(uint32_t), sizeof length);
+    if ((header != system && header != vendor && header != recovery) || !length || length > 192)
+        return {};
+    const auto nameBytes = parcel.subspan(headerSize);
+    if (nameBytes.size() < (length + 1) * 2 || nameBytes[length * 2] || nameBytes[length * 2 + 1])
+        return {};
+    std::string name;
+    name.reserve(length);
+    for (size_t index = 0; index < length; ++index) {
+        const auto ch = nameBytes[index * 2];
+        if (nameBytes[index * 2 + 1] ||
+            !((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+              (ch >= '0' && ch <= '9') || ch == '_' || ch == '.' || ch == '$')) return {};
+        name += char(ch);
+    }
+    return name;
+}
+
 template <class T>
 bool writeGuest(Machine& machine, uint64_t address, const T& value) {
     return machine.write(address, {reinterpret_cast<const uint8_t*>(&value), sizeof value});
@@ -483,7 +507,9 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
     } else {
         destination.push_back(std::move(packet));
     }
-    if (synchronousCall) connection.pendingCalls[currentTid].push_back({target, target->owner, transaction.code});
+    if (synchronousCall)
+        connection.pendingCalls[currentTid].push_back({target, target->owner, transaction.code,
+            binderInterface({bytes, size_t(transaction.dataSize)})});
     if (binderTrace.size() < 8192) {
         binderTrace += "  guest binder " + std::string(replying ? "reply" : "transaction") +
             " sender=" + std::to_string(processId()) + " target=" + std::to_string(target->owner) +

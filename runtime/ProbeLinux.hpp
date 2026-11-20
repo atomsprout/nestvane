@@ -525,6 +525,7 @@ private:
             std::weak_ptr<BinderConnection> target;
             uint64_t pid;
             uint32_t code;
+            std::string descriptor;
         };
         std::map<uint64_t, std::vector<PendingCall>> pendingCalls;
         std::deque<BinderPacket> incoming;

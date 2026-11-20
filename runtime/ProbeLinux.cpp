@@ -6749,6 +6749,7 @@ std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedPr
                                         })) tasks << " binder-server-tid=" << serverTid;
                                 }
                                 tasks << " target-queued=" << target->incoming.size();
+                                if (!call.descriptor.empty()) tasks << " interface=" << call.descriptor;
                             } else {
                                 tasks << " binder-target-closed";
                             }
@@ -6770,7 +6771,14 @@ std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedPr
             case Wait::exited: break;
         }
         tasks << " PC=0x" << std::hex << cpu.pc << " LR=0x" << cpu.x[30] << std::dec;
-        if (launcherThread || (tid == process.id &&
+        const bool handlingBinderCall = process.context == "u:r:system_server:s0" &&
+            std::ranges::any_of(process.descriptors, [&](const auto& entry) {
+                const auto& binder = entry.second.binder;
+                if (!binder) return false;
+                const auto outstanding = binder->replies.find(tid);
+                return outstanding != binder->replies.end() && !outstanding->second.empty();
+            });
+        if (launcherThread || handlingBinderCall || (tid == process.id &&
             (process.id == observedProcess || process.context == "u:r:system_server:s0"))) {
             describeCode(process, cpu.pc, "pc-file");
             describeCode(process, cpu.x[30], "lr-file");
