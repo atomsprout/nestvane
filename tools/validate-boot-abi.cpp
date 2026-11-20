@@ -2763,6 +2763,44 @@ int main() {
         assert(call(57, {sender}) == 0 && call(57, {receiver}) == 0);
     }
     {
+        ProbeLinux guest(1, 0);
+        constexpr uint64_t floor = 0x1'0000'0000, limit = 0x20'0000'0000;
+        constexpr uint64_t fixedPrivate = 0x100022;
+        Machine task(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
+        const auto invoke = [&](uint64_t number, std::array<uint64_t, 6> args) {
+            std::ranges::copy(args, task.cpu.x.begin());
+            task.cpu.x[8] = number;
+            assert(guest.syscall(task));
+            return task.cpu.x[0];
+        };
+        const auto reserve = [&](uint64_t address, uint64_t length, uint64_t protection) {
+            return invoke(222, {address, length, protection,
+                                address ? fixedPrivate : 0x22, UINT64_MAX, 0});
+        };
+        assert(reserve(floor, pageSize, 3) == floor && task.store64(floor, 0x1234));
+        assert(reserve(limit - pageSize, pageSize, 3) == limit - pageSize);
+        assert(task.store64(limit - pageSize, 0x5678));
+        constexpr uint64_t guardBytes = 16 * 1024 * 1024;
+        for (unsigned i = 0; i < 32; ++i) {
+            const auto guard = reserve(0, guardBytes, 0);
+            assert(guard == floor + pageSize);
+            assert(invoke(226, {guard + pageSize, pageSize, 3}) == 0);
+            uint64_t value = 1;
+            assert(task.load64(guard + pageSize, value) && value == 0);
+            assert(task.store64(guard + pageSize, i));
+            assert(invoke(215, {guard, guardBytes}) == 0);
+        }
+        constexpr uint64_t source = floor + 8 * pageSize;
+        assert(reserve(source, pageSize, 3) == source && task.store64(source, 42));
+        assert(reserve(source + pageSize, pageSize, 3) == source + pageSize);
+        const auto grown = invoke(216, {source, pageSize, 2 * pageSize, 1});
+        assert(grown == floor + pageSize && !task.read(source, 1, 4));
+        uint64_t value = 0;
+        assert(task.load64(grown, value) && value == 42);
+        assert(task.load64(floor, value) && value == 0x1234);
+        assert(task.load64(limit - pageSize, value) && value == 0x5678);
+    }
+    {
         using namespace std::chrono;
         assert(machine.store64(base, 1) && machine.store64(base + 8, 50'000'000));
         assert(call(101, {base, 0}) == base && linux.blocked());

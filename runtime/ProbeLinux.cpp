@@ -4763,6 +4763,19 @@ uint64_t ProbeLinux::randomMappingBase() const {
     return mappingFloor + pages(entropy) * pageSize;
 }
 
+// Keep the randomized bump allocator on the fast path. Long-lived processes
+// must still be able to reuse unmapped addresses after reaching the arena end.
+static uint64_t freeMappingAddress(const Machine& machine, uint64_t next, uint64_t length) {
+    if (next <= mappingLimit - length) return next;
+    auto candidate = mappingFloor;
+    for (const auto& segment : machine.segments) {
+        if (candidate > mappingLimit - length) return 0;
+        if (segment.address >= candidate + length) return candidate;
+        candidate = std::max(candidate, pageAlignedLength(segment.address + segment.mappedSize()));
+    }
+    return candidate <= mappingLimit - length ? candidate : 0;
+}
+
 uint64_t ProbeLinux::map(Machine& machine) {
     const auto& x = machine.cpu.x;
     constexpr uint64_t fixed = 0x10, anonymous = 0x20, noReserve = 0x4000;
@@ -4786,7 +4799,7 @@ uint64_t ProbeLinux::map(Machine& machine) {
     };
     const bool lowHint = !atAddress && hint >= lowMappingFloor && hint < mappingFloor &&
                          length <= mappingFloor - hint && !overlaps(hint, false);
-    const auto start = atAddress ? x[0] : lowHint ? hint : nextMapping;
+    const auto start = atAddress ? x[0] : lowHint ? hint : freeMappingAddress(machine, nextMapping, length);
     if (start < lowMappingFloor || start > mappingLimit - length) return noMemory;
     const auto end = start + length;
     if ((x[3] & fixedNoReplace) && overlaps(start, false)) return uint64_t(-17);
@@ -4867,7 +4880,7 @@ uint64_t ProbeLinux::map(Machine& machine) {
             mapping->size = length;
             fd.binder->mapped = mapping;
             fd.binder->address = start;
-            nextMapping = end;
+            nextMapping = std::max(nextMapping, end);
             machine.insertSegment({start, {}, 4, length, false, std::move(mapping), 0, false, true});
             return start;
         }
@@ -7384,15 +7397,15 @@ uint64_t ProbeLinux::loopIoctl(Machine& machine, const Descriptor& fd) {
 uint64_t ProbeLinux::signalRestorer(Machine& machine) {
     auto& process = *current->process;
     if (process.signalTrampoline) return process.signalTrampoline;
-    auto& address = process.nextMapping;
-    if (address > mappingLimit - pageSize || !allowsBacking(machine, address, address + pageSize, pageSize, memoryLimit)) return 0;
+    const auto address = freeMappingAddress(machine, process.nextMapping, pageSize);
+    if (!address || !allowsBacking(machine, address, address + pageSize, pageSize, memoryLimit)) return 0;
     // Guest Linux trampoline. The leading NOP matches the ARM64 vDSO unwinding convention.
     constexpr std::array<uint32_t, 4> code{0xd503201f, 0x52801168, 0xd4000001, 0xd4200000};
     Segment page{address, std::vector<uint8_t>(pageSize), 5};
     std::memcpy(page.bytes.mutableData(), code.data(), sizeof(code));
     machine.insertSegment(std::move(page));
     process.signalTrampoline = address + sizeof(code[0]);
-    address += pageSize;
+    process.nextMapping = std::max(process.nextMapping, address + pageSize);
     return process.signalTrampoline;
 }
 
@@ -10330,8 +10343,8 @@ bool ProbeLinux::syscall(Machine& machine) {
                     });
                 if (!room) {
                     if (!(flags & mayMove)) { x[0] = noMemory; break; }
-                    target = next;
-                    if (target > mappingLimit - newSize) { x[0] = noMemory; break; }
+                    target = freeMappingAddress(machine, next, newSize);
+                    if (!target) { x[0] = noMemory; break; }
                 }
             }
             if (!sparse && !lazy && (newSize > memoryLimit / 2 ||
