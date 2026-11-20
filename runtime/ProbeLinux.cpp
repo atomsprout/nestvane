@@ -6557,6 +6557,29 @@ std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedPr
     });
     tasks << "  guest tasks: " << active << " active, " << threads.size()
           << " tracked, limit " << maxGuestTasks << '\n';
+    std::set<const SharedFileBytes*> countedShared;
+    size_t privateBytes = 0, sharedBytes = 0;
+    const auto countShared = [&](const SharedFileBytes* storage) {
+        if (storage && countedShared.insert(storage).second) sharedBytes += storage->pages.capacity();
+    };
+    std::set<uint64_t> countedProcesses;
+    for (const auto& [_, thread] : threads) {
+        const auto& process = *thread.process;
+        if (thread.wait == Wait::exited || !countedProcesses.insert(process.id).second) continue;
+        for (const auto& area : process.id == processId() ? machine.segments : process.segments) {
+            privateBytes += area.bytes.capacity();
+            countShared(area.shared.get());
+        }
+        for (const auto& [_, fd] : process.descriptors) {
+            if (fd.temporary) countShared(fd.temporary->storage.get());
+            if (fd.ashmem) countShared(fd.ashmem->file.storage.get());
+            if (fd.binder) countShared(fd.binder->mapped.get());
+        }
+    }
+    for (const auto& [_, file] : writableFiles) countShared(file->storage.get());
+    for (const auto& file : memoryFiles) countShared(file.lock().get());
+    tasks << "  guest memory bytes: anonymous dirty=" << anonymousBudget->dirty
+          << " dense private capacity=" << privateBytes << " shared capacity=" << sharedBytes << '\n';
     for (const auto& [tid, thread] : threads) {
         const auto& process = *thread.process;
         if (thread.wait == Wait::exited) continue;
