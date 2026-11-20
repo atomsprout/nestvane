@@ -136,31 +136,45 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
     uint64_t nextSample = sampleBoot ? sampleStride : UINT64_MAX;
     uint64_t samples = 0, unattributedSamples = 0;
     uint64_t sha256AotEntries = 0, sha256AotInstructions = 0;
-    // The file offset survives ASLR. Group nearby instructions so hot loops are
-    // still visible when their samples fall on several different instructions.
-    using CodePage = std::pair<std::string, uint64_t>;
-    std::map<CodePage, uint64_t> codeSamples;
-    const auto appendCodeSamples = [&](std::ostream& out) {
+    // File offsets survive ASLR. Keep the cumulative page ranking and report
+    // smaller regions for each snapshot interval so later boot phases stay visible.
+    using CodeLocation = std::pair<std::string, uint64_t>;
+    using CodeSamples = std::map<CodeLocation, uint64_t>;
+    CodeSamples codeSamples, intervalCodeSamples;
+    uint64_t intervalStart = 0, intervalSamples = 0, intervalUnattributed = 0;
+    const auto appendRanking = [](std::ostream& out, const CodeSamples& histogram, size_t limit) {
+        std::vector<std::pair<CodeLocation, uint64_t>> ranked(histogram.begin(), histogram.end());
+        const auto top = ranked.begin() + std::min(ranked.size(), limit);
+        std::partial_sort(ranked.begin(), top, ranked.end(), [](const auto& a, const auto& b) {
+            if (a.second != b.second) return a.second > b.second;
+            return a.first < b.first;
+        });
+        for (auto entry = ranked.begin(); entry != top; ++entry) {
+            const auto& [location, count] = *entry;
+            out << "    " << count << ' ' << location.first << "+0x" << std::hex << location.second << std::dec << '\n';
+        }
+    };
+    const auto appendCodeSamples = [&](std::ostream& out, uint64_t elapsedMs) {
         if (bootAot)
             out << "  Android SHA-256 AOT entries: " << sha256AotEntries
                 << ", guest instructions: " << sha256AotInstructions << '\n';
         if (!sampleBoot) return;
         out << "  guest instruction samples: " << samples << ", unattributed: " << unattributedSamples << '\n';
-        std::vector<std::pair<CodePage, uint64_t>> ranked(codeSamples.begin(), codeSamples.end());
-        const auto top = ranked.begin() + std::min<size_t>(ranked.size(), 20);
-        std::partial_sort(ranked.begin(), top, ranked.end(),
-                          [](const auto& a, const auto& b) { return a.second > b.second; });
-        for (auto entry = ranked.begin(); entry != top; ++entry) {
-            const auto& [page, count] = *entry;
-            out << "    " << count << ' ' << page.first << "+0x" << std::hex << page.second << std::dec << '\n';
-        }
+        appendRanking(out, codeSamples, 20);
+        out << "  guest instruction samples in " << intervalStart << '-' << elapsedMs
+            << " ms (64-byte file ranges): " << intervalSamples << ", unattributed: " << intervalUnattributed << '\n';
+        appendRanking(out, intervalCodeSamples, 12);
     };
     const auto captureSnapshot = [&](steady_clock::time_point now) {
         std::ostringstream snapshot;
-        snapshot << "Android init at " << duration_cast<milliseconds>(now - start).count()
-                 << " ms, " << cpu.retired << " guest instructions, "
+        const auto elapsedMs = duration_cast<milliseconds>(now - start).count();
+        snapshot << "Android init at " << elapsedMs << " ms, " << cpu.retired << " guest instructions, "
                  << syscallCount << " guest syscalls\n";
-        appendCodeSamples(snapshot);
+        appendCodeSamples(snapshot, elapsedMs);
+        intervalCodeSamples.clear();
+        intervalStart = elapsedMs;
+        intervalSamples = 0;
+        intervalUnattributed = 0;
         snapshot << linux.workerReport(machine, linux.processId());
         constexpr size_t androidTailLimit = 16 * 1024;
         const std::string_view android = linux.recentAndroidOutput.empty()
@@ -239,6 +253,7 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
         }
         if (cpu.retired >= nextSample) {
             ++samples;
+            ++intervalSamples;
             nextSample = cpu.retired + sampleStride + ((samples * 0x9e37) & 0xffff);
             if (const auto location = linux.guestCodeFile(bytes)) {
                 auto [path, offset] = *location;
@@ -246,8 +261,10 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
                     if (const auto slash = path.find('/', 2); slash != std::string_view::npos) path.remove_prefix(slash);
                 }
                 ++codeSamples[{std::string(path), offset & ~uint64_t(4095)}];
+                ++intervalCodeSamples[{std::string(path), offset & ~uint64_t(63)}];
             } else {
                 ++unattributedSamples;
+                ++intervalUnattributed;
             }
         }
         if (const auto* block = bootAot ? bootAot->lookup(bytes) : nullptr;
@@ -378,7 +395,7 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
         }
     }
 
-    appendCodeSamples(report);
+    appendCodeSamples(report, duration_cast<milliseconds>(steady_clock::now() - start).count());
     if (suppressedLogs) report << "  omitted syscall log entries: " << suppressedLogs << '\n';
     if (deliveredFaults || restoredSignals)
         report << "  guest SIGSEGV deliveries: " << deliveredFaults << ", signal context returns: " << restoredSignals << '\n';
