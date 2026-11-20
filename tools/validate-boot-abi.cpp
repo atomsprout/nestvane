@@ -3378,7 +3378,7 @@ int main() {
         assert(report.ends_with("input initialization failed"));
     }
     for (const auto [wait, restart] : {std::pair{98, 0ULL}, std::pair{98, 0x10000000ULL},
-                                      std::pair{137, 0x10000000ULL}}) {
+                                      std::pair{137, 0x10000000ULL}, std::pair{133, 0x10000000ULL}}) {
         ProbeLinux guest(1, 0);
         constexpr auto handler = base + 0x200, blockedPc = base + 0x300;
         constexpr auto word = base + 0x400, action = base + 0x440, parentTid = base + 0x480;
@@ -3397,7 +3397,15 @@ int main() {
         assert(thread == 2 && guest.schedule(task) && guest.threadId() == thread);
         task.cpu.pc = blockedPc;
         task.cpu.fpsr = fpsrSaturation;
-        if (wait == 137) {
+        if (wait == 133) {
+            constexpr uint64_t blockedSignal = 1ULL << (signal - 1);
+            assert(task.store64(word, blockedSignal));
+            assert(invoke(135, {0, word, 0, 8}) == 0);
+            assert(task.store64(word, 0));
+            assert(invoke(133, {word, 4}) == uint64_t(-22));
+            assert(invoke(133, {1, 8}) == uint64_t(-14));
+            assert(invoke(133, {word, 8}) == word);
+        } else if (wait == 137) {
             // An unrelated handler interrupts rt_sigtimedwait even with SA_RESTART.
             assert(task.store64(word, 1ULL << (12 - 1)));
             assert(invoke(137, {word, 0, 0, 8}) == word);
@@ -3417,6 +3425,52 @@ int main() {
         const bool restarts = wait == 98 && restart;
         assert(task.cpu.pc == blockedPc + (restarts ? 0 : 4));
         assert(task.cpu.x[0] == (restarts ? word : uint64_t(-4)));
+        if (wait == 133) {
+            assert(invoke(135, {0, 0, word, 8}) == 0);
+            uint64_t mask = 0;
+            assert(task.load64(word, mask) && mask == (1ULL << (signal - 1)));
+        }
+    }
+    for (const bool exitsBeforeSuspend : {false, true}) {
+        ProbeLinux guest(1, 0);
+        constexpr auto handler = base + 0x200, blockedPc = base + 0x300;
+        constexpr auto word = base + 0x400, action = base + 0x440, childTid = base + 0x480;
+        constexpr uint64_t signal = 17, signalMask = 1ULL << (signal - 1);
+        Machine task(Image{base, {{base, std::vector<uint8_t>(8 * pageSize), 7}}, {}});
+        task.cpu.sp = base + 4 * pageSize;
+        const auto invoke = [&](uint64_t number, std::array<uint64_t, 6> args = {}) {
+            std::ranges::copy(args, task.cpu.x.begin());
+            task.cpu.x[8] = number;
+            assert(guest.syscall(task));
+            return task.cpu.x[0];
+        };
+        assert(task.store64(action, handler) && task.store64(action + 8, 0x10000004));
+        assert(invoke(134, {signal, action, 0, 8}) == 0);
+        assert(task.store64(word, signalMask) && invoke(135, {0, word, 0, 8}) == 0);
+        assert(task.store64(word, 0));
+        const auto child = invoke(220, {0x1200011, 0, 0, 0, childTid});
+        assert(child == 2);
+        if (!exitsBeforeSuspend) {
+            task.cpu.pc = blockedPc;
+            assert(invoke(133, {word, 8}) == word && guest.blocked());
+        }
+        assert(guest.schedule(task) && guest.processId() == child);
+        invoke(94, {42});
+        assert(guest.schedule(task) && guest.processId() == 1);
+        if (exitsBeforeSuspend) {
+            task.cpu.pc = blockedPc;
+            assert(invoke(133, {word, 8}) == word && guest.blocked());
+            assert(guest.schedule(task));
+        }
+        assert(task.cpu.pc == handler && task.cpu.x[0] == signal);
+        uint64_t info = 0;
+        assert(task.load64(task.cpu.x[1] + 8, info) && uint32_t(info) == 1);
+        assert(task.load64(task.cpu.x[1] + 16, info) && uint32_t(info) == child);
+        assert(task.load64(task.cpu.x[1] + 24, info) && uint32_t(info) == 42);
+        invoke(139);
+        assert(task.cpu.pc == blockedPc + 4 && task.cpu.x[0] == uint64_t(-4));
+        assert(invoke(135, {0, 0, word, 8}) == 0 && task.load64(word, info) && info == signalMask);
+        assert(invoke(260, {child, word}) == child && task.load64(word, info) && uint32_t(info) == 42U << 8);
     }
     {
         ProbeLinux guest(1, 0);

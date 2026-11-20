@@ -5166,6 +5166,26 @@ bool ProbeLinux::switchThread(Machine& machine, std::chrono::steady_clock::time_
         nextDeadline = refreshTimers(now);
         for (auto& [tid, thread] : threads) {
             const auto wait = thread.wait;
+            if (wait == Wait::signalSuspend) {
+                auto& child = thread.process->childSignal;
+                if (child && canCatchSignal(thread, sigChild) && !thread.pendingSignals.contains(sigChild)) {
+                    SignalWords info{};
+                    info[0] = sigChild;
+                    info[2] = child->code;
+                    info[4] = child->pid;
+                    info[5] = child->uid;
+                    info[6] = child->status;
+                    thread.pendingSignals.emplace(sigChild, info);
+                    child.reset();
+                }
+                if (std::ranges::any_of(thread.pendingSignals, [&](const auto& entry) {
+                        return canCatchSignal(thread, entry.first);
+                    })) {
+                    thread.signalInterruptedWait = wait;
+                    thread.wait = Wait::none;
+                    thread.nextSliceAfter.reset();
+                }
+            }
             if (wait == Wait::poll && thread.hostEventRetry) {
                 if (*thread.hostEventRetry <= now) {
                     thread.hostEventRetry.reset();
@@ -6262,8 +6282,10 @@ void ProbeLinux::finishProcess(Process& process, uint32_t status, bool killed) {
     if (parent) {
         childExits.emplace(process.id, ChildExit{parent, status, uid, code});
         for (auto& [tid, task] : threads) {
-            if (task.process->id != parent || task.wait == Wait::exited || !(task.signalMask & sigChildMask)) continue;
-            if (task.process->signalActions[sigChild][0] != 1 && !task.process->childSignal)
+            if (task.process->id != parent || task.wait == Wait::exited) continue;
+            const auto handler = task.process->signalActions[sigChild][0];
+            if (!(task.signalMask & sigChildMask) && handler <= 1) continue;
+            if (handler != 1 && !task.process->childSignal)
                 task.process->childSignal = Process::ChildSignal{uint32_t(process.id), uid, status, code};
             break;
         }
@@ -6793,6 +6815,7 @@ std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedPr
             case Wait::futex: tasks << " futex=0x" << std::hex << thread.futexAddress << std::dec; break;
             case Wait::recordLock: tasks << " record lock held by PID " << thread.recordLockBlocker; break;
             case Wait::signal: tasks << " signal"; break;
+            case Wait::signalSuspend: tasks << " sigsuspend"; break;
             case Wait::sleep: tasks << " sleeping"; break;
             case Wait::suspended:
                 tasks << " suspended syscall=" << cpu.x[8] << std::hex
@@ -7104,7 +7127,7 @@ bool ProbeLinux::installSignalFrame(Machine& machine, uint32_t signal, const Sig
     frame.info = std::bit_cast<SignalFrame::Info>(info);
     auto& context = frame.context;
     context.stack = current->alternateStack;
-    context.mask = current->signalMask;
+    context.mask = current->suspendSignalMask.value_or(current->signalMask);
     const bool alreadyOnStack = onSignalStack(context.stack, cpu.sp);
     if (alreadyOnStack) context.stack[1] = ssOnStack;
     const auto top = (flags & saOnStack) && !(context.stack[1] & ssDisable) && !alreadyOnStack
@@ -7127,6 +7150,7 @@ bool ProbeLinux::installSignalFrame(Machine& machine, uint32_t signal, const Sig
     const auto returnAddress = flags & saRestorer ? restorer : signalRestorer(machine);
     if (!returnAddress || !writeGuest(machine, address, frame)) return false;
 
+    current->suspendSignalMask.reset();
     if (flags & saResetHand) action.fill(0);
     current->signalMask |= (mask | ((flags & saNoDefer) ? 0 : signalBit)) & ~unblockableSignals;
     cpu.x[0] = signal;
@@ -7143,14 +7167,18 @@ bool ProbeLinux::installSignalFrame(Machine& machine, uint32_t signal, const Sig
     return true;
 }
 
+bool ProbeLinux::canCatchSignal(const Thread& thread, uint32_t signal) {
+    const auto bit = 1ULL << (signal - 1);
+    return !((thread.signalMask | thread.signalWaitMask) & bit) &&
+           thread.process->signalActions[signal][0] > 1;
+}
+
 void ProbeLinux::deliverPendingCaughtSignal(Machine& machine) {
     auto& thread = *current;
     auto& cpu = machine.cpu;
     auto& pending = thread.pendingSignals;
     const auto found = std::ranges::find_if(pending, [&](const auto& entry) {
-        const auto bit = 1ULL << (entry.first - 1);
-        return !((thread.signalMask | thread.signalWaitMask) & bit) &&
-               thread.process->signalActions[entry.first][0] > 1;
+        return canCatchSignal(thread, entry.first);
     });
     if (found == pending.end()) return;
     const auto signal = found->first;
@@ -10421,7 +10449,8 @@ bool ProbeLinux::syscall(Machine& machine) {
             if ((!caught && signal >= 32 && !waiting) ||
                 (!waiting && !masked && !fatalResend && !caught)) return false;
             if (scheduleHandler && target.wait != Wait::none && target.wait != Wait::poll &&
-                target.wait != Wait::futex && target.wait != Wait::signal && target.wait != Wait::suspended) return false;
+                target.wait != Wait::futex && target.wait != Wait::signal && target.wait != Wait::signalSuspend &&
+                target.wait != Wait::suspended) return false;
             if (signal >= 32 && target.pendingSignals.size() >= 1024) { x[0] = uint64_t(-11); break; }
             info[0] = signal;
             if (!queued) {
@@ -10443,6 +10472,18 @@ bool ProbeLinux::syscall(Machine& machine) {
             } else if (fatalResend) {
                 terminateOnPendingSignal();
             }
+            break;
+        }
+        case 133: { // rt_sigsuspend waits for a handler under a temporary mask.
+            if (x[1] != sizeof(uint64_t)) { x[0] = invalid; break; }
+            uint64_t mask = 0;
+            if (!machine.load64(x[0], mask)) { x[0] = uint64_t(-14); break; }
+            current->suspendSignalMask = current->signalMask;
+            current->signalMask = mask & ~unblockableSignals;
+            current->deadline.reset();
+            current->wait = Wait::signalSuspend;
+            sliceEnd = 0;
+            terminateOnPendingSignal();
             break;
         }
         case 137: { // rt_sigtimedwait synchronously consumes a pending guest signal.

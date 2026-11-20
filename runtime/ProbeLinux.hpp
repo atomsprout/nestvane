@@ -115,7 +115,7 @@ private:
         uint64_t generation = 0;
         std::map<std::string, MountView, std::less<>> mounts{{"/dev", {6, 0755, 0, 0, "/dev"}}};
     };
-    enum class Wait { none, poll, recordLock, futex, futexPi, signal, sleep, exited, suspended };
+    enum class Wait { none, poll, recordLock, futex, futexPi, signal, sleep, exited, suspended, signalSuspend };
     struct Process;
     struct WritableFile;
     using SignalWords = std::array<uint32_t, 32>;
@@ -151,6 +151,7 @@ private:
         std::optional<std::chrono::steady_clock::time_point> nextSliceAfter;
         uint64_t signalMask = 0;
         uint64_t signalWaitMask = 0;
+        std::optional<uint64_t> suspendSignalMask;
         std::string fsCreateContext, socketCreateContext;
         PendingSignals pendingSignals;
         std::array<uint8_t, 16> name{};
@@ -177,6 +178,7 @@ private:
     Process* liveProcess(uint64_t id) const;
     bool processAlive(uint64_t id) const { return liveProcess(id) != nullptr; }
     bool installSignalFrame(Machine& machine, uint32_t signal, const SignalWords& info, uint64_t faultAddress = 0);
+    static bool canCatchSignal(const Thread& thread, uint32_t signal);
     void deliverPendingCaughtSignal(Machine& machine);
     bool restoreSignalContext(Machine& machine);
     void terminateOnPendingSignal();
