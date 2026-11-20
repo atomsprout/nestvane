@@ -1128,6 +1128,33 @@ int main() {
         assert(executeStartupInstruction(permute, 0x0f158e91)); // rshrn v17.4h, v20.4s, #11
         assert(executeStartupInstruction(permute, 0x4f158cf1)); // rshrn2 v17.8h, v7.4s, #11
         assert(std::memcmp(permute.cpu.v[17].data(), roundedNarrowOutput.data(), sizeof(roundedNarrowOutput)) == 0);
+        // Android libjpeg's inverse transform combines wide products and keeps their high halves.
+        const std::array<uint32_t, 4> highNarrowLeft{0xffffffff, 0, 0x12345678, 0x80000000};
+        const std::array<uint32_t, 4> highNarrowRight{1, 1, 0x1111aaaa, 0x80000000};
+        const std::array<uint16_t, 8> highNarrowSum{0, 0, 0x2346, 0};
+        const std::array<uint16_t, 8> highNarrowBoth{0, 0, 0x2346, 0, 0xffff, 0xffff, 0x0122, 0};
+        std::memcpy(permute.cpu.v[4].data(), highNarrowLeft.data(), sizeof(highNarrowLeft));
+        std::memcpy(permute.cpu.v[18].data(), highNarrowRight.data(), sizeof(highNarrowRight));
+        permute.cpu.v[7].fill(0x55);
+        assert(executeStartupInstruction(permute, 0x0e724087)); // addhn v7.4h, v4.4s, v18.4s
+        assert(std::memcmp(permute.cpu.v[7].data(), highNarrowSum.data(), sizeof(highNarrowSum)) == 0);
+        assert(executeStartupInstruction(permute, 0x4e726087)); // subhn2 v7.8h, v4.4s, v18.4s
+        assert(std::memcmp(permute.cpu.v[7].data(), highNarrowBoth.data(), sizeof(highNarrowBoth)) == 0);
+        const std::array<uint64_t, 2> highNarrowWiderLeft{UINT64_MAX, 0x11223344'80000000};
+        const std::array<uint64_t, 2> highNarrowWiderRight{1, 0x00000000'00000001};
+        const std::array<uint32_t, 4> highNarrowRounded{0, 0x11223345, 0, 0};
+        std::memcpy(permute.cpu.v[4].data(), highNarrowWiderLeft.data(), sizeof(highNarrowWiderLeft));
+        std::memcpy(permute.cpu.v[18].data(), highNarrowWiderRight.data(), sizeof(highNarrowWiderRight));
+        assert(executeStartupInstruction(permute, 0x2eb24084)); // raddhn v4.2s, v4.2d, v18.2d
+        assert(std::memcmp(permute.cpu.v[4].data(), highNarrowRounded.data(), sizeof(highNarrowRounded)) == 0);
+        assert(!executeStartupInstruction(permute, 0x0ef24087)); // reserved lane size
+        const std::array<int16_t, 8> jpegNarrowInput{INT16_MIN, -514, -512, -2, 2, 505, 510, INT16_MAX};
+        const std::array<int8_t, 16> jpegNarrowOutput{-128, -128, -128, 0, 1, 126, 127, 127};
+        std::memcpy(permute.cpu.v[7].data(), jpegNarrowInput.data(), sizeof(jpegNarrowInput));
+        permute.cpu.v[5].fill(0x44);
+        assert(executeStartupInstruction(permute, 0x0f0e9ce5)); // sqrshrn v5.8b, v7.8h, #2
+        assert(std::memcmp(permute.cpu.v[5].data(), jpegNarrowOutput.data(), sizeof(jpegNarrowOutput)) == 0);
+        assert(permute.cpu.fpsr == fpsrSaturation);
         const std::array<uint16_t, 8> narrowBytesSource{0, 254, 255, 256, 257, 1, 32768, 65535};
         const std::array<uint8_t, 16> narrowBytesResult{0, 254, 255, 255, 255, 1, 255, 255};
         std::memcpy(permute.cpu.v[0].data(), narrowBytesSource.data(), sizeof(narrowBytesSource));

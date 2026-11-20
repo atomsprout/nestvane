@@ -906,6 +906,20 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
             setLane(result, i, size, reduce(lane(source, 2 * i, size), lane(source, 2 * i + 1, size)));
             setLane(result, i + pairs, size, reduce(lane(other, 2 * i, size), lane(other, 2 * i + 1, size)));
         }
+    } else if ((word & 0x9f20dc00) == 0x0e204000) { // ADDHN/SUBHN and rounded variants.
+        if (size > 4) return false;
+        const unsigned count = 8 / size;
+        const unsigned bits = size * 8;
+        const unsigned start = width == 16 ? count : 0;
+        const bool subtract = word & 0x2000, rounded = word & 0x20000000;
+        const uint64_t bias = rounded ? uint64_t{1} << (bits - 1) : 0;
+        if (start) result = cpu.v[rd];
+        for (unsigned i = 0; i < count; ++i) {
+            const auto left = lane(source, i, size * 2);
+            const auto right = lane(other, i, size * 2);
+            const auto value = subtract ? left - right : left + right;
+            setLane(result, start + i, size, (value + bias) >> bits);
+        }
     } else if (op == 0x0e20e000) { // PMULL / PMULL2.
         if (size != 1 && size != 8) return false;
         const unsigned start = width == 16 ? 8 / size : 0;
@@ -968,17 +982,6 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
             }
             setLane(result, i, size, shifted);
         }
-    } else if ((word & 0xbf20fc00) == 0x2e204000) { // RADDHN / RADDHN2.
-        if (size == 8) return false;
-        const unsigned count = 8 / size;
-        const unsigned start = width == 16 ? count : 0;
-        const unsigned bits = size * 8;
-        const uint64_t rounding = uint64_t{1} << (bits - 1);
-        if (start) result = cpu.v[rd];
-        for (unsigned i = 0; i < count; ++i) {
-            const auto sum = lane(source, i, size * 2) + lane(other, i, size * 2) + rounding;
-            setLane(result, start + i, size, sum >> bits);
-        }
     } else if (const auto narrow = word & 0xbf3ffc00;
                narrow == 0x0e212800 || narrow == 0x2e214800) { // XTN / XTN2, UQXTN / UQXTN2.
         if (size == 8) return false;
@@ -994,7 +997,10 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
             }
             setLane(result, start + i, size, value);
         }
-    } else if ((word & 0xbf80f400) == 0x0f008400) { // SHRN and RSHRN, including the upper-half forms.
+    } else if (const auto narrowingShift = word & 0xbf80f400;
+               narrowingShift == 0x0f008400 || narrowingShift == 0x0f009400) {
+        // SHRN/RSHRN and signed SQSHRN/SQRSHRN, including the upper-half forms.
+        const bool saturate = narrowingShift == 0x0f009400;
         const bool round = word & 0x800;
         const unsigned immediate = (word >> 16) & 127;
         if (immediate < 8 || immediate >= 64) return false;
@@ -1007,7 +1013,16 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
         for (unsigned i = 0; i < count; ++i) {
             const auto value = lane(source, i, size * 2);
             const auto rounding = round ? (value >> (shift - 1)) & 1 : 0;
-            setLane(result, start + i, size, (value >> shift) + rounding);
+            auto narrowed = (value >> shift) + rounding;
+            if (saturate) {
+                const auto signedValue = static_cast<int64_t>(sx(value, 2 * bits));
+                const auto shifted = (signedValue >> shift) + static_cast<int64_t>(rounding);
+                const auto limit = int64_t{1} << (bits - 1);
+                const auto clamped = std::clamp(shifted, -limit, limit - 1);
+                if (shifted != clamped) cpu.fpsr |= fpsrSaturation;
+                narrowed = static_cast<uint64_t>(clamped);
+            }
+            setLane(result, start + i, size, narrowed);
         }
     } else if (const auto rightShift = word & 0x9f80fc00;
                rightShift == 0x0f000400 || rightShift == 0x0f001400 ||
