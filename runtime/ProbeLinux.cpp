@@ -1662,7 +1662,12 @@ uint64_t ProbeLinux::renameFile(Machine& machine) {
         const auto input = readPath(machine, pointer);
         if (!input) return uint64_t(-14);
         if (input->empty()) return uint64_t(-2);
-        return resolveAtPath(uint32_t(fd), *input, path);
+        if (const auto error = resolveAtPath(uint32_t(fd), *input, path)) return error;
+        uint64_t lookupError = uint64_t(-40);
+        auto visible = followLinks(std::move(path), false, &lookupError);
+        if (!visible) return lookupError;
+        path = std::move(*visible);
+        return 0;
     };
     std::string source, destination;
     if (const auto error = getPath(x[0], x[1], source); error) return error;
@@ -1673,13 +1678,9 @@ uint64_t ProbeLinux::renameFile(Machine& machine) {
         return uint64_t(-18);
     if (source == "/data" || destination == "/data" || current->mountNamespace->mounts.contains(source) ||
         current->mountNamespace->mounts.contains(destination)) return uint64_t(-16);
-    if (sourceMount->device == "bpf") {
-        source = backingPath(source);
-        destination = backingPath(destination);
-    } else if (backingPath(source) != source || backingPath(destination) != destination) {
-        return uint64_t(-18);
-    }
     if (!writablePath(source) || !writablePath(destination)) return uint64_t(-30);
+    source = backingPath(source);
+    destination = backingPath(destination);
     auto file = writableFiles.find(source);
     auto link = links.find(source);
     const bool directory = directories.contains(source);
@@ -4041,7 +4042,7 @@ bool ProbeLinux::fileCall(Machine& machine) {
                     x[0] = uint64_t(-2);
                 break;
             }
-            if (x[8] == 34) { // mkdirat follows ancestor links and creates the final component.
+            if (x[8] == 34 || x[8] == 35) { // mkdirat and unlinkat follow only ancestor links.
                 uint64_t lookupError = uint64_t(-40);
                 auto visible = followLinks(std::move(path), false, &lookupError);
                 if (!visible) { x[0] = lookupError; break; }

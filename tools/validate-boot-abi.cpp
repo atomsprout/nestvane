@@ -4898,6 +4898,7 @@ int main() {
         mounts.addDirectory("/data/user", 0751);
         mounts.addDirectory("/data/user/0", 0751);
         mounts.addDirectory("/data/private", 0700);
+        mounts.addDirectory("/data/mirror", 0771);
         Machine task(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
         const auto invoke = [&](uint64_t number, std::array<uint64_t, 6> args) {
             std::ranges::copy(args, task.cpu.x.begin());
@@ -4920,11 +4921,19 @@ int main() {
         const auto options = path(384, "mode=751");
         const auto hiddenAlias = path(432, "/data/private/alias");
         const auto hiddenDatabases = path(480, "/data/private/alias/own.app/other");
+        const auto mirror = path(528, "/data/mirror");
+        const auto backingPackage = path(576, "/data/mirror/own.app");
+        const auto backup = path(624, "/data/user/0/own.app/databases/test.db.bak");
+        const auto crossMount = path(672, "/data/mirror/own.app/databases/test.db.bak");
         constexpr auto atCwd = uint32_t(-100);
         assert(invoke(54, {atCwd, package, 10068, 10068}) == 0);
         assert(invoke(40, {source, userZero, 0, 0x5000}) == 0);
+        assert(invoke(40, {source, mirror, 0, 0x1000}) == 0);
         assert(invoke(97, {0x20000}) == 0);
         assert(invoke(40, {tmpfs, user, tmpfs, 14, options}) == 0);
+        assert(invoke(40, {tmpfs, source, tmpfs, 14, options}) == 0);
+        assert(invoke(34, {atCwd, package, 0700}) == 0);
+        assert(invoke(40, {backingPackage, package, 0, 0x1000}) == 0);
         assert(invoke(36, {source, atCwd, userZero}) == 0);
         assert(invoke(36, {source, atCwd, hiddenAlias}) == 0);
         assert(invoke(149, {10068, 10068, 10068}) == 0);
@@ -4934,6 +4943,12 @@ int main() {
         assert(invoke(34, {atCwd, userZero, 0700}) == uint64_t(-17));
         assert(invoke(34, {atCwd, hiddenDatabases, 0700}) == uint64_t(-13));
         assert(invoke(56, {atCwd, database, 0x42, 0600}) < 256);
+        assert(invoke(38, {atCwd, database, atCwd, crossMount}) == uint64_t(-18));
+        assert(invoke(38, {atCwd, database, atCwd, backup}) == 0);
+        assert(invoke(56, {atCwd, database, 0}) == uint64_t(-2));
+        assert(invoke(56, {atCwd, crossMount, 0}) < 256);
+        assert(invoke(35, {atCwd, backup, 0}) == 0);
+        assert(invoke(56, {atCwd, crossMount, 0}) == uint64_t(-2));
     }
 
     assert(machine.store64(base + 0x840, 17));

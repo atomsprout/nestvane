@@ -552,3 +552,4 @@
 - 原版 Android 17 的 artd 使用 UID 1082，init 给它授予 DAC_OVERRIDE 和 DAC_READ_SEARCH。Nestvane 启动期间曾出现 artd 在 root 所有的 0711 dalvik-cache/arm64 中无法创建编译临时文件。客体文件和目录权限检查现在识别这两个有效能力，非 root 的 faccessat 仍按真实身份检查。宿主 ABI 回归验证了只有 DAC_OVERRIDE 可在该目录中创建临时文件，并覆盖有效能力允许打开、真实身份仍拒绝写入的差异。Android 完整启动复测待验证。
 - 正式 APK 就绪脚本从空数据卷运行后，Mac 上的原版包管理器安装了 Smoke，落盘的 8,619 字节与输入一致。ActivityTaskManager 记录 MainActivity Displayed（67,243 毫秒）。另一轮从已安装数据卷启动后，Mac 的 GuestTouch 向 640×960 Smoke 画面的 Increment 提交点按，画面由 Count: 0 变为 Could not save count，尚无 state.xml。
 - Android 17 参考系统的 DocumentsUI 和 Downloads 运行在各自的应用数据隔离挂载空间中，/data/user/0 为指向 /data/data 的符号链接。客体 mkdirat 现先解析父路径链接并检查搜索权限，保留对最终符号链接的 EEXIST。回归用相同挂载覆盖和符号链接结构复现创建目录失败，修复后以应用身份创建了目录和数据库文件。实机与完整启动复测待验证。
+- 同一个应用目录的保存流程会用到备份文件重命名和删除。客体 renameat 和 unlinkat 现在通过父路径链接进入应用挂载，允许在同一 bind mount 内重命名，同时维持跨挂载的 EXDEV。宿主 ABI 回归覆盖隔离挂载中的文件创建、改名、经另一挂载查看和删除。
