@@ -86,13 +86,16 @@ def replace_line(path, pattern, value):
 
 
 def write_guest_hardware_profile(guest):
-    # The reference phone advertises a Bluetooth controller. The Nestvane guest has no controller.
+    # The guest has no Bluetooth controller or location hardware bridge.
     config = guest / "system/etc/sysconfig/nestvane-hardware.xml"
     config.parent.mkdir(parents=True, exist_ok=True)
     config.write_text("""<?xml version="1.0" encoding="utf-8"?>
 <config>
     <unavailable-feature name="android.hardware.bluetooth" />
     <unavailable-feature name="android.hardware.bluetooth_le" />
+    <unavailable-feature name="android.hardware.location" />
+    <unavailable-feature name="android.hardware.location.gps" />
+    <unavailable-feature name="android.hardware.location.network" />
 </config>
 """, encoding="utf-8")
 
