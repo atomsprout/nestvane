@@ -6584,17 +6584,23 @@ std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedPr
     for (const auto& file : memoryFiles) countShared(file.lock().get());
     tasks << "  guest memory bytes: anonymous dirty=" << anonymousBudget->dirty
           << " dense private capacity=" << privateBytes << " shared capacity=" << sharedBytes << '\n';
+    const auto threadName = [](const Thread& thread) -> std::string_view {
+        const auto end = std::find(thread.name.begin(), thread.name.end(), uint8_t{0});
+        return {reinterpret_cast<const char*>(thread.name.data()), size_t(end - thread.name.begin())};
+    };
     for (const auto& [tid, thread] : threads) {
         const auto& process = *thread.process;
         if (thread.wait == Wait::exited) continue;
-        if (thread.wait != Wait::suspended && process.id != observedProcess &&
+        const auto name = threadName(thread);
+        const auto leader = threads.find(process.id);
+        const bool launcherThread = (tid == process.id || name == "RenderThread") &&
+            leader != threads.end() && threadName(leader->second) == "droid.launcher3";
+        if (thread.wait != Wait::suspended && process.id != observedProcess && !launcherThread &&
             process.executable != "/system/bin/bootanimation" &&
             process.executable != "/system/bin/surfaceflinger" &&
             !process.executable.starts_with("/vendor/bin/hw/android.hardware.graphics.") &&
             process.programName != "system_server" && process.context != "u:r:system_server:s0") continue;
         const auto& cpu = tid == currentTid ? machine.cpu : thread.saved;
-        const auto end = std::find(thread.name.begin(), thread.name.end(), uint8_t{0});
-        const std::string_view name(reinterpret_cast<const char*>(thread.name.data()), end - thread.name.begin());
         tasks << "  guest task " << process.id << '/' << tid << ' ' << process.executable << ' ' << name;
         switch (thread.wait) {
             case Wait::none: tasks << " runnable"; break;
@@ -6640,8 +6646,8 @@ std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedPr
             case Wait::exited: break;
         }
         tasks << " PC=0x" << std::hex << cpu.pc << " LR=0x" << cpu.x[30] << std::dec;
-        if (tid == process.id &&
-            (process.id == observedProcess || process.context == "u:r:system_server:s0")) {
+        if (launcherThread || (tid == process.id &&
+            (process.id == observedProcess || process.context == "u:r:system_server:s0"))) {
             describeCode(process, cpu.pc, "pc-file");
             describeCode(process, cpu.x[30], "lr-file");
             // Native AArch64 frame records contain the previous FP and the saved LR.

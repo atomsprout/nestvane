@@ -323,6 +323,8 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
         report << "  guest SIGSEGV deliveries: " << deliveredFaults << ", signal context returns: " << restoredSignals << '\n';
     report << "  retired guest instructions: " << cpu.retired << ", guest syscalls observed: "
            << syscallCount << ", thread pointer: 0x" << std::hex << cpu.threadPointer << std::dec << '\n';
+    if (init && (unhandled || cpu.stop == Stop::fault || cpu.stop == Stop::unsupported))
+        report << "  stopped guest PID=" << linux.processId() << " TID=" << linux.threadId() << '\n';
     if (unhandled) {
         report << "  stopped at unimplemented guest syscall " << *unhandled << '\n';
     } else if (cpu.stop == Stop::fault) {
@@ -351,7 +353,8 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
     }
     if (!linux.watchdogReport.empty())
         report << "  guest threads at Android Watchdog termination:\n" << linux.watchdogReport;
-    report << linux.workerReport(machine);
+    report << linux.workerReport(machine,
+        init && (unhandled || cpu.stop == Stop::fault || cpu.stop == Stop::unsupported) ? linux.processId() : 0);
     if (!linux.stderrOutput.empty()) report << "  guest stderr: " << linux.stderrOutput;
     if (!linux.kernelOutput.empty()) report << "  guest kernel log:\n" << linux.kernelOutput;
     if (!linux.recentKernelOutput.empty())
