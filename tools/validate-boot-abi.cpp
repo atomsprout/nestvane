@@ -28,30 +28,36 @@ int main() {
         assert(!AndroidSha256Block::bind(module));
         uint64_t state = 0x8123456789abcdefULL;
         Machine baseline(Image{0x8000, {}, {}});
-        for (unsigned example = 0; example < 64; ++example) {
-            CPU native;
-            native.pc = 0x8000;
-            native.retired = example * 4;
-            native.nzcv = example & 15;
-            native.fpsr = example & fpsrMask;
-            for (auto& value : native.x) {
-                state ^= state << 13;
-                state ^= state >> 7;
-                state ^= state << 17;
-                value = state;
-            }
-            baseline.cpu = native;
-            for (auto word : AndroidSha256Block::words) {
-                const auto instruction = decode(word);
-                if (instruction.op == Op::unsupported) {
-                    assert(executeStartupInstruction(baseline, word));
-                } else {
-                    executeDecoded(baseline, instruction);
+        const auto compare = [&](const AndroidBootAotBlock& block) {
+            for (unsigned example = 0; example < 64; ++example) {
+                CPU native;
+                native.pc = 0x8000;
+                native.retired = example * 4;
+                native.nzcv = example & 15;
+                native.fpsr = example & fpsrMask;
+                for (auto& value : native.x) {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    value = state;
                 }
+                baseline.cpu = native;
+                for (auto word : block.words) {
+                    const auto instruction = decode(word);
+                    if (instruction.op == Op::unsupported) {
+                        assert(executeStartupInstruction(baseline, word));
+                    } else {
+                        executeDecoded(baseline, instruction);
+                    }
+                }
+                block.execute(native);
+                native.pc += block.words.size_bytes();
+                native.retired += block.words.size();
+                assert(baseline.cpu == native);
             }
-            AndroidSha256Block::execute(native);
-            assert(baseline.cpu == native);
-        }
+        };
+        compare({AndroidSha256Block::fileOffset, AndroidSha256Block::words, AndroidSha256Block::executeRegisters});
+        for (const auto& block : androidBootGeneratedBlocks) compare(block);
     }
     {
         ProbeLinux guest(1, 0);

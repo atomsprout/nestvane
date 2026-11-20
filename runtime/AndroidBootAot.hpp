@@ -24,7 +24,7 @@ struct AndroidSha256Block {
         return std::memcmp(entry, words.data(), sizeof(words)) == 0 ? entry : nullptr;
     }
 
-    static void execute(CPU& cpu) {
+    static void executeRegisters(CPU& cpu) {
         auto& x = cpu.x;
         const auto w = [&](unsigned index) { return uint32_t(x[index]); };
         x[22] = w(22) + w(17);
@@ -46,9 +46,69 @@ struct AndroidSha256Block {
         x[28] = w(28) ^ w(23);
         x[17] = w(12) ^ std::rotr(w(17), 13);
         x[21] = w(21) + w(28);
+    }
+
+    static void execute(CPU& cpu) {
+        executeRegisters(cpu);
         cpu.pc += sizeof(words);
         cpu.retired += words.size();
     }
+};
+
+struct AndroidBootAotBlock {
+    uint64_t fileOffset;
+    std::span<const uint32_t> words;
+    void (*execute)(CPU&);
+};
+
+} // namespace nestvane
+
+#if __has_include("../generated/AndroidBootAotBlocks.hpp")
+#include "../generated/AndroidBootAotBlocks.hpp"
+#else
+namespace nestvane {
+inline constexpr std::array<AndroidBootAotBlock, 0> androidBootGeneratedBlocks{};
+}
+#endif
+
+namespace nestvane {
+
+class AndroidBootAot {
+public:
+    void bind(std::span<const uint8_t> module) {
+        if (module.size() <= firstOffset) return;
+        for (const auto& block : androidBootGeneratedBlocks)
+            bindBlock(module, block);
+        if (androidBootGeneratedBlocks.empty()) bindBlock(module, fallbackBlock);
+    }
+
+    const AndroidBootAotBlock* lookup(const uint8_t* bytes) const {
+        const auto address = reinterpret_cast<uintptr_t>(bytes);
+        if (!base || address < base) return nullptr;
+        const auto offset = address - base;
+        return offset < index.size() * sizeof(uint32_t) && offset % sizeof(uint32_t) == 0
+            ? index[offset / sizeof(uint32_t)] : nullptr;
+    }
+
+    explicit operator bool() const { return base != 0; }
+
+private:
+    static constexpr uint64_t firstOffset = 0x125dc0, endOffset = 0x126be8;
+    static constexpr AndroidBootAotBlock fallbackBlock{
+        AndroidSha256Block::fileOffset, AndroidSha256Block::words, AndroidSha256Block::executeRegisters};
+
+    void bindBlock(std::span<const uint8_t> module, const AndroidBootAotBlock& block) {
+        if (block.fileOffset < firstOffset || block.fileOffset >= endOffset ||
+            (block.fileOffset - firstOffset) % sizeof(uint32_t) ||
+            block.fileOffset > module.size() || block.words.size_bytes() > module.size() - block.fileOffset)
+            return;
+        if (std::memcmp(module.data() + block.fileOffset, block.words.data(), block.words.size_bytes())) return;
+        base = reinterpret_cast<uintptr_t>(module.data() + firstOffset);
+        index[(block.fileOffset - firstOffset) / sizeof(uint32_t)] = &block;
+    }
+
+    uintptr_t base = 0;
+    std::array<const AndroidBootAotBlock*, (endOffset - firstOffset) / sizeof(uint32_t)> index{};
 };
 
 } // namespace nestvane
