@@ -4682,11 +4682,13 @@ uint64_t ProbeLinux::randomMappingBase() const {
 uint64_t ProbeLinux::map(Machine& machine) {
     const auto& x = machine.cpu.x;
     constexpr uint64_t fixed = 0x10, anonymous = 0x20, noReserve = 0x4000;
+    // Prefaulting is advisory. Existing guest backing and protection rules still apply.
+    constexpr uint64_t populate = 0x8000;
     constexpr uint64_t fixedNoReplace = 0x100000;
     const bool atAddress = x[3] & (fixed | fixedNoReplace), anon = x[3] & anonymous;
     const auto sharing = x[3] & 3;
     if (!x[1] || x[1] > maxReservation || x[2] > 7 ||
-        (x[3] & ~(fixed | fixedNoReplace | anonymous | noReserve | 3ULL)) || !sharing || sharing == 3 ||
+        (x[3] & ~(fixed | fixedNoReplace | anonymous | noReserve | populate | 3ULL)) || !sharing || sharing == 3 ||
         x[5] % pageSize || (atAddress && x[0] % pageSize)) return invalid;
     if ((x[2] & 6) == 6) return (current->process->mdwe & mdweRefuseExecGain) ? uint64_t(-13) : invalid;
     const auto length = pageAlignedLength(x[1]);

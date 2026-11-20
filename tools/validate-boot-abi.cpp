@@ -5929,6 +5929,12 @@ int main() {
             assert(invoke(reopened, 47, {truncated, 1, 0, 8}) == uint64_t(-95));
             const auto readOnly = invoke(reopened, 56, {atCwd, firstPath, 0});
             assert(readOnly < 256 && invoke(reopened, 47, {readOnly, 0, 0, 8}) == uint64_t(-9));
+            constexpr uint64_t sharedPopulated = 0x8001;
+            assert(invoke(reopened, 222, {0, pageSize, 3, sharedPopulated, readOnly, 0}) == uint64_t(-13));
+            const auto mapped = invoke(reopened, 222, {0, pageSize, 1, sharedPopulated, readOnly, 0});
+            assert(mapped < uint64_t(-4095) && load(mapped) == 0x12345678 && load(mapped + 8) == 0);
+            assert(invoke(reopened, 226, {mapped, pageSize, 3}) == uint64_t(-13));
+            assert(invoke(reopened, 215, {mapped, pageSize}) == 0);
         }
         {
             const auto journalDatabase = (cleanup.directory / "journal.sqlite3").string();
