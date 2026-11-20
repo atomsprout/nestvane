@@ -221,6 +221,46 @@ struct AndroidDexAsciiVerifierLoop {
     }
 };
 
+// Batch the positive ASCII path of libart's signed-byte scan. A NUL,
+// non-ASCII byte, or inaccessible source is handled by the interpreter.
+struct AndroidArtAsciiScan {
+    static constexpr std::string_view moduleSuffix = "/lib64/libart.so";
+    static constexpr uint64_t fileOffset = 0x67c520;
+    static constexpr std::array<uint32_t, 7> words{
+        0x38c015ac, 0x7100059f, 0x1a9fa7ec, 0x5400048b,
+        0xaa0e03ef, 0xd10005ce, 0xb5ffff4f,
+    };
+    static constexpr uint64_t batchSize = 16, maxIterationInstructions = words.size();
+
+    static uint64_t execute(Machine& machine, uint64_t iterations) {
+        if (!iterations) return 0;
+        auto& cpu = machine.cpu;
+        const auto address = cpu.x[13];
+        const auto pageRemaining = pageSize - (address & (pageSize - 1));
+        auto count = std::min({iterations - 1, pageRemaining - 1, cpu.x[14]}) + 1;
+        const auto* input = machine.read(address, count, 4);
+        if (!input && count > 1) {
+            count = 1;
+            input = machine.read(address, count, 4);
+        }
+        if (!input) return 0;
+
+        uint64_t consumed = 0;
+        while (consumed < count && input[consumed] > 0 && input[consumed] < 0x80) ++consumed;
+        if (!consumed) return 0;
+
+        cpu.x[12] = 0; // CSET w12, LT is false for positive ASCII.
+        cpu.x[13] += consumed;
+        cpu.x[15] = cpu.x[14] - (consumed - 1);
+        cpu.x[14] -= consumed;
+        cpu.nzcv = input[consumed - 1] == 1 ? 6 : 2; // CMP w12, #1 before CSET.
+        if (!cpu.x[15]) cpu.pc += sizeof(words);
+        const auto retired = consumed * words.size();
+        cpu.retired += retired;
+        return retired;
+    }
+};
+
 // Fast path for an already marked heap bitmap bit in the Android 17
 // copying collector. The interpreter handles first-time marks and faults.
 struct AndroidArtGcBitmap {

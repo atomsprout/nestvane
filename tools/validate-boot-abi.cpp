@@ -286,6 +286,50 @@ int main() {
         assert(!Loop::execute(native, 16) && native.cpu == mutableCode);
     }
     {
+        using Loop = AndroidArtAsciiScan;
+        constexpr uint64_t entry = 0x4520, input = 0x6000;
+        std::vector<uint8_t> code(sizeof(Loop::words)), bytes(pageSize, 0x41);
+        std::memcpy(code.data(), Loop::words.data(), code.size());
+        const Image image{entry, {{entry, code, 5}, {input, bytes, 6}}, {}};
+        Machine native(image), reference(image);
+        assert(androidLoopMatches(native, native.readInstruction(entry), Loop::words));
+        for (unsigned example = 0; example < 256; ++example) {
+            CPU initial;
+            initial.pc = entry;
+            initial.retired = example;
+            initial.nzcv = example & 15;
+            initial.x[12] = UINT64_MAX;
+            initial.x[13] = input + (example % 2 ? pageSize - 3 : 0);
+            initial.x[14] = example % 23;
+            initial.x[15] = UINT64_MAX;
+            initial.exclusiveAddress = input;
+            initial.exclusiveSize = 8;
+            const auto length = std::min<size_t>(32, pageSize - (initial.x[13] - input));
+            for (size_t i = 0; i < length; ++i) bytes[i] = 1 + (i * 17 + example * 31) % 127;
+            if (example % 4 == 0) bytes[0] = 0;
+            if (example % 4 == 1) bytes[1] = 0xc3;
+            assert(native.write(initial.x[13], std::span(bytes).first(length)));
+            assert(reference.write(initial.x[13], std::span(bytes).first(length)));
+            native.cpu = reference.cpu = initial;
+            const auto iterations = 1 + example % Loop::batchSize;
+            const auto retired = Loop::execute(native, iterations);
+            const uint64_t maximum = std::min({iterations, uint64_t(length), initial.x[14] + 1});
+            uint64_t expected = 0;
+            while (expected < maximum && bytes[expected] > 0 && bytes[expected] < 0x80) ++expected;
+            assert(retired == expected * Loop::words.size());
+            for (uint64_t i = 0; i < retired; ++i) {
+                const auto word = Loop::words[(reference.cpu.pc - entry) / sizeof(uint32_t)];
+                const auto decoded = decode(word);
+                if (decoded.op == Op::unsupported) assert(executeStartupInstruction(reference, word));
+                else executeDecoded(reference, decoded);
+            }
+            assert(native.cpu == reference.cpu);
+        }
+        native.cpu.x[13] = input + pageSize;
+        const auto fault = native.cpu;
+        assert(!Loop::execute(native, Loop::batchSize) && native.cpu == fault);
+    }
+    {
         using Block = AndroidArtGcBitmap;
         constexpr uint64_t entry = 0x5b7c, data = 0x9000;
         std::vector<uint8_t> code(sizeof(Block::words)), bytes(pageSize);
