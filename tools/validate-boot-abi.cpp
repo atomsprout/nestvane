@@ -3396,8 +3396,11 @@ int main() {
     }
     {
         // A restored /data tree and boot tmpfs entries must leave room for Android to pin BPF objects.
+        char database[] = "/tmp/nestvane-file-capacity.XXXXXX";
+        const int databaseFd = mkstemp(database);
+        assert(databaseFd >= 0 && close(databaseFd) == 0);
         ProbeLinux storage(1, 0);
-        storage.mountData(":memory:");
+        storage.mountData(database);
         storage.addDirectory("/test", 0755);
         Machine task(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
         const auto invoke = [&](uint64_t number, std::array<uint64_t, 6> args) {
@@ -3422,10 +3425,8 @@ int main() {
             if (fd < 256) assert(invoke(57, {fd}) == 0);
             return fd;
         };
-        for (unsigned i = 0; i < 1024; ++i) {
-            assert(createFile("/data/f" + std::to_string(i)) < 256);
-            assert(createFile("/test/f" + std::to_string(i)) < 256);
-        }
+        for (unsigned i = 0; i < 4096; ++i) assert(createFile("/data/f" + std::to_string(i)) < 256);
+        for (unsigned i = 0; i < 2048; ++i) assert(createFile("/test/f" + std::to_string(i)) < 256);
         assert(createFile("/data/overflow") == uint64_t(-28));
         assert(createFile("/test/overflow") == uint64_t(-28));
 
@@ -3449,8 +3450,27 @@ int main() {
         assert(createFile("/test/replacement") < 256);
         assert(createFile("/test/overflow") == uint64_t(-28));
         const auto report = storage.workerReport(task);
-        assert(report.find("persistent files=1024/1024 transient files=1024/1024 bpffs pins=2048/2048") !=
+        assert(report.find("persistent files=4096/4096 transient files=2048/2048 bpffs pins=2048/2048") !=
                std::string::npos);
+        writePath(base, "/data");
+        assert(invoke(43, {base, attr}) == 0);
+        uint64_t count = 0;
+        assert(task.load64(attr + 5 * sizeof(uint64_t), count) && count == 4096);
+        assert(task.load64(attr + 6 * sizeof(uint64_t), count) && count == 0);
+
+        writePath(base, "/data/f4095");
+        const auto last = invoke(56, {uint32_t(-100), base, 1});
+        assert(last < 256 && task.store64(attr, 0x0123456789abcdef));
+        assert(invoke(64, {last, attr, sizeof(uint64_t)}) == sizeof(uint64_t));
+        assert(invoke(82, {last}) == 0 && invoke(57, {last}) == 0);
+        ProbeLinux reopened(1, 0);
+        reopened.mountData(database);
+        const auto path = reopened.bootGuestFile("/data/f4095");
+        const uint64_t expected = 0x0123456789abcdef;
+        assert(path.size() == sizeof(expected) && !std::memcmp(path.data(), &expected, sizeof(expected)));
+        assert(reopened.workerReport(task).find("persistent files=4096/4096 transient files=0/2048") !=
+               std::string::npos);
+        assert(unlink(database) == 0);
     }
     {
         constexpr auto attr = base + 96, code = base + 256, license = base + 280, address = base + 384;
@@ -7075,7 +7095,7 @@ int main() {
                 return freeBlocks;
             };
             const auto initialFree = dataFreeBlocks();
-            for (unsigned i = 0; i < 1024; ++i) {
+            for (unsigned i = 0; i < 2048; ++i) {
                 const auto path = "/metadata/" + std::to_string(i);
                 put(base, path.c_str());
                 const auto file = invoke(quota, 56, {cwd, base, 0xc1, 0600});

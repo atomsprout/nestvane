@@ -648,6 +648,11 @@ private:
     static constexpr uint64_t maxDataFileBytes = 64 * 1024 * 1024;
     // Persistent data and transient filesystem writes each have their own budget.
     static constexpr uint64_t maxWritableBytes = 128 * 1024 * 1024;
+    static constexpr size_t maxPersistentFiles = 4096;
+    static constexpr size_t maxTransientFiles = 2048;
+    static constexpr size_t maxGuestDirectories = 2048;
+    static constexpr size_t maxGuestLinks = 512;
+    static constexpr size_t maxDataRecords = maxPersistentFiles + maxGuestDirectories + maxGuestLinks;
     std::vector<std::weak_ptr<SharedFileBytes>> memoryFiles;
     std::optional<Descriptor> find(std::string_view path, uint32_t flags, const Machine* machine = nullptr) const;
     uint64_t freeMemory(const Machine& machine) const;

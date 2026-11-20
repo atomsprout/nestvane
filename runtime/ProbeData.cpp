@@ -105,7 +105,7 @@ void ProbeLinux::mountData(const std::string& databasePath) {
         const auto uid = sqlite3_column_int64(row, 3), gid = sqlite3_column_int64(row, 4);
         const auto inode = sqlite3_column_int64(row, 5);
         const auto bytes = columnBytes(row, 6), label = columnBytes(row, 7);
-        if (++count > 4096 || (path != root && !childPath(path)) || (path == root && kind != 0) ||
+        if (++count > maxDataRecords || (path != root && !childPath(path)) || (path == root && kind != 0) ||
             mode < 0 || mode > 07777 || uid < 0 || uid > UINT32_MAX || gid < 0 || gid > UINT32_MAX ||
             label.size() > 4096 ||
             (path != root && !loadedDirectories.contains(path.substr(0, path.rfind('/')))))

@@ -29,10 +29,7 @@ constexpr uint64_t mappingFloor = 0x1'0000'0000;
 constexpr uint64_t lowMappingFloor = 0x10000;
 constexpr uint64_t mappingLimit = 0x20'0000'0000; // 128 GiB guest arena; includes 24 randomized page bits.
 constexpr uint64_t maxGuestFileBytes = 2 * 1024 * 1024;
-constexpr size_t maxWritableFiles = 1024;
 constexpr size_t maxBpfPins = 2048;
-// Leave space for boot-created directories alongside a restored /data tree.
-constexpr size_t maxGuestDirectories = 2048;
 // Even the reference system_server alone exceeds 256 threads after boot.
 constexpr size_t maxGuestTasks = 1024;
 // /proc/config.gz reports this guest's ABI, including the absence of VMAP_STACK.
@@ -1052,6 +1049,11 @@ uint64_t ProbeLinux::statFilesystem(Machine& machine, uint64_t address, std::str
     if (dataPath(backingPath(path))) {
         stat[2] = maxWritableBytes / pageSize;
         stat[3] = stat[4] = (maxWritableBytes - writableAllocation(true)) / pageSize;
+        const auto filesUsed = std::ranges::count_if(writableFiles, [](const auto& entry) {
+            return entry.second->persistent;
+        });
+        stat[5] = maxPersistentFiles;
+        stat[6] = maxPersistentFiles - std::min(maxPersistentFiles, size_t(filesUsed));
     }
     if (!bootTransitions.empty() && (path == "/sys/fs/selinux" || inside(path, "/sys/fs/selinux"))) {
         stat[0] = 0xf97cff8c; // SELINUX_MAGIC
@@ -1836,10 +1838,11 @@ uint64_t ProbeLinux::open(const Machine& machine, const std::string& path, uint3
         if (const auto* mount = mountFor(path); mount && mount->device == "bpf") return uint64_t(-13);
         if (!canAccessParent(pathname, true)) return uint64_t(-13);
         const bool persistent = dataPath(pathname);
-        if (writableFiles.size() >= maxWritableFiles &&
+        const auto fileLimit = persistent ? maxPersistentFiles : maxTransientFiles;
+        if (writableFiles.size() >= fileLimit &&
             size_t(std::count_if(writableFiles.begin(), writableFiles.end(), [persistent](const auto& entry) {
                 return !entry.second->pinnedBpfObject() && entry.second->persistent == persistent;
-            })) >= maxWritableFiles) return uint64_t(-28);
+            })) >= fileLimit) return uint64_t(-28);
         auto file = std::make_shared<WritableFile>();
         file->inode = nextInode++;
         file->mode = mode & 0777;
@@ -4014,7 +4017,7 @@ bool ProbeLinux::fileCall(Machine& machine) {
             else if (links.contains(backing) || find(backing, 0)) x[0] = uint64_t(-17);
             else if (!writablePath(logical)) x[0] = uint64_t(-30);
             else if (userId() != 0) x[0] = uint64_t(-13);
-            else if (links.size() - ext4LinkCount >= 512) x[0] = uint64_t(-28);
+            else if (links.size() - ext4LinkCount >= maxGuestLinks) x[0] = uint64_t(-28);
             else {
                 links.emplace(backing, Link{*target, current->fsCreateContext});
                 x[0] = 0;
@@ -7119,8 +7122,8 @@ std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedPr
     tasks << "  guest dense mapping bytes: anonymous=" << anonymousDenseBytes
           << " file backed=" << fileDenseBytes
           << " other=" << privateBytes - anonymousDenseBytes - fileDenseBytes << '\n';
-    tasks << "  guest filesystem entries: persistent files=" << persistentFiles << '/' << maxWritableFiles
-          << " transient files=" << transientFiles << '/' << maxWritableFiles
+    tasks << "  guest filesystem entries: persistent files=" << persistentFiles << '/' << maxPersistentFiles
+          << " transient files=" << transientFiles << '/' << maxTransientFiles
           << " bpffs pins=" << pinnedObjects << '/' << maxBpfPins
           << " directories=" << directories.size() - ext4DirectoryCount << '/' << maxGuestDirectories << '\n';
     const auto top = activeProcesses.begin() + std::min<size_t>(activeProcesses.size(), 8);
