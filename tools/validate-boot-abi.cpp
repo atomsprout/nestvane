@@ -60,6 +60,51 @@ int main() {
         for (const auto& block : androidBootGeneratedBlocks) compare(block);
     }
     {
+        constexpr uint64_t entry = 0x4ff8, data = 0x7000;
+        constexpr auto words = AndroidDexHashLoop::words;
+        std::vector<uint8_t> code(sizeof(words)), input(pageSize);
+        std::memcpy(code.data(), words.data(), code.size());
+        const Image image{entry, {
+            {entry, std::vector<uint8_t>(code.begin(), code.begin() + 8), 5},
+            {entry + 8, std::vector<uint8_t>(code.begin() + 8, code.end()), 5},
+            {data, input, 6},
+        }, {}};
+        Machine native(image), reference(image);
+        const auto* instruction = native.readInstruction(entry);
+        assert(AndroidDexHashLoop::matches(native, instruction));
+        native.segments[1].flags = 4;
+        assert(!AndroidDexHashLoop::matches(native, instruction));
+        native.segments[1].flags = 5;
+        for (unsigned example = 0; example < 256; ++example) {
+            CPU initial;
+            initial.pc = entry;
+            initial.retired = 4 * example;
+            initial.nzcv = example & 15;
+            initial.x[0] = 0xffff000000000000ULL | (0xffffffffU - example * 31);
+            initial.x[8] = example % 2 ? data + pageSize - 2 : data;
+            initial.x[9] = 0xabcd000000000000ULL | example;
+            for (size_t i = 0; i < 32; ++i)
+                input[i] = i == example % 32 ? 0 : 1 + ((example * 31 + i * 17) % 255);
+            input[pageSize - 2] = input[0];
+            input[pageSize - 1] = input[1];
+            assert(native.write(data, input) && reference.write(data, input));
+            native.cpu = reference.cpu = initial;
+            const auto retired = AndroidDexHashLoop::execute(native, 1 + example % 16);
+            assert(retired && retired <= (1 + example % 16) * words.size());
+            for (uint64_t i = 0; i < retired; ++i) {
+                const auto word = words[(reference.cpu.pc - entry) / sizeof(uint32_t)];
+                const auto decoded = decode(word);
+                if (decoded.op == Op::unsupported) assert(executeStartupInstruction(reference, word));
+                else executeDecoded(reference, decoded);
+            }
+            assert(native.cpu == reference.cpu);
+        }
+        native.cpu.pc = entry;
+        native.cpu.x[8] = data + pageSize;
+        const CPU beforeFault = native.cpu;
+        assert(!AndroidDexHashLoop::execute(native, 16) && native.cpu == beforeFault);
+    }
+    {
         ProbeLinux guest(1, 0);
         constexpr uint64_t base = 0x2000, path = base + 0x20, payload = base + 0x140, reply = base + 0x220;
         Machine task(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});

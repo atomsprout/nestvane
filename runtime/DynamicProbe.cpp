@@ -136,6 +136,8 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
     uint64_t nextSample = sampleBoot ? sampleStride : UINT64_MAX;
     uint64_t samples = 0, unattributedSamples = 0;
     uint64_t sha256AotEntries = 0, sha256AotInstructions = 0;
+    uint64_t dexAotEntries = 0, dexAotInstructions = 0;
+    const uint8_t* dexHashEntry = nullptr;
     // File offsets survive ASLR. Keep the cumulative page ranking and report
     // smaller regions for each snapshot interval so later boot phases stay visible.
     using CodeLocation = std::pair<std::string, uint64_t>;
@@ -158,6 +160,9 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
         if (bootAot)
             out << "  Android SHA-256 AOT entries: " << sha256AotEntries
                 << ", guest instructions: " << sha256AotInstructions << '\n';
+        if (bootAot)
+            out << "  Android DEX hash AOT entries: " << dexAotEntries
+                << ", guest instructions: " << dexAotInstructions << '\n';
         if (!sampleBoot) return;
         out << "  guest instruction samples: " << samples << ", unattributed: " << unattributedSamples << '\n';
         appendRanking(out, codeSamples, 20);
@@ -278,6 +283,28 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
             continue;
         }
         std::memcpy(&word, bytes, sizeof(word));
+        if (bootAot && word == AndroidDexHashLoop::words.front() &&
+            (cpu.pc & (pageSize - 1)) == AndroidDexHashLoop::fileOffset % pageSize &&
+            AndroidDexHashLoop::matches(machine, bytes)) {
+            if (dexHashEntry != bytes) {
+                const auto location = linux.guestCodeFile(bytes);
+                if (location && location->first.ends_with("/lib64/libdexfile.so") &&
+                    location->second == AndroidDexHashLoop::fileOffset) dexHashEntry = bytes;
+            }
+            const auto budget = std::min({instructionLimit - cpu.retired, nextSample - cpu.retired,
+                                          uint64_t{4096} - (cpu.retired & 4095)});
+            constexpr auto loopSize = AndroidDexHashLoop::words.size();
+            if (dexHashEntry == bytes && budget >= loopSize && linux.hasSliceBudget(cpu.retired, loopSize)) {
+                constexpr auto batch = AndroidDexHashLoop::batchSize * loopSize;
+                const auto iterations = budget >= batch && linux.hasSliceBudget(cpu.retired, batch)
+                    ? AndroidDexHashLoop::batchSize : 1;
+                if (const auto retired = AndroidDexHashLoop::execute(machine, iterations)) {
+                    ++dexAotEntries;
+                    dexAotInstructions += retired;
+                    continue;
+                }
+            }
+        }
         auto& decoded = decodedWords[((word ^ (word >> 16)) * 0x9e3779b9U) >> 21];
         if (decoded.word != word) {
             decoded.word = word;
@@ -828,11 +855,12 @@ service nestvane-smoke /system/bin/sh /system/etc/nestvane/apk-ready.sh /system/
         linux.alias("/proc/self/exe", filename);
         linux.alias("/system/bin/ueventd", "/system/bin/init");
         AndroidBootAot bootAot;
-        if (initLimit("NESTVANE_INIT_AOT", 1, 1)) {
+        const bool enableAot = initLimit("NESTVANE_INIT_AOT", 1, 1);
+        if (enableAot) {
             if (const auto crypto = files.find("/system/lib64/libcrypto.so"); crypto != files.end())
                 bootAot.bind(crypto->second.bytes());
         }
-        auto result = runProbe(image, linux, ProbeKind::init, "true\n", stop, liveSnapshot, bootAot ? &bootAot : nullptr);
+        auto result = runProbe(image, linux, ProbeKind::init, "true\n", stop, liveSnapshot, enableAot ? &bootAot : nullptr);
         if (const auto reference = files.find("/nestvane-metadata/reference-classpath.txt"); reference != files.end()) {
             const auto expected = reference->second.bytes();
             const auto actual = linux.bootGuestFile("/data/system/environ/classpath");

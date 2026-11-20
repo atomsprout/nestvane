@@ -2,6 +2,7 @@
 
 #include "Runtime.hpp"
 
+#include <algorithm>
 #include <bit>
 #include <cstring>
 
@@ -52,6 +53,56 @@ struct AndroidSha256Block {
         executeRegisters(cpu);
         cpu.pc += sizeof(words);
         cpu.retired += words.size();
+    }
+};
+
+// ComputeModifiedUtf8Hash(const char*) in Android 17 libdexfile. Start at
+// the loop header, where w9 holds the current byte and x8 the next address.
+struct AndroidDexHashLoop {
+    static constexpr uint64_t fileOffset = 0x33ff8;
+    static constexpr std::array<uint32_t, 4> words{
+        0x4b00012a, 0x38401509, 0x0b001540, 0x35ffffa9,
+    };
+    static constexpr uint64_t batchSize = 16;
+
+    static bool matches(const Machine& machine, const uint8_t* bytes) {
+        // The loop straddles a page. Check both mappings before entering native code.
+        for (uint64_t i = 1; i < words.size(); ++i) {
+            const auto* word = machine.readInstruction(machine.cpu.pc + i * sizeof(uint32_t));
+            if (!word || std::memcmp(word, &words[i], sizeof(uint32_t))) return false;
+        }
+        return std::memcmp(bytes, words.data(), sizeof(uint32_t)) == 0;
+    }
+
+    static uint64_t execute(Machine& machine, uint64_t iterations) {
+        auto& cpu = machine.cpu;
+        const auto address = cpu.x[8];
+        const auto pageRemaining = pageSize - (address & (pageSize - 1));
+        auto count = std::min(iterations, pageRemaining);
+        if (!count) return 0;
+        const auto* input = machine.read(address, count, 4);
+        if (!input && count > 1) {
+            count = 1;
+            input = machine.read(address, count, 4);
+        }
+        if (!input) return 0; // The interpreter delivers the load fault at its precise PC.
+
+        uint32_t hash = cpu.x[0], byte = cpu.x[9], difference;
+        uint64_t consumed = 0;
+        do {
+            difference = byte - hash;
+            hash = difference + (hash << 5);
+            byte = input[consumed++];
+        } while (byte && consumed < count);
+
+        cpu.x[0] = hash;
+        cpu.x[8] += consumed;
+        cpu.x[9] = byte;
+        cpu.x[10] = difference;
+        if (!byte) cpu.pc += sizeof(words);
+        const auto retired = consumed * words.size();
+        cpu.retired += retired;
+        return retired;
     }
 };
 
