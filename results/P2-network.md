@@ -455,3 +455,4 @@
 - 同一 Mac 运行之后停在 `fcvtzs v2.2s, v0.2s, #6`（`0x0f3afc02`）。解释器新增 SIMD 定点转换，验证缩放、向零舍入、饱和、NaN 和目的寄存器别名。宿主测试、ARM64 Android 17 原生对照和 iPhoneOS Release 构建通过。
 - iPhone 14 进程 882 在 80.986 秒显示开机画面，438.261 秒完成 `startHomeOnAllDisplays`，439.978 秒完成系统服务启动。23:14 的设备屏幕截图仍显示启动动画，真机从 904.456 秒开始也命中 Binder 接收队列 32 条上限，960 秒快照的峰值 RSS 为 2,881,732,608 字节，尚无 Launcher 绘制。已保存截图、日志和客体数据用于复测。
 - 参考 Android 17 对照确认，Unix `SOCK_SEQPACKET` 接受的连接继承监听方的 `SO_PASSCRED`，且能读取发送方凭据。客体实现相同语义，宿主回归覆盖 `accept` 前已排队的数据，iPhoneOS Release 构建通过。使用延迟启用监视器的本地镜像可让原版 `lmkd` 进入监听，内存压力接口和完整服务联测仍待完成。[AOSP lmkd](https://android.googlesource.com/platform/system/memory/lmkd/+/refs/heads/main/lmkd.cpp)
+- Binder 预算和 SIMD 定点转换修复版在 Mac 运行 994.770 秒，已执行 Launcher3 的类初始化，尚无 Launcher 绘制或 `sys.boot_completed=1`。该轮终止于 `sshl v3.2s, v2.2s, v3.2s`（`0x0ea34443`）。解释器现支持向量 `SSHL`，宿主回归覆盖负数右移、超宽移位、寄存器别名和 `USHL`，参考 Android 17 原生对照及 iPhoneOS Release 构建通过。iPhone 14 修复 Binder 上限的进程 893 在 94.940 秒显示开机画面，继续复测中。

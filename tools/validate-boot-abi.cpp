@@ -838,6 +838,22 @@ int main() {
         assert(std::memcmp(permute.cpu.v[6].data(), scalarFixedResult.data(), sizeof(scalarFixedResult)) == 0);
         assert(!executeStartupInstruction(permute, 0x0f40fc84)); // reserved 1D vector form
         assert(!executeStartupInstruction(permute, 0x0f1afc02)); // reserved element width
+        const std::array<int32_t, 4> shiftSource{-3, INT32_MIN, 3, 5};
+        const std::array<uint32_t, 4> shiftCounts{0x12ff, 0x80, 2, 32};
+        const std::array<int32_t, 4> shortShiftResult{-2, -1, 0, 0};
+        const std::array<int32_t, 4> longShiftResult{-2, -1, 12, 0};
+        const std::array<int32_t, 4> unsignedShiftResult{INT32_MAX - 1, 0, 12, 0};
+        std::memcpy(permute.cpu.v[2].data(), shiftSource.data(), sizeof(shiftSource));
+        std::memcpy(permute.cpu.v[3].data(), shiftCounts.data(), sizeof(shiftCounts));
+        assert(executeStartupInstruction(permute, 0x0ea34443)); // sshl v3.2s, v2.2s, v3.2s
+        assert(std::memcmp(permute.cpu.v[3].data(), shortShiftResult.data(), sizeof(shortShiftResult)) == 0);
+        std::memcpy(permute.cpu.v[3].data(), shiftCounts.data(), sizeof(shiftCounts));
+        assert(executeStartupInstruction(permute, 0x4ea34443)); // sshl v3.4s, v2.4s, v3.4s
+        assert(std::memcmp(permute.cpu.v[3].data(), longShiftResult.data(), sizeof(longShiftResult)) == 0);
+        std::memcpy(permute.cpu.v[3].data(), shiftCounts.data(), sizeof(shiftCounts));
+        assert(executeStartupInstruction(permute, 0x6ea34443)); // ushl v3.4s, v2.4s, v3.4s
+        assert(std::memcmp(permute.cpu.v[3].data(), unsignedShiftResult.data(), sizeof(unsignedShiftResult)) == 0);
+        assert(!executeStartupInstruction(permute, 0x0ee34443)); // reserved 1D vector form
         const std::array<float, 4> leftAdd{1, -2, 3, 4}, rightAdd{3, 1, 6, -4}, expectedSum{4, -1, 9, 0};
         std::memcpy(permute.cpu.v[0].data(), leftAdd.data(), sizeof(leftAdd));
         std::memcpy(permute.cpu.v[2].data(), rightAdd.data(), sizeof(rightAdd));

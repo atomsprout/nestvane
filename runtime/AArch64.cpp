@@ -858,15 +858,22 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
             if (wideningProduct == 0x0e20a000) value = lane(cpu.v[rd], i, wideSize) - product;
             setLane(result, i, wideSize, value);
         }
-    } else if (op == 0x2e204400) { // USHL with signed lane shift counts.
+    } else if (op == 0x0e204400 || op == 0x2e204400) { // SSHL / USHL with signed lane shift counts.
+        if (size == 8 && width == 8) return false;
+        const bool signedShift = op == 0x0e204400;
         const unsigned bits = size * 8;
         for (unsigned i = 0; i < width / size; ++i) {
             const int count = static_cast<int8_t>(lane(other, i, size));
-            const uint64_t a = lane(source, i, size);
-            uint64_t value = 0;
-            if (count >= 0 && unsigned(count) < bits) value = a << count;
-            if (count < 0 && unsigned(-count) < bits) value = a >> -count;
-            setLane(result, i, size, value);
+            const auto value = lane(source, i, size);
+            uint64_t shifted = 0;
+            if (count >= 0 && unsigned(count) < bits) {
+                shifted = value << count;
+            } else if (count < 0) {
+                const auto distance = unsigned(-count);
+                if (distance < bits) shifted = shift(value, signedShift ? 2 : 1, distance, bits);
+                else if (signedShift && value >> (bits - 1)) shifted = UINT64_MAX;
+            }
+            setLane(result, i, size, shifted);
         }
     } else if ((word & 0xbf20fc00) == 0x2e204000) { // RADDHN / RADDHN2.
         if (size == 8) return false;
