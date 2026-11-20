@@ -589,3 +589,5 @@
 - 将真机采样的 Bionic __memset_aarch64 向量填充循环加入签名宿主 AOT。批处理遵守客体页与调度预算，并在跨页、写权限不足及可写代码时回退。256 组完整 CPU 状态和目标页逐字节与解释器一致。Mac 原版 Android 启动第 45 秒记录 86,446 次进入及 4,042,570 条客体指令，iPhoneOS Release 构建与签名验证通过。
 - 启用虚拟触屏 IDC 后，Mac 原版 EventHub 确认配置路径为 /system/usr/idc/Nestvane_Touchscreen.idc。Smoke 绘制后显示 viewport 进入 inactive，宿主触摸获客体输入读出，之后立即转回 active，并导出亮屏画面。仍需验证恢复后完整相机读回和 iPhone 14 物理后摄。
 - iPhone 14 进程 1207 完成 BOOT_COMPLETED 的宿主时点为 1,238,907 ms，1,275,893 ms Android 将显示 viewport 标为 inactive，此后导出黑屏。XCTest 对 Files 导入的重试由 testmanagerd 断开，未执行到文件选择器。覆盖安装前备份客体 SQLite 并通过 quick_check。含触屏唤醒及 DEX、Bionic AOT 的新包已在真机启动为 1234，第 60 秒记录 88,988 次 Bionic 填充 AOT 调用、4,243,445 条客体指令。该计数仅确认真机执行覆盖，首个可交互桌面的性能仍需对照。
+- iPhone 14 进程 1234 的第 450 秒真机快照累计执行 12,618,050,629 条客体指令。原版 DEX 哈希 AOT 执行 6,578,996 条，Bionic 向量填充 AOT 执行 66,887,735 条，SHA-256 AOT 执行 227,290,778 条，设备热状态为 serious。可交互 Launcher 及同构建 A/B 耗时仍待实测。
+- Mac 相机复测捕获到上下翻转的 Smoke 画面。对同一个 64×64 非对称 RGBA 帧，用默认 ANGLE 的 OpenGL 后端与明确指定的 ANGLE Metal 分别运行直接贴屏和 Goldfish rcCompose 贴屏，四种组合与输入逐字节一致。这缩小了翻转的查找范围，尚不能用固定行翻转修正。已用保留的客体数据重新启动明确指定原生 Metal 的完整 Camera2 联测。
