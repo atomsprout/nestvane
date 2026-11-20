@@ -23,6 +23,7 @@ FRAMEWORK_APPS = (
     "com.android.inputmethod.latin",
     "com.android.keychain",
     "com.android.launcher3",
+    "com.android.modulemetadata",
     "com.android.packageinstaller",
     "com.android.providers.downloads",
     "com.android.providers.downloads.ui",

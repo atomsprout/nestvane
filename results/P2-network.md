@@ -398,3 +398,4 @@
 - Mac 的原版框架在阶段 480 等待 FontManagerService。连续快照显示初始化线程停在 ARM64 调用 291（`statx`）。客体实现该接口，复用现有文件元数据，验证了相对路径、文件描述符、符号链接、同步标志和 Linux 错误码。同一 Bionic 探针在参考 Android 17 和 Mac 客体中核对原版字体配置的 `statx` 与 `fstat`，均通过。完整 FontManager 启动仍在复测。
 - 带 `statx` 的 Mac 完整启动越过 FontManagerService，原版 `system_server` 完成阶段 480 和 500，并进入包管理器就绪阶段。
 - iPhone 11 进程 8761 的原生「文件」选择器通过 UI 测试。三个 APK 位于「在我的 iPhone 上」的 `Nestvane Test APKs` 测试目录，从真机回读逐字节一致。实际点选 `Nestvane-Smoke.apk` 后，Nestvane 显示正在等待 Android 安装，请求已入队。包管理器的安装结果、Launcher 启动和跨重启验收仍待取得。
+- Mac 启动越过阶段 520，在 `ActivityManagerService.systemReady` 查询已安装模块时发现配置要求的原版元数据提供者未打包。镜像现包含同版参考系统的工厂 `com.android.modulemetadata`。APK 哈希与参考一致，清单中的 `android.content.pm.MODULE_METADATA` 指向可由 Android 17 原版资源加载器解析的空模块列表。完整启动仍在复测。[AOSP ModuleInfoProvider](https://android.googlesource.com/platform/frameworks/base/+/android17-release/services/core/java/com/android/server/pm/ModuleInfoProvider.java)
