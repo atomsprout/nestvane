@@ -36,6 +36,7 @@ constexpr size_t maxGuestDirectories = 2048;
 constexpr size_t maxGuestTasks = 1024;
 constexpr uint32_t guestLoopbackIndex = 1;
 constexpr uint32_t guestLoopbackMtu = 65536;
+constexpr uint32_t niceLimitResource = 13; // RLIMIT_NICE
 constexpr size_t bpfMapBudget = 32 * 1024 * 1024;
 constexpr std::string_view cgroupRoot = "/sys/fs/cgroup";
 constexpr std::string_view cgroupProcs = "/cgroup.procs";
@@ -9246,6 +9247,7 @@ bool ProbeLinux::syscall(Machine& machine) {
             const auto defaultLimit = resource == 7
                 ? std::array<uint64_t, 2>{defaultDescriptorLimit, descriptorCapacity}
                 : resource == 3 ? std::array<uint64_t, 2>{guestStackSize, maxGuestStackSize}
+                : resource == niceLimitResource ? std::array<uint64_t, 2>{0, 0}
                 : std::array<uint64_t, 2>{UINT64_MAX, UINT64_MAX};
             const auto old = found == limits.end() ? defaultLimit : found->second;
             auto updated = old;
@@ -9739,8 +9741,10 @@ bool ProbeLinux::syscall(Machine& machine) {
             }
             const auto priority = std::clamp(static_cast<int32_t>(x[2]), -20, 19);
             if (priority < task->second.nice && !privileged) {
-                x[0] = uint64_t(-13);
-                break;
+                const auto& limits = task->second.process->limits;
+                const auto limit = limits.find(niceLimitResource);
+                const auto soft = limit == limits.end() ? 0 : limit->second[0];
+                if (uint64_t(20 - priority) > soft) { x[0] = uint64_t(-13); break; }
             }
             task->second.nice = priority;
             x[0] = 0;

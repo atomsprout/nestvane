@@ -3696,6 +3696,28 @@ int main() {
             assert(call(57, {fd}) == 0);
     }
 
+    {
+        ProbeLinux guest(1, 0);
+        Machine task(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
+        const auto invoke = [&](uint64_t number, std::array<uint64_t, 6> args) {
+            std::ranges::copy(args, task.cpu.x.begin());
+            task.cpu.x[8] = number;
+            assert(guest.syscall(task));
+            return task.cpu.x[0];
+        };
+        constexpr auto limit = base + 0x180;
+        uint64_t soft = UINT64_MAX;
+        assert(invoke(163, {13, limit}) == 0 && task.load64(limit, soft) && soft == 0);
+        assert(task.store64(limit, 24) && task.store64(limit + 8, 40));
+        assert(invoke(164, {13, limit}) == 0);
+        const auto child = invoke(220, {0x1200011, 0, 0, 0, base + 0x1a0});
+        assert(child > 1 && guest.schedule(task) && guest.processId() == child);
+        assert(invoke(147, {1000, 1000, 1000}) == 0);
+        assert(invoke(140, {0, 0, uint64_t(-4)}) == 0 && invoke(141, {0, 0}) == 24);
+        assert(invoke(140, {0, 0, uint64_t(-5)}) == uint64_t(-13));
+        assert(invoke(140, {0, 1, 10}) == uint64_t(-1));
+    }
+
     // Test the clone ABI with the same registers Bionic supplies to the kernel.
     assert(call(140, {0, 0, 3}) == 0);
     machine.cpu.pc = base;
