@@ -3782,13 +3782,27 @@ bool ProbeLinux::fileCall(Machine& machine) {
                 x[0] = open(machine, path, uint32_t(x[2]), uint32_t(x[3]));
                 break;
             }
+            if (x[8] == 79 && x[3] == 0x100) { // AT_SYMLINK_NOFOLLOW
+                const auto visible = followLinks(path, false);
+                if (!visible) { x[0] = uint64_t(-40); break; }
+                const auto backing = backingPath(*visible);
+                if (!canAccessParent(backing, false)) { x[0] = uint64_t(-13); break; }
+                if (const auto link = resolve(*visible))
+                    x[0] = statFile(machine, x[2], false, link->size(),
+                                    std::hash<std::string>{}(backing) | 1, 0120777, 0, 0, 0, {});
+                else if (const auto node = find(backing, 0))
+                    x[0] = stat(machine, x[2], *node);
+                else
+                    x[0] = uint64_t(-2);
+                break;
+            }
             auto target = resolve(path);
             if (x[8] == 78 && path == "/proc/self/ns/mnt")
                 target = "mnt:[" + std::to_string(current->mountNamespace->id) + "]";
             const auto backing = backingPath(path);
             auto entry = find(x[8] != 35 && target ? backingPath(*target) : backing, 0);
             if (!entry && (x[8] == 48 || x[8] == 79)) {
-                const auto resolved = followLinks(path, x[8] != 79 || !(x[3] & 0x100));
+                const auto resolved = followLinks(path);
                 if (!resolved) { x[0] = uint64_t(-40); break; }
                 if (*resolved != path) entry = find(backingPath(*resolved), 0);
             }
@@ -3899,7 +3913,7 @@ bool ProbeLinux::fileCall(Machine& machine) {
             } else if (x[8] == 48) {
                 x[0] = x[2] > 7 ? invalid : (x[2] & 2) && entry->node == Node::regular ? uint64_t(-13) : 0;
             } else {
-                if (x[3] && x[3] != 0x100) return false;
+                if (x[3]) return false;
                 x[0] = stat(machine, x[2], *entry);
             }
             break;

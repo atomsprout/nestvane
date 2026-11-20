@@ -3831,6 +3831,11 @@ int main() {
         assert(isolatedNamespace < 256 && invoke(40, {tmpfs, user, tmpfs, 14}) == 0);
         assert(invoke(56, {atCwd, markerPath, 0}) == uint64_t(-2));
         assert(invoke(36, {source, atCwd, userZero}) == 0);
+        assert(invoke(79, {atCwd, userZero, base + 256, 0x100}) == 0);
+        uint64_t metadata = 0;
+        assert(task.load64(base + 272, metadata) && (metadata & 0170000) == 0120000);
+        assert(invoke(79, {atCwd, userZero, base + 256, 0}) == 0);
+        assert(task.load64(base + 272, metadata) && (metadata & 0170000) == 0040000);
         assert(invoke(56, {atCwd, markerPath, 0}) < 256);
         assert(invoke(268, {originalNamespace, 0x20000}) == 0);
         assert(invoke(78, {atCwd, userZero, base + 256, 32}) == uint64_t(-22));
