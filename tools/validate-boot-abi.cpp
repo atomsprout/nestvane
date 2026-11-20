@@ -1065,6 +1065,21 @@ int main() {
         assert(std::memcmp(permute.cpu.v[18].data(), indexedWideHigh.data(), sizeof(indexedWideHigh)) == 0);
         assert(std::memcmp(permute.cpu.v[19].data(), indexedWideRounded.data(), sizeof(indexedWideRounded)) == 0);
         assert(executeStartupInstruction(permute, 0xd51b443f));
+        // Exact low-half, high-half and accumulating opcodes from Android libjpeg.
+        const std::array<int16_t, 8> longInput{-1, 128, -32768, 32767, 1, -2, 3, -4};
+        const std::array<int16_t, 8> longMultiplier{123, -3, 0, 0, 0, 0, 0, 0};
+        std::memcpy(permute.cpu.v[16].data(), longInput.data(), sizeof(longInput));
+        std::memcpy(permute.cpu.v[17].data(), longInput.data(), sizeof(longInput));
+        std::memcpy(permute.cpu.v[1].data(), longMultiplier.data(), sizeof(longMultiplier));
+        assert(executeStartupInstruction(permute, 0x0f51a218)); // smull v24.4s, v16.4h, v1.h[1]
+        assert(executeStartupInstruction(permute, 0x4f51a212)); // smull2 v18.4s, v16.8h, v1.h[1]
+        const std::array<int32_t, 4> longLow{3, -384, 98304, -98301};
+        const std::array<int32_t, 4> longHigh{-3, 6, -9, 12};
+        assert(std::memcmp(permute.cpu.v[24].data(), longLow.data(), sizeof(longLow)) == 0);
+        assert(std::memcmp(permute.cpu.v[18].data(), longHigh.data(), sizeof(longHigh)) == 0);
+        assert(executeStartupInstruction(permute, 0x0f512238)); // smlal v24.4s, v17.4h, v1.h[1]
+        const std::array<int32_t, 4> longAccumulated{6, -768, 196608, -196602};
+        assert(std::memcmp(permute.cpu.v[24].data(), longAccumulated.data(), sizeof(longAccumulated)) == 0);
         const std::array<uint16_t, 8> narrowBytesSource{0, 254, 255, 256, 257, 1, 32768, 65535};
         const std::array<uint8_t, 16> narrowBytesResult{0, 254, 255, 255, 255, 1, 255, 255};
         std::memcpy(permute.cpu.v[0].data(), narrowBytesSource.data(), sizeof(narrowBytesSource));
