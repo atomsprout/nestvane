@@ -4052,6 +4052,19 @@ int main() {
     {
         ProbeLinux guest(1, 0);
         Machine task(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
+        assert(task.store64(base, 42) && task.store64(base + 16, 3600));
+        task.cpu.x[0] = base;
+        task.cpu.x[1] = 128; // FUTEX_WAIT_PRIVATE.
+        task.cpu.x[2] = 42;
+        task.cpu.x[3] = base + 16;
+        task.cpu.x[8] = 98;
+        assert(guest.syscall(task));
+        const auto report = guest.workerReport(task, 1);
+        assert(report.find("op=128 expected=42 deadline-ms=") != std::string::npos);
+    }
+    {
+        ProbeLinux guest(1, 0);
+        Machine task(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
         std::string report;
         guest.androidLogObserver = [&](std::string_view message) { report = message; };
         const auto dumpable = [&](uint64_t operation, uint64_t flag = 0) {

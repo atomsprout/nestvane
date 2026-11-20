@@ -6998,6 +6998,7 @@ std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedPr
         report += "  guest worker " + std::to_string(tid) + " waited in epoll for " + path + "\n";
     }
     std::ostringstream tasks;
+    const auto snapshotTime = std::chrono::steady_clock::now();
     const auto segmentAt = [&](const Process& process, uint64_t address) -> const Segment* {
         const auto& segments = process.id == processId() ? machine.segments : process.segments;
         const auto next = std::upper_bound(segments.begin(), segments.end(), address,
@@ -7125,7 +7126,16 @@ std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedPr
                 break;
             }
             case Wait::futexPi:
-            case Wait::futex: tasks << " futex=0x" << std::hex << thread.futexAddress << std::dec; break;
+            case Wait::futex:
+                tasks << " futex=0x" << std::hex << thread.futexAddress << std::dec
+                      << " op=" << cpu.x[1];
+                if (thread.wait == Wait::futex) tasks << " expected=" << uint32_t(cpu.x[2]);
+                if (thread.deadline) {
+                    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        *thread.deadline - snapshotTime).count();
+                    tasks << " deadline-ms=" << remaining;
+                }
+                break;
             case Wait::recordLock: tasks << " record lock held by PID " << thread.recordLockBlocker; break;
             case Wait::signal: tasks << " signal"; break;
             case Wait::signalSuspend: tasks << " sigsuspend"; break;
