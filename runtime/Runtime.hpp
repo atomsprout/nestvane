@@ -80,7 +80,7 @@ public:
     DenseBytes() = default;
     DenseBytes(std::vector<uint8_t> bytes);
     DenseBytes(std::initializer_list<uint8_t> bytes);
-    DenseBytes(const uint8_t* first, const uint8_t* last);
+    DenseBytes copyRange(size_t offset, size_t length) const;
 
     size_t size() const;
     size_t capacity() const;

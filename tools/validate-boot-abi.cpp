@@ -20,6 +20,20 @@ using namespace nestvane;
 
 int main() {
     {
+        // The guest may split its mapping at either a host page or a smaller guest page.
+        const size_t hostPage = getpagesize();
+        DenseBytes source(std::vector<uint8_t>(64 * hostPage, 0x6a));
+        for (const auto offset : {hostPage, hostPage + size_t(pageSize / 2)}) {
+            auto copy = source.copyRange(offset, 32 * hostPage);
+            assert(copy.size() == 32 * hostPage && copy.data()[0] == 0x6a && copy.data()[copy.size() - 1] == 0x6a);
+            source.mutableData()[offset] = 0xcb;
+            assert(copy.data()[0] == 0x6a);
+            copy.mutableData()[copy.size() - 1] = 0xb5;
+            assert(source.data()[offset + copy.size() - 1] == 0x6a);
+            source.mutableData()[offset] = 0x6a;
+        }
+    }
+    {
         const Startup startup{0x4000, 0, 0, 0, 0, "/bin/crc", {}, 0};
         Machine machine(Image{0x4000, {}, startup});
         // One argv entry, no environment, followed by key-value pairs.

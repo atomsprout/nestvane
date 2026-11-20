@@ -255,9 +255,9 @@ void changeRange(Machine& machine, uint64_t start, uint64_t end, std::optional<u
                 }
                 return;
             }
-            auto first = segment.bytes.begin() + (from - segment.address);
-            auto last = segment.bytes.begin() + (to - segment.address);
-            append({from, {first, last}, permissions, 0, false, {}, 0, segment.anonymous, false, segment.initialStack, segment.fileMapping});
+            auto bytes = segment.bytes.copyRange(from - segment.address, to - from);
+            append({from, std::move(bytes), permissions, 0, false, {}, 0,
+                    segment.anonymous, false, segment.initialStack, segment.fileMapping});
         };
         part(segment.address, left, segment.flags);
         if (retain) part(left, right, flags.value_or(segment.flags), true);

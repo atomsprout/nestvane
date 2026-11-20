@@ -558,24 +558,25 @@ struct DenseBytes::Storage {
     Storage(const Storage&) = delete;
     Storage& operator=(const Storage&) = delete;
 
-    std::shared_ptr<Storage> clone() const {
+    std::shared_ptr<Storage> clone(size_t offset, size_t size) const {
 #ifdef __APPLE__
-        if (mapping) {
+        static const auto hostPage = static_cast<size_t>(getpagesize());
+        if (mapping && size >= hostPage && offset % hostPage == 0) {
             auto copy = std::make_shared<Storage>(0);
             vm_address_t destination = 0;
             vm_prot_t current = 0, maximum = 0;
             const auto task = mach_task_self();
-            if (vm_remap(task, &destination, length, 0, VM_FLAGS_ANYWHERE, task,
-                         reinterpret_cast<vm_address_t>(mapping), true, &current, &maximum,
+            if (vm_remap(task, &destination, size, 0, VM_FLAGS_ANYWHERE, task,
+                         reinterpret_cast<vm_address_t>(mapping + offset), true, &current, &maximum,
                          VM_INHERIT_NONE) == KERN_SUCCESS) {
                 copy->mapping = reinterpret_cast<uint8_t*>(destination);
-                copy->length = length;
+                copy->length = size;
                 return copy;
             }
         }
 #endif
-        auto copy = std::make_shared<Storage>(length);
-        std::memcpy(copy->data(), data(), length);
+        auto copy = std::make_shared<Storage>(size);
+        std::memcpy(copy->data(), data() + offset, size);
         return copy;
     }
 
@@ -595,10 +596,10 @@ DenseBytes::DenseBytes(std::vector<uint8_t> bytes) {
 DenseBytes::DenseBytes(std::initializer_list<uint8_t> bytes)
     : DenseBytes(std::vector<uint8_t>(bytes)) {}
 
-DenseBytes::DenseBytes(const uint8_t* first, const uint8_t* last) {
-    if (first == last) return;
-    storage = std::make_shared<Storage>(last - first);
-    std::memcpy(storage->data(), first, storage->length);
+DenseBytes DenseBytes::copyRange(size_t offset, size_t length) const {
+    DenseBytes copy;
+    if (length) copy.storage = storage->clone(offset, length);
+    return copy;
 }
 
 size_t DenseBytes::size() const { return storage ? storage->length : 0; }
@@ -607,7 +608,7 @@ const uint8_t* DenseBytes::data() const { return storage ? storage->data() : nul
 
 uint8_t* DenseBytes::mutableData() {
     if (!storage) return nullptr;
-    if (storage.use_count() != 1) storage = storage->clone();
+    if (storage.use_count() != 1) storage = storage->clone(0, storage->length);
     return storage->data();
 }
 
