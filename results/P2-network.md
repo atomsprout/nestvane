@@ -472,3 +472,5 @@
 - 同镜像的 Mac 对照中，桌面启动请求返回后的相邻快照，私有段去重后备容量从 1,876,340,736 降至 1,192,394,752 字节，采样客体指令数分别约 180 亿和 179.8 亿。该值表示后备缓冲容量，物理内存以 iOS 的独立采样为准。
 - 进程 9684 在 705.073 秒快照中仍运行，物理内存为 2,124,930,384 字节，系统报告剩余 74,982,064 字节。随后 CoreDevice 控制台确认信号 9 退出，未取得桌面绘制证据。
 - 宿主对 256 KiB 以上的私有段使用独立的非可执行映射。首次写入已共享的段时，Darwin 通过 `vm_remap` 创建按宿主页写时复制的视图。其余分配和重映射失败的情况沿用堆缓冲或字节复制。Mac 对照中，共享已写满的 64 MiB 映射后写入单个字节，观察到原实现增加 67,158,064 字节的物理内存，新实现增加 16,384 字节。宿主 ABI 回归覆盖跨宿主页的父子隔离，iPhoneOS Release 构建通过，完整启动的节省仍待测量。[Apple XNU VM 接口](https://github.com/apple-oss-distributions/xnu/blob/main/osfmk/vm/vm_user.c)
+- 向量指令修复版在 iPhone 11 进程 9688 于 576.426 秒完成 `startHomeOnAllDisplays`，579.574 秒完成系统服务启动。750.002 秒的物理内存为 2,161,532,400 字节，系统报告余量为 38,380,048 字节，随后控制台报告信号 9 退出。
+- Mac 完整诊断进入 Launcher 主线程的 `libhwui` 等待，同时记录首个明确的用户解锁失败：`vold` 给 `/data/media/0` 设置默认 POSIX ACL 返回 `EOPNOTSUPP`。用户数据准备失败后，Android 进入恢复流程，最终 `system_server` 终止，`sys.boot_completed` 未通过。宿主回归验证 OpenGL 后备通道的字节和空读计数，以及两个描述符共享同一通道时的报告去重，iPhoneOS 构建通过。[AOSP vold 的媒体目录初始化](https://android.googlesource.com/platform/system/vold/+/master/FsCrypt.cpp)

@@ -2018,6 +2018,12 @@ int main() {
         assert(call(64, {channel, buffer + 9, 2}) == 2);
         assert(call(63, {channel, buffer, 524288}) == 2 && uint16_t(load(buffer)) == 0x0201);
         assert(call(63, {duplicate, buffer, 1}) == uint64_t(-11));
+        const auto graphicsReport = linux.workerReport(machine, linux.processId());
+        const auto pipeReport = graphicsReport.find("OpenGL pipe fd=");
+        assert(pipeReport != std::string::npos);
+        assert(graphicsReport.find("OpenGL pipe fd=", pipeReport + 1) == std::string::npos);
+        assert(graphicsReport.find("received=4 sent=4 read EAGAIN=3 write EAGAIN=0 last read=-11 last write=2",
+                                   pipeReport) != std::string::npos);
         assert(call(57, {duplicate}) == 0 && call(57, {channel}) == 0 && call(57, {poll}) == 0);
         const auto other = call(56, {cwd, path, 0x802});
         put(buffer, "pipe:qemud");

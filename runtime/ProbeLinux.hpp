@@ -289,6 +289,8 @@ private:
         std::unique_ptr<GraphicsPipe> backend;
         std::vector<uint8_t> readBuffer;
         size_t readOffset = 0, readSize = 0;
+        uint64_t received = 0, sent = 0, readAgain = 0, writeAgain = 0;
+        int64_t lastRead = 0, lastWrite = 0;
         std::string_view serviceContext;
         bool failed = false, vsock = false, connected = false, renderChannel = false;
 

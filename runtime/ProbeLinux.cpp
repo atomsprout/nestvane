@@ -2336,6 +2336,11 @@ uint64_t ProbeLinux::readGraphics(Machine& machine, GraphicsPipeState& pipe, uin
         const auto request = std::min<uint64_t>(size, maxGraphicsTransfer);
         if (pipe.readBuffer.size() < request) pipe.readBuffer.resize(request);
         const auto received = pipe.backend->read(std::span(pipe.readBuffer).first(request));
+        if (pipe.renderChannel) {
+            pipe.lastRead = received;
+            if (received > 0) pipe.received += received;
+            if (received == -11) ++pipe.readAgain;
+        }
         if (received <= 0 || uint64_t(received) > request)
             return received <= 0 ? uint64_t(received) : uint64_t(-5);
         pipe.readOffset = 0;
@@ -2403,6 +2408,11 @@ uint64_t ProbeLinux::writeGraphics(const Machine& machine, GraphicsPipeState& pi
     std::vector<uint8_t> input(count);
     if (!machine.readInto(address, input)) return uint64_t(-14);
     const auto sent = pipe.backend->write(input);
+    if (pipe.renderChannel) {
+        pipe.lastWrite = sent;
+        if (sent > 0) pipe.sent += sent;
+        if (sent == -11) ++pipe.writeAgain;
+    }
     return sent <= int64_t(input.size()) ? uint64_t(sent) : uint64_t(-5);
 }
 
@@ -6668,6 +6678,16 @@ std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedPr
                 describeCode(process, caller, "pc-file");
                 if (previous <= frame) break;
                 frame = previous;
+            }
+        }
+        if (tid == process.id && (launcherThread || process.id == observedProcess)) {
+            std::set<const GraphicsPipeState*> reported;
+            for (const auto& [fd, desc] : process.descriptors) {
+                const auto* pipe = desc.graphics.get();
+                if (!pipe || !pipe->renderChannel || !reported.insert(pipe).second) continue;
+                tasks << "\n    OpenGL pipe fd=" << fd << " received=" << pipe->received << " sent=" << pipe->sent
+                      << " read EAGAIN=" << pipe->readAgain << " write EAGAIN=" << pipe->writeAgain
+                      << " last read=" << pipe->lastRead << " last write=" << pipe->lastWrite;
             }
         }
         tasks << '\n';
