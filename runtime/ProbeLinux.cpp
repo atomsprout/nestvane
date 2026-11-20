@@ -1412,14 +1412,17 @@ PosixAcl ProbeLinux::inheritAcl(const Directory* parent, uint32_t& mode) const {
     return acl.extended() ? std::move(acl) : PosixAcl{};
 }
 
-bool ProbeLinux::inodeAllows(const auto& node, unsigned requested) const {
-    if (!userId()) return true;
+bool ProbeLinux::inodeAllows(const auto& node, unsigned requested, bool realIds) const {
+    const auto& process = *current->process;
+    const auto uid = process.userIds[realIds ? 0 : 1];
+    if (!uid) return true;
     if (node.accessAcl.empty())
-        return ((node.mode >> permissionShift(node.uid, node.gid)) & requested) == requested;
+        return ((node.mode >> permissionShift(node.uid, node.gid, realIds)) & requested) == requested;
     const auto inGroup = [&](uint32_t group) {
-        return groupId() == group || std::ranges::find(current->process->groups, group) != current->process->groups.end();
+        return process.groupIds[realIds ? 0 : 1] == group ||
+               std::ranges::find(process.groups, group) != process.groups.end();
     };
-    return node.accessAcl.allows(requested, userId() == node.uid, userId(), node.gid, inGroup);
+    return node.accessAcl.allows(requested, uid == node.uid, uid, node.gid, inGroup);
 }
 
 uint64_t ProbeLinux::chmodDirectory(Directory& directory, uint32_t mode) const {
@@ -1433,8 +1436,8 @@ uint64_t ProbeLinux::chmodDirectory(Directory& directory, uint32_t mode) const {
     return 0;
 }
 
-bool ProbeLinux::canAccessParent(std::string_view path, bool modify) const {
-    if (!userId()) return true;
+bool ProbeLinux::canAccessParent(std::string_view path, bool modify, bool realIds) const {
+    if (!current->process->userIds[realIds ? 0 : 1]) return true;
     const MountView* view = nullptr;
     std::string_view root = "/data";
     if (!dataPath(path)) {
@@ -1449,9 +1452,9 @@ bool ProbeLinux::canAccessParent(std::string_view path, bool modify) const {
         const auto requested = immediate && modify ? 3U : 1U;
         unsigned permission = 0;
         if (directory != directories.end()) {
-            permission = inodeAllows(directory->second, requested) ? requested : 0;
+            permission = inodeAllows(directory->second, requested, realIds) ? requested : 0;
         } else if (view && parent == root) {
-            permission = view->mode >> permissionShift(0, view->gid);
+            permission = view->mode >> permissionShift(0, view->gid, realIds);
         }
         if ((permission & requested) != requested) return false;
         immediate = false;
@@ -1460,10 +1463,11 @@ bool ProbeLinux::canAccessParent(std::string_view path, bool modify) const {
     return !modify || !immediate;
 }
 
-unsigned ProbeLinux::permissionShift(uint32_t uid, uint32_t gid) const {
-    if (userId() == uid) return 6;
-    const auto& groups = current->process->groups;
-    return groupId() == gid || std::find(groups.begin(), groups.end(), gid) != groups.end() ? 3 : 0;
+unsigned ProbeLinux::permissionShift(uint32_t uid, uint32_t gid, bool realIds) const {
+    const auto& process = *current->process;
+    if (process.userIds[realIds ? 0 : 1] == uid) return 6;
+    return process.groupIds[realIds ? 0 : 1] == gid ||
+           std::ranges::find(process.groups, gid) != process.groups.end() ? 3 : 0;
 }
 
 uint64_t ProbeLinux::recordLock(Machine& machine, const Descriptor& fd) {
@@ -4147,13 +4151,14 @@ bool ProbeLinux::fileCall(Machine& machine) {
                     ? size : uint64_t(-14);
             } else if (!entry) {
                 x[0] = uint64_t(-2);
-            } else if (x[8] == 48) {
+            } else if (x[8] == 48) { // faccessat uses real credentials.
                 const auto directory = directories.find(entry->path);
                 if (x[2] > 7) x[0] = invalid;
-                else if (entry->temporary && !entry->temporary->accessAcl.empty())
-                    x[0] = inodeAllows(*entry->temporary, x[2]) ? 0 : uint64_t(-13);
-                else if (directory != directories.end() && !directory->second.accessAcl.empty())
-                    x[0] = inodeAllows(directory->second, x[2]) ? 0 : uint64_t(-13);
+                else if (!canAccessParent(entry->path, false, true)) x[0] = uint64_t(-13);
+                else if (entry->temporary)
+                    x[0] = inodeAllows(*entry->temporary, x[2], true) ? 0 : uint64_t(-13);
+                else if (directory != directories.end())
+                    x[0] = inodeAllows(directory->second, x[2], true) ? 0 : uint64_t(-13);
                 else x[0] = (x[2] & 2) && entry->node == Node::regular ? uint64_t(-13) : 0;
             } else {
                 if (x[3]) return false;

@@ -1825,6 +1825,34 @@ int main() {
         assert(parent.load64(mapping + sparseRange - pageSize, value) && value == 42);
     }
     {
+        ProbeLinux apkGuest(1, 0);
+        apkGuest.addBootTmpfs("/data", 0771, 1000, 6);
+        apkGuest.addDirectory("/data/app", 0755);
+        apkGuest.addDirectory("/data/private", 0700);
+        auto task = apkGuest.createMachine(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
+        const auto invoke = [&](uint64_t number, std::initializer_list<uint64_t> args) {
+            task.cpu.x.fill(0);
+            std::ranges::copy(args, task.cpu.x.begin());
+            task.cpu.x[8] = number;
+            assert(apkGuest.syscall(task));
+            return task.cpu.x[0];
+        };
+        constexpr char apk[] = "/data/app/base.apk";
+        constexpr char hidden[] = "/data/private/base.apk";
+        constexpr auto apkPath = base + 64, hiddenPath = base + 128;
+        assert(task.write(apkPath, {reinterpret_cast<const uint8_t*>(apk), sizeof apk}));
+        assert(task.write(hiddenPath, {reinterpret_cast<const uint8_t*>(hidden), sizeof hidden}));
+        constexpr auto atCwd = uint32_t(-100);
+        assert(invoke(56, {atCwd, apkPath, 0x42, 0644}) < 256);
+        assert(invoke(56, {atCwd, hiddenPath, 0x42, 0644}) < 256);
+        assert(invoke(54, {atCwd, apkPath, 1000, 1000, 0}) == 0);
+        assert(invoke(147, {10032, 1000, 1000}) == 0);
+        assert(invoke(48, {atCwd, apkPath, 4}) == 0);
+        assert(invoke(48, {atCwd, apkPath, 2}) == uint64_t(-13));
+        assert(invoke(48, {atCwd, hiddenPath, 0}) == uint64_t(-13));
+        assert(invoke(56, {atCwd, apkPath, 2}) < 256);
+    }
+    {
         static std::array<uint8_t, pageSize * 3 + 32> contents{};
         contents[pageSize] = 0x37;
         contents[2 * pageSize] = 0x72;

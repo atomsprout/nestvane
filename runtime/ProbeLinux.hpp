@@ -621,10 +621,10 @@ private:
     bool validAppDataContext(std::string_view label) const;
     bool validAppProcessContext(std::string_view label) const;
     bool canSpecializeApp(std::string_view label) const;
-    bool canAccessParent(std::string_view path, bool modify) const;
+    bool canAccessParent(std::string_view path, bool modify, bool realIds = false) const;
     const Directory* parentDirectory(std::string_view path) const;
     PosixAcl inheritAcl(const Directory* parent, uint32_t& mode) const;
-    bool inodeAllows(const auto& node, unsigned requested) const;
+    bool inodeAllows(const auto& node, unsigned requested, bool realIds = false) const;
     uint64_t changePosixAcl(Machine& machine, const Descriptor& entry, bool defaults, bool removing);
     uint64_t chmodDirectory(Directory& directory, uint32_t mode) const;
     uint64_t changeDirectoryUserAttribute(Machine& machine, const Descriptor& entry,
@@ -851,7 +851,7 @@ private:
     uint64_t nextFutexPiOrder = 1;
     uint32_t userId() const { return current->process->userIds[1]; }
     uint32_t groupId() const { return current->process->groupIds[1]; }
-    unsigned permissionShift(uint32_t uid, uint32_t gid) const;
+    unsigned permissionShift(uint32_t uid, uint32_t gid, bool realIds = false) const;
     uint64_t pid, memoryLimit;
     std::shared_ptr<AnonymousBudget> anonymousBudget;
     struct ChildExit {
