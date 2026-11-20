@@ -535,3 +535,5 @@
 - Binder 现按远端强弱引用和在途事务缓冲区保留节点。只在最后一份强或弱引用消失且前序通知已确认后，向存活的对象所有者发送 BR_RELEASE 或 BR_DECREFS。关闭连接时也清理其引用。宿主 ABI 回归覆盖持有弱引用、分步释放、节点地址复用和客户端带活引用退出。iPhoneOS Release 构建通过，原版 SurfaceFlinger 动画图层联测已启动。
 - MAP_POPULATE 修复版的 Android 17 原版包管理器已安装 Smoke APK。原版 dumpsys 查到包、活动和用户安装状态，SQLite 中最终路径的 base.apk 为 8,619 字节，与输入文件逐字节一致。随后 ActivityManager 建立了 MainActivity 的启动记录，但 Zygote 的 fork 返回 EAGAIN。该轮邻近快照只有约 465 个活跃任务，低于 1,024 个的任务上限。APK 界面与 Files 导入仍待验证。
 - Smoke 启动 fork 失败的 Mac 联测进程中，调试器读到稀疏虚拟地址保留 4,025,270,272 字节，上限为 4,294,967,296 字节。脏页仅 209,043,456 字节，低于 536,870,912 字节的上限。读数取得于失败之后，不能单独判定失败分支。新版把完整客体稀疏虚拟地址额度从 4 GiB 调到 8 GiB，脏页上限仍为 512 MiB，并在 EAGAIN 时区分任务数、预留地址、宿主映射和脏页额度。宿主回归验证了超过旧额度的稀疏映射可在 fork 后保留数据和隔离父子写入，iPhoneOS Release 构建通过。完整客体复测已启动。
+- 更新 Binder 后，Mac 同版采样确认开机动画图层已从原版 SurfaceFlinger 中移除。动画退出后的首次延时快照中，HWC 合成列表包含 Settings 的 FallbackHome。下一次快照中 QuickstepLauncher 已 resumed，但仍无窗口焦点或可见合成图层。尚未读回 Launcher 首帧。
+- 在当前运行时中使用可控测试图案作为摄像头源，原版 ARM64 环境内的 Goldfish 相机探针读取了 1,228,800 字节 RGBA 和 460,800 字节 YUV420。宿主记录到租用、两种帧格式的请求及最终释放。该轮未接入物理相机，也未测试 Camera2 API 或 JPEG。
