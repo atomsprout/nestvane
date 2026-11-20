@@ -662,3 +662,5 @@
 - 使用原生工具栏 Stop Android 正常停止该轮并导出报告。停止后的 SQLite 备份通过 quick_check，仍包含发布版 ScriptWidget APK 的准确 SHA-256 和 OpenCalc 的 7×8 → 56 历史记录。OpenCalc 从界面读回仍待真机验证。运行快照新增长期复测所需的匿名和文件映射容量分项，以及持久文件、临时文件、bpffs 和目录条目数。宿主回归和 iPhoneOS Release 签名校验通过。
 - iPhone 14 进程 1526 的第 60 秒快照记录持久文件 989/1024、临时文件 1017/1024、bpffs 111/2048、目录 1139/2048。此次改动给持久文件 4096 个条目、临时文件 2048 个条目，保留独立的字节预算和 bpffs 条目上限，/data 的 statfs 同步报告文件总量与余量。SQLite 恢复记录上限按文件、目录和链接预算计算。宿主回归填满两个文件池及 bpffs 池，核对 /data 的 statfs 及第 4096 个持久文件在 fsync 和数据库重新打开后的原始字节。iPhoneOS Release 编译和签名通过，当前真机仍用上一构建继续启动。
 - Mac 用故障轮次的同一份真机数据副本执行原版 ScriptWidget。应用以分配的 UID 创建 /data/data/com.atomsprout.scriptwidget/shared_prefs 成功，当时只用 1225/2048 个目录条目，随后记录 MainActivity Displayed。该对照未复现真机 /data/user/0 下的 shared_prefs 警告。
+- iPhone 14 进程 1526 完成 BOOT_COMPLETED 广播，耗时 818.573 秒。原版 QuickstepLauncher 在约 1024 秒绘制，UIKit 呈现 578 × 1064 客体画面，记录物理内存峰值 2,455,904,272 字节。本轮使用资源诊断构建，包含映射查找内联，还未包含文件条目扩容和私有文件映射复用。Editor 启动、输入与保存另行验收。
+- Mac 使用已包含官方 APK 的真机数据库副本运行私有映射复用候选，在 540.005 秒、约 236 亿客体指令的启动窗口内没有记录复用命中。这段未覆盖第三方应用反复启动阶段，尚未测出真机内存收益。另以发布 APK 的 28,524,544 字节页对齐前缀做两份宿主映射，试验中的 Mach 写时复制重映射增加约 57.08 MB 物理占用，普通复制增加约 57.11 MB，因此未采用这项改动。
