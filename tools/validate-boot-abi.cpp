@@ -20,6 +20,48 @@ using namespace nestvane;
 
 int main() {
     {
+        const Startup startup{0x4000, 0, 0, 0, 0, "/bin/crc", {}, 0};
+        Machine machine(Image{0x4000, {}, startup});
+        // One argv entry, no environment, followed by key-value pairs.
+        uint64_t hwcap = 0;
+        for (uint64_t entry = machine.cpu.sp + 4 * sizeof(uint64_t); ; entry += 16) {
+            uint64_t key;
+            assert(machine.load64(entry, key));
+            if (key == 0) break;
+            if (key == 16) {
+                assert(machine.load64(entry + sizeof(key), hwcap));
+                break;
+            }
+        }
+        assert(hwcap == (uint64_t{1} << 7));
+        for (const bool castagnoli : {false, true}) {
+            const uint32_t polynomial = castagnoli ? 0x82f63b78 : 0xedb88320;
+            for (unsigned width = 0; width < 4; ++width) {
+                const uint32_t word = 0x1ac24020 | (width << 10) |
+                    (castagnoli ? 0x1000U : 0U) | (width == 3 ? 0x80000000U : 0U);
+                for (uint64_t i = 0; i < 64; ++i) {
+                    CPU initial;
+                    initial.pc = 0x4000;
+                    initial.nzcv = i & 15;
+                    initial.x[0] = UINT64_MAX;
+                    initial.x[1] = 0xffff0000d3456789ULL ^ (i * 0x1000007);
+                    initial.x[2] = 0x0fedcba987654321ULL * i;
+                    uint32_t checksum = initial.x[1];
+                    for (unsigned bit = 0; bit < (8U << width); ++bit) {
+                        const bool feedback = (checksum ^ (initial.x[2] >> bit)) & 1;
+                        checksum = (checksum >> 1) ^ (feedback ? polynomial : 0);
+                    }
+                    machine.cpu = initial;
+                    assert(executeStartupInstruction(machine, word));
+                    initial.x[0] = checksum;
+                    initial.pc += sizeof(word);
+                    ++initial.retired;
+                    assert(machine.cpu == initial);
+                }
+            }
+        }
+    }
+    {
         std::vector<uint8_t> module(AndroidSha256Block::fileOffset + sizeof(AndroidSha256Block::words));
         auto* entry = module.data() + AndroidSha256Block::fileOffset;
         std::memcpy(entry, AndroidSha256Block::words.data(), sizeof(AndroidSha256Block::words));

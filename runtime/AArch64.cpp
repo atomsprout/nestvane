@@ -7,11 +7,60 @@
 #include <limits>
 #include <type_traits>
 
+#if defined(__APPLE__) && defined(__aarch64__)
+#include <arm_acle.h>
+#include <sys/sysctl.h>
+#endif
+
 namespace nestvane {
 
 namespace {
 
 constexpr unsigned zero = 31;
+
+constexpr std::array<uint32_t, 256> crcTable(uint32_t polynomial) {
+    std::array<uint32_t, 256> table{};
+    for (uint32_t byte = 0; byte < table.size(); ++byte) {
+        uint32_t checksum = byte;
+        for (unsigned bit = 0; bit < 8; ++bit)
+            checksum = (checksum >> 1) ^ ((checksum & 1) ? polynomial : 0);
+        table[byte] = checksum;
+    }
+    return table;
+}
+
+#if defined(__APPLE__) && defined(__aarch64__)
+__attribute__((target("crc")))
+uint32_t nativeCrc32(uint32_t checksum, uint64_t data, unsigned size, bool castagnoli) {
+    switch (size) {
+        case 1: return castagnoli ? __crc32cb(checksum, data) : __crc32b(checksum, data);
+        case 2: return castagnoli ? __crc32ch(checksum, data) : __crc32h(checksum, data);
+        case 4: return castagnoli ? __crc32cw(checksum, data) : __crc32w(checksum, data);
+        default: return castagnoli ? __crc32cd(checksum, data) : __crc32d(checksum, data);
+    }
+}
+#endif
+
+uint32_t crc32(uint32_t checksum, uint64_t data, unsigned size, bool castagnoli) {
+#if defined(__APPLE__) && defined(__aarch64__)
+    static const bool native = [] {
+        int supported = 0;
+        size_t size = sizeof(supported);
+        return sysctlbyname("hw.optional.armv8_crc32", &supported, &size, nullptr, 0) == 0 &&
+               size == sizeof(supported) && supported == 1;
+    }();
+    if (native) return nativeCrc32(checksum, data, size, castagnoli);
+#endif
+
+    static constexpr auto ieee = crcTable(0xedb88320);
+    static constexpr auto castagnoliTable = crcTable(0x82f63b78);
+    const auto& table = castagnoli ? castagnoliTable : ieee;
+    for (unsigned i = 0; i < size; ++i) {
+        checksum = (checksum >> 8) ^ table[uint8_t(checksum ^ data)];
+        data >>= 8;
+    }
+    return checksum;
+}
 
 uint64_t mask(unsigned bits) {
     return bits == 64 ? UINT64_MAX : (uint64_t{1} << bits) - 1;
@@ -1495,15 +1544,9 @@ bool values(CPU& cpu, uint32_t word) {
     } else if ((word & 0x7fe0e000) == 0x1ac04000) { // CRC32 and CRC32C.
         const unsigned size = 1U << ((word >> 10) & 3);
         if ((size == 8) != (bits == 64)) return false;
-        const uint32_t polynomial = word & 0x1000 ? 0x82f63b78 : 0xedb88320;
-        auto data = reg(cpu, (word >> 16) & 31);
-        auto checksum = static_cast<uint32_t>(reg(cpu, rn));
-        for (unsigned i = 0; i < size * 8; ++i) {
-            const bool feedback = (checksum ^ data) & 1;
-            checksum = (checksum >> 1) ^ (feedback ? polynomial : 0);
-            data >>= 1;
-        }
-        put(cpu, rd, checksum, 32);
+        const auto data = reg(cpu, (word >> 16) & 31);
+        const auto checksum = static_cast<uint32_t>(reg(cpu, rn));
+        put(cpu, rd, crc32(checksum, data, size, word & 0x1000), 32);
     } else if ((word & 0x7fe0f000) == 0x1ac02000) {
         const unsigned rm = (word >> 16) & 31;
         put(cpu, rd, shift(reg(cpu, rn), (word >> 10) & 3, reg(cpu, rm) & (bits - 1), bits), bits);

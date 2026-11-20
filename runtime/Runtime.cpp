@@ -295,13 +295,14 @@ void setupStack(Machine& machine, const Startup& startup) {
     const uint64_t randomPointer = pushData(machine, platformPointer, random);
 
     // Linux/AArch64 auxiliary vector key-value pairs.
+    constexpr uint64_t hwcapCrc32 = uint64_t{1} << 7; // CRC32 and CRC32C at all operand widths.
     const auto ids = startup.credentials.value_or(std::array<uint64_t, 4>{
         startup.uid, startup.uid, startup.uid, startup.uid});
     initial.insert(initial.end(), {
         3, startup.programHeaders, 4, startup.programHeaderSize, 5, startup.programHeaderCount,
         6, pageSize, 7, startup.interpreterBase, 9, startup.executableEntry,
         11, ids[0], 12, ids[1], 13, ids[2], 14, ids[3],
-        15, platformPointer, 16, 0, 17, 100, // AT_CLKTCK, the Linux guest USER_HZ.
+        15, platformPointer, 16, hwcapCrc32, 17, 100, // AT_CLKTCK, the Linux guest USER_HZ.
         23, 0, 25, randomPointer, 31, name,
         0, 0,
     });
