@@ -556,3 +556,5 @@
 - Mac 联测确认目录修复后的原版 DocumentsUI 创建了 16,384 字节的 search_history.db，原版 Downloads 创建了 24,576 字节的 downloads.db。从持久化数据卷导出两份数据库，PRAGMA quick_check 均返回 ok。已安装的 Smoke 从数据卷启动并收到了 GuestTouch 点按，落盘 state.xml 的 count 从缺省值变为 1。该轮的部分宿主合成帧只在左上角呈现缩小内容，计数以数据卷为准。已用包含该值的校验通过的 SQLite 副本开始重启复测。
 - 更新版 APK 在从空数据卷走正式安装后的 Mac GuestTouch 联测中，应用日志按顺序记录 Opened activity with count 0、Saved count 1、Saved count 2。完整性检查通过的持久化数据卷副本含 count=2，SharedPreferences 的备份文件已清理。带 UI 的客体重启、第三方收件和实体相机仍需独立确认。
 - 从含 count=1 的已校验数据卷副本启动独立 Mac 客体。Android 重新打开原版包管理器中已安装的 Smoke，ActivityTaskManager 记录 MainActivity Displayed。点按一次后，应用将 SharedPreferences 的 count 更新为 2，确认新进程读回了重启前的值。该轮按已确认的客体坐标点按，宿主合成画面仍偶发缩小或变形。
+- 真机使用相同类别的 Metal 后端。Mac ANGLE Metal 联测在重启后实际绘出完整的 640×960 Smoke 界面和 Count: 2，客体日志也确认读回计数 2。GuestApkInbox 通过正式安装服务先后回报 OpenCalc、Editor 安装成功，持久化数据卷中的 APK 字节与两个已核对的输入逐字节一致。第三方应用的桌面启动和操作仍待验证。
+- 带触摸显示的启动现在在 boot_completed 且开机动画停止时，通过原版 PowerManager 唤醒一次客体屏幕。未修改系统的自动休眠设置。Android 17 参考模拟器上用同一命令确认从 Asleep 回到 Awake，macOS 和 iPhoneOS Release 编译通过。从空数据卷、不加诊断保活脚本的联测已启动。

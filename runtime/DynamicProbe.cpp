@@ -514,6 +514,7 @@ DynamicReport probeInit(const std::string& directory, const std::string& databas
         const auto image = loadDynamicELF(files.at(filename).bytes(), files.at(interpreter).bytes(), filename,
                                           interpreter, {"second_stage"}, 0);
         ProbeLinux linux(1, 0, 512 * 1024 * 1024);
+        const bool wakeGuestDisplay = graphics && touch && files.contains("/system/bin/cmd");
         linux.setGraphicsPipeFactory(std::move(graphics));
         linux.setCamera(std::move(camera));
         linux.setGuestTouch(std::move(touch));
@@ -715,6 +716,24 @@ service nestvane-check-vold-shell /system/bin/service check vold
 )rc";
             linux.mount("/system/etc/init/nestvane-check-vold.rc",
                         {reinterpret_cast<const uint8_t*>(client.data()), client.size()});
+            linux.alias("/dev/kmsg_debug", "/dev/kmsg");
+        }
+        if (wakeGuestDisplay) {
+            // Long cold boots can let the virtual display time out before Launcher draws.
+            static constexpr std::string_view wakeDisplay = R"rc(
+on property:sys.boot_completed=1 && property:init.svc.bootanim=stopped
+    start nestvane-wake-display
+
+service nestvane-wake-display /system/bin/cmd power wakeup
+    user shell
+    group shell
+    seclabel u:r:shell:s0
+    disabled
+    oneshot
+    stdio_to_kmsg
+)rc";
+            linux.mount("/system/etc/init/nestvane-wake-display.rc",
+                        {reinterpret_cast<const uint8_t*>(wakeDisplay.data()), wakeDisplay.size()});
             linux.alias("/dev/kmsg_debug", "/dev/kmsg");
         }
         if (expectSmoke) {
