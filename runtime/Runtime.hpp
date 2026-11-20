@@ -77,7 +77,18 @@ private:
 };
 
 class DenseBytes {
+    struct Storage;
+
 public:
+    class Weak {
+    public:
+        DenseBytes lock() const;
+        void remember(const DenseBytes& bytes) { storage = bytes.storage; }
+
+    private:
+        std::weak_ptr<Storage> storage;
+    };
+
     DenseBytes() = default;
     DenseBytes(std::vector<uint8_t> bytes);
     DenseBytes(std::initializer_list<uint8_t> bytes);
@@ -94,9 +105,14 @@ public:
     bool operator==(const DenseBytes& other) const;
 
 private:
-    struct Storage;
     std::shared_ptr<Storage> storage;
 };
+
+inline DenseBytes DenseBytes::Weak::lock() const {
+    DenseBytes bytes;
+    bytes.storage = storage.lock();
+    return bytes;
+}
 
 struct Segment {
     uint64_t address;

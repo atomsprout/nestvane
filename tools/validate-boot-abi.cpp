@@ -7113,6 +7113,29 @@ int main() {
             assert(invoke(quota, 57, {persistent}) == 0 && quota.syncData());
         }
         {
+            ProbeLinux maps(1, 0);
+            maps.mountData(":memory:");
+            put(base, "/data/large-private-map");
+            const auto file = invoke(maps, 56, {uint32_t(-100), base, 0xc2, 0600});
+            constexpr uint64_t length = 512 * 1024;
+            assert(file < 256 && invoke(maps, 46, {file, length}) == 0);
+            assert(machine.store64(base + 64, 42) && invoke(maps, 68, {file, base + 64, 8, 0}) == 8);
+            const auto first = invoke(maps, 222, {0, length, 1, 2, file, 0});
+            const auto second = invoke(maps, 222, {0, length, 1, 2, file, 0});
+            const auto* backing = machine.read(first, 8, 4);
+            assert(backing && load(first) == 42 && machine.read(second, 8, 4) == backing);
+            assert(invoke(maps, 226, {second, length, 3}) == 0);
+            assert(machine.store64(second, 99) && load(first) == 42 && load(second) == 99);
+
+            const auto shared = invoke(maps, 222, {0, length, 3, 1, file, 0});
+            assert(machine.store64(shared, 71));
+            const auto third = invoke(maps, 222, {0, length, 1, 2, file, 0});
+            assert(load(third) == 71 && load(first) == 42 && load(second) == 99);
+            for (const auto mapping : {first, second, shared, third})
+                assert(invoke(maps, 215, {mapping, length}) == 0);
+            assert(invoke(maps, 57, {file}) == 0);
+        }
+        {
             ProbeLinux installer(1, 0);
             installer.mountData((cleanup.directory / "apk-labels.sqlite3").string());
             constexpr auto cwd = uint32_t(-100);

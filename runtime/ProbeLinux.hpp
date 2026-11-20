@@ -214,6 +214,9 @@ private:
         uint32_t seals = 0;
         std::vector<RecordLock> locks;
         std::shared_ptr<SharedFileBytes> storage = std::make_shared<SharedFileBytes>();
+        DenseBytes::Weak privateMapping;
+        uint64_t privateMappingOffset = 0;
+        size_t privateMappingSourceSize = 0;
         std::map<std::string, std::vector<uint8_t>, std::less<>> attributes, userAttributes;
         PosixAcl accessAcl{};
         std::shared_ptr<BpfMap> pinnedMap{};

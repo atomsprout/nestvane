@@ -4868,6 +4868,7 @@ uint64_t ProbeLinux::map(Machine& machine) {
     std::span<const uint8_t> bytes;
     uint64_t backedLength = length;
     uint64_t imageLength = 0;
+    WritableFile* snapshotFile = nullptr;
     if (anon) {
         if (x[5]) return invalid;
     } else {
@@ -4958,6 +4959,8 @@ uint64_t ProbeLinux::map(Machine& machine) {
         const auto raw = fd.temporary
             ? std::span<const uint8_t>(fd.temporary->storage->pages).first(fd.temporary->storage->size) : fd.contents();
         if (x[5] < raw.size()) bytes = raw.subspan(x[5], std::min<uint64_t>(length, raw.size() - x[5]));
+        // Large private maps can share their existing copy-on-write backing.
+        if (sharing == 2 && bytes.size() >= 256 * 1024) snapshotFile = fd.temporary.get();
         backedLength = pageAlignedLength(bytes.size());
         // The root loader and retained read-only APEX mounts own these bytes throughout the boot.
         if (!(x[2] & 2) && !fd.temporary && !fd.apkRequest && files.contains(fd.path))
@@ -4976,8 +4979,23 @@ uint64_t ProbeLinux::map(Machine& machine) {
         segment.anonymousPages = AnonymousPages::allocate(length, anonymousBudget);
         if (!segment.anonymousPages) return noMemory;
     } else if (!sparse && copiedLength) {
-        segment.bytes.resize(copiedLength);
-        std::copy(bytes.begin() + imageLength, bytes.end(), segment.bytes.mutableData());
+        if (snapshotFile && snapshotFile->privateMappingOffset == x[5] &&
+            snapshotFile->privateMappingSourceSize == bytes.size()) {
+            auto existing = snapshotFile->privateMapping.lock();
+            // MAP_SHARED may change the inode without a file syscall, so verify the visible bytes.
+            if (existing.size() == copiedLength &&
+                std::memcmp(existing.data(), bytes.data(), bytes.size()) == 0)
+                segment.bytes = std::move(existing);
+        }
+        if (segment.bytes.empty()) {
+            segment.bytes.resize(copiedLength);
+            std::copy(bytes.begin() + imageLength, bytes.end(), segment.bytes.mutableData());
+            if (snapshotFile) {
+                snapshotFile->privateMappingOffset = x[5];
+                snapshotFile->privateMappingSourceSize = bytes.size();
+                snapshotFile->privateMapping.remember(segment.bytes);
+            }
+        }
     }
     if (atAddress) changeRange(machine, start, end, {});
     if (!atAddress || (x[3] & fixedNoReplace)) nextMapping = std::max(nextMapping, end);
