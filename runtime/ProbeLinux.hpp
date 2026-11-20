@@ -600,7 +600,7 @@ private:
     std::string absolutePath(std::string_view path) const;
     uint64_t resolveAtPath(uint32_t directory, std::string_view path, std::string& result) const;
     uint64_t changeWorkingDirectory(std::string path);
-    std::optional<std::string> followLinks(std::string path, bool followFinal = true) const;
+    std::optional<std::string> followLinks(std::string path, bool followFinal = true, uint64_t* lookupError = nullptr) const;
     uint64_t writeDescriptor(Machine& machine, const Descriptor& fd, uint64_t address, uint64_t size,
                              std::optional<uint64_t> position = {});
     uint64_t open(const Machine& machine, const std::string& path, uint32_t flags, uint32_t mode);

@@ -4890,6 +4890,52 @@ int main() {
         assert(invoke(56, {atCwd, markerPath, 0}) < 256);
     }
 
+    {
+        ProbeLinux mounts(1, 0);
+        mounts.addBootTmpfs("/data", 0771, 1000, 6);
+        mounts.addDirectory("/data/data", 0771);
+        mounts.addDirectory("/data/data/own.app", 0700);
+        mounts.addDirectory("/data/user", 0751);
+        mounts.addDirectory("/data/user/0", 0751);
+        mounts.addDirectory("/data/private", 0700);
+        Machine task(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
+        const auto invoke = [&](uint64_t number, std::array<uint64_t, 6> args) {
+            std::ranges::copy(args, task.cpu.x.begin());
+            task.cpu.x[8] = number;
+            assert(mounts.syscall(task));
+            return task.cpu.x[0];
+        };
+        const auto path = [&](uint64_t offset, const auto& text) {
+            assert(task.write(base + offset, {reinterpret_cast<const uint8_t*>(text), sizeof(text)}));
+            return base + offset;
+        };
+        const auto source = path(0, "/data/data");
+        const auto user = path(48, "/data/user");
+        const auto userZero = path(96, "/data/user/0");
+        const auto package = path(144, "/data/data/own.app");
+        const auto isolatedDatabases = path(192, "/data/user/0/own.app/databases");
+        const auto canonicalDatabases = path(240, "/data/data/own.app/databases");
+        const auto database = path(288, "/data/user/0/own.app/databases/test.db");
+        const auto tmpfs = path(336, "tmpfs");
+        const auto options = path(384, "mode=751");
+        const auto hiddenAlias = path(432, "/data/private/alias");
+        const auto hiddenDatabases = path(480, "/data/private/alias/own.app/other");
+        constexpr auto atCwd = uint32_t(-100);
+        assert(invoke(54, {atCwd, package, 10068, 10068}) == 0);
+        assert(invoke(40, {source, userZero, 0, 0x5000}) == 0);
+        assert(invoke(97, {0x20000}) == 0);
+        assert(invoke(40, {tmpfs, user, tmpfs, 14, options}) == 0);
+        assert(invoke(36, {source, atCwd, userZero}) == 0);
+        assert(invoke(36, {source, atCwd, hiddenAlias}) == 0);
+        assert(invoke(149, {10068, 10068, 10068}) == 0);
+        assert(invoke(147, {10068, 10068, 10068}) == 0);
+        assert(invoke(34, {atCwd, isolatedDatabases, 0700}) == 0);
+        assert(invoke(34, {atCwd, canonicalDatabases, 0700}) == uint64_t(-17));
+        assert(invoke(34, {atCwd, userZero, 0700}) == uint64_t(-17));
+        assert(invoke(34, {atCwd, hiddenDatabases, 0700}) == uint64_t(-13));
+        assert(invoke(56, {atCwd, database, 0x42, 0600}) < 256);
+    }
+
     assert(machine.store64(base + 0x840, 17));
     assert(machine.store64(base + 0x850, 1ULL << 16));
     assert(call(135, {0, base + 0x850, 0, 8}) == 0);

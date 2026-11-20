@@ -519,7 +519,7 @@ std::optional<std::string> ProbeLinux::resolve(std::string_view path) const {
     return {};
 }
 
-std::optional<std::string> ProbeLinux::followLinks(std::string path, bool followFinal) const {
+std::optional<std::string> ProbeLinux::followLinks(std::string path, bool followFinal, uint64_t* lookupError) const {
     for (unsigned depth = 0; depth <= 32; ++depth) {
         const std::string_view original(path);
         bool replaced = false;
@@ -527,6 +527,10 @@ std::optional<std::string> ProbeLinux::followLinks(std::string path, bool follow
             if (end == std::string::npos && !followFinal) break;
             const auto prefix = original.substr(0, end);
             if (const auto link = resolve(prefix)) {
+                if (lookupError && !canAccessParent(backingPath(prefix), false)) {
+                    *lookupError = uint64_t(-13);
+                    return {};
+                }
                 if (depth == 32) return {};
                 auto target = link->starts_with('/') ? *link :
                     std::string(prefix.substr(0, prefix.rfind('/'))) + "/" + *link;
@@ -4037,6 +4041,12 @@ bool ProbeLinux::fileCall(Machine& machine) {
                     x[0] = uint64_t(-2);
                 break;
             }
+            if (x[8] == 34) { // mkdirat follows ancestor links and creates the final component.
+                uint64_t lookupError = uint64_t(-40);
+                auto visible = followLinks(std::move(path), false, &lookupError);
+                if (!visible) { x[0] = lookupError; break; }
+                path = std::move(*visible);
+            }
             auto target = resolve(path);
             if (x[8] == 78 && path == "/proc/self/ns/mnt")
                 target = "mnt:[" + std::to_string(current->mountNamespace->id) + "]";
@@ -4131,7 +4141,7 @@ bool ProbeLinux::fileCall(Machine& machine) {
                 if (!x[0]) fileEvent(entry->path, fileAttributes, entry->node == Node::directory);
             } else if (x[8] == 34) {
                 const auto parent = backing.substr(0, backing.rfind('/'));
-                if (entry) x[0] = uint64_t(-17);
+                if (entry || target) x[0] = uint64_t(-17);
                 else if (!directoryExists(parent)) x[0] = uint64_t(-2);
                 else if (!writablePath(path)) x[0] = uint64_t(-30);
                 else if (!canAccessParent(backing, true)) x[0] = uint64_t(-13);
