@@ -3767,12 +3767,17 @@ int main() {
         Machine task(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
         std::string report;
         guest.androidLogObserver = [&](std::string_view message) { report = message; };
-        const auto abort = [&] {
-            task.cpu.x[0] = 4;
-            task.cpu.x[1] = 1;
+        const auto dumpable = [&](uint64_t operation, uint64_t flag = 0) {
+            task.cpu.x[0] = operation;
+            task.cpu.x[1] = flag;
             task.cpu.x[8] = 167;
-            assert(!guest.syscall(task));
+            assert(guest.syscall(task));
+            return task.cpu.x[0];
         };
+        assert(dumpable(3) == 1);
+        assert(dumpable(4, 0) == 0 && dumpable(3) == 0);
+        assert(dumpable(4, 2) == uint64_t(-22) && dumpable(3) == 0);
+        const auto abort = [&] { assert(dumpable(4, 1) == 0 && dumpable(3) == 1); };
         task.cpu.x.fill(0);
         task.cpu.x[1] = 96 * 1024 * 1024;
         task.cpu.x[2] = 3;
@@ -3793,6 +3798,14 @@ int main() {
         abort();
         assert(report.starts_with("Guest native abort: PID=1 TID=1 "));
         assert(report.ends_with("input initialization failed"));
+        assert(dumpable(0x59616d61, UINT64_MAX) == uint64_t(-22));
+        task.cpu.x[0] = 0x01210900;
+        task.cpu.x[8] = 220; // debuggerd's clone without CLONE_FILES
+        assert(guest.syscall(task) && task.cpu.x[0] == uint64_t(-38));
+
+        task.cpu.x[0] = 1000;
+        task.cpu.x[8] = 146; // setuid
+        assert(guest.syscall(task) && task.cpu.x[0] == 0 && dumpable(3) == 0);
     }
     for (const auto [wait, restart] : {std::pair{98, 0ULL}, std::pair{98, 0x10000000ULL},
                                       std::pair{137, 0x10000000ULL}, std::pair{133, 0x10000000ULL}}) {

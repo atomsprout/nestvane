@@ -6276,6 +6276,7 @@ bool ProbeLinux::execProcess(Machine& machine) {
             process.effectiveCaps &= oldEffective & process.permittedCaps;
         }
         process.secureBits &= ~secureKeepCaps;
+        process.dumpable = process.userIds[0] == process.userIds[1] && process.groupIds[0] == process.groupIds[1];
         process.pendingEntry = image.startup->executableEntry;
         process.nextMapping = randomMappingBase();
         for (auto& action : process.signalActions) if (action[0] != 1) action.fill(0);
@@ -9791,7 +9792,11 @@ bool ProbeLinux::syscall(Machine& machine) {
             sliceEnd = 0;
             x[0] = 0;
             break;
-        case 220: return cloneThread(machine);
+        case 220: // clone
+            // debuggerd asks for a thread with its own file table. This profile
+            // shares files across threads, so let Android take its exit fallback.
+            if (x[0] == 0x01210900) { x[0] = uint64_t(-38); break; }
+            return cloneThread(machine);
         case 93: return exitThread(machine);
         case 94:
             if (processId() == pid) return false;
@@ -9841,6 +9846,7 @@ bool ProbeLinux::syscall(Machine& machine) {
                         process.effectiveCaps = process.permittedCaps;
                     }
                 }
+                if (ids[1] != updated[1]) process.dumpable = false;
                 ids = updated;
             }
             x[0] = allowed ? 0 : uint64_t(-1);
@@ -10530,8 +10536,14 @@ bool ProbeLinux::syscall(Machine& machine) {
                 x[0] = 0;
                 break;
             }
-            if (x[0] == 3) { x[0] = 1; break; } // PR_GET_DUMPABLE
-            if (x[0] == 4 && x[1] == 1 && androidLogObserver) { // debuggerd sets PR_SET_DUMPABLE.
+            if (x[0] == 0x59616d61) { x[0] = invalid; break; } // PR_SET_PTRACER without Yama.
+            if (x[0] == 3) { x[0] = process.dumpable; break; } // PR_GET_DUMPABLE
+            if (x[0] == 4) { // PR_SET_DUMPABLE
+                if (x[1] > 1) { x[0] = invalid; break; }
+                process.dumpable = x[1];
+                x[0] = 0;
+                if (!process.dumpable || !androidLogObserver) break;
+
                 // Bionic places this record at the beginning of its abort-message mapping.
                 constexpr uint64_t magic1 = 0xb18e40886ac388f0ULL;
                 constexpr uint64_t magic2 = 0xc6dfba755a1de0b5ULL;
@@ -10553,6 +10565,7 @@ bool ProbeLinux::syscall(Machine& machine) {
                     androidLogObserver(message);
                     break;
                 }
+                break;
             }
             if (x[0] == 7) { x[0] = bool(process.secureBits & secureKeepCaps); break; }
             if (x[0] == 8) { // PR_SET_KEEPCAPS

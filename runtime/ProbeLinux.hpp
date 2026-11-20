@@ -761,7 +761,7 @@ private:
     };
     std::map<std::string, Link, std::less<>> links;
     struct Process {
-        bool expeditedMembarrier = false;
+        bool expeditedMembarrier = false, dumpable = true;
         uint64_t id;
         uint64_t parent = 0;
         std::string executable;
