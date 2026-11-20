@@ -4660,7 +4660,8 @@ int main() {
     linux.setBootContext("u:r:vold:s0");
     assert(call(29, {manager, 0xc0046209, base + 512}) == uint64_t(-1));
     const auto channel = call(56, {uint32_t(-100), base + 260, 2});
-    const auto clientMap = call(222, {0, pageSize, 1, 0x4002, channel, 0});
+    constexpr uint64_t clientMapSize = 128 * 1024;
+    const auto clientMap = call(222, {0, clientMapSize, 1, 0x4002, channel, 0});
     assert(channel < 256 && clientMap != managerMap);
     assert(bindRequest(channel, 0x40406300, 42, "request", true) == 0);
     assert(uint32_t(load(base + 0x720)) == 0x7206);
@@ -4854,6 +4855,61 @@ int main() {
             }
         }
         assert(call(57, {fixedFd}) == 0);
+    }
+    {
+        constexpr size_t payloadLength = 72 * 1024, objectCount = 80;
+        std::vector<uint8_t> payload(payloadLength, 0xa5);
+        std::array<uint64_t, objectCount> offsets{};
+        const std::array<uint64_t, 3> nullObject{flatBinder, 0, 0};
+        for (size_t i = 0; i < offsets.size(); ++i) {
+            offsets[i] = i * sizeof(nullObject);
+            std::memcpy(payload.data() + offsets[i], nullObject.data(), sizeof(nullObject));
+        }
+        for (const auto length : {uint64_t(payloadLength), clientMapSize}) {
+            assert(bindRequest(channel, 0x40406300, 50, "large reply", true) == 0);
+            assert(uint32_t(load(base + 0x720)) == 0x7206);
+            assert(bindRequest(channel, 0, 0, "", true) == channel && linux.blocked());
+            assert(linux.schedule(machine) && linux.processId() == 1);
+            assert(bindRequest(manager, 0, 0, "", true) == 0);
+            assert(uint32_t(load(base + 0x720)) == 0x80407202);
+            const auto requestBuffer = load(base + 0x724 + 6 * 8);
+            constexpr uint64_t regionSize = 2 * clientMapSize;
+            const auto region = call(222, {0, regionSize, 3, 0x22, UINT32_MAX});
+            assert(region < INT64_MAX);
+            const auto payloadAt = region + pageSize - 40;
+            const auto offsetsAt = region + clientMapSize - 32;
+            const auto command = region + clientMapSize + pageSize - 8;
+            const std::array<uint64_t, 8> transaction{0, 0, 0, 0, length, sizeof offsets, payloadAt, offsetsAt};
+            constexpr uint32_t reply = 0x40406301;
+            assert(machine.write(payloadAt, payload));
+            assert(machine.write(offsetsAt, {reinterpret_cast<const uint8_t*>(offsets.data()), sizeof offsets}));
+            assert(machine.write(command, {reinterpret_cast<const uint8_t*>(&reply), sizeof reply}));
+            assert(machine.write(command + 4, {reinterpret_cast<const uint8_t*>(transaction.data()), sizeof transaction}));
+            assert(call(226, {region + pageSize, pageSize, 1}) == 0);
+            assert(call(226, {region + clientMapSize, pageSize, 1}) == 0);
+            assert(!machine.read(payloadAt, payloadLength, 4) && !machine.read(offsetsAt, sizeof offsets, 4));
+            assert(!machine.read(command + 4, sizeof transaction, 4));
+            constexpr uint64_t arguments = base + 0x690, output = base + 0x720;
+            const std::array<uint64_t, 6> exchange{sizeof reply + sizeof transaction, 0, command, 128, 0, output};
+            assert(machine.write(arguments, {reinterpret_cast<const uint8_t*>(exchange.data()), sizeof exchange}));
+            assert(call(29, {manager, 0xc0306201, arguments}) == 0 && uint32_t(load(output)) == 0x7206);
+            assert(bindRequest(manager, 0x40086303, 0, "", false, {}, requestBuffer) == 0);
+            assert(call(215, {region, regionSize}) == 0);
+            machine.cpu.retired += 4096;
+            assert(linux.schedule(machine) && linux.processId() == binderChild);
+            assert(bindRequest(channel, 0, 0, "", true) == 0);
+            if (length == payloadLength) {
+                assert(uint32_t(load(output)) == 0x80407203);
+                assert(load(output + 4 + 4 * 8) == length);
+                const auto buffer = load(output + 4 + 6 * 8);
+                const auto list = load(output + 4 + 7 * 8);
+                assert(std::memcmp(machine.read(buffer, payload.size(), 4), payload.data(), payload.size()) == 0);
+                assert(std::memcmp(machine.read(list, sizeof offsets, 4), offsets.data(), sizeof offsets) == 0);
+                assert(bindRequest(channel, 0x40086303, 0, "", false, {}, buffer) == 0);
+            } else {
+                assert(uint32_t(load(output)) == 0x7211);
+            }
+        }
     }
     const auto binderWorker = call(220, {0x3d0f00, base + 0x900, base + 0x810, base + 0xa00, base + 0x810});
     assert(binderWorker > binderChild);

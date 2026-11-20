@@ -4635,7 +4635,7 @@ uint64_t ProbeLinux::map(Machine& machine) {
         }
         if (fd.binder) {
             if (fd.binder->owner != processId()) return uint64_t(-1);
-            if (atAddress || x[5] || x[2] != 1 || length > 4 * 1024 * 1024) return invalid;
+            if (atAddress || x[5] || x[2] != 1 || length > binderMappingLimit) return invalid;
             if (fd.binder->mapped) return uint64_t(-16);
             if (!allowsBacking(machine, start, end, length, memoryLimit)) return noMemory;
             auto mapping = std::make_shared<SharedFileBytes>();

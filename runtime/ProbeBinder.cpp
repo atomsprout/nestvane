@@ -23,10 +23,15 @@ constexpr size_t binderObjectLimit = 4096;
 
 template <class T>
 bool readGuest(Machine& machine, uint64_t address, T& value) {
-    const auto* data = machine.read(address, sizeof value, 4);
-    if (!data) return false;
-    std::memcpy(&value, data, sizeof value);
-    return true;
+    return machine.readInto(address, {reinterpret_cast<uint8_t*>(&value), sizeof value});
+}
+
+const uint8_t* readBinderBytes(Machine& machine, uint64_t address, size_t size,
+                               std::vector<uint8_t>& storage) {
+    if (!size) return nullptr;
+    if (const auto* bytes = machine.read(address, size, 4)) return bytes;
+    storage.resize(size);
+    return machine.readInto(address, storage) ? storage.data() : nullptr;
 }
 
 template <class T>
@@ -226,13 +231,10 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
     const bool scatterGather = command == bcTransactionSg || command == bcReplySg;
     uint64_t extraSize = 0;
     if (scatterGather) std::memcpy(&extraSize, data.data() + sizeof transaction, sizeof extraSize);
-    if (transaction.dataSize > 64 * 1024 || transaction.offsetsSize % sizeof(uint64_t) ||
-        transaction.offsetsSize > 64 * sizeof(uint64_t) || extraSize > 64 * 1024 || extraSize % 8)
+    if (transaction.dataSize > binderMappingLimit || extraSize > binderMappingLimit ||
+        transaction.offsetsSize % sizeof(uint64_t) || extraSize % 8 ||
+        transaction.offsetsSize / sizeof(uint64_t) > transaction.dataSize / sizeof(BinderObject))
         return fail(brFailedReply);
-    const auto* bytes = transaction.dataSize ? machine.read(transaction.buffer, transaction.dataSize, 4) : nullptr;
-    if (transaction.dataSize && !bytes) return fail(brFailedReply);
-    const auto* offsets = transaction.offsetsSize ? machine.read(transaction.offsets, transaction.offsetsSize, 4) : nullptr;
-    if (transaction.offsetsSize && !offsets) return fail(brFailedReply);
     std::shared_ptr<BinderConnection> target;
     uint64_t replyThread = 0;
     uint64_t targetPointer = 0, targetCookie = 0;
@@ -286,6 +288,17 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
     auto& destination = replyThread ? target->directed[replyThread] : target->incoming;
     if (destination.size() >= 32) return capacityReached("receive queue", destination.size());
     const auto label = sendLabel ? std::string_view(current->process->context) : std::string_view{};
+    const auto endPayload = (transaction.dataSize + 7) & ~uint64_t{7};
+    const auto extraOffset = endPayload + transaction.offsetsSize;
+    const auto extent = extraOffset + extraSize + (label.empty() ? 0 : label.size() + 1);
+    if (!target->mapped || std::max<uint64_t>(8, (extent + 7) & ~uint64_t{7}) > target->mapped->size)
+        return capacityReached("transaction bytes", extent);
+
+    std::vector<uint8_t> splitPayload, splitOffsets;
+    const auto* bytes = readBinderBytes(machine, transaction.buffer, transaction.dataSize, splitPayload);
+    if (transaction.dataSize && !bytes) return fail(brFailedReply);
+    const auto* offsets = readBinderBytes(machine, transaction.offsets, transaction.offsetsSize, splitOffsets);
+    if (transaction.offsetsSize && !offsets) return fail(brFailedReply);
 
     struct Translation {
         size_t offset;
@@ -409,7 +422,6 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
             allocation.handles.push_back(item.handle);
         }
     }
-    const auto extraOffset = ((transaction.dataSize + 7) & ~uint64_t{7}) + transaction.offsetsSize;
     auto* targetBytes = target->mapped->pages.data() + (address - target->address);
     for (const auto& item : buffers) {
         auto buffer = item.object;
@@ -433,7 +445,7 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
     transaction.senderPid = replying || (transaction.flags & oneWay) ? 0 : processId();
     transaction.senderUid = userId();
     transaction.buffer = address;
-    transaction.offsets = address + ((transaction.dataSize + 7) & ~uint64_t{7});
+    transaction.offsets = address + endPayload;
     const auto opcode = replying ? brReply : label.empty() ? brTransaction : brTransactionSecctx;
     BinderPacket packet{opcode, transaction, label.empty() ? 0 : address + extraOffset + extra.size()};
     if (synchronousCall) {
@@ -469,6 +481,7 @@ uint64_t ProbeLinux::binderWriteRead(Machine& machine, const Descriptor& fd) {
         request.writeConsumed > request.writeSize || request.readConsumed > request.readSize ||
         request.writeBuffer > UINT64_MAX - request.writeSize || request.readBuffer > UINT64_MAX - request.readSize)
         return invalid;
+    std::vector<uint8_t> splitCommand;
     while (request.writeConsumed < request.writeSize) {
         const auto position = request.writeBuffer + request.writeConsumed;
         const auto remaining = request.writeSize - request.writeConsumed;
@@ -477,7 +490,7 @@ uint64_t ProbeLinux::binderWriteRead(Machine& machine, const Descriptor& fd) {
         if (!readGuest(machine, position, command)) return fault;
         const auto size = (command >> 16) & 0x3fff;
         if (remaining < sizeof command + size) return invalid;
-        const auto* data = size ? machine.read(position + sizeof command, size, 4) : nullptr;
+        const auto* data = readBinderBytes(machine, position + sizeof command, size, splitCommand);
         if (size && !data) return fault;
         if (const auto error = binderCommand(machine, fd, command, {data, size}); error)
             return writeGuest(machine, argument, request) ? error : fault;

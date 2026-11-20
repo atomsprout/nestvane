@@ -498,6 +498,7 @@ private:
         uint64_t cookie, thread;
         bool sent = false, acknowledged = false, cleared = false;
     };
+    static constexpr size_t binderMappingLimit = 4 * 1024 * 1024;
     struct BinderConnection {
         uint64_t owner;
         uint32_t maxThreads = 0;
