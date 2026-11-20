@@ -180,6 +180,7 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
             idle = !timedOut;
             break;
         }
+        if (cpu.stop != Stop::running) continue;
         if (init && linux.hasChildEntryAt(cpu.pc)) {
             if (auto event = linux.observeEntry(cpu.pc); !event.empty()) {
                 if (event.find(" entered /system/bin/app_process64 ") != std::string::npos)

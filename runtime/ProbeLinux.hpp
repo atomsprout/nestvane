@@ -117,7 +117,8 @@ private:
     enum class Wait { none, poll, recordLock, futex, futexPi, signal, sleep, exited, suspended };
     struct Process;
     struct WritableFile;
-    using PendingSignals = std::map<uint32_t, std::array<uint32_t, 32>>;
+    using SignalWords = std::array<uint32_t, 32>;
+    using PendingSignals = std::multimap<uint32_t, SignalWords>;
     struct BinderConnection;
     struct SeccompFilter {
         struct Instruction { uint16_t code; uint8_t yes, no; uint32_t value; };
@@ -137,7 +138,7 @@ private:
         std::weak_ptr<uint64_t> waitingRecordDescription;
         uint64_t recordLockBlocker = 0;
         bool noNewPrivileges = false;
-        Wait wait = Wait::none;
+        Wait wait = Wait::none, signalInterruptedWait = Wait::none;
         uint64_t clearTid = 0, futexAddress = 0, futexPiOrder = 0;
         std::shared_ptr<SharedFileBytes> futexBacking;
         std::shared_ptr<Process> futexAddressSpace;
@@ -173,6 +174,8 @@ private:
     void finishProcess(Process& process, uint32_t status, bool killed);
     bool waitChild(Machine& machine);
     bool processAlive(uint64_t id) const;
+    bool installSignalFrame(Machine& machine, uint32_t signal, const SignalWords& info, uint64_t faultAddress = 0);
+    void deliverPendingCaughtSignal(Machine& machine);
     bool restoreSignalContext(Machine& machine);
     void terminateOnPendingSignal();
     uint64_t signalRestorer(Machine& machine);

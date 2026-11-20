@@ -72,7 +72,7 @@ constexpr uint64_t invalid = uint64_t(-22);
 constexpr unsigned sigSegv = 11;
 constexpr uint64_t unblockableSignals = (1ULL << 8) | (1ULL << 18);
 constexpr uint32_t saSigInfo = 4, saRestorer = 0x04000000, saOnStack = 0x08000000,
-                   saNoDefer = 0x40000000, saResetHand = 0x80000000;
+                   saRestart = 0x10000000, saNoDefer = 0x40000000, saResetHand = 0x80000000;
 constexpr uint32_t ssOnStack = 1, ssDisable = 2;
 constexpr uint32_t fpsimdMagic = 0x46508001;
 
@@ -5090,6 +5090,7 @@ bool ProbeLinux::switchThread(Machine& machine, std::chrono::steady_clock::time_
             if (exited) threads.erase(previous);
         }
         sliceEnd = machine.cpu.retired + 4096;
+        if (!current->pendingSignals.empty()) deliverPendingCaughtSignal(machine);
         return true;
     }
     return false;
@@ -6810,14 +6811,29 @@ uint64_t ProbeLinux::signalRestorer(Machine& machine) {
 }
 
 bool ProbeLinux::deliverMemoryFault(Machine& machine) {
+    if (machine.cpu.stop != Stop::fault) return false;
+    const auto address = machine.cpu.faultAddress & 0x00ff'ffff'ffff'ffff;
+    const bool mapped = std::ranges::any_of(machine.segments, [&](const Segment& segment) {
+        return address >= segment.address && address - segment.address < segment.mappedSize();
+    });
+    SignalFrame::Info info{};
+    info.number = sigSegv;
+    info.code = mapped ? 2 : 1; // SEGV_ACCERR or SEGV_MAPERR
+    info.address = address;
+    return installSignalFrame(machine, sigSegv, std::bit_cast<SignalWords>(info), address);
+}
+
+bool ProbeLinux::installSignalFrame(Machine& machine, uint32_t signal, const SignalWords& info,
+                                    uint64_t faultAddress) {
     auto& cpu = machine.cpu;
-    auto& action = current->process->signalActions[sigSegv];
+    auto& action = current->process->signalActions[signal];
     const auto [handler, flags, restorer, mask] = action;
-    const uint64_t signalBit = 1ULL << (sigSegv - 1);
-    if (cpu.stop != Stop::fault || handler <= 1 || (current->signalMask & signalBit) ||
-        handler % 4 || !machine.read(handler, 4, 1)) return false;
+    const uint64_t signalBit = 1ULL << (signal - 1);
+    if (handler <= 1 || (current->signalMask & signalBit) || handler % 4 ||
+        !machine.read(handler, 4, 1)) return false;
 
     SignalFrame frame{};
+    frame.info = std::bit_cast<SignalFrame::Info>(info);
     auto& context = frame.context;
     context.stack = current->alternateStack;
     context.mask = current->signalMask;
@@ -6830,13 +6846,7 @@ bool ProbeLinux::deliverMemoryFault(Machine& machine) {
     if ((alreadyOnStack || top != cpu.sp) && address < context.stack[0]) return false;
 
     auto& saved = context.machine;
-    saved.faultAddress = cpu.faultAddress & 0x00ff'ffff'ffff'ffff;
-    const bool mapped = std::any_of(machine.segments.begin(), machine.segments.end(), [&](const Segment& segment) {
-        return saved.faultAddress >= segment.address && saved.faultAddress - segment.address < segment.mappedSize();
-    });
-    frame.info.number = sigSegv;
-    frame.info.code = mapped ? 2 : 1; // SEGV_ACCERR or SEGV_MAPERR
-    frame.info.address = saved.faultAddress;
+    saved.faultAddress = faultAddress;
     saved.regs = cpu.x;
     saved.sp = cpu.sp;
     saved.pc = cpu.pc;
@@ -6850,7 +6860,7 @@ bool ProbeLinux::deliverMemoryFault(Machine& machine) {
 
     if (flags & saResetHand) action.fill(0);
     current->signalMask |= (mask | ((flags & saNoDefer) ? 0 : signalBit)) & ~unblockableSignals;
-    cpu.x[0] = sigSegv;
+    cpu.x[0] = signal;
     if (flags & saSigInfo) {
         cpu.x[1] = address;
         cpu.x[2] = address + offsetof(SignalFrame, context);
@@ -6862,6 +6872,41 @@ bool ProbeLinux::deliverMemoryFault(Machine& machine) {
     cpu.exclusiveSize = 0;
     cpu.stop = Stop::running;
     return true;
+}
+
+void ProbeLinux::deliverPendingCaughtSignal(Machine& machine) {
+    auto& thread = *current;
+    auto& cpu = machine.cpu;
+    auto& pending = thread.pendingSignals;
+    const auto found = std::ranges::find_if(pending, [&](const auto& entry) {
+        const auto bit = 1ULL << (entry.first - 1);
+        return !((thread.signalMask | thread.signalWaitMask) & bit) &&
+               thread.process->signalActions[entry.first][0] > 1;
+    });
+    if (found == pending.end()) return;
+    const auto signal = found->first;
+    const auto info = found->second;
+    pending.erase(found);
+
+    const auto interrupted = std::exchange(thread.signalInterruptedWait, Wait::none);
+    if (interrupted != Wait::none) {
+        const auto flags = thread.process->signalActions[signal][1];
+        const auto syscall = cpu.x[8], futexOp = cpu.x[1] & 127;
+        const bool restartable = interrupted == Wait::futex
+            ? (!cpu.x[3] || futexOp == 9)
+            : syscall == 63 || syscall == 64 || syscall == 206 || syscall == 207;
+        if (!(flags & saRestart) || !restartable) {
+            cpu.pc += 4;
+            cpu.x[0] = uint64_t(-4); // EINTR
+        }
+        thread.deadline.reset();
+        thread.hostEventRetry.reset();
+        thread.realtimeFutexDeadline.reset();
+        thread.futexBacking.reset();
+        thread.futexAddressSpace.reset();
+        thread.waitingBinder.reset();
+    }
+    if (!installSignalFrame(machine, signal, info)) machine.fault(cpu.pc, cpu.sp);
 }
 
 // These default dispositions terminate the thread group. Catchable signals
@@ -6913,6 +6958,7 @@ bool ProbeLinux::restoreSignalContext(Machine& machine) {
     cpu.faultAddress = 0;
     signalContextRestored = true;
     terminateOnPendingSignal();
+    if (!current->pendingSignals.empty()) sliceEnd = 0;
     return true;
 }
 
@@ -10004,7 +10050,8 @@ bool ProbeLinux::syscall(Machine& machine) {
                 info[4] = uint32_t(processId()); // SI_USER
                 info[5] = current->process->userIds[0];
                 for (const auto& [id, victim] : victims) {
-                    if (!victim->pendingSignals.try_emplace(quit, info).second) continue;
+                    if (victim->pendingSignals.contains(quit)) continue;
+                    victim->pendingSignals.emplace(quit, info);
                     for (auto& [tid, task] : threads) {
                         if (task.process != victim || !waiting(task)) continue;
                         task.wait = Wait::none;
@@ -10071,18 +10118,31 @@ bool ProbeLinux::syscall(Machine& machine) {
             if (handler == 1 && !waiting && !(target.signalMask & mask)) { x[0] = 0; break; }
             const bool fatalResend = queued && &target == current && !handler &&
                 defaultFatalSignal(signal) && processId() != pid;
-            if (signal >= 32 || (!waiting && !(target.signalMask & mask) && !fatalResend)) return false;
+            const bool masked = target.signalMask & mask;
+            const bool caught = handler > 1;
+            const bool scheduleHandler = caught && !masked && !waiting;
+            if ((!caught && signal >= 32 && !waiting) ||
+                (!waiting && !masked && !fatalResend && !caught)) return false;
+            if (scheduleHandler && target.wait != Wait::none &&
+                target.wait != Wait::poll && target.wait != Wait::futex) return false;
+            if (signal >= 32 && target.pendingSignals.size() >= 1024) { x[0] = uint64_t(-11); break; }
             info[0] = signal;
             if (!queued) {
                 info[2] = uint32_t(-6); // SI_TKILL
                 info[4] = uint32_t(processId());
                 info[5] = sender[0];
             }
-            target.pendingSignals.try_emplace(signal, info); // Standard signals coalesce.
+            if (signal >= 32 || !target.pendingSignals.contains(signal))
+                target.pendingSignals.emplace(signal, info);
             x[0] = 0;
             if (waiting) {
                 target.wait = Wait::none;
                 target.deadline.reset();
+            } else if (scheduleHandler) {
+                if (target.wait != Wait::none) target.signalInterruptedWait = target.wait;
+                target.wait = Wait::none;
+                target.nextSliceAfter.reset();
+                sliceEnd = 0;
             } else if (fatalResend) {
                 terminateOnPendingSignal();
             }
@@ -10157,7 +10217,10 @@ bool ProbeLinux::syscall(Machine& machine) {
             if (x[2] && !writeGuest(machine, x[2], current->signalMask)) { x[0] = uint64_t(-14); break; }
             current->signalMask = next;
             x[0] = 0;
-            if (x[1]) terminateOnPendingSignal();
+            if (x[1]) {
+                terminateOnPendingSignal();
+                if (!current->pendingSignals.empty()) sliceEnd = 0;
+            }
             break;
         }
         case 132: { // sigaltstack

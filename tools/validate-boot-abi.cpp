@@ -2894,6 +2894,35 @@ int main() {
         assert(report.find("pc-file=/system/boot-trace-probe.so+0x1010") != std::string::npos);
         assert(report.find("lr-file=/system/boot-trace-probe.so+0x1020") != std::string::npos);
     }
+    for (const uint64_t restart : {0ULL, 0x10000000ULL}) {
+        ProbeLinux guest(1, 0);
+        constexpr auto handler = base + 0x200, blockedPc = base + 0x300;
+        constexpr auto word = base + 0x400, action = base + 0x440, parentTid = base + 0x480;
+        constexpr auto signal = 33;
+        Machine task(Image{base, {{base, std::vector<uint8_t>(8 * pageSize), 7}}, {}});
+        task.cpu.sp = base + 4 * pageSize;
+        const auto invoke = [&](uint64_t number, std::array<uint64_t, 6> args = {}) {
+            std::ranges::copy(args, task.cpu.x.begin());
+            task.cpu.x[8] = number;
+            assert(guest.syscall(task));
+            return task.cpu.x[0];
+        };
+        assert(task.store64(action, handler) && task.store64(action + 8, restart | 4));
+        assert(invoke(134, {signal, action, 0, 8}) == 0);
+        const auto thread = invoke(220, {0x3d0f00, base + 8 * pageSize, parentTid, 0, parentTid + 8});
+        assert(thread == 2 && guest.schedule(task) && guest.threadId() == thread);
+        task.cpu.pc = blockedPc;
+        assert(invoke(98, {word, 0x80, 0}) == word && guest.blocked());
+        assert(guest.schedule(task) && guest.threadId() == 1);
+        assert(invoke(131, {1, thread, signal}) == 0 && guest.schedule(task));
+        assert(guest.threadId() == thread && task.cpu.pc == handler && task.cpu.x[0] == signal);
+        uint64_t signalInfo = 0;
+        assert(task.load64(task.cpu.x[1] + 8, signalInfo) && uint32_t(signalInfo) == uint32_t(-6));
+        invoke(139);
+        assert(guest.restoredSignalContext() && !guest.blocked());
+        assert(task.cpu.pc == blockedPc + (restart ? 0 : 4));
+        assert(task.cpu.x[0] == (restart ? word : uint64_t(-4)));
+    }
     {
         ProbeLinux guest(1, 0);
         guest.addBootCgroups();
