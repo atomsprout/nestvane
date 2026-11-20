@@ -2792,6 +2792,29 @@ int main() {
     }
     {
         ProbeLinux guest(1, 0);
+        Machine task(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
+        const std::array<uint8_t, 2 * pageSize> code{};
+        constexpr char codePath[] = "/system/boot-trace-probe.so";
+        guest.mount(codePath, code);
+        assert(task.write(base, {reinterpret_cast<const uint8_t*>(codePath), sizeof(codePath)}));
+        const auto invoke = [&](uint64_t number, std::array<uint64_t, 6> args) {
+            std::ranges::copy(args, task.cpu.x.begin());
+            task.cpu.x[8] = number;
+            assert(guest.syscall(task));
+            return task.cpu.x[0];
+        };
+        const auto fd = invoke(56, {uint32_t(-100), base, 0});
+        assert(fd < 256);
+        const auto mapping = invoke(222, {0, pageSize, 5, 2, fd, pageSize});
+        assert(mapping >= 0x100000000 && mapping < 0x2000000000);
+        task.cpu.pc = mapping + 0x10;
+        task.cpu.x[30] = mapping + 0x20;
+        const auto report = guest.workerReport(task, 1);
+        assert(report.find("pc-file=/system/boot-trace-probe.so+0x1010") != std::string::npos);
+        assert(report.find("lr-file=/system/boot-trace-probe.so+0x1020") != std::string::npos);
+    }
+    {
+        ProbeLinux guest(1, 0);
         guest.addBootCgroups();
         Machine task(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
         const auto invoke = [&](uint64_t number, std::array<uint64_t, 6> args = {}) {

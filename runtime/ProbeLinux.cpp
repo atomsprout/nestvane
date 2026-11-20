@@ -6440,6 +6440,32 @@ std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedPr
         report += "  guest worker " + std::to_string(tid) + " waited in epoll for " + path + "\n";
     }
     std::ostringstream tasks;
+    const auto describeCode = [&](const Process& process, uint64_t address, const char* field) {
+        const auto& segments = process.id == processId() ? machine.segments : process.segments;
+        const auto next = std::upper_bound(segments.begin(), segments.end(), address,
+            [](uint64_t pc, const Segment& segment) { return pc < segment.address; });
+        if (next == segments.begin()) return;
+        const auto& segment = *std::prev(next);
+        const auto offset = address - segment.address;
+        if (!segment.imageView || offset >= segment.mappedSize()) return;
+        const auto pointer = reinterpret_cast<uintptr_t>(segment.imageView) + offset;
+        const auto describe = [&](std::string_view path, std::span<const uint8_t> bytes) {
+            const auto beginning = reinterpret_cast<uintptr_t>(bytes.data());
+            if (pointer < beginning || pointer - beginning >= bytes.size()) return false;
+            if (path.size() > 1 && path[1] == '\0') {
+                if (const auto slash = path.find('/', 2); slash != std::string_view::npos) path.remove_prefix(slash);
+            }
+            tasks << ' ' << field << '=' << path << "+0x" << std::hex << pointer - beginning << std::dec;
+            return true;
+        };
+        // An APEX extent may refer into its containing image. Prefer the ELF entry.
+        for (const auto& [path, node] : ext4Nodes) {
+            const auto bytes = node->view.empty() ? std::span<const uint8_t>(node->owned) : node->view;
+            if (describe(path, bytes)) return;
+        }
+        for (const auto& [path, bytes] : files)
+            if (describe(path, bytes)) return;
+    };
     const auto active = std::ranges::count_if(threads, [](const auto& entry) {
         return entry.second.wait != Wait::exited;
     });
@@ -6499,7 +6525,13 @@ std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedPr
                 break;
             case Wait::exited: break;
         }
-        tasks << " PC=0x" << std::hex << cpu.pc << " LR=0x" << cpu.x[30] << std::dec << '\n';
+        tasks << " PC=0x" << std::hex << cpu.pc << " LR=0x" << cpu.x[30] << std::dec;
+        if (tid == process.id &&
+            (process.id == observedProcess || process.context == "u:r:system_server:s0")) {
+            describeCode(process, cpu.pc, "pc-file");
+            describeCode(process, cpu.x[30], "lr-file");
+        }
+        tasks << '\n';
     }
     return report + tasks.str() + binderTrace;
 }
