@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -116,7 +117,18 @@ struct Segment {
     const uint8_t* imageView = nullptr; // Borrowed immutable root bytes, kept alive by the image loader.
 
     uint64_t mappedSize() const { return reservedSize ? reservedSize : bytes.size(); }
-    uint64_t accessibleSize() const;
+    uint64_t accessibleSize() const {
+        if (anonymousPages || imageView) return mappedSize();
+        if (!shared) return bytes.size();
+        if (fileOffset >= shared->pages.size()) return 0;
+        return std::min(mappedSize(), shared->pages.size() - fileOffset);
+    }
+    bool contains(uint64_t start, size_t count) const {
+        if (start < address) return false;
+        const auto offset = start - address;
+        const auto length = accessibleSize();
+        return offset < length && count <= length - offset;
+    }
     const uint8_t* data() const;
     uint8_t* data();
     bool prepareWrite(uint64_t offset, uint64_t length);
@@ -189,7 +201,16 @@ struct Machine {
     uint64_t dataAddress(uint64_t address) const {
         return topByteIgnore ? address & 0x00ff'ffff'ffff'ffffULL : address;
     }
-    const uint8_t* read(uint64_t address, size_t size, unsigned flags) const;
+    const uint8_t* read(uint64_t address, size_t size, unsigned flags) const {
+        const bool code = flags & 1;
+        if (!code) address = dataAddress(address);
+        const auto index = findSegment(address, size, flags, code ? codeHint : dataHint);
+        if (index == segments.size()) return nullptr;
+        const auto& segment = segments[index];
+        const auto offset = address - segment.address;
+        if (segment.anonymousPages) return segment.anonymousPages->read(segment.fileOffset + offset, size);
+        return segment.data() + offset;
+    }
     const uint8_t* read(uint64_t address, size_t size, unsigned flags,
                         std::vector<uint8_t>& scratch) const;
 
@@ -215,7 +236,15 @@ struct Machine {
     void fault(uint64_t pc, uint64_t address);
 
 private:
-    size_t findSegment(uint64_t address, size_t size, unsigned flags, size_t& hint) const;
+    size_t findSegment(uint64_t address, size_t size, unsigned flags, size_t& hint) const {
+        // Indices survive as hints only. Check the current mapping and permissions on every access.
+        if (hint < segments.size()) {
+            const auto& segment = segments[hint];
+            if ((segment.flags & flags) == flags && segment.contains(address, size)) return hint;
+        }
+        return searchSegment(address, size, flags, hint);
+    }
+    size_t searchSegment(uint64_t address, size_t size, unsigned flags, size_t& hint) const;
     bool mappedRange(uint64_t address, size_t size, unsigned flags) const;
     mutable size_t codeHint = 0, dataHint = 0;
     mutable std::array<size_t, 64> segmentHints{};

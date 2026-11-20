@@ -42,13 +42,6 @@ uint64_t signExtend(unsigned value, unsigned bits) {
     return (uint64_t{value} ^ sign) - sign;
 }
 
-bool contains(const Segment& segment, uint64_t address, size_t count) {
-    if (address < segment.address) return false;
-    uint64_t offset = address - segment.address;
-    const auto length = segment.accessibleSize();
-    return offset < length && count <= length - offset;
-}
-
 uint32_t fetch(const uint8_t* bytes) {
     uint32_t value;
     std::memcpy(&value, bytes, sizeof(value));
@@ -255,7 +248,7 @@ ELFImage readELF(std::span<const uint8_t> elf, uint64_t bias, ImageKind kind) {
         std::copy_n(elf.data() + offset, filesz, segment.bytes.mutableData());
     }
     if (image.entry % 4 || std::none_of(image.segments.begin(), image.segments.end(), [&](const Segment& segment) {
-        return (segment.flags & executable) && contains(segment, image.entry, 4);
+        return (segment.flags & executable) && segment.contains(image.entry, 4);
     })) throw std::runtime_error("ELF entry is not mapped for execution");
     return object;
 }
@@ -634,13 +627,6 @@ bool DenseBytes::operator==(const DenseBytes& other) const {
         (size() == other.size() && std::memcmp(data(), other.data(), size()) == 0);
 }
 
-uint64_t Segment::accessibleSize() const {
-    if (anonymousPages || imageView) return mappedSize();
-    if (!shared) return bytes.size();
-    if (fileOffset >= shared->pages.size()) return 0;
-    return std::min(mappedSize(), shared->pages.size() - fileOffset);
-}
-
 const uint8_t* Segment::data() const {
     if (anonymousPages) return anonymousPages->read(fileOffset, mappedSize());
     if (imageView) return imageView;
@@ -671,12 +657,10 @@ void Machine::insertSegment(Segment segment) {
     segments.insert(position, std::move(segment));
 }
 
-size_t Machine::findSegment(uint64_t address, size_t size, unsigned flags, size_t& hint) const {
+size_t Machine::searchSegment(uint64_t address, size_t size, unsigned flags, size_t& hint) const {
     const auto matches = [&](const Segment& segment) {
-        return (segment.flags & flags) == flags && contains(segment, address, size);
+        return (segment.flags & flags) == flags && segment.contains(address, size);
     };
-    // The hint is an index. Revalidate it against the current mappings on every use.
-    if (hint < segments.size() && matches(segments[hint])) return hint;
     const auto page = address / pageSize;
     auto& cached = segmentHints[(page ^ (page >> 6)) & (segmentHints.size() - 1)];
     if (cached < segments.size() && matches(segments[cached])) return hint = cached;
@@ -685,16 +669,6 @@ size_t Machine::findSegment(uint64_t address, size_t size, unsigned flags, size_
     if (next == segments.begin() || !matches(*std::prev(next))) return segments.size();
     hint = cached = size_t(std::prev(next) - segments.begin());
     return hint;
-}
-
-const uint8_t* Machine::read(uint64_t address, size_t size, unsigned flags) const {
-    if (!(flags & executable)) address = dataAddress(address);
-    const auto index = findSegment(address, size, flags, flags & executable ? codeHint : dataHint);
-    if (index == segments.size()) return nullptr;
-    const auto& segment = segments[index];
-    const auto offset = address - segment.address;
-    if (segment.anonymousPages) return segment.anonymousPages->read(segment.fileOffset + offset, size);
-    return segment.data() + offset;
 }
 
 const uint8_t* Machine::read(uint64_t address, size_t size, unsigned flags,
