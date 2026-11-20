@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <charconv>
 #include <chrono>
 #include <cstring>
@@ -7737,6 +7738,77 @@ bool ProbeLinux::canAllocateSocketStorage(size_t valueSize) {
     return bpfMapBytes() <= bpfMapBudget - (valueSize + 128);
 }
 
+uint64_t ProbeLinux::bpfHashBatch(Machine& machine, std::span<const uint8_t> input, bool remove) {
+    struct Batch {
+        uint64_t inputCursor, outputCursor, keys, values;
+        uint32_t count, mapFd;
+        uint64_t entryFlags, flags;
+    };
+    static_assert(sizeof(Batch) == 56);
+    constexpr uint64_t fault = uint64_t(-14), end = uint64_t(-2);
+    Batch batch{};
+    std::memcpy(&batch, input.data(), sizeof(batch));
+    if (batch.entryFlags || batch.flags ||
+        std::any_of(input.begin() + sizeof(batch), input.end(), [](uint8_t byte) { return byte != 0; }))
+        return invalid;
+    const auto fd = descriptors().find(batch.mapFd);
+    if (fd == descriptors().end()) return uint64_t(-9);
+    if (!fd->second.bpfMap) return invalid;
+    const auto access = fd->second.flags & 3;
+    if (access == 1 || (remove && !access)) return uint64_t(-1);
+    auto& map = *fd->second.bpfMap;
+    if (map.type != 1 && map.type != 5 && map.type != BpfMap::lruHash) return uint64_t(-95);
+    if (!batch.count) return 0;
+    const auto countAddress = machine.dataAddress(machine.cpu.x[1]) + offsetof(Batch, count);
+    if (!writeGuest(machine, countAddress, uint32_t{0})) return fault;
+
+    uint32_t cursor = 0;
+    if (batch.inputCursor &&
+        !machine.readInto(batch.inputCursor, {reinterpret_cast<uint8_t*>(&cursor), sizeof(cursor)})) return fault;
+    const auto bucketCount = std::bit_ceil(map.entryCount);
+    if (cursor >= bucketCount) return end;
+    try {
+        // The cursor is an opaque bucket number and stays valid when a prior batch erased entries.
+        std::vector<std::pair<uint32_t, BpfMap::Entries::iterator>> entries;
+        entries.reserve(map.hash.size());
+        for (auto entry = map.hash.begin(); entry != map.hash.end(); ++entry) {
+            uint32_t hash = 2166136261U;
+            for (const auto byte : entry->first) hash = (hash ^ byte) * 16777619U;
+            const uint32_t bucket = hash & (bucketCount - 1);
+            if (bucket >= cursor) entries.emplace_back(bucket, entry);
+        }
+        std::ranges::sort(entries, {}, [](const auto& entry) { return entry.first; });
+        size_t count = 0;
+        while (count < entries.size()) {
+            const auto first = entries.begin() + count;
+            const auto next = std::upper_bound(first, entries.end(), first->first,
+                [](uint32_t bucket, const auto& entry) { return bucket < entry.first; });
+            const auto throughBucket = size_t(next - entries.begin());
+            if (throughBucket > batch.count) break;
+            count = throughBucket;
+        }
+        const bool finished = count == entries.size();
+        const auto nextCursor = finished ? bucketCount : entries[count].first;
+        const auto keys = machine.dataAddress(batch.keys);
+        const auto values = machine.dataAddress(batch.values);
+        if (keys > UINT64_MAX - count * map.keySize || values > UINT64_MAX - count * map.valueStride) return fault;
+        for (size_t i = 0; i < count; ++i) {
+            const auto& [key, value] = *entries[i].second;
+            if (!machine.write(keys + i * map.keySize, key) ||
+                !machine.write(values + i * map.valueStride, value.bytes)) return fault;
+        }
+        if (!writeGuest(machine, batch.outputCursor, nextCursor) ||
+            !writeGuest(machine, countAddress, uint32_t(count))) return fault;
+        if (remove) {
+            for (size_t i = 0; i < count; ++i) map.hash.erase(entries[i].second);
+        }
+        if (finished) return end;
+        return count ? 0 : uint64_t(-28);
+    } catch (const std::bad_alloc&) {
+        return noMemory;
+    }
+}
+
 uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
     constexpr uint64_t fault = uint64_t(-14), tooBig = uint64_t(-7);
     constexpr uint64_t create = 0, lookup = 1, update = 2, erase = 3, nextKey = 4;
@@ -7757,6 +7829,9 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
         const auto bytes = std::span(input).subspan(first, last - first);
         return std::any_of(bytes.begin(), bytes.end(), [](auto b) { return b != 0; });
     };
+
+    if (command == 24 || command == 25)
+        return bpfHashBatch(machine, input, command == 25);
 
     if (command == create) {
         // BPF_MAP_CREATE has five leading u32 fields and an optional 16-byte object name.
@@ -8428,7 +8503,7 @@ bool ProbeLinux::syscall(Machine& machine) {
             x[0] = uint64_t(-38);
             return true;
         case 280: { // bpf
-            if (x[0] <= 4) { x[0] = bpfMapCall(machine); break; }
+            if (x[0] <= 4 || x[0] == 24 || x[0] == 25) { x[0] = bpfMapCall(machine); break; }
             if (x[0] == 5) { x[0] = loadBpfProgram(machine); break; }
             if (x[0] == 8 || x[0] == 9) { x[0] = changeBpfCgroupAttachment(machine); break; }
             if (x[0] == 10) { x[0] = testBpfProgram(machine); break; }

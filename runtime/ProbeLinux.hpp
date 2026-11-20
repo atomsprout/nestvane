@@ -341,6 +341,7 @@ private:
         const std::shared_ptr<SocketState>& second);
     std::shared_ptr<CgroupSocketHooks> inetReleasePrograms = std::make_shared<CgroupSocketHooks>();
     uint64_t bpfMapCall(Machine& machine);
+    uint64_t bpfHashBatch(Machine& machine, std::span<const uint8_t> input, bool remove);
     uint64_t loadBpfProgram(Machine& machine);
     uint64_t testBpfProgram(Machine& machine);
     uint64_t bpfObjectIdCall(Machine& machine);

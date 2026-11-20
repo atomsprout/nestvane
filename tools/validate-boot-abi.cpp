@@ -1970,6 +1970,24 @@ int main() {
         assert(invoke(3, hash, hashOut, 0) == 0);
         assert(invoke(1, hash, hashOut, output) == uint64_t(-2));
         assert(invoke(3, hash, hashOut, 0) == uint64_t(-2));
+        assert(invoke(2, hash, hashOut, data) == 0);
+        constexpr auto cursor = base + 576, keys = base + 592, values = base + 640;
+        const auto batch = [&](uint64_t command, uint64_t in, uint32_t count, uint64_t result) {
+            const std::array<uint64_t, 7> args{in, cursor, keys, result, hash << 32 | count, 0, 0};
+            assert(machine.write(attr, {reinterpret_cast<const uint8_t*>(args.data()), sizeof(args)}));
+            return call(280, {command, attr, sizeof(args)});
+        };
+        assert(batch(24, 0, 2, values) == uint64_t(-2) && uint32_t(load(attr + 32)) == 2);
+        assert(load(keys) == 1 && load(keys + 16) == 1);
+        assert(load(keys + 8) + load(keys + 24) == 15);
+        assert(load(values) == expected && load(values + 8) == expected);
+        assert(batch(25, 0, 2, UINT64_MAX) == uint64_t(-14));
+        assert(invoke(1, hash, hashOut, output) == 0);
+        assert(batch(25, 0, 1, values) == 0 && uint32_t(load(attr + 32)) == 1);
+        assert(invoke(1, hash, keys, output) == uint64_t(-2));
+        assert(batch(25, cursor, 1, values) == uint64_t(-2) && uint32_t(load(attr + 32)) == 1);
+        assert(invoke(4, hash, 0, hashOut) == uint64_t(-2));
+        assert(batch(25, 0, 2, values) == uint64_t(-2) && uint32_t(load(attr + 32)) == 0);
         assert(call(57, {hash}) == 0);
         const std::array<uint32_t, 5> devmapArgs{25, 4, 4, 2, 0};
         assert(machine.write(attr, {reinterpret_cast<const uint8_t*>(devmapArgs.data()), sizeof(devmapArgs)}));
