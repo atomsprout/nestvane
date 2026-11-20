@@ -403,8 +403,8 @@ uint64_t statFile(Machine& machine, uint64_t address, bool extended, uint64_t si
 
 ProbeLinux::ProbeLinux(uint64_t pid, uint64_t uid, uint64_t memoryLimit)
     : pid(pid), memoryLimit(memoryLimit),
-      // ART reserves large sparse address ranges per process. Limit physical writes separately.
-      anonymousBudget(std::make_shared<AnonymousBudget>(AnonymousBudget{0, 0, 16 * memoryLimit, memoryLimit})),
+      // ART reserves large sparse address ranges per process. Only touched blocks need host mappings.
+      anonymousBudget(std::make_shared<AnonymousBudget>(AnonymousBudget{0, 0, 32 * memoryLimit, memoryLimit})),
       current(&threads[pid]), currentTid(pid), nextTid(pid + 1) {
     current->process = std::make_shared<Process>();
     current->process->id = pid;
@@ -10528,7 +10528,8 @@ bool ProbeLinux::syscall(Machine& machine) {
                 for (const auto& area : machine.segments) {
                     std::array<uint64_t, 3> header{};
                     if (!(area.flags & 4) || area.accessibleSize() < sizeof(header)) continue;
-                    std::memcpy(header.data(), area.data(), sizeof(header));
+                    if (!machine.readInto(area.address,
+                            {reinterpret_cast<uint8_t*>(header.data()), sizeof(header)})) continue;
                     if (header[0] != magic1 || header[1] != magic2 || header[2] <= sizeof(header)) continue;
                     std::array<uint8_t, 512> buffer{};
                     const auto length = std::min<uint64_t>(buffer.size(), header[2] - sizeof(header));

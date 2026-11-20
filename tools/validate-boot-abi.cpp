@@ -1903,6 +1903,9 @@ int main() {
         };
         const auto mapping = invoke(222, {0, sparseRange, 3, 0x22, UINT64_MAX, 0});
         assert(mapping < uint64_t(-4095));
+        // Forking both ranges exceeds the old logical limit. The second stays untouched.
+        const auto untouched = invoke(222, {0, sparseRange, 3, 0x22, UINT32_MAX, 0});
+        assert(untouched < uint64_t(-4095));
         const uint64_t boundary = mapping + 64 * 1024;
         const std::array<uint8_t, 8> across{11, 18, 29, 47, 76, 123, 199, 1};
         std::array<uint8_t, 8> restored{};
@@ -3596,13 +3599,23 @@ int main() {
             task.cpu.x[8] = 167;
             assert(!guest.syscall(task));
         };
+        task.cpu.x.fill(0);
+        task.cpu.x[1] = 96 * 1024 * 1024;
+        task.cpu.x[2] = 3;
+        task.cpu.x[3] = 0x22;
+        task.cpu.x[4] = UINT32_MAX;
+        task.cpu.x[8] = 222; // mmap
+        assert(guest.syscall(task));
+        const auto abortMapping = task.cpu.x[0];
+        assert(abortMapping < uint64_t(-4095));
         abort();
         assert(report.empty());
         constexpr std::string_view crash = "input initialization\nfailed";
         const std::array<uint64_t, 3> header{0xb18e40886ac388f0ULL, 0xc6dfba755a1de0b5ULL,
                                              3 * sizeof(uint64_t) + crash.size() + 1};
-        assert(task.write(base, {reinterpret_cast<const uint8_t*>(header.data()), sizeof(header)}));
-        assert(task.write(base + sizeof(header), {reinterpret_cast<const uint8_t*>(crash.data()), crash.size()}));
+        assert(task.write(abortMapping, {reinterpret_cast<const uint8_t*>(header.data()), sizeof(header)}));
+        assert(task.write(abortMapping + sizeof(header),
+                          {reinterpret_cast<const uint8_t*>(crash.data()), crash.size()}));
         abort();
         assert(report.starts_with("Guest native abort: PID=1 TID=1 "));
         assert(report.ends_with("input initialization failed"));
