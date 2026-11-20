@@ -176,6 +176,10 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
     using CodeSamples = std::map<CodeLocation, uint64_t>;
     CodeSamples codeSamples, intervalCodeSamples;
     uint64_t intervalStart = 0, intervalSamples = 0, intervalUnattributed = 0;
+    uint64_t previousSnapshotRetired = 0, previousSnapshotAot = 0;
+    const auto aotInstructions = [&] {
+        return sha256AotInstructions + dexAot.instructions + bionicFillAot.instructions + bionicCopyAot.instructions;
+    };
     const auto appendRanking = [](std::ostream& out, const CodeSamples& histogram, size_t limit) {
         std::vector<std::pair<CodeLocation, uint64_t>> ranked(histogram.begin(), histogram.end());
         const auto top = ranked.begin() + std::min(ranked.size(), limit);
@@ -189,6 +193,10 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
         }
     };
     const auto appendBootProfile = [&](std::ostream& out, uint64_t elapsedMs) {
+        const auto aot = aotInstructions();
+        out << "  Android AOT " << (bootAot ? "enabled" : "disabled") << ": " << aot << " of " << cpu.retired
+            << " guest instructions, " << (aot - previousSnapshotAot) << " of "
+            << (cpu.retired - previousSnapshotRetired) << " in " << intervalStart << '-' << elapsedMs << " ms\n";
         if (bootAot) {
             out << "  Android SHA-256 AOT entries: " << sha256AotEntries
                 << ", guest instructions: " << sha256AotInstructions << '\n'
@@ -231,6 +239,8 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
         snapshot << "Android init at " << elapsedMs << " ms, " << cpu.retired << " guest instructions, "
                  << syscallCount << " guest syscalls\n";
         appendBootProfile(snapshot, elapsedMs);
+        previousSnapshotRetired = cpu.retired;
+        previousSnapshotAot = aotInstructions();
         intervalCodeSamples.clear();
         intervalStart = elapsedMs;
         intervalSamples = 0;
@@ -477,7 +487,7 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
         }
     }
 
-    appendBootProfile(report, duration_cast<milliseconds>(steady_clock::now() - start).count());
+    if (init) appendBootProfile(report, duration_cast<milliseconds>(steady_clock::now() - start).count());
     if (suppressedLogs) report << "  omitted syscall log entries: " << suppressedLogs << '\n';
     if (deliveredFaults || restoredSignals)
         report << "  guest SIGSEGV deliveries: " << deliveredFaults << ", signal context returns: " << restoredSignals << '\n';
