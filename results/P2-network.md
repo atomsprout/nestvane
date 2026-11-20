@@ -459,3 +459,4 @@
 - 原版 `lmkd` 对照镜像中的连接追踪确认，ActivityManager 成功连接后首笔 `sendmsg` 返回 `EOPNOTSUPP`，随后客户端关闭连接。Android libbase 即使没有待传描述符也发送空 `SCM_RIGHTS`。客体现在校验并接受该头部，支持同一客户端在 Unix 包套接字接收时使用的标志。宿主回归覆盖空控制头、接收凭据及非法控制头，ARM64 Android 17 对照和 iPhoneOS Release 构建通过。完整低内存管理与桌面仍在联测。[Android libbase 控制消息](https://android.googlesource.com/platform/system/libbase/+/refs/heads/main/cmsg.cpp)
 - iPhone 11（iOS 26.0.1）重新连接后，已备份客体数据库并通过 SQLite 完整性检查。开发签名版进程 9544 在 89.338 秒绘制 640 × 960 的 Android 开机画面，正在继续验证桌面。
 - Mac 对照中，原版 `lmkd` 成功收到 ActivityManager 的 4、8、24 和 52 字节消息。下一处失败是打开 `/proc/<pid>/oom_score_adj`。客体补齐进程级读写、fork 继承、权限下限与进程退出后的处理。宿主回归和参考 Android 17 对照验证取值、继承和能力下限，iPhoneOS Release 构建通过。内存压力监视器仍待完成。[Linux procfs 实现](https://github.com/torvalds/linux/blob/master/fs/proc/base.c)
+- Mac 在补齐 SSHL 后越过该编码，进一步遇到 `fmla v16.4s, v17.4s, v1.4s`（`0x4e21ce30`）。解释器支持向量 `FMLA/FMLS`，宿主回归覆盖单次舍入、目标寄存器别名、双精度和保留编码。ARM64 Android 17 的原生单次舍入对照和 iPhoneOS Release 构建通过。

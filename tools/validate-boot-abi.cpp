@@ -908,6 +908,29 @@ int main() {
         assert(executeStartupInstruction(permute, 0x6ea34443)); // ushl v3.4s, v2.4s, v3.4s
         assert(std::memcmp(permute.cpu.v[3].data(), unsignedShiftResult.data(), sizeof(unsignedShiftResult)) == 0);
         assert(!executeStartupInstruction(permute, 0x0ee34443)); // reserved 1D vector form
+        const std::array<float, 4> fmaLeft{1 + 0x1p-23f, -2, 3, 4};
+        const std::array<float, 4> fmaRight{1 - 0x1p-23f, 4, -5, 6};
+        const std::array<float, 4> fmaAccumulator{-1, 2, 3, 4};
+        const std::array<float, 4> fmaSum{-0x1p-46f, -6, -12, 28};
+        std::memcpy(permute.cpu.v[17].data(), fmaLeft.data(), sizeof(fmaLeft));
+        std::memcpy(permute.cpu.v[1].data(), fmaRight.data(), sizeof(fmaRight));
+        std::memcpy(permute.cpu.v[16].data(), fmaAccumulator.data(), sizeof(fmaAccumulator));
+        assert(executeStartupInstruction(permute, 0x4e21ce30)); // fmla v16.4s, v17.4s, v1.4s
+        assert(std::memcmp(permute.cpu.v[16].data(), fmaSum.data(), sizeof(fmaSum)) == 0);
+        const std::array<float, 4> fmsAliased{4, 8, 73, 82}, fmsLeft{3, 0.5, 1, 2};
+        const std::array<float, 4> fmsDifference{-8, 4, 0, 0};
+        std::memcpy(permute.cpu.v[0].data(), fmsAliased.data(), sizeof(fmsAliased));
+        std::memcpy(permute.cpu.v[2].data(), fmsLeft.data(), sizeof(fmsLeft));
+        assert(executeStartupInstruction(permute, 0x0ea0cc40)); // fmls v0.2s, v2.2s, v0.2s
+        assert(std::memcmp(permute.cpu.v[0].data(), fmsDifference.data(), sizeof(fmsDifference)) == 0);
+        const std::array<double, 2> doubleFmaLeft{1 + 0x1p-52, -2}, doubleFmaRight{1 - 0x1p-52, 3};
+        const std::array<double, 2> doubleAddend{-1, 0.5}, doubleFmaSum{-0x1p-104, -5.5};
+        std::memcpy(permute.cpu.v[4].data(), doubleFmaLeft.data(), sizeof(doubleFmaLeft));
+        std::memcpy(permute.cpu.v[5].data(), doubleFmaRight.data(), sizeof(doubleFmaRight));
+        std::memcpy(permute.cpu.v[6].data(), doubleAddend.data(), sizeof(doubleAddend));
+        assert(executeStartupInstruction(permute, 0x4e65cc86)); // fmla v6.2d, v4.2d, v5.2d
+        assert(std::memcmp(permute.cpu.v[6].data(), doubleFmaSum.data(), sizeof(doubleFmaSum)) == 0);
+        assert(!executeStartupInstruction(permute, 0x0e65cc86)); // reserved 1D vector form
         const std::array<float, 4> leftAdd{1, -2, 3, 4}, rightAdd{3, 1, 6, -4}, expectedSum{4, -1, 9, 0};
         std::memcpy(permute.cpu.v[0].data(), leftAdd.data(), sizeof(leftAdd));
         std::memcpy(permute.cpu.v[2].data(), rightAdd.data(), sizeof(rightAdd));

@@ -464,9 +464,10 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
     } else if (const auto arithmetic = word & 0xbfa0fc00;
                arithmetic == 0x0e20d400 || arithmetic == 0x0ea0d400 ||
                arithmetic == 0x2e20dc00 || arithmetic == 0x2e20fc00 ||
+               arithmetic == 0x0e20cc00 || arithmetic == 0x0ea0cc00 ||
                arithmetic == 0x2ea0d400 || (word & 0xffa0fc00) == 0x7ea0d400 ||
                (word & 0xffbffc00) == 0x7e30d800) {
-        // Vector FADD/FSUB/FMUL/FDIV, vector/scalar FABD and scalar FADDP.
+        // Vector floating arithmetic, scalar FABD and scalar FADDP.
         const bool pair = (word & 0xffbffc00) == 0x7e30d800;
         const bool wide = word & 0x400000;
         if (!scalar && wide && width == 8) return false;
@@ -482,6 +483,8 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
                     case 0x0ea0d400: value = left - right; break;
                     case 0x2e20dc00: value = left * right; break;
                     case 0x2e20fc00: value = left / right; break;
+                    case 0x0e20cc00: value = std::fma(left, right, get(cpu.v[rd], i)); break;
+                    case 0x0ea0cc00: value = std::fma(-left, right, get(cpu.v[rd], i)); break;
                     default: value = std::abs(left - right); break;
                 }
                 setLane(result, i, sizeof(Float), std::bit_cast<UInt>(value));
