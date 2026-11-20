@@ -324,6 +324,32 @@ int main() {
         assert(pairs.cpu.stop == Stop::fault && pairs.cpu.faultAddress == address + 8);
     }
     {
+        constexpr uint64_t location = 0x4000;
+        Machine literal(Image{location, {{location, std::vector<uint8_t>(pageSize), 7}}, {}});
+        const std::array<uint8_t, 16> bytes{1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16};
+        assert(literal.write(location + 0xcc, bytes));
+        assert(executeStartupInstruction(literal, 0xd53b0029)); // mrs x9, ctr_el0
+        assert(literal.cpu.x[9] == 0xb004c004 && literal.cpu.pc == location + 4);
+        assert(executeStartupInstruction(literal, 0xd5033b9f)); // dsb ish
+        assert(literal.cpu.pc == location + 8);
+        for (unsigned scale = 0; scale < 3; ++scale) {
+            literal.cpu.pc = location;
+            literal.cpu.v[8].fill(0xff);
+            assert(executeStartupInstruction(literal, 0x1c000668 | (scale << 30)));
+            assert(literal.cpu.pc == location + 4);
+            const unsigned size = 4U << scale;
+            for (unsigned i = 0; i < bytes.size(); ++i)
+                assert(literal.cpu.v[8][i] == (i < size ? bytes[i] : 0));
+        }
+        literal.cpu.pc = location + 0xdc;
+        assert(executeStartupInstruction(literal, 0x9c000008 | (0x7fffc << 5)));
+        assert(literal.cpu.v[8] == bytes);
+        literal.cpu.pc = location + pageSize - 4;
+        assert(executeStartupInstruction(literal, 0x1c000668));
+        assert(literal.cpu.stop == Stop::fault && literal.cpu.faultAddress == location + pageSize + 0xc8);
+        assert(literal.cpu.v[8] == bytes);
+    }
+    {
         Machine permute(Image{base, {}, {}});
         const std::array<uint32_t, 4> left{10, 20, 30, 40}, right{1, 2, 3, 4}, expected{20, 2, 40, 4};
         std::memcpy(permute.cpu.v[2].data(), left.data(), sizeof(left));

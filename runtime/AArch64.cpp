@@ -1020,6 +1020,13 @@ bool floatInstruction(CPU& cpu, uint32_t word) {
 bool vectors(Machine& m, uint32_t word) {
     auto& cpu = m.cpu;
     unsigned rd = word & 31, rn = (word >> 5) & 31, rm = (word >> 16) & 31;
+    if ((word & 0x3f000000) == 0x1c000000) { // LDR (literal, SIMD/FP)
+        const unsigned scale = word >> 30;
+        if (scale == 3) return false;
+        const auto address = cpu.pc + sx((word >> 5) & 0x7ffff, 19) * 4;
+        vectorTransfer(m, address, rd, 4U << scale, true);
+        return true;
+    }
     if ((word & 0x9ff8fc00) == 0x0f00f400) { // FMOV vector immediate.
         const auto immediate = ((word >> 11) & 0xe0) | ((word >> 5) & 31);
         const bool wide = word & 0x20000000;
@@ -1342,6 +1349,10 @@ bool values(CPU& cpu, uint32_t word) {
     } else if ((word & 0xfffffc00) == 0xdac00c00 || (word & 0xfffffc00) == 0x5ac00800) {
         uint64_t a = reg(cpu, rn);
         put(cpu, rd, bits == 64 ? __builtin_bswap64(a) : __builtin_bswap32(uint32_t(a)), bits);
+    } else if ((word & 0xffffffe0) == 0xd53b0020) { // CTR_EL0
+        // Instruction fetches see current guest memory. Both cache maintenance loops are unnecessary.
+        constexpr uint64_t coherentCache = (1ULL << 31) | (3ULL << 28) | (4ULL << 16) | (3ULL << 14) | 4;
+        put(cpu, rd, coherentCache);
     } else if ((word & 0xffffffe0) == 0xd53b00e0) {
         put(cpu, rd, 16); // DCZID_EL0.DZP. This profile does not offer DC ZVA.
     } else if ((word & 0xffffffe0) == 0xd53b4200) { // MRS <Xt>, NZCV.
@@ -1393,7 +1404,8 @@ bool executeStartupInstruction(Machine& machine, uint32_t word) {
                 return true;
             }
             // Ordering is inherent in the interpreter. PAC and BTI are disabled.
-            const bool barrier = word == 0xd50339bf || word == 0xd5033abf || word == 0xd5033bbf ||
+            const bool barrier = word == 0xd5033b9f || // DSB ISH, used by __clear_cache.
+                                 word == 0xd50339bf || word == 0xd5033abf || word == 0xd5033bbf ||
                                  word == 0xd5033dbf || word == 0xd5033ebf || word == 0xd5033fbf || word == 0xd5033fdf;
             const bool hint = barrier || word == 0xd503201f || word == 0xd503245f || word == 0xd503249f ||
                               word == 0xd50324df || word == 0xd503233f || word == 0xd50323bf ||

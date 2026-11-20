@@ -163,6 +163,8 @@ def main():
     parser.add_argument("serial")
     parser.add_argument("--root", type=Path, required=True, help="Unpacked boot input used to check the reference build")
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--compiler-filter", choices=("verify", "speed"), default="verify",
+                        help="ART filter for the offline boot image")
     parser.add_argument("--framework-diagnostic", action="store_true",
                         help="Produce a complete offline diagnostic guest root using the compiled image")
     parser.add_argument("--framework-apps", action="store_true",
@@ -281,7 +283,7 @@ def main():
             "--runtime-arg", "-Xmx1g",
             "--base=0x70000000",
             "--instruction-set=arm64", "--instruction-set-features=default",
-            "--compiler-filter=verify", "--single-image", "--image-format=uncompressed",
+            f"--compiler-filter={args.compiler_filter}", "--single-image", "--image-format=uncompressed",
             "--image=" + base + ".art", "--oat-file=" + base + ".oat",
             "--oat-location=/system/framework/arm64/boot.oat",
             "--output-vdex=" + base + ".vdex", "--avoid-storing-invocation",
