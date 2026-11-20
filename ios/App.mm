@@ -8,7 +8,9 @@
 #include "IOSCamera.hpp"
 #include "Validation.hpp"
 
+#include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <chrono>
 #include <mach/mach.h>
 #include <memory>
@@ -18,8 +20,32 @@
 #include <vector>
 
 namespace {
-constexpr uint32_t guestWidth = 640;
-constexpr uint32_t guestHeight = 960;
+constexpr uint32_t defaultGuestWidth = 640;
+constexpr uint32_t defaultGuestHeight = 960;
+constexpr size_t displayPixelBudget = size_t(defaultGuestWidth) * defaultGuestHeight;
+
+struct DisplaySize {
+    uint32_t width;
+    uint32_t height;
+};
+
+DisplaySize GuestDisplaySize(CGSize viewport) {
+    if (viewport.width <= 0 || viewport.height <= 0) return {defaultGuestWidth, defaultGuestHeight};
+    const double aspect = std::clamp(double(viewport.width / viewport.height), 0.25, 4.0);
+    const auto evenPixels = [](double length) { return uint32_t(2 * std::lround(length / 2)); };
+    return {evenPixels(std::sqrt(displayPixelBudget * aspect)),
+            evenPixels(std::sqrt(displayPixelBudget / aspect))};
+}
+
+UIButton* ToolbarButton(NSString* symbol, NSString* label, id target, SEL action) {
+    UIButtonConfiguration* configuration = [UIButtonConfiguration plainButtonConfiguration];
+    configuration.image = [UIImage systemImageNamed:symbol];
+    configuration.baseForegroundColor = UIColor.whiteColor;
+    UIButton* button = [UIButton buttonWithConfiguration:configuration primaryAction:nil];
+    button.accessibilityLabel = label;
+    [button addTarget:target action:action forControlEvents:UIControlEventTouchUpInside];
+    return button;
+}
 
 UIImage* GuestDisplayImage(std::unique_ptr<uint8_t[]>& pixels, size_t capacity,
                            uint32_t width, uint32_t height) {
@@ -45,13 +71,13 @@ UIImage* GuestDisplayImage(std::unique_ptr<uint8_t[]>& pixels, size_t capacity,
     return image;
 }
 
-std::jthread StartDisplayReader(const nestvane::GfxstreamSession& renderer, bool captureContent,
+std::jthread StartDisplayReader(const nestvane::GfxstreamSession& renderer, DisplaySize size, bool captureContent,
                                 const std::atomic_bool& launcherDrawn,
                                 void (^present)(UIImage*, bool, bool)) {
     if (!renderer.hasDisplayReadback()) return {};
-    return std::jthread([&renderer, &launcherDrawn, captureContent, present](std::stop_token stop) mutable {
+    return std::jthread([&renderer, &launcherDrawn, size, captureContent, present](std::stop_token stop) mutable {
         bool captureLauncher = captureContent;
-        constexpr auto capacity = size_t(guestWidth) * guestHeight * 4;
+        const auto capacity = std::max(displayPixelBudget, size_t(size.width) * size.height) * 4;
         std::unique_ptr<uint8_t[]> pixels;
         const auto slot = dispatch_semaphore_create(1);
         uint64_t lastFrame = 0;
@@ -188,26 +214,56 @@ static NSString* ThermalState() {
 @property(nonatomic, strong) GuestDisplayView* display;
 @property(nonatomic, strong) UIButton* run;
 @property(nonatomic, strong) UIButton* importApk;
-@property(nonatomic, strong) UIStackView* androidNavigation;
+@property(nonatomic, strong) UIButton* back;
+@property(nonatomic, strong) UIButton* home;
+@property(nonatomic, strong) UIStackView* startup;
 @property(nonatomic, strong) UILabel* apkStatus;
 @end
 
 @implementation ValidationViewController {
     std::shared_ptr<nestvane::GuestApkInbox> _apkInbox;
     std::stop_source _androidStop;
+    BOOL _started;
+    NSUInteger _apkStatusGeneration;
+}
+
+- (BOOL)prefersStatusBarHidden {
+    return YES;
 }
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.view.backgroundColor = UIColor.systemBackgroundColor;
+    self.view.backgroundColor = UIColor.blackColor;
 
-    UILabel* title = [UILabel new];
-    title.text = @"nestvane";
-    title.font = [UIFont preferredFontForTextStyle:UIFontTextStyleLargeTitle];
-    title.adjustsFontForContentSizeCategory = YES;
+    self.display = [GuestDisplayView new];
+    self.display.translatesAutoresizingMaskIntoConstraints = NO;
+    self.display.userInteractionEnabled = YES;
+    self.display.contentMode = UIViewContentModeScaleAspectFit;
+    self.display.accessibilityLabel = @"Android display";
+    self.display.isAccessibilityElement = YES;
+    self.display.hidden = YES;
+    [self.view addSubview:self.display];
+
+    self.back = ToolbarButton(@"chevron.backward", @"Android Back", self, @selector(guestBack));
+    self.home = ToolbarButton(@"house", @"Android Home", self, @selector(guestHome));
+    self.importApk = ToolbarButton(@"square.and.arrow.down", @"Install APK…", self, @selector(chooseApk));
+    self.run = ToolbarButton(@"play.fill", @"Start Android", self, @selector(runOrStop));
+    UIStackView* controls = [[UIStackView alloc] initWithArrangedSubviews:
+        @[self.back, self.home, self.importApk, self.run]];
+    controls.distribution = UIStackViewDistributionFillEqually;
+    controls.translatesAutoresizingMaskIntoConstraints = NO;
+
+    UIView* footer = [UIView new];
+    footer.backgroundColor = [UIColor colorWithWhite:0.10 alpha:1];
+    footer.translatesAutoresizingMaskIntoConstraints = NO;
+    [footer addSubview:controls];
+    [self.view addSubview:footer];
 
     self.status = [UILabel new];
     self.status.font = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
+    self.status.adjustsFontForContentSizeCategory = YES;
+    self.status.textColor = UIColor.whiteColor;
+    self.status.textAlignment = NSTextAlignmentCenter;
     self.status.numberOfLines = 0;
 
     self.details = [UITextView new];
@@ -215,62 +271,77 @@ static NSString* ThermalState() {
     self.details.font = [UIFont monospacedSystemFontOfSize:13 weight:UIFontWeightRegular];
     self.details.backgroundColor = UIColor.secondarySystemBackgroundColor;
     self.details.textContainerInset = UIEdgeInsetsMake(12, 12, 12, 12);
+    self.details.hidden = YES;
 
-    self.display = [GuestDisplayView new];
-    self.display.userInteractionEnabled = YES;
-    self.display.contentMode = UIViewContentModeScaleAspectFit;
-    self.display.backgroundColor = UIColor.blackColor;
-    self.display.hidden = YES;
-    self.display.accessibilityLabel = @"Android display";
-    self.display.isAccessibilityElement = YES;
-    [self.display setContentCompressionResistancePriority:UILayoutPriorityDefaultLow
-                                                  forAxis:UILayoutConstraintAxisVertical];
-    [self.display setContentCompressionResistancePriority:UILayoutPriorityDefaultLow
-                                                  forAxis:UILayoutConstraintAxisHorizontal];
-
-    self.run = [UIButton buttonWithType:UIButtonTypeSystem];
-    [self.run setTitle:@"Run validation" forState:UIControlStateNormal];
-    [self.run addTarget:self action:@selector(runOrStop) forControlEvents:UIControlEventTouchUpInside];
-
-    self.importApk = [UIButton buttonWithType:UIButtonTypeSystem];
-    [self.importApk setTitle:@"Install APK…" forState:UIControlStateNormal];
-    [self.importApk addTarget:self action:@selector(chooseApk) forControlEvents:UIControlEventTouchUpInside];
-    self.importApk.hidden = YES;
-
-    UIButton* back = [UIButton buttonWithType:UIButtonTypeSystem];
-    [back setTitle:@"Android Back" forState:UIControlStateNormal];
-    [back addTarget:self action:@selector(guestBack) forControlEvents:UIControlEventTouchUpInside];
-    UIButton* home = [UIButton buttonWithType:UIButtonTypeSystem];
-    [home setTitle:@"Android Home" forState:UIControlStateNormal];
-    [home addTarget:self action:@selector(guestHome) forControlEvents:UIControlEventTouchUpInside];
-    self.androidNavigation = [[UIStackView alloc] initWithArrangedSubviews:@[back, home]];
-    self.androidNavigation.distribution = UIStackViewDistributionFillEqually;
-    self.androidNavigation.hidden = YES;
-    NSLayoutConstraint* navigationHeight = [self.androidNavigation.heightAnchor constraintGreaterThanOrEqualToConstant:44];
-    navigationHeight.priority = UILayoutPriorityRequired - 1;
-    navigationHeight.active = YES;
+    self.startup = [[UIStackView alloc] initWithArrangedSubviews:@[self.status, self.details]];
+    self.startup.axis = UILayoutConstraintAxisVertical;
+    self.startup.spacing = 12;
+    self.startup.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:self.startup];
 
     self.apkStatus = [UILabel new];
+    self.apkStatus.translatesAutoresizingMaskIntoConstraints = NO;
     self.apkStatus.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
     self.apkStatus.adjustsFontForContentSizeCategory = YES;
+    self.apkStatus.textColor = UIColor.whiteColor;
+    self.apkStatus.backgroundColor = [UIColor colorWithWhite:0.10 alpha:0.95];
+    self.apkStatus.textAlignment = NSTextAlignmentCenter;
     self.apkStatus.numberOfLines = 0;
     self.apkStatus.hidden = YES;
-
-    UIStackView* layout = [[UIStackView alloc] initWithArrangedSubviews:
-        @[title, self.status, self.details, self.display, self.androidNavigation, self.apkStatus, self.importApk, self.run]];
-    layout.axis = UILayoutConstraintAxisVertical;
-    layout.spacing = 12;
-    layout.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.view addSubview:layout];
+    [self.view addSubview:self.apkStatus];
 
     UILayoutGuide* safe = self.view.safeAreaLayoutGuide;
+    NSLayoutConstraint* detailsHeight = [self.details.heightAnchor constraintEqualToConstant:260];
+    detailsHeight.priority = UILayoutPriorityDefaultHigh;
     [NSLayoutConstraint activateConstraints:@[
-        [layout.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:20],
-        [layout.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-20],
-        [layout.topAnchor constraintEqualToAnchor:safe.topAnchor constant:16],
-        [layout.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor constant:-12],
+        [footer.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [footer.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [footer.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+        [controls.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor],
+        [controls.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor],
+        [controls.topAnchor constraintEqualToAnchor:footer.topAnchor],
+        [controls.heightAnchor constraintEqualToConstant:44],
+        [controls.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor],
+        [self.display.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor],
+        [self.display.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor],
+        [self.display.topAnchor constraintEqualToAnchor:safe.topAnchor],
+        [self.display.bottomAnchor constraintEqualToAnchor:footer.topAnchor],
+        [self.startup.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:16],
+        [self.startup.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-16],
+        [self.startup.centerYAnchor constraintEqualToAnchor:self.display.centerYAnchor],
+        [self.startup.topAnchor constraintGreaterThanOrEqualToAnchor:self.display.topAnchor constant:8],
+        [self.startup.bottomAnchor constraintLessThanOrEqualToAnchor:self.display.bottomAnchor constant:-8],
+        detailsHeight,
+        [self.apkStatus.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor],
+        [self.apkStatus.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor],
+        [self.apkStatus.bottomAnchor constraintEqualToAnchor:footer.topAnchor],
+        [self.apkStatus.heightAnchor constraintGreaterThanOrEqualToConstant:30],
     ]];
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    if (_started) return;
+    _started = YES;
     [self runValidation];
+}
+
+- (void)setRunSymbol:(NSString*)symbol label:(NSString*)label {
+    UIButtonConfiguration* configuration = self.run.configuration;
+    configuration.image = [UIImage systemImageNamed:symbol];
+    self.run.configuration = configuration;
+    self.run.accessibilityLabel = label;
+}
+
+- (void)showApkStatus:(NSString*)message transient:(BOOL)transient {
+    const auto generation = ++_apkStatusGeneration;
+    self.apkStatus.text = message;
+    self.apkStatus.hidden = NO;
+    UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, message);
+    if (!transient) return;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 6 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+        if (self->_apkStatusGeneration == generation) self.apkStatus.hidden = YES;
+    });
 }
 
 - (void)runOrStop {
@@ -303,13 +374,12 @@ static NSString* ThermalState() {
     const auto inbox = _apkInbox;
     NSURL* source = urls.firstObject;
     if (!inbox || !source) return;
-    self.apkStatus.hidden = NO;
     if ([source.pathExtension caseInsensitiveCompare:@"apk"] != NSOrderedSame) {
-        self.apkStatus.text = @"Choose an .apk file.";
+        [self showApkStatus:@"Choose an .apk file." transient:YES];
         return;
     }
     self.importApk.enabled = NO;
-    self.apkStatus.text = @"Waiting for Android to install the APK…";
+    [self showApkStatus:@"Waiting for Android to install the APK…" transient:NO];
     __weak ValidationViewController* weakSelf = self;
     const std::weak_ptr<nestvane::GuestApkInbox> active = inbox;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
@@ -319,7 +389,7 @@ static NSString* ThermalState() {
                 ValidationViewController* owner = weakSelf;
                 const auto current = active.lock();
                 if (!owner || !current || owner->_apkInbox != current) return;
-                owner.apkStatus.text = message;
+                [owner showApkStatus:message transient:YES];
                 owner.importApk.enabled = owner->_androidStop.stop_possible() && !owner->_androidStop.stop_requested();
             });
         };
@@ -364,7 +434,7 @@ static NSString* ThermalState() {
     _androidStop = apkInbox ? std::stop_source{} : std::stop_source{std::nostopstate};
     const auto stop = _androidStop.get_token();
     if (stop.stop_possible()) {
-        [self.run setTitle:@"Stop Android" forState:UIControlStateNormal];
+        [self setRunSymbol:@"stop.fill" label:@"Stop Android"];
         self.run.enabled = YES;
     }
     self.importApk.hidden = !apkInbox;
@@ -374,11 +444,14 @@ static NSString* ThermalState() {
     [self.display setTouchDevice:touch];
     self.display.image = nil;
     self.display.hidden = YES;
-    self.androidNavigation.hidden = YES;
-    self.details.hidden = NO;
+    self.back.hidden = self.home.hidden = !apkInbox;
+    self.back.enabled = self.home.enabled = NO;
+    self.startup.hidden = NO;
+    self.details.hidden = YES;
     self.details.text = nil;
     UIApplication.sharedApplication.idleTimerDisabled = YES;
-    self.status.text = @"Running ARM64 ELF validation…";
+    self.status.text = apkInbox ? @"Starting Android…" : @"Running ARM64 ELF validation…";
+    const auto displaySize = GuestDisplaySize(self.display.bounds.size);
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSString* before = ThermalState();
         NSString* resources = NSBundle.mainBundle.resourcePath;
@@ -489,13 +562,13 @@ static NSString* ThermalState() {
                 }
 
                 progress("Initializing local Android renderer");
-                nestvane::GfxstreamSession renderer(rendererPath.fileSystemRepresentation, guestWidth, guestHeight);
+                nestvane::GfxstreamSession renderer(rendererPath.fileSystemRepresentation, displaySize.width, displaySize.height);
                 if (!renderer) return {false, renderer.error() + "\n"};
                 progress("Local Android renderer initialized");
                 NSURL* displayProgress = [documents URLByAppendingPathComponent:@"display-first-frame.txt"];
                 const BOOL captureFirstFrame = [NSProcessInfo.processInfo.environment[@"NESTVANE_CAPTURE_FIRST_FRAME"]
                     isEqualToString:@"1"];
-                auto displayReader = StartDisplayReader(renderer, captureFirstFrame, launcherDisplayed,
+                auto displayReader = StartDisplayReader(renderer, displaySize, captureFirstFrame, launcherDisplayed,
                                                         ^(UIImage* frame, bool content, bool launcher) {
                     const BOOL firstFrame = self.display.hidden;
                     self.display.image = frame;
@@ -510,10 +583,10 @@ static NSString* ThermalState() {
                             NSLog(@"Unable to export display progress: %@", error);
                     };
                     if (firstFrame) {
-                        self.status.text = @"Android 17 display";
-                        self.details.hidden = YES;
+                        self.startup.hidden = YES;
                         self.display.hidden = NO;
-                        self.androidNavigation.hidden = NO;
+                        self.back.hidden = self.home.hidden = NO;
+                        self.back.enabled = self.home.enabled = YES;
                         writePresentationTime(displayProgress);
                     }
                     if (captureFirstFrame && (firstFrame || content || launcher)) {
@@ -563,11 +636,15 @@ static NSString* ThermalState() {
         dispatch_async(dispatch_get_main_queue(), ^{
             self.status.text = status;
             [self.display setTouchDevice:std::shared_ptr<nestvane::GuestTouch>{}];
-            self.details.text = report;
-            self.androidNavigation.hidden = YES;
+            self.display.hidden = YES;
+            self.display.image = nil;
+            self.startup.hidden = NO;
+            self.details.text = apkInbox ? nil : report;
+            self.details.hidden = bool(apkInbox);
+            self.back.enabled = self.home.enabled = NO;
             self->_androidStop = std::stop_source{std::nostopstate};
             self.importApk.enabled = NO;
-            [self.run setTitle:apkInbox ? @"Start Android" : @"Run validation" forState:UIControlStateNormal];
+            [self setRunSymbol:@"play.fill" label:apkInbox ? @"Start Android" : @"Run validation"];
             self.run.enabled = YES;
             UIApplication.sharedApplication.idleTimerDisabled = NO;
         });
