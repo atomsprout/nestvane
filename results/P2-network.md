@@ -486,3 +486,5 @@
 - 同版在 iPhone 11 进程 9700 于 824.097 秒完成用户 0 数据准备，850.346 秒完成 79 个包的数据核对，873.982 秒完成 `finishUserUnlocked-0`。960.077 秒时 Launcher 主线程仍在 `libhwui` 执行，系统报告还有 395,763,880 字节内存余量。XCTest 截图 runner 两次在建立连接前退出，尚未取得 Launcher 屏幕截图或交互证据。
 - Binder 同步等待报告增加目标进程、事务码、正在处理事务的线程和目标进程队列长度。宿主双进程回归覆盖排队中和被服务线程接收后的快照，iPhoneOS Release 构建通过。
 - iPhone 11 的 ACL 修复版在 1,140.077 秒快照中，原版 Launcher 主线程同样停在 Binder ioctl。此时宿主物理内存为 1,861,705,640 字节，余量为 338,206,808 字节。通过显式诊断开关可随现有快照导出 App 当前正在显示的客体合成帧，方便在 XCTest 无法连接时核对画面。iPhoneOS Release 构建通过。
+- iPhone 11 进程 9700 在 1,215.078 秒仍停在相同的 Launcher Binder ioctl，物理内存为 1,862,262,696 字节。保存客体数据库并校验完整性后，进程 9720 加载了同时包含 Binder 等待诊断与画面采集的版本。从设备取回的 640×960 PNG 为 Android 开机画面，验证了当前画面采集路径。
+- 同一份已解锁的客体数据在 Mac OpenGL 对照中，SurfaceFlinger 的 Composer3 `executeCommands`（事务码 5）在 140 至 360 秒持续等待原版 Composer3 线程。宿主采样确认 `rcCompose` 等待合成完成，`GL_Viewport` 争用锁，另一渲染线程停在 `gleRunVertexSubmitImmediate`。本机普通执行环境无法取得 Metal 设备，允许访问 Metal 后原版 Gfxstream 输出确认 ANGLE Metal 已启用。独立复制同一客体数据库的 Metal 对照在对应的 Composer3 请求后继续到 `StartServices`，200 秒达到约 101.7 亿条客体指令。此结果确认 Mac 图形后端差别，iPhone Launcher 仍在复测。[AOSP Composer3 接口](https://source.android.com/docs/core/graphics/aidl-hwc)
