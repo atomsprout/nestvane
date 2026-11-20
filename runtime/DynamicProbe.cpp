@@ -697,18 +697,14 @@ service nestvane-check-vold-shell /system/bin/service check vold
             linux.alias("/dev/kmsg_debug", "/dev/kmsg");
         }
         if (expectSmoke) {
-            if (!files.contains("/system/bin/cmd")) throw std::runtime_error("smoke APK requires Android cmd");
+            if (!files.contains(GuestApkInbox::installer) || !files.contains("/system/bin/cmd"))
+                throw std::runtime_error("smoke APK requires the guest installer and Android cmd");
             static constexpr std::string_view smoke = R"rc(
 on property:sys.boot_completed=1
-    copy /system/etc/nestvane/smoke.apk /data/local/tmp/nestvane-smoke.apk
-    chown shell shell /data/local/tmp/nestvane-smoke.apk
-    chmod 0644 /data/local/tmp/nestvane-smoke.apk
-    restorecon /data/local/tmp/nestvane-smoke.apk
     exec_start nestvane-smoke-install
-    rm /data/local/tmp/nestvane-smoke.apk
     exec_start nestvane-smoke-launch
 
-service nestvane-smoke-install /system/bin/cmd package install -r /data/local/tmp/nestvane-smoke.apk
+service nestvane-smoke-install /system/bin/nestvane-apk-install /system/etc/nestvane/smoke.apk
     user shell
     group shell
     seclabel u:r:shell:s0

@@ -57,7 +57,32 @@ static unsigned install(long apk) {
     return result == child ? status : failed;
 }
 
-void _start(void) {
+/* Android starts this fixture at the ELF entry with argc and argv on the stack. */
+__asm__(".text\n"
+        ".global _start\n"
+        ".type _start, %function\n"
+        "_start:\n"
+        "ldr x0, [sp]\n"
+        "add x1, sp, #8\n"
+        "b run_installer\n"
+        ".size _start, .-_start\n");
+
+__attribute__((noreturn))
+static void finish(unsigned code) {
+    system_call(exit_group, code, 0, 0, 0);
+    __builtin_unreachable();
+}
+
+__attribute__((used, noreturn))
+static void run_installer(long argc, const char *const *argv) {
+    if (argc == 2) {
+        const long fd = system_call(openat, at_cwd, (long)argv[1], close_on_exec, 0);
+        if (fd < 0) finish(1);
+        const unsigned status = install(fd);
+        const unsigned signal = status & 0x7f;
+        finish(signal ? 128 + signal : (status >> 8) & 0xff);
+    }
+    if (argc != 1) finish(1);
     for (;;) {
         const long fd = system_call(openat, at_cwd, (long)"/dev/nestvane-apk", close_on_exec, 0);
         if (fd == interrupted) continue;
@@ -67,6 +92,5 @@ void _start(void) {
         system_call(close, fd, 0, 0, 0);
         if (reported != 0) break;
     }
-    system_call(exit_group, 1, 0, 0, 0);
-    __builtin_unreachable();
+    finish(1);
 }

@@ -518,3 +518,5 @@
 - Mac 使用属性目录权限修复版（`7d74a4a`）另行跑完 900 秒，终止报告由独立读取器验证 `sys.boot_completed=1`。同一报告记录四个原版 `dumpsys` 和两个自有 APK 夹具调用的原版 `cmd` 已进入客体 ELF，运行期间读取到六个服务均已停止。现有报告未验证这些命令的结果，后续轮次把窗口、图层、活动和电源状态各自保存到客体文件。
 - iPhone 11 进程 9791 跑过 1,455 秒，实时快照仍能读到原版 Launcher 主线程执行。该轮新取回的 640×960 PNG 仍显示 Android 开机动画。真机桌面、APK 和摄像头仍待验收。
 - iPhone 11 进程 9791 于 1,469.793 秒记录 SurfaceFlinger 的 Binder 接收缓冲区容量错误，随后 BootAnimation、SystemUI 状态栏和 Launcher 任务栏均因提交显示事务失败而触发 SIGABRT，错误码为 `FAILED_TRANSACTION`（`-2147483646`）。Binder 容量日志现在区分异步额度和连续空间不足，并显示接收缓冲区和最长的单向等待队列。宿主回归验证额度报错和队列诊断，原有同步事务及额度释放仍通过。
+- Mac 上的 20 Hz OpenGL 诊断轮次在 `sys.boot_completed=1` 时启动原版窗口和电源诊断。时点快照显示 Android 仍处于 Awake，任务为 Settings FallbackHome，焦点窗口为 Android System。后续完成 `BOOT_COMPLETED` 广播，主显示输出仍有黑帧，读取 SurfaceFlinger 的 Binder 映射未看到积压。此轮宿主是 ANGLE 的 OpenGL 后端，使用显式 ANGLE Metal 的 60 Hz 与 20 Hz 独立对照仍在运行。
+- 同一轮的包管理日志确认路径版冒烟测试因 `system_server` 无法读取 `shell_data_file` 而失败。冒烟安装现与文件导入共用原版 `cmd package install -r -S` 的只读标准输入路径。新版 ARM64 安装助手在指定 Android 17 参考模拟器上安装成功并启动 Smoke Activity，损坏 APK 被包管理器拒绝，iPhoneOS Release 编译通过。Nestvane 内的端到端复测已启动。
