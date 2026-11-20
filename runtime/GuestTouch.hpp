@@ -16,6 +16,7 @@ class GuestTouch {
 public:
     static constexpr int32_t maximumAxis = 32767;
     static constexpr uint16_t touchKey = 0x14a;
+    static constexpr uint16_t wakeKey = 143;
 
     struct Event {
         int64_t seconds;
@@ -48,11 +49,9 @@ public:
         if (!readerAvailable || (!down && !position.down)) return false;
         x = std::clamp(x, 0, maximumAxis);
         y = std::clamp(y, 0, maximumAxis);
-        const auto timestamp = std::chrono::steady_clock::now().time_since_epoch();
-        const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(timestamp);
-        const auto micros = std::chrono::duration_cast<std::chrono::microseconds>(timestamp - seconds);
+        const auto [seconds, micros] = eventTime();
         const auto append = [&](uint16_t type, uint16_t code, int32_t value) {
-            events.push_back({seconds.count(), micros.count(), type, code, value});
+            events.push_back({seconds, micros, type, code, value});
         };
         if (events.size() + 4 > capacity) {
             events.clear();
@@ -63,6 +62,17 @@ public:
         if (down != position.down) append(1, touchKey, down);
         append(0, 0, 0); // SYN_REPORT
         position = {x, y, down};
+        return true;
+    }
+
+    bool wake() {
+        std::scoped_lock lock(mutex);
+        if (!readerAvailable || events.size() + 4 > capacity) return false;
+        const auto [seconds, micros] = eventTime();
+        events.insert(events.end(), {
+            {seconds, micros, 1, wakeKey, 1}, {seconds, micros, 0, 0, 0},
+            {seconds, micros, 1, wakeKey, 0}, {seconds, micros, 0, 0, 0},
+        });
         return true;
     }
 
@@ -90,6 +100,13 @@ public:
     }
 
 private:
+    static std::pair<int64_t, int64_t> eventTime() {
+        using namespace std::chrono;
+        const auto now = steady_clock::now().time_since_epoch();
+        const auto whole = duration_cast<seconds>(now);
+        return {whole.count(), duration_cast<microseconds>(now - whole).count()};
+    }
+
     void setReaderAvailable(bool available) {
         std::scoped_lock lock(mutex);
         readerAvailable = available;

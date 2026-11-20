@@ -4865,6 +4865,15 @@ int main() {
         const auto* configBytes = machine.read(base + 768, touchConfig.size(), 4);
         assert(configBytes && std::string_view(reinterpret_cast<const char*>(configBytes), touchConfig.size()) == touchConfig);
         assert(call(57, {config}) == 0);
+        put(base + 704, "/system/usr/keylayout/Nestvane_Touchscreen.kl");
+        const auto layout = call(56, {uint32_t(-100), base + 704, 0});
+        assert(layout < 256);
+        constexpr std::string_view wakeLayout = "key 143 WAKEUP\n";
+        assert(call(63, {layout, base + 768, 96}) == wakeLayout.size());
+        const auto* layoutBytes = machine.read(base + 768, wakeLayout.size(), 4);
+        assert(layoutBytes && std::string_view(reinterpret_cast<const char*>(layoutBytes), wakeLayout.size()) == wakeLayout);
+        assert(call(57, {layout}) == 0);
+        assert(!touch->wake());
         touch->submit(100, 100, true); // A tap on the boot screen has no guest reader.
         put(base + 704, "/dev/input");
         const auto directory = call(56, {uint32_t(-100), base + 704, 0x4000});
@@ -4879,6 +4888,7 @@ int main() {
         assert(call(29, {input, 0x80044501, base + 760}) == 0 && (load(base + 760) & UINT32_MAX) == 0x010001);
         assert(call(29, {input, 0x80604521, base + 768}) == 96);
         assert(*machine.read(base + 768 + GuestTouch::touchKey / 8, 1, 4) == 1 << (GuestTouch::touchKey % 8));
+        assert(*machine.read(base + 768 + GuestTouch::wakeKey / 8, 1, 4) == 1 << (GuestTouch::wakeKey % 8));
         assert(machine.store64(base + 688, 0x20000001) && machine.store64(base + 696, 42));
         assert(call(21, {poll, 1, input, base + 688}) == 0);
         assert(call(63, {input, base + 768, 96}) == uint64_t(-11));
@@ -4904,6 +4914,17 @@ int main() {
         touch->submit(800, 920, false);
         assert(call(63, {input, base + 768, 96}) == 96);
         assert(event(2).code == GuestTouch::touchKey && event(2).value == 0);
+        assert(call(22, {poll, base + 512, 1, UINT32_MAX}) == poll && linux.blocked());
+        assert(touch->wake());
+        assert(linux.schedule(machine, std::chrono::steady_clock::now() + std::chrono::seconds(1)));
+        assert(!linux.blocked());
+        assert(call(22, {poll, base + 512, 1}) == 1 && load(base + 512) == 1);
+        assert(call(63, {input, base + 768, 96}) == 96);
+        assert(event(0).type == 1 && event(0).code == GuestTouch::wakeKey && event(0).value == 1);
+        assert(event(1).type == 0 && event(1).code == 0);
+        assert(event(2).type == 1 && event(2).code == GuestTouch::wakeKey && event(2).value == 0);
+        assert(event(3).type == 0 && event(3).code == 0);
+        assert(!touch->state().down && !touch->ready());
         assert(call(57, {input}) == 0);
         linux.setGuestTouch({});
     }

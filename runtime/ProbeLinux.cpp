@@ -553,8 +553,10 @@ void ProbeLinux::addDirectory(std::string path, uint32_t mode) {
 void ProbeLinux::setGuestTouch(std::shared_ptr<GuestTouch> touch) {
     guestTouch = std::move(touch);
     constexpr auto configPath = "/system/usr/idc/Nestvane_Touchscreen.idc";
+    constexpr auto keyLayoutPath = "/system/usr/keylayout/Nestvane_Touchscreen.kl";
     if (!guestTouch) {
         files.erase(configPath);
+        files.erase(keyLayoutPath);
         return;
     }
     addDirectory("/dev/input", 0755);
@@ -563,6 +565,8 @@ void ProbeLinux::setGuestTouch(std::shared_ptr<GuestTouch> touch) {
         "touch.enableForInactiveViewport = 1\n"
         "touch.wake = 1\n";
     mount(configPath, {reinterpret_cast<const uint8_t*>(config.data()), config.size()});
+    static constexpr std::string_view keyLayout = "key 143 WAKEUP\n";
+    mount(keyLayoutPath, {reinterpret_cast<const uint8_t*>(keyLayout.data()), keyLayout.size()});
 }
 
 void ProbeLinux::addBootTmpfs(std::string path, uint32_t mode, uint32_t gid, uint64_t flags) {
@@ -2428,6 +2432,7 @@ uint64_t ProbeLinux::touchIoctl(Machine& machine, const Descriptor& fd) {
             break;
         case 0x20: bits[0] = (1 << 0) | (1 << 1) | (1 << 3); break; // EV_SYN, EV_KEY, EV_ABS
         case 0x21:
+            bits[GuestTouch::wakeKey / 8] = 1 << (GuestTouch::wakeKey % 8);
             bits[GuestTouch::touchKey / 8] = 1 << (GuestTouch::touchKey % 8);
             break;
         case 0x23: bits[0] = 3; break; // ABS_X, ABS_Y

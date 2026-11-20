@@ -679,7 +679,8 @@ DynamicReport probeInit(const std::string& directory, const std::string& databas
         const auto image = loadDynamicELF(files.at(filename).bytes(), files.at(interpreter).bytes(), filename,
                                           interpreter, {"second_stage"}, 0);
         ProbeLinux linux(1, 0, 512 * 1024 * 1024);
-        const bool wakeGuestDisplay = graphics && touch && files.contains("/system/bin/cmd");
+        const auto startupTouch = graphics ? touch : nullptr;
+        const bool wakeGuestDisplay = startupTouch && files.contains("/system/bin/cmd");
         linux.setGraphicsPipeFactory(std::move(graphics));
         linux.setGraphicsDma(std::move(graphicsDma));
         linux.setCamera(std::move(camera));
@@ -729,7 +730,22 @@ service nestvane-apk-install /system/bin/sh /system/etc/nestvane/apk-ready.sh
             }
         }
         bool smokeActivityOpened = false;
-        if (progress || expectSmoke) linux.androidLogObserver = [&](std::string_view message) {
+        bool bootBroadcastCompleted = false, displayInactive = false, launcherDrawn = false, wakeSent = false;
+        if (progress || expectSmoke || startupTouch) linux.androidLogObserver = [&](std::string_view message) {
+            const auto line = message.substr(0, message.find('\n'));
+            constexpr std::string_view bootBroadcast =
+                "SystemServerTiming: broadcastIntent-0-android.intent.action.BOOT_COMPLETED took to complete:";
+            constexpr std::string_view launcherDisplay = "ActivityTaskManager: Displayed com.android.launcher3/";
+            const bool viewportChanged = line.starts_with("InputManager-JNI: Viewport [0] to add: local:");
+            if (viewportChanged) displayInactive = line.ends_with("isActive: false");
+            if (line.starts_with(bootBroadcast)) bootBroadcastCompleted = true;
+            if (line.starts_with(launcherDisplay) && !displayInactive) launcherDrawn = true;
+            const bool queueWake = startupTouch && !wakeSent && !launcherDrawn && bootBroadcastCompleted &&
+                displayInactive && (viewportChanged || line.starts_with(bootBroadcast));
+            if (queueWake && startupTouch->wake()) {
+                wakeSent = true;
+                if (progress) progress("Queued WAKEUP key for inactive Android startup display");
+            }
             if (expectSmoke && message.starts_with("NestvaneSmoke: Opened activity with count "))
                 smokeActivityOpened = true;
             if (!progress) return;
@@ -749,6 +765,7 @@ service nestvane-apk-install /system/bin/sh /system/etc/nestvane/apk-ready.sh
                 "ActivityTaskManager: Displayed com.android.settings/.FallbackHome",
                 "SystemUIFactory: Failed to initialize WMComponent", "libc: Fatal signal ",
                 "Guest native abort: ", "InputTransport: ", "InputDispatcher: ", "InputManager-JNI: ",
+                "PowerManagerService: Waking up", "PowerManagerService: Going to sleep",
                 "SurfaceFlinger: SurfaceFlinger is starting", "SurfaceFlinger: Using HWComposer service",
                 "SurfaceFlinger: OpenGL ES informations", "mapper.ranchu: GoldfishAddressSpace",
                 "SurfaceFlinger: Can't create AidlComposerClient", "SurfaceFlinger: Loaded AIDL composer3 HAL",
@@ -768,7 +785,9 @@ service nestvane-apk-install /system/bin/sh /system/etc/nestvane/apk-ready.sh
             const bool graphicsTransportFailure = message.starts_with("GFXSTREAM: ") &&
                 (message.find("Failed to connect to host") != std::string_view::npos ||
                  message.find("Could not open '/dev/goldfish") != std::string_view::npos);
-            if (graphicsTransportFailure || std::any_of(std::begin(milestones), std::end(milestones),
+            const bool launcherProcess = line.starts_with("ActivityManager: ") &&
+                line.find("com.android.launcher3") != std::string_view::npos;
+            if (launcherProcess || graphicsTransportFailure || std::any_of(std::begin(milestones), std::end(milestones),
                             [message](auto prefix) { return message.starts_with(prefix); }))
                 progress(message.substr(0, message.find('\n')));
         };
