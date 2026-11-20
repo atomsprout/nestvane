@@ -61,7 +61,8 @@ void systemCall(Machine& machine) {
         cpu.exitCode = static_cast<int>(cpu.x[0] & 255);
         cpu.stop = Stop::exit;
     } else if (cpu.x[8] == 64 && (cpu.x[0] == 1 || cpu.x[0] == 2) && cpu.x[2] <= 4096) {
-        auto data = machine.read(cpu.x[1], cpu.x[2], readable);
+        std::vector<uint8_t> scratch;
+        auto data = machine.read(cpu.x[1], cpu.x[2], readable, scratch);
         if (!data) {
             cpu.x[0] = uint64_t(-14); // EFAULT
             return;
@@ -112,7 +113,8 @@ namespace {
 const AOTBlock* checkedBlock(Machine& machine, const AOTBlock& block,
                              uint64_t entry, Counters& counters) {
     if (block.entryOffset > UINT64_MAX - entry) return nullptr;
-    auto bytes = machine.read(entry + block.entryOffset, block.words.size_bytes(), executable);
+    std::vector<uint8_t> scratch;
+    auto bytes = machine.read(entry + block.entryOffset, block.words.size_bytes(), executable, scratch);
     if (bytes && std::memcmp(bytes, block.words.data(), block.words.size_bytes()) == 0) return &block;
     ++counters.rejectedMappings;
     return nullptr;
@@ -385,38 +387,73 @@ Machine::Machine(const Image& image, const std::shared_ptr<AnonymousBudget>& bud
 }
 
 AnonymousPages::AnonymousPages(uint64_t length, const std::shared_ptr<AnonymousBudget>& limits)
-    : budget(limits), hostPage(getpagesize()), size((length + hostPage - 1) & ~(hostPage - 1)) {}
+    : budget(limits), hostPage(getpagesize()), size((length + hostPage - 1) & ~(hostPage - 1)),
+      dirty(size / hostPage), blocks(size / blockSize + (size % blockSize != 0)) {
+    budget->reserved += size;
+}
 
 std::shared_ptr<AnonymousPages> AnonymousPages::allocate(uint64_t length, const std::shared_ptr<AnonymousBudget>& budget,
-                                                        int* mappingError) {
-    if (mappingError) *mappingError = 0;
-    auto pages = std::shared_ptr<AnonymousPages>(new AnonymousPages(length, budget));
-    if (pages->size > budget->reservedLimit - budget->reserved) return {};
-    pages->dirty.resize(pages->size / pages->hostPage);
-    // Only the interpreter reads these bytes as guest instructions. Host permissions are always RW.
-    auto* region = mmap(nullptr, pages->size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (region == MAP_FAILED) {
-        if (mappingError) *mappingError = errno;
+                                                        int* allocationError) {
+    if (allocationError) *allocationError = 0;
+    const auto hostPage = uint64_t(getpagesize());
+    const auto remaining = budget->reservedLimit - budget->reserved;
+    if (!length || length > (remaining & ~(hostPage - 1)))
+        return {};
+    try {
+        return std::shared_ptr<AnonymousPages>(new AnonymousPages(length, budget));
+    } catch (const std::bad_alloc&) {
+        if (allocationError) *allocationError = ENOMEM;
         return {};
     }
-    pages->mapping = static_cast<uint8_t*>(region);
-    budget->reserved += pages->size;
-    return pages;
 }
 
 AnonymousPages::~AnonymousPages() {
-    if (!mapping) return;
-    munmap(mapping, size);
+    for (size_t index = 0; index < blocks.size(); ++index) releaseBlock(index);
     budget->reserved -= size;
     budget->dirty -= dirtyBytes;
+}
+
+void AnonymousPages::releaseBlock(size_t index) {
+    auto& block = blocks[index];
+    if (!block.data) return;
+    munmap(block.data, std::min<uint64_t>(blockSize, size - index * blockSize));
+    block = {};
+}
+
+const uint8_t* AnonymousPages::read(uint64_t offset, size_t length) const {
+    if (offset >= size || length > size - offset || length > blockSize - offset % blockSize) return nullptr;
+    static constexpr std::array<uint8_t, blockSize> zero{};
+    const auto* data = blocks[offset / blockSize].data;
+    return (data ? data : zero.data()) + offset % blockSize;
+}
+
+void AnonymousPages::readInto(uint64_t offset, std::span<uint8_t> bytes) const {
+    while (!bytes.empty()) {
+        const auto count = std::min(bytes.size(), blockSize - size_t(offset % blockSize));
+        std::memcpy(bytes.data(), read(offset, count), count);
+        offset += count;
+        bytes = bytes.subspan(count);
+    }
+}
+
+void AnonymousPages::write(uint64_t offset, std::span<const uint8_t> bytes) {
+    while (!bytes.empty()) {
+        const auto within = offset % blockSize;
+        const auto count = std::min(bytes.size(), blockSize - size_t(within));
+        std::memmove(blocks[offset / blockSize].data + within, bytes.data(), count);
+        offset += count;
+        bytes = bytes.subspan(count);
+    }
 }
 
 bool AnonymousPages::resident(uint64_t offset) const {
     return offset < size && dirty[offset / hostPage];
 }
 
-bool AnonymousPages::prepareWrite(uint64_t offset, uint64_t length) {
+bool AnonymousPages::prepareWrite(uint64_t offset, uint64_t length, int* mappingError) {
+    if (mappingError) *mappingError = 0;
     if (!length) return true;
+    if (offset >= size || length > size - offset) return false;
     const auto first = offset / hostPage, last = (offset + length - 1) / hostPage;
     uint64_t additional = 0;
     for (auto index = first; index <= last; ++index) {
@@ -424,7 +461,27 @@ bool AnonymousPages::prepareWrite(uint64_t offset, uint64_t length) {
     }
     if (!additional) return true;
     if (additional > budget->dirtyLimit - budget->dirty) return false;
-    for (auto index = first; index <= last; ++index) dirty[index] = true;
+
+    const auto firstBlock = offset / blockSize, lastBlock = (offset + length - 1) / blockSize;
+    for (auto index = firstBlock; index <= lastBlock; ++index) {
+        auto& block = blocks[index];
+        if (block.data) continue;
+        void* data = mmap(nullptr, std::min<uint64_t>(blockSize, size - index * blockSize),
+                          PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (data == MAP_FAILED) {
+            if (mappingError) *mappingError = errno;
+            for (auto pending = firstBlock; pending < index; ++pending) {
+                if (!blocks[pending].dirtyPages) releaseBlock(pending);
+            }
+            return false;
+        }
+        block.data = static_cast<uint8_t*>(data);
+    }
+    for (auto index = first; index <= last; ++index) {
+        if (dirty[index]) continue;
+        dirty[index] = true;
+        ++blocks[index * hostPage / blockSize].dirtyPages;
+    }
     budget->dirty += additional;
     dirtyBytes += additional;
     return true;
@@ -436,18 +493,21 @@ void AnonymousPages::discard(uint64_t offset, uint64_t length) {
         const auto index = position / hostPage;
         const auto next = std::min(end, (index + 1) * hostPage);
         if (dirty[index]) {
-            std::memset(mapping + position, 0, next - position);
+            const auto blockIndex = position / blockSize;
+            auto& block = blocks[blockIndex];
+            auto* data = block.data + position % blockSize;
+            std::memset(data, 0, next - position);
             if (position % hostPage == 0 && next - position == hostPage) {
-                // Darwin can reclaim the zeroed page with MADV_FREE. On Linux DONTNEED also zeros it.
 #ifdef __APPLE__
                 constexpr auto release = MADV_FREE;
 #else
                 constexpr auto release = MADV_DONTNEED;
 #endif
-                if (madvise(mapping + position, hostPage, release) == 0) {
+                if (block.dirtyPages == 1 || madvise(data, hostPage, release) == 0) {
                     dirty[index] = false;
                     budget->dirty -= hostPage;
                     dirtyBytes -= hostPage;
+                    if (!--block.dirtyPages) releaseBlock(blockIndex);
                 }
             }
         }
@@ -455,15 +515,17 @@ void AnonymousPages::discard(uint64_t offset, uint64_t length) {
     }
 }
 
-bool AnonymousPages::copyTo(AnonymousPages& target, uint64_t source, uint64_t destination, uint64_t length) const {
+bool AnonymousPages::copyTo(AnonymousPages& target, uint64_t source, uint64_t destination,
+                            uint64_t length, int* mappingError) const {
+    if (mappingError) *mappingError = 0;
     const auto end = source + length;
     for (auto position = source; position < end;) {
         const auto index = position / hostPage;
         const auto next = std::min(end, (index + 1) * hostPage);
         if (dirty[index]) {
             const auto targetOffset = destination + position - source;
-            if (!target.prepareWrite(targetOffset, next - position)) return false;
-            std::memcpy(target.mapping + targetOffset, mapping + position, next - position);
+            if (!target.prepareWrite(targetOffset, next - position, mappingError)) return false;
+            target.write(targetOffset, {read(position, next - position), size_t(next - position)});
         }
         position = next;
     }
@@ -572,7 +634,7 @@ uint64_t Segment::accessibleSize() const {
 }
 
 const uint8_t* Segment::data() const {
-    if (anonymousPages) return anonymousPages->data() + fileOffset;
+    if (anonymousPages) return anonymousPages->read(fileOffset, mappedSize());
     if (imageView) return imageView;
     return shared ? shared->pages.data() + fileOffset : bytes.data();
 }
@@ -622,7 +684,25 @@ const uint8_t* Machine::read(uint64_t address, size_t size, unsigned flags) cons
     const auto index = findSegment(address, size, flags, flags & executable ? codeHint : dataHint);
     if (index == segments.size()) return nullptr;
     const auto& segment = segments[index];
-    return segment.data() + (address - segment.address);
+    const auto offset = address - segment.address;
+    if (segment.anonymousPages) return segment.anonymousPages->read(segment.fileOffset + offset, size);
+    return segment.data() + offset;
+}
+
+const uint8_t* Machine::read(uint64_t address, size_t size, unsigned flags,
+                             std::vector<uint8_t>& scratch) const {
+    if (const auto* bytes = read(address, size, flags)) return bytes;
+    if (!(flags & executable)) address = dataAddress(address);
+    const auto index = findSegment(address, size, flags, flags & executable ? codeHint : dataHint);
+    if (index == segments.size() || !segments[index].anonymousPages) return nullptr;
+    const auto& segment = segments[index];
+    try {
+        scratch.resize(size);
+    } catch (const std::bad_alloc&) {
+        return nullptr;
+    }
+    segment.anonymousPages->readInto(segment.fileOffset + address - segment.address, scratch);
+    return scratch.data();
 }
 
 bool Machine::mappedRange(uint64_t address, size_t size, unsigned flags) const {
@@ -649,7 +729,10 @@ bool Machine::readInto(uint64_t address, std::span<uint8_t> output) const {
         const auto& segment = segments[findSegment(address, 1, readable, dataHint)];
         const auto offset = address - segment.address;
         const auto count = std::min<uint64_t>(output.size(), segment.accessibleSize() - offset);
-        std::memcpy(output.data(), segment.data() + offset, count);
+        if (segment.anonymousPages)
+            segment.anonymousPages->readInto(segment.fileOffset + offset, output.first(count));
+        else
+            std::memcpy(output.data(), segment.data() + offset, count);
         output = output.subspan(count);
         address += count;
     }
@@ -665,8 +748,23 @@ bool Machine::write(uint64_t address, std::span<const uint8_t> bytes) {
     const auto index = findSegment(address, bytes.size(), writable, dataHint);
     if (index != segments.size()) {
         auto& segment = segments[index];
-        if (!segment.prepareWrite(address - segment.address, bytes.size())) return false;
-        std::memmove(segment.data() + (address - segment.address), bytes.data(), bytes.size());
+        const auto offset = address - segment.address;
+        std::vector<uint8_t> copy;
+        if (segment.anonymousPages &&
+            !segment.anonymousPages->read(segment.fileOffset + offset, bytes.size())) {
+            try {
+                copy.assign(bytes.begin(), bytes.end());
+            } catch (const std::bad_alloc&) {
+                return false;
+            }
+            bytes = copy;
+        }
+        if (!segment.prepareWrite(offset, bytes.size())) return false;
+        if (segment.anonymousPages) {
+            segment.anonymousPages->write(segment.fileOffset + offset, bytes);
+        } else {
+            std::memmove(segment.data() + offset, bytes.data(), bytes.size());
+        }
     } else {
         if (!mappedRange(address, bytes.size(), writable)) return false;
         for (auto position = address, end = address + bytes.size(); position < end;) {
@@ -683,7 +781,10 @@ bool Machine::write(uint64_t address, std::span<const uint8_t> bytes) {
             auto& segment = segments[findSegment(position, 1, writable, dataHint)];
             const auto offset = position - segment.address;
             const auto count = std::min<uint64_t>(source.size() - copied, segment.accessibleSize() - offset);
-            std::memcpy(segment.data() + offset, source.data() + copied, count);
+            if (segment.anonymousPages)
+                segment.anonymousPages->write(segment.fileOffset + offset, std::span(source).subspan(copied, count));
+            else
+                std::memcpy(segment.data() + offset, source.data() + copied, count);
             position += count;
             copied += count;
         }

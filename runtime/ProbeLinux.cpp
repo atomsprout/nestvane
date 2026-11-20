@@ -1961,7 +1961,8 @@ bool ProbeLinux::eventCall(Machine& machine) {
             if (setting) {
                 constexpr uint64_t absolute = 1, cancelOnSet = 2;
                 if (x[1] & ~(absolute | cancelOnSet)) { x[0] = invalid; break; }
-                const auto* input = machine.read(x[2], sizeof previous, 4);
+                std::vector<uint8_t> inputScratch;
+                const auto* input = machine.read(x[2], sizeof previous, 4, inputScratch);
                 if (!input) { x[0] = uint64_t(-14); break; }
                 std::array<int64_t, 4> values{};
                 std::memcpy(values.data(), input, sizeof values);
@@ -2021,7 +2022,8 @@ bool ProbeLinux::eventCall(Machine& machine) {
             if (x[1] == 1 && registered) { x[0] = uint64_t(-17); break; }
             if (x[1] != 1 && !registered) { x[0] = uint64_t(-2); break; }
             std::array<uint64_t, 2> event{};
-            const auto* data = machine.read(x[3], sizeof(event), 4);
+            std::vector<uint8_t> dataScratch;
+            const auto* data = machine.read(x[3], sizeof(event), 4, dataScratch);
             if (!data) { x[0] = uint64_t(-14); break; }
             std::memcpy(event.data(), data, sizeof(event));
             const auto mask = uint32_t(event[0]);
@@ -2712,12 +2714,14 @@ uint64_t ProbeLinux::receiveKernelNetlink(Machine& machine, SocketState& endpoin
     if (x[2] & ~0x40ULL) return invalid; // MSG_DONTWAIT
     if (endpoint.inbox.empty()) return uint64_t(-11);
     SocketMessage message{};
-    const auto* header = machine.read(x[1], sizeof(message), 4);
+    std::vector<uint8_t> headerScratch;
+    const auto* header = machine.read(x[1], sizeof(message), 4, headerScratch);
     if (!header) return uint64_t(-14);
     std::memcpy(&message, header, sizeof(message));
     std::array<uint64_t, 2> vector{};
     if (message.vectorCount != 1) return invalid;
-    const auto* iov = machine.read(message.vector, sizeof(vector), 4);
+    std::vector<uint8_t> iovScratch;
+    const auto* iov = machine.read(message.vector, sizeof(vector), 4, iovScratch);
     if (!iov) return uint64_t(-14);
     std::memcpy(vector.data(), iov, sizeof(vector));
     const auto& packet = endpoint.inbox.front().payload;
@@ -3034,7 +3038,8 @@ bool ProbeLinux::socketCall(Machine& machine) {
     const auto fd = descriptors().find(uint32_t(x[0]));
     const auto writeAddress = [&](std::span<const uint8_t> address) -> uint64_t {
         uint32_t space = 0;
-        const auto* len = machine.read(x[2], sizeof(space), 4);
+        std::vector<uint8_t> lenScratch;
+        const auto* len = machine.read(x[2], sizeof(space), 4, lenScratch);
         if (!len) return uint64_t(-14);
         std::memcpy(&space, len, sizeof(space));
         if (space > INT32_MAX) return invalid;
@@ -3198,7 +3203,8 @@ bool ProbeLinux::socketCall(Machine& machine) {
                 break;
             }
             if (x[2] < 3 || x[2] > 110) { x[0] = invalid; break; }
-            const auto* bytes = machine.read(x[1], x[2], 4);
+            std::vector<uint8_t> bytesScratch;
+            const auto* bytes = machine.read(x[1], x[2], 4, bytesScratch);
             if (!bytes) { x[0] = uint64_t(-14); break; }
             if (bytes[0] != 1 || bytes[1]) { x[0] = uint64_t(-97); break; }
             if (!bytes[2]) return false; // Abstract Unix socket namespace.
@@ -3565,7 +3571,8 @@ bool ProbeLinux::socketCall(Machine& machine) {
             }
             if (x[1] != 1) return false;
             uint32_t size = 0;
-            const auto* pointer = machine.read(x[4], sizeof(size), 4);
+            std::vector<uint8_t> pointerScratch;
+            const auto* pointer = machine.read(x[4], sizeof(size), 4, pointerScratch);
             if (!pointer) { x[0] = uint64_t(-14); break; }
             std::memcpy(&size, pointer, sizeof(size));
             const bool sendTimeout = x[2] == sendTimeoutOld || x[2] == sendTimeoutNew;
@@ -4633,7 +4640,8 @@ bool ProbeLinux::fileCall(Machine& machine) {
             if (*name != "security.selinux") { x[0] = uint64_t(-95); break; }
             if (removing) { x[0] = uint64_t(-13); break; }
             if (x[3] > 4096 || x[4] > 2) { x[0] = invalid; break; }
-            const auto* bytes = x[3] ? machine.read(x[2], x[3], 4) : nullptr;
+            std::vector<uint8_t> bytesScratch;
+            const auto* bytes = x[3] ? machine.read(x[2], x[3], 4, bytesScratch) : nullptr;
             if (x[3] && !bytes) { x[0] = uint64_t(-14); break; }
             if (userId() != 0) {
                 const auto label = bytes
@@ -4874,7 +4882,8 @@ uint64_t ProbeLinux::moveToCgroup(Machine& machine, const Descriptor& fd, uint64
     if (!canWriteCgroup(*fd.cgroupFile)) return uint64_t(-13);
     if (!size) return 0;
     if (size > 32) return invalid;
-    const auto* bytes = machine.read(address, size, 4);
+    std::vector<uint8_t> bytesScratch;
+    const auto* bytes = machine.read(address, size, 4, bytesScratch);
     if (!bytes) return uint64_t(-14);
     std::string_view input(reinterpret_cast<const char*>(bytes), size);
     while (!input.empty() && (input.back() == '\n' || input.back() == ' ' || input.back() == '\t')) input.remove_suffix(1);
@@ -4902,7 +4911,8 @@ uint64_t ProbeLinux::writeDescriptor(Machine& machine, const Descriptor& fd, uin
     if (fd.graphics) return writeGraphics(machine, *fd.graphics, address, size);
     if (fd.node == Node::securityInfo || fd.node == Node::securityValidate) {
         if (!size || size > pageSize) return invalid;
-        const auto* data = machine.read(address, size, 4);
+        std::vector<uint8_t> dataScratch;
+        const auto* data = machine.read(address, size, 4, dataScratch);
         if (!data) return uint64_t(-14);
         std::string_view label(reinterpret_cast<const char*>(data), size);
         if (label.ends_with('\0')) label.remove_suffix(1);
@@ -4927,7 +4937,8 @@ uint64_t ProbeLinux::writeDescriptor(Machine& machine, const Descriptor& fd, uin
     }
     if (fd.node == Node::securityCreate || fd.node == Node::securityAccess) {
         if (!size || size > pageSize) return invalid;
-        const auto* data = machine.read(address, size, 4);
+        std::vector<uint8_t> dataScratch;
+        const auto* data = machine.read(address, size, 4, dataScratch);
         if (!data) return uint64_t(-14);
         fd.securityReply->clear();
         *fd.offset = 0;
@@ -4975,7 +4986,8 @@ uint64_t ProbeLinux::writeDescriptor(Machine& machine, const Descriptor& fd, uin
             return uint64_t(-13);
         std::string_view label;
         if (size) {
-            const auto* data = machine.read(address, size, 4);
+            std::vector<uint8_t> dataScratch;
+            const auto* data = machine.read(address, size, 4, dataScratch);
             if (!data) return uint64_t(-14);
             label = {reinterpret_cast<const char*>(data), size};
             if (label.ends_with('\0') || label.ends_with('\n')) label.remove_suffix(1);
@@ -4994,7 +5006,8 @@ uint64_t ProbeLinux::writeDescriptor(Machine& machine, const Descriptor& fd, uin
     if (fd.node == Node::execLabel) {
         if (userId() != 0 && current->process->context != "u:r:init:s0") return uint64_t(-1);
         if (!size || size > 256) return invalid;
-        const auto* data = machine.read(address, size, 4);
+        std::vector<uint8_t> dataScratch;
+        const auto* data = machine.read(address, size, 4, dataScratch);
         if (!data) return uint64_t(-14);
         std::string_view label(reinterpret_cast<const char*>(data), size);
         if (label.ends_with('\0')) label.remove_suffix(1);
@@ -5012,7 +5025,8 @@ uint64_t ProbeLinux::writeDescriptor(Machine& machine, const Descriptor& fd, uin
         const auto space = Pipe::capacity - fd.pipe->data.size();
         if (!space || (size <= pageSize && size > space)) return uint64_t(-11);
         const auto count = std::min<uint64_t>(size, space);
-        const auto* data = machine.read(address, count, 4);
+        std::vector<uint8_t> dataScratch;
+        const auto* data = machine.read(address, count, 4, dataScratch);
         if (!data) return uint64_t(-14);
         fd.pipe->data.insert(fd.pipe->data.end(), data, data + count);
         wakePollers();
@@ -5044,7 +5058,8 @@ uint64_t ProbeLinux::writeDescriptor(Machine& machine, const Descriptor& fd, uin
     if (fd.node == Node::kernelSetting) {
         if (userId() != 0) return uint64_t(-1);
         if (*fd.offset || !size || size > 16) return invalid;
-        const auto* data = machine.read(address, size, 4);
+        std::vector<uint8_t> dataScratch;
+        const auto* data = machine.read(address, size, 4, dataScratch);
         if (!data) return uint64_t(-14);
         std::string_view value(reinterpret_cast<const char*>(data), size);
         while (!value.empty() && (value.back() == '\n' || value.back() == ' ' || value.back() == '\t'))
@@ -5063,7 +5078,8 @@ uint64_t ProbeLinux::writeDescriptor(Machine& machine, const Descriptor& fd, uin
     if (fd.node == Node::ueventTrigger) {
         if (userId() != 0) return uint64_t(-1);
         if (size < 3 || size > 4) return invalid;
-        const auto* bytes = machine.read(address, size, 4);
+        std::vector<uint8_t> bytesScratch;
+        const auto* bytes = machine.read(address, size, 4, bytesScratch);
         if (!bytes) return uint64_t(-14);
         const std::string_view action(reinterpret_cast<const char*>(bytes), size);
         if (action != "add" && action != "add\n") return invalid;
@@ -5077,7 +5093,8 @@ uint64_t ProbeLinux::writeDescriptor(Machine& machine, const Descriptor& fd, uin
         auto& peer = fd.pty->input[!slave];
         const auto count = std::min<uint64_t>(size, 65536 - peer.size());
         if (!count) return uint64_t(-11);
-        const auto* data = machine.read(address, count, 4);
+        std::vector<uint8_t> dataScratch;
+        const auto* data = machine.read(address, count, 4, dataScratch);
         if (!data) return uint64_t(-14);
         const bool crlf = slave && (fd.pty->termios[1] & 5) == 5;
         uint64_t written = 0;
@@ -5113,7 +5130,8 @@ uint64_t ProbeLinux::writeDescriptor(Machine& machine, const Descriptor& fd, uin
         const auto limit = file.persistent || file.memoryFile ? maxDataFileBytes : maxGuestFileBytes;
         if (offset > limit || size > limit - offset) return uint64_t(-27);
         std::vector<uint8_t> splitBuffer;
-        const auto* data = machine.read(address, size, 4);
+        std::vector<uint8_t> dataScratch;
+        const auto* data = machine.read(address, size, 4, dataScratch);
         if (!data) {
             splitBuffer.resize(size);
             if (!machine.readInto(address, splitBuffer)) return uint64_t(-14);
@@ -5126,7 +5144,8 @@ uint64_t ProbeLinux::writeDescriptor(Machine& machine, const Descriptor& fd, uin
     }
     if (fd.node == Node::kernelLog) {
         if (size > 65536) return uint64_t(-28);
-        const auto* data = machine.read(address, size, 4);
+        std::vector<uint8_t> dataScratch;
+        const auto* data = machine.read(address, size, 4, dataScratch);
         if (!data) return uint64_t(-14);
         captureLog(kernelOutput, recentKernelOutput, 64 * 1024,
                    {reinterpret_cast<const char*>(data), size});
@@ -5139,7 +5158,8 @@ uint64_t ProbeLinux::writeDescriptor(Machine& machine, const Descriptor& fd, uin
         default: return uint64_t(-9);
     }
     if (size > 65536 || destination->size() > 65536 - size) return uint64_t(-28);
-    const auto* data = machine.read(address, size, 4);
+    std::vector<uint8_t> dataScratch;
+    const auto* data = machine.read(address, size, 4, dataScratch);
     if (!data) return uint64_t(-14);
     destination->append(reinterpret_cast<const char*>(data), size);
     return size;
@@ -5386,7 +5406,7 @@ bool ProbeLinux::forkProcess(Machine& machine) {
                   << " requested=" << requested << " tasks=" << threads.size() << '/' << maxGuestTasks
                   << " sparse reserved=" << anonymousBudget->reserved << '/' << anonymousBudget->reservedLimit
                   << " dirty=" << anonymousBudget->dirty << '/' << anonymousBudget->dirtyLimit;
-            if (mappingError) event << " host mmap errno=" << mappingError;
+            if (mappingError) event << " host memory errno=" << mappingError;
             androidLogObserver(event.str());
         }
         x[0] = uint64_t(-11);
@@ -5414,13 +5434,15 @@ bool ProbeLinux::forkProcess(Machine& machine) {
             int mappingError = 0;
             copy = AnonymousPages::allocate(source->capacity(), anonymousBudget, &mappingError);
             if (!copy) {
-                return retry(mappingError ? "host mapping failed" : "sparse reservation limit",
+                return retry(mappingError ? "host bookkeeping allocation" : "sparse reservation limit",
                              source->capacity(), mappingError);
             }
         }
+        int mappingError = 0;
         if (!segment.wipeOnFork &&
-            !source->copyTo(*copy, segment.fileOffset, segment.fileOffset, segment.mappedSize()))
-            return retry("dirty page limit", segment.mappedSize());
+            !source->copyTo(*copy, segment.fileOffset, segment.fileOffset, segment.mappedSize(), &mappingError))
+            return retry(mappingError ? "host block mapping" : "dirty page limit",
+                         segment.mappedSize(), mappingError);
         segment.anonymousPages = copy;
     }
     child.process->parent = processId();
@@ -5843,7 +5865,8 @@ uint64_t ProbeLinux::updateTimes(Machine& machine) {
     constexpr uint64_t atEmptyPath = 0x1000, noFollow = 0x100;
     std::array<int64_t, 4> requested{0, now, 0, now};
     if (x[2]) {
-        const auto* bytes = machine.read(x[2], sizeof(requested), 4);
+        std::vector<uint8_t> bytesScratch;
+        const auto* bytes = machine.read(x[2], sizeof(requested), 4, bytesScratch);
         if (!bytes) return uint64_t(-14);
         std::memcpy(requested.data(), bytes, sizeof(requested));
         if (requested[1] == omit && requested[3] == omit) return 0;
@@ -6261,7 +6284,8 @@ bool ProbeLinux::futexPi(Machine& machine, uint64_t op, uint64_t address,
     std::optional<nanoseconds> timeout;
     if (!unlock && !tryLock && x[3]) {
         std::array<int64_t, 2> fields{};
-        const auto* bytes = machine.read(x[3], sizeof(fields), 4);
+        std::vector<uint8_t> bytesScratch;
+        const auto* bytes = machine.read(x[3], sizeof(fields), 4, bytesScratch);
         if (!bytes) { x[0] = uint64_t(-14); return true; }
         std::memcpy(fields.data(), bytes, sizeof(fields));
         if (fields[0] < 0 || fields[1] < 0 || fields[1] >= 1'000'000'000) {
@@ -6339,7 +6363,8 @@ bool ProbeLinux::futex(Machine& machine) {
     if (op != 0 && op != 1 && !requeue && !pi && op != 9 && op != 10) return false;
     const uint32_t mask = op == 9 || op == 10 ? uint32_t(x[5]) : UINT32_MAX;
     if (x[0] % 4 || !mask) { x[0] = invalid; return true; }
-    const auto* bytes = machine.read(x[0], 4, 4);
+    std::vector<uint8_t> bytesScratch;
+    const auto* bytes = machine.read(x[0], 4, 4, bytesScratch);
     if (!bytes) { x[0] = uint64_t(-14); return true; }
     const auto keyFor = [&](uint64_t pointer) {
         auto address = pointer & 0x00ff'ffff'ffff'ffff;
@@ -6363,7 +6388,8 @@ bool ProbeLinux::futex(Machine& machine) {
     }
     if (requeue) {
         if (int32_t(x[2]) < 0 || int32_t(x[3]) < 0 || x[4] % 4) { x[0] = invalid; return true; }
-        if (!machine.read(x[4], 4, 4)) { x[0] = uint64_t(-14); return true; }
+        std::array<uint8_t, 4> bitset{};
+        if (!machine.readInto(x[4], bitset)) { x[0] = uint64_t(-14); return true; }
         uint32_t value = 0;
         std::memcpy(&value, bytes, sizeof(value));
         if (op == 4 && value != uint32_t(x[5])) { x[0] = uint64_t(-11); return true; }
@@ -6394,7 +6420,8 @@ bool ProbeLinux::futex(Machine& machine) {
     if (x[3]) {
         using namespace std::chrono;
         std::array<int64_t, 2> timeout{};
-        const auto* data = machine.read(x[3], sizeof(timeout), 4);
+        std::vector<uint8_t> dataScratch;
+        const auto* data = machine.read(x[3], sizeof(timeout), 4, dataScratch);
         if (!data) { x[0] = uint64_t(-14); return true; }
         std::memcpy(timeout.data(), data, sizeof(timeout));
         if (timeout[0] < 0 || timeout[1] < 0 || timeout[1] >= 1'000'000'000) {
@@ -6756,7 +6783,8 @@ bool ProbeLinux::poll(Machine& machine) {
     using namespace std::chrono;
     if (x[2] && !current->deadline) {
         std::array<int64_t, 2> timeout{};
-        const auto* data = machine.read(x[2], sizeof(timeout), 4);
+        std::vector<uint8_t> dataScratch;
+        const auto* data = machine.read(x[2], sizeof(timeout), 4, dataScratch);
         if (!data) { x[0] = uint64_t(-14); return true; }
         std::memcpy(timeout.data(), data, sizeof(timeout));
         if (timeout[0] < 0 || timeout[1] < 0 || timeout[1] >= 1'000'000'000) { x[0] = invalid; return true; }
@@ -6782,7 +6810,8 @@ bool ProbeLinux::poll(Machine& machine) {
     std::vector<PollFD> entries(x[1]);
     const size_t length = entries.size() * sizeof(PollFD);
     if (length) {
-        const auto* input = machine.read(x[0], length, 4);
+        std::vector<uint8_t> inputScratch;
+        const auto* input = machine.read(x[0], length, 4, inputScratch);
         if (!input) return complete(uint64_t(-14));
         std::memcpy(entries.data(), input, length);
     }
@@ -7025,7 +7054,11 @@ std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedPr
                 const auto size = segment->accessibleSize();
                 std::array<uint64_t, 2> record;
                 if (offset >= size || sizeof(record) > size - offset) break;
-                std::memcpy(record.data(), segment->data() + offset, sizeof(record));
+                if (segment->anonymousPages)
+                    segment->anonymousPages->readInto(segment->fileOffset + offset,
+                        {reinterpret_cast<uint8_t*>(record.data()), sizeof(record)});
+                else
+                    std::memcpy(record.data(), segment->data() + offset, sizeof(record));
                 const auto [previous, returnAddress] = record;
                 if (returnAddress < 4 || (returnAddress & 3)) break;
                 const auto caller = returnAddress - 4;
@@ -7092,7 +7125,8 @@ uint64_t ProbeLinux::ptyIoctl(Machine& machine, const Descriptor& fd) {
     auto& terminal = *fd.pty;
     const auto write = [&](const auto& value) { return writeGuest(machine, x[2], value) ? 0 : uint64_t(-14); };
     const auto read = [&](auto& value) -> uint64_t {
-        const auto* bytes = machine.read(x[2], sizeof(value), 4);
+        std::vector<uint8_t> bytesScratch;
+        const auto* bytes = machine.read(x[2], sizeof(value), 4, bytesScratch);
         if (!bytes) return uint64_t(-14);
         std::memcpy(&value, bytes, sizeof(value));
         return 0;
@@ -7196,7 +7230,8 @@ uint64_t ProbeLinux::loopIoctl(Machine& machine, const Descriptor& fd) {
         };
         static_assert(sizeof(Config) == 304);
         Config config;
-        const auto* input = machine.read(x[2], sizeof(config), 4);
+        std::vector<uint8_t> inputScratch;
+        const auto* input = machine.read(x[2], sizeof(config), 4, inputScratch);
         if (!input) return uint64_t(-14);
         std::memcpy(&config, input, sizeof(config));
         const auto backing = descriptors().find(config.fd);
@@ -7438,7 +7473,8 @@ bool ProbeLinux::restoreSignalContext(Machine& machine) {
 }
 
 uint64_t ProbeLinux::installSeccomp(Machine& machine, uint64_t address) {
-    const auto* header = machine.read(address, 16, 4); // AArch64 sock_fprog
+    std::vector<uint8_t> headerScratch;
+    const auto* header = machine.read(address, 16, 4, headerScratch); // AArch64 sock_fprog
     if (!header) return uint64_t(-14);
     uint16_t count;
     uint64_t instructions;
@@ -7452,7 +7488,8 @@ uint64_t ProbeLinux::installSeccomp(Machine& machine, uint64_t address) {
     static_assert(sizeof(SeccompFilter::Instruction) == 8);
     std::vector<SeccompFilter::Instruction> program(count);
     const auto bytes = program.size() * sizeof(program[0]);
-    const auto* source = machine.read(instructions, bytes, 4);
+    std::vector<uint8_t> sourceScratch;
+    const auto* source = machine.read(instructions, bytes, 4, sourceScratch);
     if (!source) return uint64_t(-14);
     std::memcpy(program.data(), source, bytes);
     if (program.back().code != 0x06) return invalid;
@@ -9359,7 +9396,8 @@ bool ProbeLinux::syscall(Machine& machine) {
             const auto loadVectors = [&](uint64_t address, uint64_t count, std::array<Vector, 64>& vectors) {
                 if (!count) return true;
                 const auto bytes = count * sizeof(Vector);
-                const auto* source = machine.read(address, bytes, 4);
+                std::vector<uint8_t> sourceScratch;
+                const auto* source = machine.read(address, bytes, 4, sourceScratch);
                 if (!source) return false;
                 std::memcpy(vectors.data(), source, bytes);
                 uint64_t total = 0;
@@ -9385,7 +9423,8 @@ bool ProbeLinux::syscall(Machine& machine) {
                 if (!dest.size) { ++to; continue; }
                 const auto count = std::min({source.size, dest.size,
                     pageSize - source.address % pageSize, pageSize - dest.address % pageSize});
-                const auto* input = machine.read(source.address, count, 4);
+                std::vector<uint8_t> inputScratch;
+                const auto* input = machine.read(source.address, count, 4, inputScratch);
                 if (!input) { failed = true; break; }
                 std::memcpy(buffer.data(), input, count);
                 if (!machine.write(dest.address, std::span(buffer).first(count))) { failed = true; break; }
@@ -9425,7 +9464,8 @@ bool ProbeLinux::syscall(Machine& machine) {
                 const auto& file = descriptor->second;
                 if (file.apkInstaller != processId()) { x[0] = uint64_t(-1); break; }
                 if (file.apkRequest->finished()) { x[0] = uint64_t(-114); break; }
-                const auto* status = machine.read(x[2], sizeof(uint32_t), 4);
+                std::vector<uint8_t> statusScratch;
+                const auto* status = machine.read(x[2], sizeof(uint32_t), 4, statusScratch);
                 if (!status) { x[0] = uint64_t(-14); break; }
                 uint32_t waitStatus;
                 std::memcpy(&waitStatus, status, sizeof waitStatus);
@@ -9748,7 +9788,8 @@ bool ProbeLinux::syscall(Machine& machine) {
                 std::vector<uint32_t> updated(x[0]);
                 const auto size = updated.size() * sizeof(uint32_t);
                 if (size) {
-                    const auto* source = machine.read(x[1], size, 4);
+                    std::vector<uint8_t> sourceScratch;
+                    const auto* source = machine.read(x[1], size, 4, sourceScratch);
                     if (!source) { x[0] = uint64_t(-14); break; }
                     std::memcpy(updated.data(), source, size);
                 }
@@ -9775,7 +9816,8 @@ bool ProbeLinux::syscall(Machine& machine) {
             const auto task = threads.find(x[0] ? x[0] : currentTid);
             if (task == threads.end() || task->second.wait == Wait::exited) { x[0] = uint64_t(-3); break; }
             const auto parameter = x[number == 119 ? 2 : 1];
-            const auto* bytes = machine.read(parameter, sizeof(int32_t), 4);
+            std::vector<uint8_t> bytesScratch;
+            const auto* bytes = machine.read(parameter, sizeof(int32_t), 4, bytesScratch);
             if (!bytes) { x[0] = uint64_t(-14); break; }
             int32_t priority = 0;
             std::memcpy(&priority, bytes, sizeof(priority));
@@ -9840,7 +9882,8 @@ bool ProbeLinux::syscall(Machine& machine) {
             const auto old = found == limits.end() ? defaultLimit : found->second;
             auto updated = old;
             if (input) {
-                const auto* data = machine.read(input, sizeof(updated), 4);
+                std::vector<uint8_t> dataScratch;
+                const auto* data = machine.read(input, sizeof(updated), 4, dataScratch);
                 if (!data) { x[0] = uint64_t(-14); break; }
                 std::memcpy(updated.data(), data, sizeof(updated));
                 if (updated[0] > updated[1]) { x[0] = invalid; break; }
@@ -9909,7 +9952,8 @@ bool ProbeLinux::syscall(Machine& machine) {
             const auto now = steady_clock::now();
             if (!current->deadline) {
                 std::array<int64_t, 2> timeout{};
-                const auto* data = machine.read(x[0], sizeof(timeout), 4);
+                std::vector<uint8_t> dataScratch;
+                const auto* data = machine.read(x[0], sizeof(timeout), 4, dataScratch);
                 if (!data) { x[0] = uint64_t(-14); break; }
                 std::memcpy(timeout.data(), data, sizeof(timeout));
                 if (timeout[0] < 0 || timeout[1] < 0 || timeout[1] >= 1'000'000'000) { x[0] = invalid; break; }
@@ -9933,7 +9977,8 @@ bool ProbeLinux::syscall(Machine& machine) {
             std::array<int64_t, 2> time{};
             std::array<int32_t, 2> timezone{};
             if (address || !timeOfDay) {
-                const auto* input = machine.read(address, sizeof time, 4);
+                std::vector<uint8_t> inputScratch;
+                const auto* input = machine.read(address, sizeof time, 4, inputScratch);
                 if (!input) { x[0] = uint64_t(-14); break; }
                 std::memcpy(time.data(), input, sizeof time);
                 const auto ticksPerSecond = timeOfDay ? 1'000'000 : 1'000'000'000;
@@ -9946,7 +9991,8 @@ bool ProbeLinux::syscall(Machine& machine) {
                 time[1] = fraction;
             }
             if (timeOfDay && x[1]) {
-                const auto* input = machine.read(x[1], sizeof timezone, 4);
+                std::vector<uint8_t> inputScratch;
+                const auto* input = machine.read(x[1], sizeof timezone, 4, inputScratch);
                 if (!input) { x[0] = uint64_t(-14); break; }
                 std::memcpy(timezone.data(), input, sizeof timezone);
                 if (timezone[0] < -900 || timezone[0] > 900) { x[0] = invalid; break; }
@@ -10027,12 +10073,14 @@ bool ProbeLinux::syscall(Machine& machine) {
                 for (uint64_t i = 0; i < x[2]; ++i) {
                     std::array<uint64_t, 2> vector{};
                     if (x[1] > UINT64_MAX - i * sizeof(vector)) { readable = false; break; }
-                    const auto* region = machine.read(x[1] + i * sizeof(vector), sizeof(vector), 4);
+                    std::vector<uint8_t> regionScratch;
+                    const auto* region = machine.read(x[1] + i * sizeof(vector), sizeof(vector), 4, regionScratch);
                     if (!region) { readable = false; break; }
                     std::memcpy(vector.data(), region, sizeof(vector));
                     if (!vector[1]) continue;
                     if (vector[1] > 16384 || written > 16384 - vector[1]) { readable = false; break; }
-                    const auto* bytes = machine.read(vector[0], vector[1], 4);
+                    std::vector<uint8_t> bytesScratch;
+                    const auto* bytes = machine.read(vector[0], vector[1], 4, bytesScratch);
                     if (!bytes) { readable = false; break; }
                     written += vector[1];
                     // liblog writes a packed header. Bionic's async-safe writer splits it into three vectors.
@@ -10072,7 +10120,8 @@ bool ProbeLinux::syscall(Machine& machine) {
             for (uint64_t i = 0; i < x[2]; ++i) {
                 std::array<uint64_t, 2> iov{};
                 const auto address = x[1] + i * sizeof(iov);
-                const auto* entry = address >= x[1] ? machine.read(address, sizeof(iov), 4) : nullptr;
+                std::vector<uint8_t> entryScratch;
+                const auto* entry = address >= x[1] ? machine.read(address, sizeof(iov), 4, entryScratch) : nullptr;
                 if (!entry) { result = uint64_t(-14); break; }
                 std::memcpy(iov.data(), entry, sizeof(iov));
                 result = writeDescriptor(machine, descriptor->second, iov[0], iov[1]);
@@ -10360,7 +10409,8 @@ bool ProbeLinux::syscall(Machine& machine) {
             const auto size = requested == legacy ? 12 : 24;
             std::array<uint32_t, 6> caps{};
             if (setting) {
-                const auto* data = machine.read(x[1], size, 4);
+                std::vector<uint8_t> dataScratch;
+                const auto* data = machine.read(x[1], size, 4, dataScratch);
                 if (!data) { x[0] = uint64_t(-14); break; }
                 std::memcpy(caps.data(), data, size);
                 const auto mask = [&](unsigned i) {
@@ -10677,7 +10727,8 @@ bool ProbeLinux::syscall(Machine& machine) {
             std::optional<nanoseconds> timeout;
             if (x[2]) {
                 std::array<int64_t, 2> values{};
-                const auto* data = machine.read(x[2], sizeof(values), 4);
+                std::vector<uint8_t> dataScratch;
+                const auto* data = machine.read(x[2], sizeof(values), 4, dataScratch);
                 if (!data) { x[0] = uint64_t(-14); break; }
                 std::memcpy(values.data(), data, sizeof(values));
                 if (values[0] < 0 || values[1] < 0 || values[1] >= 1'000'000'000) { x[0] = invalid; break; }
@@ -10716,7 +10767,8 @@ bool ProbeLinux::syscall(Machine& machine) {
             auto& action = current->process->signalActions[x[0]];
             auto next = action;
             if (x[1]) {
-                const auto* data = machine.read(x[1], sizeof(next), 4);
+                std::vector<uint8_t> dataScratch;
+                const auto* data = machine.read(x[1], sizeof(next), 4, dataScratch);
                 if (!data) { x[0] = uint64_t(-14); break; }
                 std::memcpy(next.data(), data, sizeof(next));
             }
@@ -10751,7 +10803,8 @@ bool ProbeLinux::syscall(Machine& machine) {
             const bool active = onSignalStack(next, machine.cpu.sp);
             if (x[0]) {
                 if (active) { x[0] = uint64_t(-1); break; }
-                auto data = machine.read(x[0], sizeof(next), 4);
+                std::vector<uint8_t> dataScratch;
+                auto data = machine.read(x[0], sizeof(next), 4, dataScratch);
                 if (!data) { x[0] = uint64_t(-14); break; }
                 std::memcpy(next.data(), data, sizeof(next));
                 if (uint32_t(next[1]) == ssDisable) next = {0, ssDisable, 0};

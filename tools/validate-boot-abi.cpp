@@ -1839,16 +1839,34 @@ int main() {
         };
         const auto mapping = invoke(222, {0, sparseRange, 3, 0x22, UINT64_MAX, 0});
         assert(mapping < uint64_t(-4095));
+        const uint64_t boundary = mapping + 64 * 1024;
+        const std::array<uint8_t, 8> across{11, 18, 29, 47, 76, 123, 199, 1};
+        std::array<uint8_t, 8> restored{};
+        assert(parent.readInto(boundary - 4, restored) && restored == (std::array<uint8_t, 8>{}));
+        assert(parent.write(boundary - 4, across));
+        std::vector<uint8_t> scratch;
+        const auto* bytes = parent.read(boundary - 4, across.size(), 4, scratch);
+        assert(bytes && std::ranges::equal(std::span(bytes, across.size()), across));
+        const auto dirty = forkGuest.dirtyAnonymousBytes();
+        const auto hostPage = uint64_t(getpagesize());
+        assert(invoke(233, {boundary - hostPage, 2 * hostPage, 4}) == 0); // MADV_DONTNEED
+        assert(parent.readInto(boundary - 4, restored) && restored == (std::array<uint8_t, 8>{}));
+        assert(forkGuest.dirtyAnonymousBytes() < dirty);
+        assert(parent.write(boundary - 4, across));
         assert(parent.store64(mapping + sparseRange - pageSize, 42));
         const auto child = invoke(220, {0x1200011, 0, 0, 0, base + 8});
         assert(child == 2 && forkGuest.dirtyAnonymousBytes() < physicalBudget);
         assert(forkGuest.schedule(parent) && forkGuest.processId() == child);
         uint64_t value = 0;
         assert(parent.load64(mapping + sparseRange - pageSize, value) && value == 42);
+        assert(parent.readInto(boundary - 4, restored) && restored == across);
+        assert(parent.write(boundary - 4, {}));
+        assert(parent.write(boundary - 4, std::array<uint8_t, 8>{}));
         assert(parent.store64(mapping + sparseRange - pageSize, 99));
         parent.cpu.retired += 4096;
         assert(forkGuest.schedule(parent) && forkGuest.processId() == 1);
         assert(parent.load64(mapping + sparseRange - pageSize, value) && value == 42);
+        assert(parent.readInto(boundary - 4, restored) && restored == across);
     }
     {
         ProbeLinux apkGuest(1, 0);

@@ -51,19 +51,28 @@ public:
     AnonymousPages(const AnonymousPages&) = delete;
     AnonymousPages& operator=(const AnonymousPages&) = delete;
 
-    uint8_t* data() const { return mapping; }
+    const uint8_t* read(uint64_t offset, size_t length) const;
+    void readInto(uint64_t offset, std::span<uint8_t> bytes) const;
+    void write(uint64_t offset, std::span<const uint8_t> bytes);
     uint64_t capacity() const { return size; }
-    bool prepareWrite(uint64_t offset, uint64_t length);
+    bool prepareWrite(uint64_t offset, uint64_t length, int* mappingError = nullptr);
     bool resident(uint64_t offset) const;
     void discard(uint64_t offset, uint64_t length);
-    bool copyTo(AnonymousPages& target, uint64_t source, uint64_t destination, uint64_t length) const;
+    bool copyTo(AnonymousPages& target, uint64_t source, uint64_t destination, uint64_t length,
+                int* mappingError = nullptr) const;
 
 private:
     AnonymousPages(uint64_t size, const std::shared_ptr<AnonymousBudget>& budget);
+    static constexpr size_t blockSize = 64 * 1024;
+    struct Block {
+        uint8_t* data = nullptr;
+        size_t dirtyPages = 0;
+    };
+    void releaseBlock(size_t index);
     std::shared_ptr<AnonymousBudget> budget;
     uint64_t hostPage, size, dirtyBytes = 0;
     std::vector<bool> dirty;
-    uint8_t* mapping = nullptr;
+    std::vector<Block> blocks;
 };
 
 class DenseBytes {
@@ -181,6 +190,8 @@ struct Machine {
         return topByteIgnore ? address & 0x00ff'ffff'ffff'ffffULL : address;
     }
     const uint8_t* read(uint64_t address, size_t size, unsigned flags) const;
+    const uint8_t* read(uint64_t address, size_t size, unsigned flags,
+                        std::vector<uint8_t>& scratch) const;
 
     const uint8_t* readInstruction(uint64_t address) const {
         if (address % sizeof(uint32_t)) return nullptr;
