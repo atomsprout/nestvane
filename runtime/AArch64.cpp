@@ -892,6 +892,19 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
             const auto rounding = rightShift == 0x0f002400 ? (value >> (amount - 1)) & 1 : 0;
             setLane(result, i, size, accumulator + shifted + rounding);
         }
+    } else if ((word & 0xbf80fc00) == 0x2f005400) { // SLI (vector).
+        const unsigned immediate = (word >> 16) & 127;
+        if (immediate < 8) return false;
+        const unsigned bits = std::bit_floor(immediate);
+        if (bits == 64 && width == 8) return false;
+        size = bits / 8;
+        const auto amount = immediate - bits;
+        const auto preserved = mask(amount);
+        for (unsigned i = 0; i < width / size; ++i) {
+            const auto destination = lane(cpu.v[rd], i, size);
+            const auto shifted = lane(source, i, size) << amount;
+            setLane(result, i, size, (destination & preserved) | shifted);
+        }
     } else if (const bool widen = (word & 0x9f80fc00) == 0x0f00a400;
                widen || (word & 0xbf80fc00) == 0x0f005400) { // SSHLL/USHLL, SHL (immediate).
         const unsigned immediate = (word >> 16) & 127;

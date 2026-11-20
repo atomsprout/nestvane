@@ -715,6 +715,24 @@ int main() {
         assert(std::memcmp(permute.cpu.v[8].data(), unsignedProductSum.data(), sizeof(unsignedProductSum)) == 0);
         assert(executeStartupInstruction(permute, 0x6ea4a068)); // umlsl2 v8.2d, v3.4s, v4.4s
         assert(std::memcmp(permute.cpu.v[8].data(), unsignedAccumulators.data(), sizeof(unsignedAccumulators)) == 0);
+        const std::array<uint32_t, 4> insertSource{0x05060789, 0xaabbccab, 1, 2};
+        const std::array<uint32_t, 4> insertDestination{0xdeadbeef, 0x7845789a, 3, 4};
+        const std::array<uint32_t, 4> inserted{0x89adbeef, 0xab45789a, 0, 0};
+        std::memcpy(permute.cpu.v[7].data(), insertSource.data(), sizeof(insertSource));
+        std::memcpy(permute.cpu.v[13].data(), insertDestination.data(), sizeof(insertDestination));
+        assert(executeStartupInstruction(permute, 0x2f3854ed)); // sli v13.2s, v7.2s, #24
+        assert(std::memcmp(permute.cpu.v[13].data(), inserted.data(), sizeof(inserted)) == 0);
+        const std::array<uint64_t, 2> aliasedInsert{3, 0x8000000000000002ULL};
+        const std::array<uint64_t, 2> aliasedResult{0x8000000000000003ULL, 2};
+        std::memcpy(permute.cpu.v[1].data(), aliasedInsert.data(), sizeof(aliasedInsert));
+        assert(executeStartupInstruction(permute, 0x6f7f5421)); // sli v1.2d, v1.2d, #63
+        assert(std::memcmp(permute.cpu.v[1].data(), aliasedResult.data(), sizeof(aliasedResult)) == 0);
+        permute.cpu.v[3].fill(0x17);
+        permute.cpu.v[2].fill(0xff);
+        assert(executeStartupInstruction(permute, 0x2f085462)); // sli v2.8b, v3.8b, #0
+        const std::array<uint8_t, 16> insertedBytes{0x17, 0x17, 0x17, 0x17, 0x17, 0x17, 0x17, 0x17};
+        assert(permute.cpu.v[2] == insertedBytes);
+        assert(!executeStartupInstruction(permute, 0x2f7f5421)); // unallocated 1D vector form
         const std::array<float, 4> leftAdd{1, -2, 3, 4}, rightAdd{3, 1, 6, -4}, expectedSum{4, -1, 9, 0};
         std::memcpy(permute.cpu.v[0].data(), leftAdd.data(), sizeof(leftAdd));
         std::memcpy(permute.cpu.v[2].data(), rightAdd.data(), sizeof(rightAdd));

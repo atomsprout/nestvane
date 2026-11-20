@@ -428,3 +428,5 @@
 - iPhone 11 进程 8950 用默认 `verify` 镜像完成阶段 500，窗口管理服务就绪，随后在启动后 1,825.628 秒完成 `MakePackageManagerServiceReady`。这一步用时 361.145 秒，上一轮在此触发 Android Watchdog。本轮宿主在 105.298 秒显示首个 640 × 960 客体帧，尚无 Launcher 绘制记录。真机继续运行，速度优先的镜像尚未安装。
 - 真机进程 8950 在包管理器就绪后开始初始化 Crash Recovery，随后 Android Watchdog 因主线程阻塞 725 秒而终止 `system_server`。已归档数据库并通过 SQLite 完整性检查。带 `speed` 镜像和 `DC CVAC` 修复的开发签名包覆盖安装后仍保留 79 个包缓存，iPhone 11 进程 8959 已启动。
 - Mac 带 `DC CVAC` 修复的完整联测再次完成 `ActivityManagerStartApps`，随后在 `android.ui` 线程遇到 `fabs v2.2s, v0.2s`。浮点向量绝对值复用已有的向量取反实现，支持 2S、4S 和 2D。宿主回归和同版 Android 17 原生测试验证负零、负无穷、NaN 载荷及 2S 高半部清零。iPhoneOS Release 构建通过，完整启动在复测。
+- iPhone 11 进程 8959 的 `speed` 启动镜像实测预加载 18,596 个类用时 37.106 秒，上一个 `verify` 进程为 235.374 秒。同样命中 79 个缓存的系统包扫描从 120.583 秒降到 27.622 秒。两轮是有缓存的真机启动，未固定热状态，完整开机及可交互帧仍待测。iOS「文件」冒烟 APK 导入测试已在新版通过。
+- 修复向量 FABS 后，Mac 联测越过此前指令，随后在 `system_server` 的 RenderThread 遇到 `sli v13.2s, v7.2s, #24`。客体支持向量 SLI，按通道保留目标寄存器低位。宿主回归和同版 Android 17 原生测试验证 #0、#24、#63、源目标寄存器重叠和 64 位向量的高半部清零。iPhoneOS Release 构建通过。Mac 复测镜像包含冒烟 APK，会在真实 `sys.boot_completed` 后尝试安装和启动。
