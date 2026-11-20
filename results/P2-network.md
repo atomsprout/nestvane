@@ -591,3 +591,4 @@
 - iPhone 14 进程 1207 完成 BOOT_COMPLETED 的宿主时点为 1,238,907 ms，1,275,893 ms Android 将显示 viewport 标为 inactive，此后导出黑屏。XCTest 对 Files 导入的重试由 testmanagerd 断开，未执行到文件选择器。覆盖安装前备份客体 SQLite 并通过 quick_check。含触屏唤醒及 DEX、Bionic AOT 的新包已在真机启动为 1234，第 60 秒记录 88,988 次 Bionic 填充 AOT 调用、4,243,445 条客体指令。该计数仅确认真机执行覆盖，首个可交互桌面的性能仍需对照。
 - iPhone 14 进程 1234 的第 450 秒真机快照累计执行 12,618,050,629 条客体指令。原版 DEX 哈希 AOT 执行 6,578,996 条，Bionic 向量填充 AOT 执行 66,887,735 条，SHA-256 AOT 执行 227,290,778 条，设备热状态为 serious。可交互 Launcher 及同构建 A/B 耗时仍待实测。
 - Mac 相机复测捕获到上下翻转的 Smoke 画面。对同一个 64×64 非对称 RGBA 帧，用默认 ANGLE 的 OpenGL 后端与明确指定的 ANGLE Metal 分别运行直接贴屏和 Goldfish rcCompose 贴屏，四种组合与输入逐字节一致。这缩小了翻转的查找范围，尚不能用固定行翻转修正。已用保留的客体数据重新启动明确指定原生 Metal 的完整 Camera2 联测。
+- 启动诊断增加按阶段统计的系统调用处理耗时，采样仅覆盖宿主处理函数，阻塞后的客体等待时间另计。Mac 的 Android 17 启动实跑在 5 个连续窗口记录 170 个样本。发现共有参数解析器拒绝显式 0，导致之前的 NESTVANE_INIT_AOT=0 无法启用对照。修复后用同一二进制验证 AOT 和采样开关各为 1 时有执行记录，各为 0 时可进入 init 且无该记录，非法值 2 仍被拒绝。iPhoneOS Release 构建与签名通过。

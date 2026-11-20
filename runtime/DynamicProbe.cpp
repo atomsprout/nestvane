@@ -60,13 +60,13 @@ private:
 
 enum class ProbeKind { dynamic, init, properties, runtimeApex, serviceReady, bootGate, data, art };
 
-uint64_t initLimit(const char* name, uint64_t fallback, uint64_t maximum) {
+uint64_t initLimit(const char* name, uint64_t fallback, uint64_t maximum, uint64_t minimum = 1) {
     const auto* raw = std::getenv(name);
     if (!raw) return fallback;
     std::string_view value(raw);
     uint64_t limit = 0;
     const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), limit);
-    if (error != std::errc{} || end != value.data() + value.size() || !limit || limit > maximum)
+    if (error != std::errc{} || end != value.data() + value.size() || limit < minimum || limit > maximum)
         throw std::runtime_error(std::string("invalid init probe limit: ") + name);
     return limit;
 }
@@ -132,9 +132,19 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
     auto nextSnapshot = snapshotInterval.count() ? start + snapshotInterval : steady_clock::time_point::max();
     auto scheduleDeadline = std::min(deadline, nextSnapshot);
     constexpr uint64_t sampleStride = 1'048'576;
-    const bool sampleBoot = init && initLimit("NESTVANE_INIT_SAMPLE_CODE", 0, 1);
+    const bool sampleBoot = init && initLimit("NESTVANE_INIT_SAMPLE_CODE", 0, 1, 0);
     uint64_t nextSample = sampleBoot ? sampleStride : UINT64_MAX;
     uint64_t samples = 0, unattributedSamples = 0;
+    // Time a dispersed subset of syscall handlers. The guest's wait after a
+    // blocked syscall is outside this measurement.
+    constexpr uint64_t syscallSampleStride = 256;
+    uint64_t nextSyscallSample = sampleBoot ? syscallSampleStride : UINT64_MAX;
+    uint64_t syscallSamples = 0, intervalSyscallSamples = 0;
+    struct SyscallTiming {
+        uint64_t calls = 0, samples = 0, nanoseconds = 0;
+    };
+    constexpr size_t otherSyscall = 512;
+    std::array<SyscallTiming, otherSyscall + 1> intervalSyscalls{};
     uint64_t sha256AotEntries = 0, sha256AotInstructions = 0;
     struct NativeLoop {
         const uint8_t* entry = nullptr;
@@ -178,7 +188,7 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
             out << "    " << count << ' ' << location.first << "+0x" << std::hex << location.second << std::dec << '\n';
         }
     };
-    const auto appendCodeSamples = [&](std::ostream& out, uint64_t elapsedMs) {
+    const auto appendBootProfile = [&](std::ostream& out, uint64_t elapsedMs) {
         if (bootAot) {
             out << "  Android SHA-256 AOT entries: " << sha256AotEntries
                 << ", guest instructions: " << sha256AotInstructions << '\n'
@@ -193,17 +203,38 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
         out << "  guest instruction samples in " << intervalStart << '-' << elapsedMs
             << " ms (64-byte file ranges): " << intervalSamples << ", unattributed: " << intervalUnattributed << '\n';
         appendRanking(out, intervalCodeSamples, 12);
+        out << "  guest syscall handler samples in " << intervalStart << '-' << elapsedMs
+            << " ms: " << intervalSyscallSamples << '\n';
+        std::vector<size_t> ranked;
+        for (size_t syscall = 0; syscall < intervalSyscalls.size(); ++syscall)
+            if (intervalSyscalls[syscall].samples) ranked.push_back(syscall);
+        const auto top = ranked.begin() + std::min<size_t>(ranked.size(), 10);
+        std::partial_sort(ranked.begin(), top, ranked.end(), [&](size_t a, size_t b) {
+            if (intervalSyscalls[a].nanoseconds != intervalSyscalls[b].nanoseconds)
+                return intervalSyscalls[a].nanoseconds > intervalSyscalls[b].nanoseconds;
+            return a < b;
+        });
+        for (auto entry = ranked.begin(); entry != top; ++entry) {
+            const auto& timing = intervalSyscalls[*entry];
+            out << "    syscall ";
+            if (*entry == otherSyscall) out << "other";
+            else out << *entry;
+            out << ": " << timing.calls << " calls, " << timing.samples << " samples, "
+                << timing.nanoseconds << " sampled handler ns\n";
+        }
     };
     const auto captureSnapshot = [&](steady_clock::time_point now) {
         std::ostringstream snapshot;
         const auto elapsedMs = duration_cast<milliseconds>(now - start).count();
         snapshot << "Android init at " << elapsedMs << " ms, " << cpu.retired << " guest instructions, "
                  << syscallCount << " guest syscalls\n";
-        appendCodeSamples(snapshot, elapsedMs);
+        appendBootProfile(snapshot, elapsedMs);
         intervalCodeSamples.clear();
         intervalStart = elapsedMs;
         intervalSamples = 0;
         intervalUnattributed = 0;
+        intervalSyscalls.fill({});
+        intervalSyscallSamples = 0;
         snapshot << linux.workerReport(machine, linux.processId());
         constexpr size_t androidTailLimit = 16 * 1024;
         const std::string_view android = linux.recentAndroidOutput.empty()
@@ -386,7 +417,19 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
                         break;
                 }
             }
-            if (linux.syscall(machine)) {
+            auto& timing = intervalSyscalls[std::min<uint64_t>(syscall, otherSyscall)];
+            if (sampleBoot) ++timing.calls;
+            const bool timeSyscall = syscallCount >= nextSyscallSample;
+            const auto syscallStart = timeSyscall ? steady_clock::now() : steady_clock::time_point{};
+            const bool handled = linux.syscall(machine);
+            if (timeSyscall) {
+                timing.nanoseconds += duration_cast<nanoseconds>(steady_clock::now() - syscallStart).count();
+                ++timing.samples;
+                ++intervalSyscallSamples;
+                ++syscallSamples;
+                nextSyscallSample = syscallCount + syscallSampleStride + ((syscallSamples * 0x9e37) & 255);
+            }
+            if (handled) {
                 if (linux.blocked()) {
                     if (trace) report << " [blocked]\n";
                     continue;
@@ -430,7 +473,7 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
         }
     }
 
-    appendCodeSamples(report, duration_cast<milliseconds>(steady_clock::now() - start).count());
+    appendBootProfile(report, duration_cast<milliseconds>(steady_clock::now() - start).count());
     if (suppressedLogs) report << "  omitted syscall log entries: " << suppressedLogs << '\n';
     if (deliveredFaults || restoredSignals)
         report << "  guest SIGSEGV deliveries: " << deliveredFaults << ", signal context returns: " << restoredSignals << '\n';
@@ -863,7 +906,7 @@ service nestvane-smoke /system/bin/sh /system/etc/nestvane/apk-ready.sh /system/
         linux.alias("/proc/self/exe", filename);
         linux.alias("/system/bin/ueventd", "/system/bin/init");
         AndroidBootAot bootAot;
-        const bool enableAot = initLimit("NESTVANE_INIT_AOT", 1, 1);
+        const bool enableAot = initLimit("NESTVANE_INIT_AOT", 1, 1, 0);
         if (enableAot) {
             if (const auto crypto = files.find("/system/lib64/libcrypto.so"); crypto != files.end())
                 bootAot.bind(crypto->second.bytes());
