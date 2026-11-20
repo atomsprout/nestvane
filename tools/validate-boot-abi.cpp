@@ -149,6 +149,64 @@ int main() {
         assert(!AndroidBionicFillLoop::execute(native, 16) && native.cpu == readOnly);
     }
     {
+        constexpr uint64_t entry = 0x5080, source = 0x7000, target = 0x9000;
+        constexpr auto words = AndroidBionicCopyLoop::words;
+        std::vector<uint8_t> code(sizeof(words)), input(pageSize), blank(pageSize, 0x55);
+        std::memcpy(code.data(), words.data(), code.size());
+        const Image image{entry, {{entry, code, 5}, {source, input, 6}, {target, blank, 6}}, {}};
+        Machine native(image), reference(image);
+        assert(androidLoopMatches(native, native.readInstruction(entry), words));
+        const std::array<uint64_t, 8> lengths{0, 1, 63, 64, 65, 1024, INT64_MAX, uint64_t{1} << 63};
+        for (size_t example = 0; example < 256; ++example) {
+            CPU initial;
+            initial.pc = entry;
+            initial.retired = 10 * example;
+            initial.nzcv = example % 16;
+            initial.x[1] = source + (example % 2 ? pageSize - 96 : 3);
+            initial.x[2] = lengths[example % lengths.size()];
+            initial.x[3] = target + (example % 4 ? 7 : pageSize - 96);
+            initial.exclusiveSize = 16;
+            initial.exclusiveAddress = initial.x[3] + (example % 8) * 16;
+            for (size_t i = 6; i <= 13; ++i) initial.x[i] = example * 7 + i * 0x112233445566ULL;
+            for (size_t i = 0; i < input.size(); ++i) input[i] = example * 19 + i * 7 + (i >> 8);
+            assert(native.write(source, input) && reference.write(source, input));
+            assert(native.write(target, blank) && reference.write(target, blank));
+            native.cpu = reference.cpu = initial;
+            const auto retired = AndroidBionicCopyLoop::execute(native, 1 + example % 16);
+            assert(retired && retired <= (1 + example % 16) * words.size());
+            for (uint64_t i = 0; i < retired; ++i) {
+                const auto word = words[(reference.cpu.pc - entry) / sizeof(uint32_t)];
+                const auto decoded = decode(word);
+                if (decoded.op == Op::unsupported) assert(executeStartupInstruction(reference, word));
+                else executeDecoded(reference, decoded);
+            }
+            assert(native.cpu == reference.cpu);
+            assert(std::memcmp(native.read(target, pageSize, 4), reference.read(target, pageSize, 4), pageSize) == 0);
+        }
+        native.cpu.pc = entry;
+        native.cpu.x[1] = source;
+        native.cpu.x[2] = 1024;
+        native.cpu.x[3] = source + 16;
+        const auto overlap = native.cpu;
+        assert(!AndroidBionicCopyLoop::execute(native, 16) && native.cpu == overlap);
+        native.cpu.x[3] = target;
+        native.segments[2].flags = 4;
+        const auto protectedTarget = native.cpu;
+        assert(!AndroidBionicCopyLoop::execute(native, 16) && native.cpu == protectedTarget);
+        native.segments[2].flags = 6;
+        native.cpu.x[1] = source + pageSize - 32;
+        const auto crossesPage = native.cpu;
+        assert(!AndroidBionicCopyLoop::execute(native, 16) && native.cpu == crossesPage);
+
+        auto shared = std::make_shared<SharedFileBytes>();
+        shared->pages = input;
+        shared->size = input.size();
+        native.segments[1].shared = native.segments[2].shared = shared;
+        native.cpu.x[1] = source;
+        const auto mappedAlias = native.cpu;
+        assert(!AndroidBionicCopyLoop::execute(native, 16) && native.cpu == mappedAlias);
+    }
+    {
         ProbeLinux guest(1, 0);
         constexpr uint64_t base = 0x2000, path = base + 0x20, payload = base + 0x140, reply = base + 0x220;
         Machine task(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});

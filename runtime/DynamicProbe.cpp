@@ -149,7 +149,7 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
     struct NativeLoop {
         const uint8_t* entry = nullptr;
         uint64_t entries = 0, instructions = 0;
-    } dexAot, bionicFillAot;
+    } dexAot, bionicFillAot, bionicCopyAot;
     const auto runNativeLoop = [&]<typename Loop>(NativeLoop& stats, const uint8_t* bytes) {
         if (cpu.pc % pageSize != Loop::fileOffset % pageSize || !androidLoopMatches(machine, bytes, Loop::words))
             return false;
@@ -195,7 +195,9 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
                 << "  Android DEX hash AOT entries: " << dexAot.entries
                 << ", guest instructions: " << dexAot.instructions << '\n'
                 << "  Android Bionic fill AOT entries: " << bionicFillAot.entries
-                << ", guest instructions: " << bionicFillAot.instructions << '\n';
+                << ", guest instructions: " << bionicFillAot.instructions << '\n'
+                << "  Android Bionic copy AOT entries: " << bionicCopyAot.entries
+                << ", guest instructions: " << bionicCopyAot.instructions << '\n';
         }
         if (!sampleBoot) return;
         out << "  guest instruction samples: " << samples << ", unattributed: " << unattributedSamples << '\n';
@@ -343,6 +345,8 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
                 runNativeLoop.operator()<AndroidDexHashLoop>(dexAot, bytes)) continue;
             if (word == AndroidBionicFillLoop::words.front() &&
                 runNativeLoop.operator()<AndroidBionicFillLoop>(bionicFillAot, bytes)) continue;
+            if (word == AndroidBionicCopyLoop::words.front() &&
+                runNativeLoop.operator()<AndroidBionicCopyLoop>(bionicCopyAot, bytes)) continue;
         }
         auto& decoded = decodedWords[((word ^ (word >> 16)) * 0x9e3779b9U) >> 21];
         if (decoded.word != word) {

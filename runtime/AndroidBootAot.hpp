@@ -108,6 +108,25 @@ struct AndroidDexHashLoop {
     }
 };
 
+inline constexpr uint64_t bionicMemoryStep = 64;
+
+inline uint64_t bionicMemoryIterations(uint64_t remaining) {
+    return std::max(uint64_t{1}, remaining / bionicMemoryStep + (remaining % bionicMemoryStep != 0));
+}
+
+inline uint64_t finishBionicMemoryLoop(CPU& cpu, uint64_t iterations, uint64_t instructions) {
+    const auto previous = cpu.x[2] - (iterations - 1) * bionicMemoryStep;
+    const auto remaining = previous - bionicMemoryStep;
+    cpu.x[2] = remaining;
+    cpu.x[3] += iterations * bionicMemoryStep;
+    cpu.nzcv = ((remaining >> 63) << 3) | (remaining == 0 ? 4 : 0) |
+               (previous >= bionicMemoryStep ? 2 : 0) | (((previous ^ remaining) & previous) >> 63);
+    if (previous <= bionicMemoryStep) cpu.pc += instructions * sizeof(uint32_t);
+    const auto retired = iterations * instructions;
+    cpu.retired += retired;
+    return retired;
+}
+
 // Bionic's portable __memset_aarch64 loop with vector pair stores.
 struct AndroidBionicFillLoop {
     static constexpr std::string_view moduleSuffix = "/lib64/bionic/libc.so";
@@ -122,31 +141,62 @@ struct AndroidBionicFillLoop {
         // Keep the fast write in one guest page. The interpreter handles stores
         // crossing a page or encountering a fault, including partial pair stores.
         if (machine.read(cpu.pc, sizeof(uint32_t), 2)) return 0;
-        constexpr uint64_t blockBytes = 64;
         const auto destination = cpu.x[3] + 32;
         const auto pageRemaining = pageSize - (destination & (pageSize - 1));
-        const auto requested = cpu.x[2];
-        const auto toExit = std::max(uint64_t{1}, requested / blockBytes + (requested % blockBytes != 0));
-        const auto count = std::min({iterations, batchSize, toExit, pageRemaining / blockBytes});
+        const auto count = std::min({iterations, batchSize, bionicMemoryIterations(cpu.x[2]),
+                                     pageRemaining / bionicMemoryStep});
         if (!count) return 0;
 
-        std::array<uint8_t, batchSize * blockBytes> buffer;
-        const auto written = count * blockBytes;
+        std::array<uint8_t, batchSize * bionicMemoryStep> buffer;
+        const auto written = count * bionicMemoryStep;
         const auto& pattern = cpu.v[0];
         for (uint64_t offset = 0; offset < written; offset += pattern.size())
             std::memcpy(buffer.data() + offset, pattern.data(), pattern.size());
         if (!machine.write(destination, std::span(buffer).first(written))) return 0;
 
-        const auto previous = requested - (count - 1) * blockBytes;
-        const auto remaining = previous - blockBytes;
-        cpu.x[2] = remaining;
-        cpu.x[3] += written;
-        cpu.nzcv = ((remaining >> 63) << 3) | (remaining == 0 ? 4 : 0) |
-                   (previous >= blockBytes ? 2 : 0) | (((previous ^ remaining) & previous) >> 63);
-        if (previous <= blockBytes) cpu.pc += sizeof(words);
-        const auto retired = count * words.size();
-        cpu.retired += retired;
-        return retired;
+        return finishBionicMemoryLoop(cpu, count, words.size());
+    }
+};
+
+// Bionic's forward __memmove_aarch64 loop pipelines 64 bytes in x6-x13.
+struct AndroidBionicCopyLoop {
+    static constexpr std::string_view moduleSuffix = "/lib64/bionic/libc.so";
+    static constexpr uint64_t fileOffset = 0x6f080;
+    static constexpr std::array<uint32_t, 10> words{
+        0xa9011c66, 0xa9411c26, 0xa9022468, 0xa9422428, 0xa9032c6a,
+        0xa9432c2a, 0xa984346c, 0xa9c4342c, 0xf1010042, 0x54fffee8,
+    };
+    static constexpr uint64_t batchSize = 16;
+
+    static uint64_t execute(Machine& machine, uint64_t iterations) {
+        auto& cpu = machine.cpu;
+        if (machine.read(cpu.pc, sizeof(uint32_t), 2)) return 0;
+        const auto source = cpu.x[1] + 16;
+        const auto destination = cpu.x[3] + 16;
+        const auto pageRemaining = pageSize - std::max(source % pageSize, destination % pageSize);
+        const auto count = std::min({iterations, batchSize, bionicMemoryIterations(cpu.x[2]),
+                                     pageRemaining / bionicMemoryStep});
+        if (!count) return 0;
+        const auto length = count * bionicMemoryStep;
+        const auto overlap = [length](uint64_t a, uint64_t b) {
+            return std::max(a, b) - std::min(a, b) < length;
+        };
+        if (overlap(machine.dataAddress(source), machine.dataAddress(destination))) return 0;
+
+        const auto* input = machine.read(source, length, 4);
+        const auto* output = machine.read(destination, length, 6);
+        // The same shared pages can appear at distinct guest addresses.
+        if (!input || !output || overlap(reinterpret_cast<uintptr_t>(input), reinterpret_cast<uintptr_t>(output)))
+            return 0;
+        std::array<uint8_t, batchSize * bionicMemoryStep> buffer;
+        std::array<uint64_t, 8> pending;
+        std::memcpy(buffer.data(), &cpu.x[6], bionicMemoryStep);
+        std::memcpy(buffer.data() + bionicMemoryStep, input, length - bionicMemoryStep);
+        std::memcpy(pending.data(), input + length - bionicMemoryStep, bionicMemoryStep);
+        if (!machine.write(destination, std::span(buffer).first(length))) return 0;
+        std::ranges::copy(pending, cpu.x.begin() + 6);
+        cpu.x[1] += length;
+        return finishBionicMemoryLoop(cpu, count, words.size());
     }
 };
 
