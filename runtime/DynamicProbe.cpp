@@ -542,6 +542,7 @@ service nestvane-apk-install /system/bin/nestvane-apk-install
                 "SystemServer: Entered the Android system server", "SystemServerTiming: ",
                 "PackageManagerTiming: ", "EventHub: New device:", "HealthLoop: ", "Binder capacity: ",
                 "mmap APK: ", "PackageManager: Failed to parse", "PackageManager: Time to scan packages",
+                "PackageManager: Finished scanning system apps.",
                 "PackageManager: Failed to create app data", "PackageManager: reconcileAppsData",
                 "installd: Failed to restorecon", "ActivityTaskManager: Displayed com.android.launcher3/",
                 "CameraProviderManager: Adding new camera device:", "CameraService: addStates",
