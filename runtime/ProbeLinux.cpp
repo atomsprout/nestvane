@@ -9037,9 +9037,7 @@ bool ProbeLinux::syscall(Machine& machine) {
                     const auto& connection = descriptor->second.binder;
                     current->waitingBinder = connection;
                     current->waitingBinderFd = uint32_t(x[0]);
-                    const auto replies = connection->replies.find(currentTid);
-                    if (connection->loopers.contains(currentTid) &&
-                        (replies == connection->replies.end() || replies->second.empty()))
+                    if (binderAvailableForProcessWork(*connection, currentTid))
                         current->idleBinder = connection;
                     return waitForEvents();
                 }

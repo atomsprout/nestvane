@@ -491,6 +491,7 @@ private:
         std::optional<BinderRoute> reply{};
         std::array<uint64_t, 2> reference{};
         std::vector<BinderFileTransfer> files{};
+        bool completesCall = false;
     };
     struct BinderDeath {
         std::weak_ptr<BinderConnection> target;
@@ -511,6 +512,7 @@ private:
         uint32_t nextHandle = 1;
         std::map<uint64_t, std::deque<BinderPacket>> directed;
         std::map<uint64_t, std::vector<BinderRoute>> replies;
+        std::map<uint64_t, size_t> pendingCalls;
         std::deque<BinderPacket> incoming;
         std::map<uint64_t, bool> loopers; // Whether the looper was requested by the driver.
         explicit BinderConnection(uint64_t owner) : owner(owner) {}
@@ -613,6 +615,7 @@ private:
     uint64_t binderCommand(Machine& machine, const Descriptor& fd, uint32_t command,
                            std::span<const uint8_t> data);
     uint64_t binderWriteRead(Machine& machine, const Descriptor& fd);
+    static bool binderAvailableForProcessWork(const BinderConnection& connection, uint64_t tid);
     bool binderReadable(const BinderConnection& connection, uint64_t pid, uint64_t tid) const;
     bool freeBinderBuffer(BinderConnection& connection, uint64_t address, bool delivered);
     uint64_t storeBinderBuffer(BinderConnection& target, std::span<const uint8_t> data,

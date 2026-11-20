@@ -36,11 +36,17 @@ bool writeGuest(Machine& machine, uint64_t address, const T& value) {
 
 } // namespace
 
+bool ProbeLinux::binderAvailableForProcessWork(const BinderConnection& connection, uint64_t tid) {
+    if (!connection.loopers.contains(tid) || connection.pendingCalls.contains(tid)) return false;
+    const auto replies = connection.replies.find(tid);
+    return replies == connection.replies.end() || replies->second.empty();
+}
+
 bool ProbeLinux::binderReadable(const BinderConnection& connection, uint64_t pid, uint64_t tid) const {
     if (connection.owner != pid) return false;
     const auto directed = connection.directed.find(tid);
     return (directed != connection.directed.end() && !directed->second.empty()) ||
-           (!connection.incoming.empty() && connection.loopers.contains(tid));
+           (!connection.incoming.empty() && binderAvailableForProcessWork(connection, tid));
 }
 
 uint64_t ProbeLinux::storeBinderBuffer(BinderConnection& target, std::span<const uint8_t> data,
@@ -204,7 +210,9 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
             const auto route = outstanding.back();
             outstanding.pop_back();
             if (const auto caller = route.connection.lock()) {
-                caller->directed[route.thread].push_back({status});
+                BinderPacket failed{status};
+                failed.completesCall = true;
+                caller->directed[route.thread].push_back(std::move(failed));
                 notices.push_back({brComplete});
                 wakePollers();
                 return uint64_t{0};
@@ -434,7 +442,9 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
         packet.reply = BinderRoute{fd.binder, currentTid, bool(transaction.flags & acceptReplyFiles), std::move(parent)};
     }
     packet.files = std::move(files);
+    packet.completesCall = replying;
     destination.push_back(std::move(packet));
+    if (synchronousCall) ++connection.pendingCalls[currentTid];
     if (binderTrace.size() < 8192) {
         binderTrace += "  guest binder " + std::string(replying ? "reply" : "transaction") +
             " sender=" + std::to_string(processId()) + " target=" + std::to_string(target->owner) +
@@ -491,12 +501,16 @@ uint64_t ProbeLinux::binderWriteRead(Machine& machine, const Descriptor& fd) {
     }
     if (fileNumbers.size() != next.files.size()) {
         if (next.reply) {
-            if (const auto caller = next.reply->connection.lock())
-                caller->directed[next.reply->thread].push_back({brFailedReply});
+            if (const auto caller = next.reply->connection.lock()) {
+                BinderPacket failed{brFailedReply};
+                failed.completesCall = true;
+                caller->directed[next.reply->thread].push_back(std::move(failed));
+            }
         }
         freeBinderBuffer(connection, next.transaction.buffer, false);
         if (next.command == brReply) {
             next = BinderPacket{brFailedReply};
+            next.completesCall = true;
         } else {
             queue.pop_front();
             wakePollers();
@@ -558,6 +572,11 @@ uint64_t ProbeLinux::binderWriteRead(Machine& machine, const Descriptor& fd) {
         connection.allocations.at(offset).delivered = true;
     }
     if (next.reply) connection.replies[currentTid].push_back(*next.reply);
+    if (next.completesCall) {
+        const auto calls = connection.pendingCalls.find(currentTid);
+        if (calls != connection.pendingCalls.end() && !--calls->second)
+            connection.pendingCalls.erase(calls);
+    }
     queue.pop_front();
     return 0;
 }
@@ -600,6 +619,7 @@ uint64_t ProbeLinux::binderIoctl(Machine& machine, const Descriptor& fd) {
             connection.loopers.erase(currentTid);
             connection.directed.erase(currentTid);
             connection.replies.erase(currentTid);
+            connection.pendingCalls.erase(currentTid);
             return 0;
         case 0xc0306201: // BINDER_WRITE_READ
             return binderWriteRead(machine, fd);
