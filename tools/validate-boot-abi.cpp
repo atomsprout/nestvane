@@ -3281,6 +3281,38 @@ int main() {
         }
     }
     {
+        ProbeLinux source(1, 0), reader(2, 1000);
+        Machine task(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
+        source.addDirectory("/dev/__properties__", 0711);
+        source.addDirectory("/dev/__properties__/private", 0700);
+        const auto call = [&](ProbeLinux& guest, uint64_t syscall, std::array<uint64_t, 6> args) {
+            std::ranges::copy(args, task.cpu.x.begin());
+            task.cpu.x[8] = syscall;
+            assert(guest.syscall(task));
+            return task.cpu.x[0];
+        };
+        const auto open = [&](ProbeLinux& guest, std::string_view filename, uint64_t flags) {
+            assert(task.write(base, {reinterpret_cast<const uint8_t*>(filename.data()), filename.size()}));
+            const uint8_t terminator = 0;
+            assert(task.write(base + filename.size(), {&terminator, 1}));
+            return call(guest, 56, {uint32_t(-100), base, flags, 0444});
+        };
+        constexpr std::string_view propertyInfo = "/dev/__properties__/property_info";
+        constexpr std::string_view privateInfo = "/dev/__properties__/private/property_info";
+        for (const auto file : {propertyInfo, privateInfo}) {
+            const auto fd = open(source, file, 0x41);
+            assert(fd < 256 && task.store64(base + 0x100, 37));
+            assert(call(source, 64, {fd, base + 0x100, 8}) == 8);
+        }
+        assert(source.exportFiles(reader, "/dev/__properties__/") == 2);
+        const auto readable = open(reader, propertyInfo, 0x88000);
+        assert(readable < 256);
+        uint64_t value = 0;
+        assert(call(reader, 63, {readable, base + 0x180, 8}) == 8);
+        assert(task.load64(base + 0x180, value) && value == 37);
+        assert(open(reader, privateInfo, 0x88000) == uint64_t(-13));
+    }
+    {
         ProbeLinux guest(1, 0);
         Machine task(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
         const std::array<uint8_t, 2 * pageSize> code{};

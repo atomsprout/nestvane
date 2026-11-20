@@ -971,6 +971,14 @@ size_t ProbeLinux::exportFiles(ProbeLinux& reader, std::string_view prefix) cons
     for (const auto& [path, file] : writableFiles) {
         if (!path.starts_with(prefix)) continue;
         reader.mount(path, std::span(file->storage->pages).first(file->storage->size));
+        // Static mounts can imply a path exists, but traversal under /dev checks directory metadata.
+        const std::string_view filename = path;
+        for (auto separator = filename.rfind('/'); separator != std::string_view::npos && separator > 0;
+             separator = filename.rfind('/', separator - 1)) {
+            const auto directory = directories.find(filename.substr(0, separator));
+            if (directory != directories.end())
+                reader.directories.try_emplace(directory->first, directory->second);
+        }
         ++count;
     }
     return count;
