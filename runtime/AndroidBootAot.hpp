@@ -58,6 +58,9 @@ struct AndroidSha256Block {
 
 inline bool androidLoopMatches(const Machine& machine, const uint8_t* bytes,
                                std::span<const uint32_t> words) {
+    const auto* contiguous = machine.read(machine.cpu.pc, words.size_bytes(), 1);
+    if (contiguous && contiguous == bytes)
+        return std::memcmp(contiguous, words.data(), words.size_bytes()) == 0;
     // Some loops straddle a page. Check every instruction in the current mapping.
     for (uint64_t i = 1; i < words.size(); ++i) {
         const auto* word = machine.readInstruction(machine.cpu.pc + i * sizeof(uint32_t));
@@ -74,7 +77,7 @@ struct AndroidDexHashLoop {
     static constexpr std::array<uint32_t, 4> words{
         0x4b00012a, 0x38401509, 0x0b001540, 0x35ffffa9,
     };
-    static constexpr uint64_t batchSize = 16;
+    static constexpr uint64_t batchSize = 16, maxIterationInstructions = words.size();
 
     static uint64_t execute(Machine& machine, uint64_t iterations) {
         auto& cpu = machine.cpu;
@@ -108,6 +111,78 @@ struct AndroidDexHashLoop {
     }
 };
 
+// CheckIntraStringDataItem in Android 17 libdexfile. Handle nonzero ASCII
+// bytes on the back edge; multibyte and malformed inputs use the interpreter.
+struct AndroidDexAsciiVerifierLoop {
+    static constexpr std::string_view moduleSuffix = "/lib64/libdexfile.so";
+    static constexpr uint64_t fileOffset = 0x28508;
+    static constexpr std::array<uint32_t, 53> words{
+        0x710005ce, 0xaa0f03ea, 0x540006e0, 0x9100054f, 0xf900440f,
+        0x39400148, 0x53047d09, 0x71003d3f, 0x54000568, 0x1ac92190,
+        0x7214061f, 0x54000200, 0xb400068b, 0x9100094f, 0xf900440f,
+        0x39400549, 0x121a052a, 0x7102015f, 0x540007c1, 0x12001529,
+        0xd100056b, 0x331a1109, 0x34fffd49, 0x531a1108, 0x7101fd1f,
+        0x54fffce8, 0x1400003a, 0x7100393f, 0x540002a1, 0xf100057f,
+        0x54000449, 0x91000949, 0xf9004409, 0x39400549, 0x121a052f,
+        0x710201ff, 0x54000581, 0x91000d4f, 0xf900440f, 0x3940094a,
+        0x121a0550, 0x7102021f, 0x540005c1, 0x53140d08, 0x331a1528,
+        0x711ffd1f, 0x540005c9, 0xd100096b, 0x17ffffd0, 0x6a0d021f,
+        0x540002c1, 0x35fff9a9, 0x35fff988,
+    };
+    static constexpr uint64_t batchSize = 16, maxIterationInstructions = 18;
+
+    static uint64_t execute(Machine& machine, uint64_t iterations) {
+        auto& cpu = machine.cpu;
+        const auto* code = machine.read(cpu.pc, sizeof(words), 1);
+        if (!code || machine.read(cpu.pc, sizeof(uint32_t), 2)) return 0;
+
+        const auto source = cpu.x[15];
+        const auto destination = cpu.x[0] + 0x88;
+        if (destination % sizeof(uint64_t)) return 0;
+        const auto pageRemaining = pageSize - source % pageSize;
+        const auto count = std::min(iterations, pageRemaining);
+        if (!count) return 0;
+        const auto* input = machine.read(source, count, 4);
+        const auto* output = machine.read(destination, sizeof(uint64_t), 6);
+        if (!input || !output) return 0;
+
+        const auto overlapsOutput = [output](const uint8_t* bytes, size_t size) {
+            const auto start = reinterpret_cast<uintptr_t>(bytes);
+            const auto end = start + size;
+            const auto writeStart = reinterpret_cast<uintptr_t>(output);
+            return start < writeStart + sizeof(uint64_t) && writeStart < end;
+        };
+        // Each guest iteration stores the cursor before reading the byte.
+        if (overlapsOutput(input, count) || overlapsOutput(code, sizeof(words))) return 0;
+
+        uint32_t remaining = cpu.x[14], byte = 0, nibble = 0, shifted = 0;
+        uint64_t consumed = 0, retired = 0;
+        while (consumed < count && remaining != 1) {
+            const uint32_t next = input[consumed];
+            if (!next || next >= 0x80) break;
+            const uint32_t mask = uint32_t(cpu.x[12]) << (next >> 4);
+            if (mask & (0x3000 | uint32_t(cpu.x[13]))) break;
+            byte = next;
+            nibble = next >> 4;
+            shifted = mask;
+            retired += nibble ? 17 : 18;
+            ++consumed;
+            --remaining;
+        }
+        if (!consumed || !machine.store64(destination, source + consumed)) return 0;
+
+        cpu.x[8] = byte;
+        cpu.x[9] = nibble;
+        cpu.x[10] = source + consumed - 1;
+        cpu.x[14] = remaining;
+        cpu.x[15] = source + consumed;
+        cpu.x[16] = shifted;
+        cpu.nzcv = 4; // The final TST found neither of the multibyte cases.
+        cpu.retired += retired;
+        return retired;
+    }
+};
+
 inline constexpr uint64_t bionicMemoryStep = 64;
 
 inline uint64_t bionicMemoryIterations(uint64_t remaining) {
@@ -134,7 +209,7 @@ struct AndroidBionicFillLoop {
     static constexpr std::array<uint32_t, 5> words{
         0xad010060, 0xad020060, 0x91010063, 0xf1010042, 0x54ffff88,
     };
-    static constexpr uint64_t batchSize = 16;
+    static constexpr uint64_t batchSize = 16, maxIterationInstructions = words.size();
 
     static uint64_t execute(Machine& machine, uint64_t iterations) {
         auto& cpu = machine.cpu;
@@ -166,7 +241,7 @@ struct AndroidBionicCopyLoop {
         0xa9011c66, 0xa9411c26, 0xa9022468, 0xa9422428, 0xa9032c6a,
         0xa9432c2a, 0xa984346c, 0xa9c4342c, 0xf1010042, 0x54fffee8,
     };
-    static constexpr uint64_t batchSize = 16;
+    static constexpr uint64_t batchSize = 16, maxIterationInstructions = words.size();
 
     static uint64_t execute(Machine& machine, uint64_t iterations) {
         auto& cpu = machine.cpu;

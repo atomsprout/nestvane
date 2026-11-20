@@ -149,7 +149,7 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
     struct NativeLoop {
         const uint8_t* entry = nullptr;
         uint64_t entries = 0, instructions = 0;
-    } dexAot, bionicFillAot, bionicCopyAot;
+    } dexAot, dexVerifierAot, bionicFillAot, bionicCopyAot;
     const auto runNativeLoop = [&]<typename Loop>(NativeLoop& stats, const uint8_t* bytes) {
         if (cpu.pc % pageSize != Loop::fileOffset % pageSize || !androidLoopMatches(machine, bytes, Loop::words))
             return false;
@@ -161,7 +161,7 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
         }
         const auto budget = std::min({instructionLimit - cpu.retired, nextSample - cpu.retired,
                                       uint64_t{4096} - (cpu.retired & 4095)});
-        constexpr auto loopSize = Loop::words.size();
+        constexpr auto loopSize = Loop::maxIterationInstructions;
         if (budget < loopSize || !linux.hasSliceBudget(cpu.retired, loopSize)) return false;
         constexpr auto batch = Loop::batchSize * loopSize;
         const auto iterations = budget >= batch && linux.hasSliceBudget(cpu.retired, batch) ? Loop::batchSize : 1;
@@ -178,7 +178,8 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
     uint64_t intervalStart = 0, intervalSamples = 0, intervalUnattributed = 0;
     uint64_t previousSnapshotRetired = 0, previousSnapshotAot = 0;
     const auto aotInstructions = [&] {
-        return sha256AotInstructions + dexAot.instructions + bionicFillAot.instructions + bionicCopyAot.instructions;
+        return sha256AotInstructions + dexAot.instructions + dexVerifierAot.instructions +
+               bionicFillAot.instructions + bionicCopyAot.instructions;
     };
     const auto appendRanking = [](std::ostream& out, const CodeSamples& histogram, size_t limit) {
         std::vector<std::pair<CodeLocation, uint64_t>> ranked(histogram.begin(), histogram.end());
@@ -202,6 +203,8 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
                 << ", guest instructions: " << sha256AotInstructions << '\n'
                 << "  Android DEX hash AOT entries: " << dexAot.entries
                 << ", guest instructions: " << dexAot.instructions << '\n'
+                << "  Android DEX ASCII verifier AOT entries: " << dexVerifierAot.entries
+                << ", guest instructions: " << dexVerifierAot.instructions << '\n'
                 << "  Android Bionic fill AOT entries: " << bionicFillAot.entries
                 << ", guest instructions: " << bionicFillAot.instructions << '\n'
                 << "  Android Bionic copy AOT entries: " << bionicCopyAot.entries
@@ -353,6 +356,8 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
         if (bootAot) {
             if (word == AndroidDexHashLoop::words.front() &&
                 runNativeLoop.operator()<AndroidDexHashLoop>(dexAot, bytes)) continue;
+            if (word == AndroidDexAsciiVerifierLoop::words.front() &&
+                runNativeLoop.operator()<AndroidDexAsciiVerifierLoop>(dexVerifierAot, bytes)) continue;
             if (word == AndroidBionicFillLoop::words.front() &&
                 runNativeLoop.operator()<AndroidBionicFillLoop>(bionicFillAot, bytes)) continue;
             if (word == AndroidBionicCopyLoop::words.front() &&

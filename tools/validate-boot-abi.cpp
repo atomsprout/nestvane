@@ -105,6 +105,72 @@ int main() {
         assert(!AndroidDexHashLoop::execute(native, 16) && native.cpu == beforeFault);
     }
     {
+        using Loop = AndroidDexAsciiVerifierLoop;
+        constexpr uint64_t entry = 0x4508, input = 0x6000, object = 0x8000, cursor = object + 0x88;
+        std::vector<uint8_t> code(sizeof(Loop::words)), bytes(pageSize, 0x41), state(pageSize);
+        std::memcpy(code.data(), Loop::words.data(), code.size());
+        const Image image{entry, {{entry, code, 5}, {input, bytes, 6}, {object, state, 6}}, {}};
+        Machine native(image), reference(image);
+        const auto* instruction = native.readInstruction(entry);
+        assert(androidLoopMatches(native, instruction, Loop::words));
+        for (unsigned example = 0; example < 256; ++example) {
+            CPU initial;
+            initial.pc = entry;
+            initial.retired = example;
+            initial.nzcv = example & 15;
+            initial.x[0] = object;
+            initial.x[12] = 1;
+            initial.x[13] = 0x8f00;
+            initial.x[14] = 2 + example % 23;
+            initial.x[15] = input + (example % 2 ? pageSize - 3 : 0);
+            initial.exclusiveAddress = cursor;
+            initial.exclusiveSize = 8;
+            const auto length = std::min<size_t>(32, pageSize - (initial.x[15] - input));
+            for (size_t i = 0; i < length; ++i)
+                bytes[i] = 1 + (i * 17 + example * 31) % 127;
+            if (example % 4 == 0) bytes[1] = 0;
+            if (example % 4 == 1) bytes[2] = 0xc3;
+            assert(native.write(initial.x[15], std::span(bytes).first(length)));
+            assert(reference.write(initial.x[15], std::span(bytes).first(length)));
+            native.cpu = reference.cpu = initial;
+            const auto iterations = 1 + example % Loop::batchSize;
+            const auto retired = Loop::execute(native, iterations);
+            assert(retired >= 17 && retired <= iterations * Loop::maxIterationInstructions);
+            for (uint64_t i = 0; i < retired; ++i) {
+                const auto word = Loop::words[(reference.cpu.pc - entry) / sizeof(uint32_t)];
+                const auto decoded = decode(word);
+                if (decoded.op == Op::unsupported) assert(executeStartupInstruction(reference, word));
+                else executeDecoded(reference, decoded);
+            }
+            assert(native.cpu == reference.cpu);
+            uint64_t observed, expected;
+            assert(native.load64(cursor, observed) && reference.load64(cursor, expected) && observed == expected);
+        }
+        native.cpu.x[14] = 1;
+        const auto lastCharacter = native.cpu;
+        assert(!Loop::execute(native, 16) && native.cpu == lastCharacter);
+        native.cpu.x[14] = 20;
+        native.cpu.x[15] = cursor;
+        const auto aliased = native.cpu;
+        assert(!Loop::execute(native, 16) && native.cpu == aliased);
+        native.cpu.x[15] = input;
+        const auto objectSegment = std::ranges::find(native.segments, object, &Segment::address);
+        assert(objectSegment != native.segments.end());
+        objectSegment->flags = 4;
+        const auto writeFault = native.cpu;
+        assert(!Loop::execute(native, 16) && native.cpu == writeFault);
+        objectSegment->flags = 6;
+        native.cpu.x[15] = input + pageSize;
+        const auto readFault = native.cpu;
+        assert(!Loop::execute(native, 16) && native.cpu == readFault);
+        const auto codeSegment = std::ranges::find(native.segments, entry, &Segment::address);
+        assert(codeSegment != native.segments.end());
+        codeSegment->flags = 7;
+        native.cpu.x[15] = input;
+        const auto mutableCode = native.cpu;
+        assert(!Loop::execute(native, 16) && native.cpu == mutableCode);
+    }
+    {
         constexpr uint64_t entry = 0x53c0, data = 0x7000;
         constexpr auto words = AndroidBionicFillLoop::words;
         std::vector<uint8_t> code(sizeof(words)), input(pageSize, 0x55);
