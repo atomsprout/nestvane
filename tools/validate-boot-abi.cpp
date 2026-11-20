@@ -3730,6 +3730,26 @@ int main() {
     assert(linux.schedule(machine) && linux.threadId() == childTid);
     assert(call(137, {base + 0x820, base + 0xe00, 0, 8}) == userSignal);
     assert(load(base + 0xe00) == userSignal && uint32_t(load(base + 0xe08)) == uint32_t(-6));
+
+    assert(call(135, {0, base + 0x820, 0, 8}) == 0);
+    std::array<uint32_t, 32> queuedInfo{0, 0, uint32_t(-1), 0, 1, 123, 0x123456};
+    constexpr auto signalInfo = base + 0xe80;
+    assert(machine.write(signalInfo, {reinterpret_cast<const uint8_t*>(queuedInfo.data()), sizeof(queuedInfo)}));
+    call(137, {base + 0x820, base + 0xe00, 0, 8});
+    assert(linux.blocked() && linux.schedule(machine) && linux.threadId() == 1);
+    assert(call(240, {1, childTid, userSignal, 0xdead}) == uint64_t(-14));
+    assert(call(240, {2, childTid, userSignal, signalInfo}) == uint64_t(-3));
+    assert(machine.store64(signalInfo + 8, uint32_t(-6)));
+    assert(call(240, {1, childTid, userSignal, signalInfo}) == uint64_t(-1));
+    assert(machine.store64(signalInfo + 8, uint32_t(-1)));
+    assert(call(240, {1, childTid, userSignal, signalInfo}) == 0);
+    assert(machine.store64(signalInfo + 24, 0x654321));
+    assert(call(240, {1, childTid, userSignal, signalInfo}) == 0); // Coalesces with the first entry.
+    machine.cpu.retired += 4096;
+    assert(linux.schedule(machine) && linux.threadId() == childTid);
+    assert(call(137, {base + 0x820, base + 0xe00, 0, 8}) == userSignal);
+    assert(load(base + 0xe00) == userSignal && uint32_t(load(base + 0xe08)) == uint32_t(-1));
+    assert(load(base + 0xe18) == 0x123456);
     call(93);
     assert(linux.blocked() && linux.schedule(machine) && linux.threadId() == 1);
     assert(load(base + 0x810) == 0);
@@ -4471,6 +4491,19 @@ int main() {
     assert(call(260, {killedChild, base + 512, 1}) == killedChild && load(base + 512) == 9);
     assert(call(73, {processPoll, 1, noWaitTimeout}) == 1 && load(processPoll) >> 48 == 17);
     assert(call(57, {processHandle}) == 0 && call(57, {duplicateHandle}) == 0);
+
+    const auto abortingChild = call(220, {0x1200011, 0, 0, 0, base + 0x848});
+    assert(abortingChild > killedChild);
+    assert(linux.schedule(machine) && linux.processId() == abortingChild);
+    constexpr uint64_t abortSignal = 6;
+    assert(machine.store64(base + 0x820, 1ULL << (abortSignal - 1)));
+    assert(call(135, {0, base + 0x820, 0, 8}) == 0);
+    assert(machine.store64(signalInfo, abortSignal));
+    assert(machine.store64(signalInfo + 8, uint32_t(-6)));
+    assert(call(240, {abortingChild, abortingChild, abortSignal, signalInfo}) == 0 && !linux.blocked());
+    assert(call(135, {1, base + 0x820, 0, 8}) == 0 && linux.blocked());
+    assert(linux.schedule(machine) && linux.processId() == 1);
+    assert(call(260, {abortingChild, base + 512, 1}) == abortingChild && load(base + 512) == abortSignal);
     const auto groupLeader = call(220, {0x1200011, 0, 0, 0, base + 0x848});
     const auto groupMember = call(220, {0x1200011, 0, 0, 0, base + 0x848});
     assert(groupLeader > killedChild && groupMember > groupLeader);

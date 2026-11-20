@@ -168,6 +168,7 @@ private:
     bool waitChild(Machine& machine);
     bool processAlive(uint64_t id) const;
     bool restoreSignalContext(Machine& machine);
+    void terminateOnPendingSignal();
     uint64_t signalRestorer(Machine& machine);
     uint64_t installSeccomp(Machine& machine, uint64_t address);
     bool enforceSeccomp(Machine& machine);

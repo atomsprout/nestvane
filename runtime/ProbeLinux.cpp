@@ -6540,6 +6540,31 @@ bool ProbeLinux::deliverMemoryFault(Machine& machine) {
     return true;
 }
 
+// These default dispositions terminate the thread group. Catchable signals
+// with guest handlers use the separate signal-frame delivery path.
+static bool defaultFatalSignal(uint32_t signal) {
+    switch (signal) {
+        case 4: case 5: case 6: case 7: case 8: case 9: case 11: case 31:
+            return true;
+        default:
+            return false;
+    }
+}
+
+void ProbeLinux::terminateOnPendingSignal() {
+    if (current->pendingSignals.empty() || current->process->id == pid) return;
+    const auto signal = std::ranges::find_if(current->pendingSignals, [&](const auto& entry) {
+        const auto number = entry.first;
+        return defaultFatalSignal(number) && !current->process->signalActions[number][0] &&
+               !(current->signalMask & (1ULL << (number - 1)));
+    });
+    if (signal == current->pendingSignals.end()) return;
+    finishProcess(*current->process, signal->first, true);
+    removeSiblingThreads();
+    current->wait = Wait::exited;
+    sliceEnd = 0;
+}
+
 bool ProbeLinux::restoreSignalContext(Machine& machine) {
     auto& cpu = machine.cpu;
     SignalFrame frame;
@@ -6563,6 +6588,7 @@ bool ProbeLinux::restoreSignalContext(Machine& machine) {
     cpu.exclusiveSize = 0;
     cpu.faultAddress = 0;
     signalContextRestored = true;
+    terminateOnPendingSignal();
     return true;
 }
 
@@ -9592,12 +9618,23 @@ bool ProbeLinux::syscall(Machine& machine) {
             x[0] = permitted ? 0 : uint64_t(-1);
             break;
         }
-        case 130: case 131: { // tkill, tgkill for guest threads.
-            const bool grouped = number == 131;
+        case 130: case 131: case 240: { // tkill, tgkill, rt_tgsigqueueinfo.
+            const bool queued = number == 240;
+            const bool grouped = number != 130;
             const int32_t tid = x[grouped ? 1 : 0];
             const int32_t group = grouped ? int32_t(x[0]) : 0;
             const uint32_t signal = x[grouped ? 2 : 1];
+            std::array<uint32_t, 32> info{};
+            const auto infoBytes = std::span(reinterpret_cast<uint8_t*>(info.data()), sizeof(info));
+            if (queued && !machine.readInto(x[3], infoBytes)) {
+                x[0] = uint64_t(-14);
+                break;
+            }
             if (tid <= 0 || (grouped && group <= 0) || signal > 64) { x[0] = invalid; break; }
+            if (queued && uint32_t(tid) != currentTid && (int32_t(info[2]) >= 0 || int32_t(info[2]) == -6)) {
+                x[0] = uint64_t(-1);
+                break;
+            }
             const auto task = threads.find(tid);
             if (task == threads.end() || task->second.wait == Wait::exited ||
                 (grouped && task->second.process->id != uint32_t(group))) { x[0] = uint64_t(-3); break; }
@@ -9613,17 +9650,22 @@ bool ProbeLinux::syscall(Machine& machine) {
             const bool waiting = target.wait == Wait::signal && (target.signalWaitMask & mask);
             const auto handler = target.process->signalActions[signal][0];
             if (handler == 1 && !waiting && !(target.signalMask & mask)) { x[0] = 0; break; }
-            if (signal >= 32 || (!waiting && !(target.signalMask & mask))) return false;
-            std::array<uint32_t, 32> info{};
+            const bool fatalResend = queued && &target == current && !handler &&
+                defaultFatalSignal(signal) && processId() != pid;
+            if (signal >= 32 || (!waiting && !(target.signalMask & mask) && !fatalResend)) return false;
             info[0] = signal;
-            info[2] = uint32_t(-6); // SI_TKILL
-            info[4] = uint32_t(processId());
-            info[5] = sender[0];
+            if (!queued) {
+                info[2] = uint32_t(-6); // SI_TKILL
+                info[4] = uint32_t(processId());
+                info[5] = sender[0];
+            }
             target.pendingSignals.try_emplace(signal, info); // Standard signals coalesce.
             x[0] = 0;
             if (waiting) {
                 target.wait = Wait::none;
                 target.deadline.reset();
+            } else if (fatalResend) {
+                terminateOnPendingSignal();
             }
             break;
         }
@@ -9696,6 +9738,7 @@ bool ProbeLinux::syscall(Machine& machine) {
             if (x[2] && !writeGuest(machine, x[2], current->signalMask)) { x[0] = uint64_t(-14); break; }
             current->signalMask = next;
             x[0] = 0;
+            if (x[1]) terminateOnPendingSignal();
             break;
         }
         case 132: { // sigaltstack
