@@ -732,22 +732,19 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
             else if (op == 0x2e208400) value = a - b;
             setLane(result, i, size, value);
         }
-    } else if ((word & 0xffe0fc00) == 0x7ee08c00) { // CMEQ Dd, Dn, Dm.
-        const bool matches = lane(source, 0, 8) == lane(other, 0, 8);
-        setLane(result, 0, 8, matches ? UINT64_MAX : 0);
-    } else if (op == 0x0e208c00) { // CMTST: compare the lane's bitwise intersection with zero.
-        if (size == 8 && width == 8) return false;
-        for (unsigned i = 0; i < width / size; ++i) {
-            const auto intersection = lane(source, i, size) & lane(other, i, size);
-            setLane(result, i, size, intersection ? UINT64_MAX : 0);
-        }
-    } else if (op == 0x2e208c00 || op == 0x2e203c00 || op == 0x2e203400 ||
-               op == 0x0e203c00 || op == 0x0e203400) { // Integer register comparisons.
-        if (size == 8 && width == 8) return false;
-        const auto sign = (op & 0x20000000) ? 0 : uint64_t{1} << (size * 8 - 1);
-        for (unsigned i = 0; i < width / size; ++i) {
-            const auto a = lane(source, i, size) ^ sign, b = lane(other, i, size) ^ sign;
-            const bool matches = op == 0x2e208c00 ? a == b : (op & 0x800) ? a >= b : a > b;
+    } else if (const auto comparison = op & ~0x10000000;
+               comparison == 0x0e208c00 || comparison == 0x2e208c00 ||
+               comparison == 0x2e203c00 || comparison == 0x2e203400 ||
+               comparison == 0x0e203c00 || comparison == 0x0e203400) {
+        // CMTST, CMEQ, CMHS, CMHI, CMGE and CMGT, in vector and scalar D forms.
+        if (scalar ? size != 8 || width != 16 : size == 8 && width == 8) return false;
+        const auto sign = (comparison & 0x20000000) ? 0 : uint64_t{1} << (size * 8 - 1);
+        for (unsigned i = 0; i < (scalar ? 1 : width / size); ++i) {
+            const auto a = lane(source, i, size), b = lane(other, i, size);
+            bool matches;
+            if (comparison == 0x0e208c00) matches = (a & b) != 0;
+            else if (comparison == 0x2e208c00) matches = a == b;
+            else matches = (comparison & 0x800) ? (a ^ sign) >= (b ^ sign) : (a ^ sign) > (b ^ sign);
             setLane(result, i, size, matches ? UINT64_MAX : 0);
         }
     } else if ((word & 0x9f3fbc00) == 0x0e202800) { // SADDLP/UADDLP/SADALP/UADALP.

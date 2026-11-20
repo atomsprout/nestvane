@@ -360,6 +360,24 @@ int main() {
         assert(std::memcmp(permute.cpu.v[0].data(), compareEqual.data(), sizeof(compareEqual)) == 0);
         assert(executeStartupInstruction(permute, 0x7ee08c20));
         assert(std::memcmp(permute.cpu.v[0].data(), compareUnequal.data(), sizeof(compareUnequal)) == 0);
+        const std::array<uint64_t, 2> positive{1, UINT64_MAX}, negative{UINT64_MAX, 9};
+        std::memcpy(permute.cpu.v[4].data(), positive.data(), sizeof(positive));
+        std::memcpy(permute.cpu.v[0].data(), negative.data(), sizeof(negative));
+        permute.cpu.v[16].fill(0xff);
+        assert(executeStartupInstruction(permute, 0x5ee03490)); // cmgt d16, d4, d0
+        assert(std::memcmp(permute.cpu.v[16].data(), compareEqual.data(), sizeof(compareEqual)) == 0);
+        std::memcpy(permute.cpu.v[4].data(), negative.data(), sizeof(negative));
+        assert(executeStartupInstruction(permute, 0x5ee03490));
+        assert((permute.cpu.v[16] == std::array<uint8_t, 16>{}));
+        assert(executeStartupInstruction(permute, 0x5ee03c90)); // cmge d16, d4, d0
+        assert(std::memcmp(permute.cpu.v[16].data(), compareEqual.data(), sizeof(compareEqual)) == 0);
+        std::memcpy(permute.cpu.v[4].data(), positive.data(), sizeof(positive));
+        assert(executeStartupInstruction(permute, 0x7ee03490)); // cmhi d16, d4, d0
+        assert((permute.cpu.v[16] == std::array<uint8_t, 16>{}));
+        assert(executeStartupInstruction(permute, 0x5ee08c90)); // cmtst d16, d4, d0
+        assert(std::memcmp(permute.cpu.v[16].data(), compareEqual.data(), sizeof(compareEqual)) == 0);
+        assert(!executeStartupInstruction(permute, 0x5ea03490)); // reserved scalar size
+
         const std::array<float, 4> floorSingles{-2.5f, -0.0f, 17, 42}, floorSinglesResult{-3, -0.0f, 0, 0};
         std::memcpy(permute.cpu.v[1].data(), floorSingles.data(), sizeof(floorSingles));
         assert(executeStartupInstruction(permute, 0x0e219821)); // frintm v1.2s, v1.2s

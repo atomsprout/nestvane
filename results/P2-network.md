@@ -399,3 +399,4 @@
 - 带 `statx` 的 Mac 完整启动越过 FontManagerService，原版 `system_server` 完成阶段 480 和 500，并进入包管理器就绪阶段。
 - iPhone 11 进程 8761 的原生「文件」选择器通过 UI 测试。三个 APK 位于「在我的 iPhone 上」的 `Nestvane Test APKs` 测试目录，从真机回读逐字节一致。实际点选 `Nestvane-Smoke.apk` 后，Nestvane 显示正在等待 Android 安装，请求已入队。包管理器的安装结果、Launcher 启动和跨重启验收仍待取得。
 - Mac 启动越过阶段 520，在 `ActivityManagerService.systemReady` 查询已安装模块时发现配置要求的原版元数据提供者未打包。镜像现包含同版参考系统的工厂 `com.android.modulemetadata`。APK 哈希与参考一致，清单中的 `android.content.pm.MODULE_METADATA` 指向可由 Android 17 原版资源加载器解析的空模块列表。完整启动仍在复测。[AOSP ModuleInfoProvider](https://android.googlesource.com/platform/frameworks/base/+/android17-release/services/core/java/com/android/server/pm/ModuleInfoProvider.java)
+- 补齐 ModuleMetadata 后，原版 Mac 客体越过 `ActivityManagerService.systemReady` 的模块查询并进入阶段 550。随后 `system_server` 在输入法服务启动期间到达尚未支持的 ARM64 `cmgt d16, d4, d0`（`0x5ee03490`）。执行器复用已有整数向量比较实现补齐标量 D 形式。原生 ARM64 对照和宿主回归验证有符号比较、相等、无符号结果以及清零目标寄存器的高 64 位。iPhoneOS Release 构建通过，阶段 550 完整启动仍在复测。
