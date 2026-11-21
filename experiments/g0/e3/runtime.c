@@ -2184,7 +2184,7 @@ void guest_syscall(struct Context* context) {
     }
     case 198: {  // socket: Unix sockets only. There is no network.
         if (a[0] != 1) { r = -97; break; }
-        const int descriptor = socket(AF_UNIX, (int)(a[1] & 0xf), 0);
+        const int descriptor = socket(AF_UNIX, (a[1] & 0xf) == 5 ? SOCK_STREAM : (int)(a[1] & 0xf), 0);  // no SOCK_SEQPACKET on the host
         if (descriptor >= 0) fcntl(descriptor, F_SETFD, FD_CLOEXEC);
         if (descriptor >= 0 && a[1] & 04000) fcntl(descriptor, F_SETFL, O_NONBLOCK);
         r = install_fd(p, descriptor, 0, (a[1] & 02000000) != 0);
@@ -2193,7 +2193,8 @@ void guest_syscall(struct Context* context) {
     case 199: {  // socketpair
         int pair[2];
         if (a[0] != 1) { r = -97; break; }
-        if (socketpair(AF_UNIX, (int)(a[1] & 0xf), 0, pair) != 0) { r = linux_errno(errno); break; }
+        // The host has no SOCK_SEQPACKET for Unix sockets. A datagram pair keeps message boundaries too.
+        if (socketpair(AF_UNIX, (a[1] & 0xf) == 5 ? SOCK_DGRAM : (int)(a[1] & 0xf), 0, pair) != 0) { r = linux_errno(errno); break; }
         int* out = host(p, a[3]);
         for (int index = 0; index < 2; ++index) {
             fcntl(pair[index], F_SETFD, FD_CLOEXEC);
