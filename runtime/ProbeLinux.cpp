@@ -262,6 +262,8 @@ void changeRange(Machine& machine, uint64_t start, uint64_t end, std::optional<u
         part(right, segmentEnd, segment.flags);
     }
     machine.segments = std::move(pages);
+    if (machine.space)
+        for (auto& segment : machine.segments) machine.place(segment);  // fragments that got buffers of their own
     machine.cpu.exclusiveSize = 0;
 }
 

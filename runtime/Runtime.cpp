@@ -395,6 +395,7 @@ Machine::Machine(const Image& image, const std::shared_ptr<AnonymousBudget>& bud
     std::sort(segments.begin(), segments.end(), [](const Segment& a, const Segment& b) {
         return a.address < b.address;
     });
+    for (auto& segment : segments) place(segment);
     cpu.pc = image.entry;
     if (image.startup) {
         setupStack(*this, *image.startup);
@@ -729,7 +730,32 @@ bool Segment::prepareWrite(uint64_t offset, uint64_t length) {
     return true;
 }
 
+void Machine::place(Segment& segment) {
+    if (!space || segment.shared || segment.beyondFileEnd || (segment.anonymousPages && segment.anonymousPages->guestSpace())) return;
+    const auto size = (segment.mappedSize() + GuestSpace::page - 1) & ~(GuestSpace::page - 1);
+    if (!size || segment.address % GuestSpace::page || segment.address + size > GuestSpace::size) return;
+    // An ELF segment may end inside a page. The rest of that page is the segment's, unless the next
+    // segment starts in it, which a 16 KiB image does not do.
+    for (const auto& other : segments)
+        if (&other != &segment && other.address < segment.address + size && segment.address + segment.mappedSize() <= other.address) return;
+    auto pages = AnonymousPages::allocateIn(space, segment.address, size);
+    if (!pages) return;
+    const auto length = segment.accessibleSize();
+    if (segment.anonymousPages) {
+        if (!segment.anonymousPages->copyTo(*pages, segment.fileOffset, 0, std::min<uint64_t>(length, size))) return;
+    } else if (length && (segment.imageView || !segment.bytes.empty())) {
+        if (!pages->prepareWrite(0, length)) return;
+        pages->write(0, {segment.data(), size_t(length)});
+    }
+    segment.bytes = {};
+    segment.imageView = nullptr;
+    segment.anonymousPages = std::move(pages);
+    segment.fileOffset = 0;
+    segment.reservedSize = size;
+}
+
 void Machine::insertSegment(Segment segment) {
+    place(segment);
     auto position = std::lower_bound(segments.begin(), segments.end(), segment.address,
         [](const Segment& entry, uint64_t address) { return entry.address < address; });
     segments.insert(position, std::move(segment));

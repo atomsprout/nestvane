@@ -236,6 +236,9 @@ struct Machine {
     // Kept in address order. Insert new mappings through insertSegment().
     std::vector<Segment> segments;
     void insertSegment(Segment segment);
+    // With a guest address space: moves a private segment's contents to its place in it, so that it
+    // is host memory at the address native guest code uses. Shared storage is not handled here.
+    void place(Segment& segment);
 
     uint64_t dataAddress(uint64_t address) const {
         return topByteIgnore ? address & 0x00ff'ffff'ffff'ffffULL : address;
