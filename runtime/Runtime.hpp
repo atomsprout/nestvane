@@ -14,7 +14,11 @@
 
 namespace nestvane {
 
-inline constexpr uint64_t pageSize = 4096;
+// The guest's page size. 16384 matches the host, which native execution of guest code needs.
+#ifndef NESTVANE_PAGE_SIZE
+#define NESTVANE_PAGE_SIZE 4096
+#endif
+inline constexpr uint64_t pageSize = NESTVANE_PAGE_SIZE;
 inline constexpr uint64_t fuel = 2'000'000;
 inline constexpr uint64_t guestStackSize = 8 * 1024 * 1024;
 inline constexpr uint64_t maxGuestStackSize = 32 * 1024 * 1024;
