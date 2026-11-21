@@ -578,6 +578,7 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
     if (!linux.watchdogReport.empty())
         report << "  guest threads at Android Watchdog termination:\n" << linux.watchdogReport;
     if (nativeExecution) report << native::statistics();
+    else if (native::failure()) report << "  native execution is off: " << native::failure() << '\n';
     report << linux.workerReport(machine,
         init && (unhandled || cpu.stop == Stop::fault || cpu.stop == Stop::unsupported) ? linux.processId() : 0);
     if (!linux.stderrOutput.empty()) report << "  guest stderr: " << linux.stderrOutput;

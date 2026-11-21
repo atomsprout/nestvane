@@ -37,7 +37,7 @@ address, given with --base. --name sets the module name used in symbols, so that
 can be linked into one program. Each module exports _guest_module_<name>: its text start, text end,
 entry point and code table.
 
-usage: rewrite.py [--host-lr] [--table] [--chunk-shift 24] [--reuse] [--split-index] [--symbols] [--base 0x...] [--name module] <elf> <output.s>
+usage: rewrite.py [--host-lr] [--table] [--chunk-shift 24] [--reuse] [--split-index] [--final-table] [--symbols] [--base 0x...] [--name module] <elf> <output.s>
 """
 import struct
 import sys
@@ -508,6 +508,8 @@ class Rewriter:
             self.add_base(register)
             self.emit("b " + self.label(pc))
         self.flush_far()
+        if "--final-table" in sys.argv:
+            return self.finish_mapped()
         out.append(".section __DATA,__const")
         out.append(".p2align 3")
         table = "Lguest_table_%s" % self.name
@@ -520,6 +522,41 @@ class Rewriter:
         out.append("Lguest_stubs_%s:" % self.name)
         for pc in sorted(self.stubs):
             out.append("\t.quad %d, Ls%x" % ((pc - self.start) // 4, pc))
+        return "\n".join(out) + "\n"
+
+
+    def finish_mapped(self):
+        """--final-table: what runtime/NativeCode.cpp links against.
+
+        The table of host code per guest instruction is complete, with the entry stubs in place, and
+        laid out so that the runtime can map its pages into the table of all translated code instead
+        of copying it: that table has the entry for guest pc at 2 * pc from a page boundary, and so
+        has this one. A second table gives where each instruction's translation starts, as an offset
+        from the start of the code; it needs no pointers fixed up and is only read when a fault or
+        the end of a time slice has to be traced back to a guest instruction.
+        """
+        out, name = self.out, self.name
+        # Where a jump to the program's entry point leaves native code, when the runtime asks for it.
+        out.append("Lguest_trap_%s:" % name)
+        self.constant(SCRATCH, self.entry)
+        self.emit("b _guest_trap")
+        out.append(".section __TEXT,__const")
+        out.append(".p2align 2")
+        out.append("Lguest_starts_%s:" % name)
+        for pc in range(self.start, self.end, 4):
+            out.append("\t.long %s - _guest_code_%s" % (self.label(pc), name))
+        out.append(".section __DATA,__const")
+        out.append(".p2align 3")
+        out.append(".globl _guest_module_%s\n_guest_module_%s:" % (name, name))
+        out.append("\t.quad 0x%x, 0x%x, 0x%x, Lguest_table_%s, Lguest_starts_%s, _guest_code_%s, Lguest_trap_%s"
+                   % (self.start, self.end, self.entry, name, name, name, name))
+        out.append(".p2align 14")
+        if self.start * 2 % 16384:
+            out.append("\t.space %d" % (self.start * 2 % 16384))
+        out.append("Lguest_table_%s:" % name)
+        for pc in range(self.start, self.end, 4):
+            out.append("\t.quad " + ("Ls%x" % pc if pc in self.stubs else self.label(pc)))
+        out.append(".p2align 14")
         return "\n".join(out) + "\n"
 
 

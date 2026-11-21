@@ -74,11 +74,9 @@ _nestvane_native_enter:
 	ldr x28, [x25, #CTX_PC]
 	br x28
 
-// Reached from a rewritten svc with the host address after it in x28, by way of the context (the
-// translations are in images of their own). Everything the guest can see is saved, because the
-// kernel layer reads and writes it as the guest's registers.
-.globl _nestvane_native_svc
-_nestvane_native_svc:
+// Puts everything the guest can see into the context, with x28 as its pc. The kernel layer reads and
+// writes the context as the guest's registers.
+.macro SAVE_GUEST
 	stp x0, x1, [x25, #0]
 	stp x2, x3, [x25, #16]
 	stp x4, x5, [x25, #32]
@@ -117,10 +115,25 @@ _nestvane_native_svc:
 	stp q30, q31, [x0, #480]
 	mrs x0, fpsr
 	str x0, [x25, #CTX_FPSR]
+.endm
+
+// Reached from a rewritten svc with the host address after it in x28, by way of the context (the
+// translations are in images of their own).
+.globl _nestvane_native_svc
+_nestvane_native_svc:
+	SAVE_GUEST
 	mov w0, #1
+	b _nestvane_native_exit
+
+// Reached from a module's entry trap with the guest pc of the program's entry point in x28: a jump to
+// it leaves native code, so that the kernel layer sees the program arrive there.
+.globl _nestvane_native_trap
+_nestvane_native_trap:
+	SAVE_GUEST
+	mov w0, #4
 
 // Leaves guest code with the reason in w0 and the context in x25. The guest's registers are in the
-// context already: nestvane_native_svc put them there, or the signal handler did before it sent the thread here.
+// context already: SAVE_GUEST put them there, or the signal handler did before it sent the thread here.
 .globl _nestvane_native_exit
 _nestvane_native_exit:
 	ldr x9, [x25, #CTX_HOST_SP]

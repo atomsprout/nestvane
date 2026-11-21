@@ -369,14 +369,11 @@ Image loadDynamicELF(std::span<const uint8_t> elf, std::span<const uint8_t> link
     image.startup = Startup{program.image.entry, interpreterBase, program.programHeaders,
                             program.programHeaderSize, program.programHeaderCount, std::string(guestFilename),
                             std::move(arguments), uid};
-    image.interpreted = !nativeProgram || !nativeLinker;
-    for (const auto* module : {nativeProgram, nativeLinker}) {
-        if (!module || image.interpreted) continue;
-        native::activate(*module);
-        image.nativeCode.push_back({module->info[0], module->info[1]});
-    }
+    image.interpreted = !nativeProgram || !nativeLinker || !native::activate(*nativeProgram) || !native::activate(*nativeLinker);
+    for (const auto* module : {nativeProgram, nativeLinker})
+        if (!image.interpreted) image.nativeCode.push_back({module->info[0], module->info[1]});
     // The kernel layer watches for a new program reaching its entry point.
-    if (nativeProgram) native::trap(program.image.entry);
+    if (!image.interpreted) native::trap(program.image.entry);
     return image;
 }
 

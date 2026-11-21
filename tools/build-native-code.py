@@ -20,7 +20,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REWRITER = os.path.join(HERE, "../experiments/g0/e3/rewrite.py")
-OPTIONS = ["--table", "--chunk-shift", "20", "--reuse", "--split-index"]
+OPTIONS = ["--table", "--chunk-shift", "20", "--reuse", "--split-index", "--final-table"]
 # Below the kernel layer's mapping arena (4 GiB and up) and above the boot image and the first stack.
 FIRST_BASE, LIMIT = 0x8000_0000, 0x1_0000_0000
 KEY_BYTES = 16384
@@ -28,14 +28,18 @@ IOS = "--ios" in sys.argv
 TARGET = (["-target", "arm64-apple-ios26.0", "-isysroot", subprocess.run(["xcrun", "--sdk", "iphoneos", "--show-sdk-path"],
            capture_output=True, text=True).stdout.strip()] if IOS else ["-arch", "arm64"])
 LIBRARIES = 12  # a fixed number, so that the app project can name them
-# Rewritten code reaches the runtime's system call entry through the context: a call across images
-# would go through a linker stub, which uses registers that belong to the guest. x27 is the runtime's
-# and is loaded again when the guest is entered. The offset is NativeContext::svcEntry.
+# Rewritten code reaches the runtime's entries through the context: a call across images would go
+# through a linker stub, which uses registers that belong to the guest. x27 is the runtime's and is
+# loaded again when the guest is entered. The offsets are NativeContext::svcEntry and trapEntry.
 SVC = """.text
 .p2align 2
 .private_extern _guest_svc
 _guest_svc:
 \tldr x27, [x25, #864]
+\tbr x27
+.private_extern _guest_trap
+_guest_trap:
+\tldr x27, [x25, #872]
 \tbr x27
 """
 

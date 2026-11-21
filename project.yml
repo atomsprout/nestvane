@@ -138,6 +138,10 @@ targets:
         MARKETING_VERSION: "0.1.0"
         HEADER_SEARCH_PATHS: "$(SRCROOT)/runtime"
         GCC_PREPROCESSOR_DEFINITIONS: "$(inherited) NESTVANE_PAGE_SIZE=16384 NESTVANE_NATIVE_DEFAULT=1"
+        LIBRARY_SEARCH_PATHS: "$(SRCROOT)/generated/native-code/ios/lib"
+        # The table of translated code and the guests' address spaces need more address space than
+        # an app gets by default.
+        CODE_SIGN_ENTITLEMENTS: ios/Native.entitlements
         CODE_SIGN_STYLE: Automatic
       configs:
         Release:

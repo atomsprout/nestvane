@@ -463,7 +463,12 @@ static NSString* ThermalState() {
 #endif
         NSString* status = result.passed ? @"Execution paths agree" : @"Validation failed";
         bool previousChecksPassed = result.passed;
-        if (previousChecksPassed && [NSFileManager.defaultManager fileExistsAtPath:
+#if defined(NESTVANE_PAGE_SIZE) && NESTVANE_PAGE_SIZE != 4096
+        const bool fixturesFit = false;  // the dynamic ELF fixture is linked for 4 KiB guest pages too
+#else
+        const bool fixturesFit = true;
+#endif
+        if (previousChecksPassed && fixturesFit && [NSFileManager.defaultManager fileExistsAtPath:
                                [resources stringByAppendingPathComponent:@"android17-dynamic.elf"]]) {
             auto probe = nestvane::probeDynamic(resources.fileSystemRepresentation);
             result.report += "\n" + probe.report;

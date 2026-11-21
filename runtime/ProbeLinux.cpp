@@ -5096,8 +5096,8 @@ uint64_t ProbeLinux::map(Machine& machine) {
     if (!anon && (x[2] & 4) && machine.space && native::enabled()) {
         // Code of a translated file, mapped where it was translated for, runs natively from now on.
         const auto& fd = descriptors().find(uint32_t(x[4]))->second;
-        if (const auto* module = fd.temporary ? nullptr : native::mappedCode(fd.contents(), start, x[5])) {
-            native::activate(*module);
+        if (const auto* module = fd.temporary ? nullptr : native::mappedCode(fd.contents(), start, x[5]);
+            module && native::activate(*module)) {
             machine.space->addCode(module->info[0], module->info[1]);
             // Linker namespaces can load one file more than once. The next load of this file goes to
             // another translation of the same bytes, if there is one that the process does not use.
