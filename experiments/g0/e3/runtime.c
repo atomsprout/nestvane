@@ -164,7 +164,8 @@ static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t changed = PTHREAD_COND_INITIALIZER;
 static struct Process* processes[MAX_PROCESSES];
 static int next_pid = 100;
-static int trace;
+static int trace, log_times;  // G0E3_TIMES: put the time since the start before each log line
+static uint64_t start_ns;
 static uint64_t syscall_count, fork_count, fork_ns, lazy_count, emulated_count;
 static int64_t reserved_bytes, reserved_peak;  // host address space held by guest memory, over all processes
 
@@ -384,9 +385,11 @@ static int load_modules(const char* single) {
         module->host_path = realpath(path, NULL);
         const int descriptor = module->host_path ? open(module->host_path, O_RDONLY) : -1;
         struct stat info;
-        if (descriptor < 0 || fstat(descriptor, &info) != 0) {
-            fprintf(stderr, "[runtime] cannot open module %s\n", path);
-            return 0;
+        if (descriptor < 0 || fstat(descriptor, &info) != 0) {  // not in this root: nothing can load it
+            if (trace) fprintf(stderr, "[runtime] module %s is not in the root\n", path);
+            if (descriptor >= 0) close(descriptor);
+            module->image = NULL;
+            continue;
         }
         module->image = mmap(NULL, (size_t)info.st_size, PROT_READ, MAP_PRIVATE, descriptor, 0);
         close(descriptor);
@@ -1762,6 +1765,7 @@ static void* print_log(void* raw) {
         const char* tag = (const char*)packet + 12;
         const char* message = tag + strlen(tag) + 1;
         if (message >= (const char*)packet + length) message = "";
+        if (log_times) fprintf(stderr, "[%7.1f ms] ", (double)(now_ns() - start_ns) / 1e6);
         fprintf(stderr, "[logcat] %c %s: %s%s", priorities[packet[11] & 7], tag, message, message[0] && message[strlen(message) - 1] == '\n' ? "" : "\n");
     }
     close(descriptor);
@@ -2371,6 +2375,8 @@ int GUEST_MAIN(int argc, char** argv, char** envp) {
         return 2;
     }
     trace = getenv("G0E3_TRACE") ? atoi(getenv("G0E3_TRACE")) : 0;
+    log_times = getenv("G0E3_TIMES") != NULL;
+    start_ns = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
     struct stat info;
     if (stat(argv[1], &info) != 0) { perror(argv[1]); return 2; }
     if (S_ISDIR(info.st_mode)) {

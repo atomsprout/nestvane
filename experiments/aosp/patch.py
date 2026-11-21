@@ -265,3 +265,12 @@ edit("device/generic/goldfish/64bitonly/product/sdk_phone16k_arm64.mk", [(
     "BOARD_EMULATOR_DYNAMIC_PARTITIONS_SIZE ?= $(shell expr 1800 \\* 1048576 )",
     "BOARD_EMULATOR_DYNAMIC_PARTITIONS_SIZE ?= $(shell expr 4096 \\* 1048576 )  # Nestvane: was 1800")],
     "Nestvane: was 1800")
+
+# Cronet carries its own BoringSSL, twice, with the same assembly.
+for flavour in ("stable", "tot"):
+    edit("external/cronet/%s/third_party/boringssl/Android.bp" % flavour, [(
+        '    name: "%s_cronet_boringssl_defaults",\n    stl: "none",\n' % flavour,
+        '    name: "%s_cronet_boringssl_defaults",\n    stl: "none",\n'
+        '    cflags: ["-DOPENSSL_NO_ASM"], // Nestvane: the assembly uses registers owned by the host runtime.\n'
+        '    asflags: ["-DOPENSSL_NO_ASM"],\n' % flavour)],
+        "Nestvane: the assembly uses registers")
