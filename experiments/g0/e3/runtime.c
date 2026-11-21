@@ -1009,8 +1009,24 @@ static int load_image(struct Thread* thread, const struct Module* executable, ch
     cursor -= 16;
     arc4random_buf(base + cursor, 16);
     const uint64_t random = cursor;
+    // Where each translated file must be loaded, for the dynamic linker (see experiments/aosp/patch.py):
+    // records of device, inode and address, announced in the auxiliary vector.
+    uint64_t files = 0, file_count = 0;
+    if (executable->guest_path && (files = allocate(process, page_up((uint64_t)guest_module_count * 24), 1)) &&
+        map_anonymous(process, files, page_up((uint64_t)guest_module_count * 24), PROT_READ | PROT_WRITE)) {
+        uint64_t* records = host(process, files);
+        for (int index = 0; index < guest_module_count; ++index) {
+            const struct Module* module = &guest_modules[index];
+            if (!module->image) continue;
+            records[file_count * 3] = (uint64_t)module->device;
+            records[file_count * 3 + 1] = module->inode;
+            records[file_count * 3 + 2] = module->base;
+            ++file_count;
+        }
+    }
     const uint64_t auxv[] = {3, executable->headers, 4, phentsize, 5, phnum, 6, PAGE, 7, interpreter ? interpreter->base : 0,
-                             9, executable->info[2], 11, 0, 12, 0, 13, 0, 14, 0, 16, 0, 23, 0, 25, random, 31, pointers[0], 0, 0};
+                             9, executable->info[2], 11, 0, 12, 0, 13, 0, 14, 0, 16, 0, 23, 0, 25, random, 31, pointers[0],
+                             0x4e56, files, 0x4e57, file_count, 0, 0};
     const uint64_t words = 1 + argc + 1 + envc + 1 + sizeof auxv / 8;
     cursor = (cursor - words * 8) & ~15ull;
     uint64_t* stack = (uint64_t*)(base + cursor);
@@ -2558,7 +2574,7 @@ void guest_syscall(struct Context* context) {
     case 260: r = guest_wait(p, (long)(int)a[0], a[1], (long)a[2]); break;
     case 278: arc4random_buf(host(p, a[0]), a[1]); r = (long)a[1]; break;
     case 0x4e56: {
-        // The dynamic linker asks where a library must be loaded for its translated code to apply.
+        // Linkers built before the auxiliary vector carried this asked with a system call.
         struct stat info;
         const struct Module* module = fstat(host_fd(p, (long)a[0]), &info) == 0 ? module_for_stat(&info) : NULL;
         r = module ? (long)module->base : -2;

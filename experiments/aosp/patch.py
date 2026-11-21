@@ -136,27 +136,40 @@ edit("art/runtime/interpreter/mterp/nterp.cc", [(
     "Nestvane: nterp uses x25-x28")
 
 # ---------------------------------------------------------------- dynamic linker
-# The host translates each system ELF ahead of time for one load address. The linker asks the host
-# where a file must go. On a real kernel the call fails with ENOSYS and nothing changes.
+# The host translates each system ELF ahead of time for one load address, and tells the linker in
+# the auxiliary vector: entry 0x4e56 points at records of (device, inode, address) and entry 0x4e57
+# is their count. On a real kernel the entries are absent and nothing changes. It is not a system
+# call, because seccomp filters kill a process that makes one they do not know.
 edit("bionic/linker/linker_phdr.cpp", [(
     "    start = ReserveWithAlignmentPadding(load_size_, kLibraryAlignment, start_alignment, &gap_start_,\n"
     "                                        &gap_size_);\n",
-    "    // Nestvane: system call 0x4e56 returns the address this file was translated for, if any.\n"
+    "    // Nestvane: the host lists the address each file was translated for in the auxiliary vector.\n"
     "    start = nullptr;\n"
-    "    long nestvane_address = syscall(0x4e56, fd_, load_size_);\n"
-    "    if (nestvane_address > 0) {\n"
-    "      void* fixed = mmap(reinterpret_cast<void*>(nestvane_address), load_size_, PROT_NONE,\n"
-    "                         MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);\n"
-    "      if (fixed != MAP_FAILED) {\n"
-    "        start = fixed;\n"
-    "        gap_start_ = nullptr;\n"
-    "        gap_size_ = 0;\n"
+    "    {\n"
+    "      struct NestvaneFile { uint64_t device, inode, address; };\n"
+    "      const NestvaneFile* files = reinterpret_cast<const NestvaneFile*>(getauxval(0x4e56));\n"
+    "      const uint64_t count = getauxval(0x4e57);\n"
+    "      struct stat info;\n"
+    "      if (files != nullptr && fstat(fd_, &info) == 0) {\n"
+    "        for (uint64_t i = 0; i < count; ++i) {\n"
+    "          if (files[i].device != static_cast<uint64_t>(info.st_dev) || files[i].inode != info.st_ino) continue;\n"
+    "          void* fixed = mmap(reinterpret_cast<void*>(files[i].address), load_size_, PROT_NONE,\n"
+    "                             MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);\n"
+    "          if (fixed != MAP_FAILED) {\n"
+    "            start = fixed;\n"
+    "            gap_start_ = nullptr;\n"
+    "            gap_size_ = 0;\n"
+    "          }\n"
+    "          break;\n"
+    "        }\n"
     "      }\n"
     "    }\n"
     "    if (start == nullptr) {\n"
     "      start = ReserveWithAlignmentPadding(load_size_, kLibraryAlignment, start_alignment, &gap_start_,\n"
     "                                          &gap_size_);\n"
-    "    }\n")], "Nestvane: system call 0x4e56")
+    "    }\n"),
+    ('#include "linker_phdr.h"\n', '#include "linker_phdr.h"\n\n#include <sys/auxv.h>  // Nestvane\n#include <sys/stat.h>\n')],
+    "Nestvane: the host lists")
 
 # ---------------------------------------------------------------- hand-written assembly in libraries
 # BoringSSL's generated assembly uses x25-x28 as working registers. Its C implementations do not.
