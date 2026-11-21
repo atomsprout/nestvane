@@ -674,3 +674,4 @@
 - 同一批采样现按 64 字节范围及完整 ELF 分别排序，按文件汇总在生成快照时完成。Mac 从同一 Android 17 镜像和真机数据副本出发运行前 10 亿条指令，按文件累计前三项为系统 BoringSSL 156、bootstrap libc 122、系统 PCRE2 116。原版 vendor Gatekeeper APEX 内的 libcrypto.so 仍单独列出。Mac Release 探针和 iPhoneOS Release 构建通过。
 - ARM64 SHA256H、SHA256H2、SHA256SU0 和 SHA256SU1 已接入 Apple Silicon 宿主指令。宿主支持 SHA-256 且以 NESTVANE_GUEST_SHA2=1 启动时才向客体报告 ASIMD 与 SHA2。8,192 组寄存器状态含别名对照原生汇编通过。Mac 原型在同一 Android 17 镜像和真机数据副本上完成 BOOT_COMPLETED，Launcher Displayed 落在启动后 510.134 至 540.135 秒之间。iPhoneOS Release 构建和试验包签名验证通过。旧路径的 Mac 完整启动对照仍在跑，真机整轮收益待测。
 - PCRE2 和 ART 热区的独立生成器原型补齐无标志算术和标量内存读写，生成 141 个块共 718 条客体指令。6,768 组对照核对完整 CPU 状态和两页内存，其中 1,928 组覆盖访问失败。原型尚未接入真实启动，执行覆盖和耗时未测。
+- iPhone 14 进程 1552 使用既有签名包和已装应用的数据卷冷启动。BOOT_COMPLETED 广播约在 793 秒完成。之后一份客体帧显示 Settings 无响应提示，随后该进程在未关闭 Settings 的情况下于 1053.881 秒报告 Launcher Displayed，UIKit 呈现 578 × 1064，峰值物理占用 2,623,824,224 字节。该轮测试未启用 SHA2。第一次 Editor 自动化启动时测试运行器因自动录屏提前退出，已在同一客体进程按截图模式复测。
