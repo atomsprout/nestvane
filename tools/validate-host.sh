@@ -12,3 +12,7 @@ xcrun clang++ -O2 -std=c++20 -Wall -Wextra -Werror -Iruntime \
     runtime/Ext4.cpp tools/no-aot.cpp tools/validate-boot-abi.cpp \
     -lsqlite3 -o generated/validate-boot-abi
 generated/validate-boot-abi
+
+xcrun clang++ -O2 -std=c++20 -Wall -Wextra -Werror -Iruntime \
+    runtime/GuestSpace.cpp tools/validate-guest-space.cpp -o generated/validate-guest-space
+generated/validate-guest-space
