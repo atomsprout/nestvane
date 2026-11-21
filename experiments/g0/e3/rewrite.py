@@ -19,6 +19,12 @@ With --table, x27 points at a per-process table instead of holding the base: the
 guest address A is A + table[A >> 24], for a 39-bit guest address space in 16 MiB chunks. This is the scheme a guest needs when its address space is too
 sparse to reserve as one block, and it costs two more instructions and a load per access.
 
+With --reuse, an access through the same base register as the access before it uses the address
+that is still in x28, when nothing in between changed either. The instructions from after the first
+access to the second can also be reached by an indirect branch or a signal return, with x28 holding
+something else, so each of them gets an entry stub that works the address out again: the code table
+points at the stub, and straight-line execution does not pass through it.
+
 With --host-lr, bl and ret stay native calls and returns and x30 holds a host address. Without it,
 x30 holds the guest return address and every return goes through the table.
 
@@ -27,7 +33,7 @@ address, given with --base. --name sets the module name used in symbols, so that
 can be linked into one program. Each module exports _guest_module_<name>: its text start, text end,
 entry point and code table.
 
-usage: rewrite.py [--host-lr] [--table] [--chunk-shift 24] [--symbols] [--base 0x...] [--name module] <elf> <output.s>
+usage: rewrite.py [--host-lr] [--table] [--chunk-shift 24] [--reuse] [--symbols] [--base 0x...] [--name module] <elf> <output.s>
 """
 import struct
 import sys
@@ -70,6 +76,36 @@ class Rewriter:
         assert self.start % 4 == 0
         self.out = []
         self.counts = {}
+        # --reuse: the base register whose host address x28 holds, the instructions emitted since
+        # that have not disturbed it, and the entry stubs: guest pc -> base register.
+        self.reuse = "--reuse" in sys.argv
+        self.cache, self.pending, self.kept, self.stubs, self.leaders = None, [], False, {}, set()
+        if self.reuse:
+            for pc in range(self.start, self.end, 4):
+                w, = struct.unpack_from("<I", self.data, self.offset + pc - self.start)
+                if w & 0x7C000000 == 0x14000000:
+                    self.leaders.add(pc + signed(w & 0x3FFFFFF, 26) * 4)
+                elif w & 0xFF000010 == 0x54000000 or w & 0x7E000000 == 0x34000000:
+                    self.leaders.add(pc + signed(w >> 5 & 0x7FFFF, 19) * 4)
+                elif w & 0x7E000000 == 0x36000000:
+                    self.leaders.add(pc + signed(w >> 5 & 0x3FFF, 14) * 4)
+
+    def keep(self, written=()):
+        """This instruction leaves x28 alone and writes only these registers."""
+        if self.cache is not None and self.cache not in written:
+            self.kept = True
+
+    @staticmethod
+    def writes(w):
+        """The general registers a load or store changes, or None for forms that are not reused."""
+        rt, rt2, rn, vector = w & 31, w >> 10 & 31, w >> 5 & 31, w >> 26 & 1
+        if w & 0x3A000000 == 0x28000000:  # pair
+            result = {rt, rt2} if w >> 22 & 1 and not vector else set()
+            return result | {rn} if w >> 23 & 1 else result
+        if w & 0x3B000000 == 0x39000000 or w & 0x3B200000 == 0x38000000:  # immediate offsets
+            result = {rt} if w >> 22 & 3 and not vector else set()
+            return result | {rn} if not w >> 24 & 1 and w >> 10 & 1 else result
+        return None
 
     def count(self, kind, extra):
         entry = self.counts.setdefault(kind, [0, 0])
@@ -146,6 +182,8 @@ class Rewriter:
         rn = w >> 5 & 31
         if rn == 31:
             self.word(w)
+            if self.writes(w) is not None:
+                self.keep(self.writes(w))
             return self.count("sp_relative", 0)
         # `after` is the write-back. It is applied after the access, so that a faulting access has
         # changed nothing and can be reported or retried as one guest instruction.
@@ -178,7 +216,13 @@ class Rewriter:
                 plain = w & ~(3 << 10)  # the unscaled-offset form
                 if mode == 1:
                     plain &= ~(0x1FF << 12)  # post-index: access at the base
-        if self.table and w & 0x3B200C00 == 0x38200800:
+        written = self.writes(w) if self.reuse else None
+        if written is not None and self.cache == rn:
+            # x28 still holds this base register's host address.
+            for address in self.pending + [pc]:
+                self.stubs[address] = rn
+            added = -1
+        elif self.table and w & 0x3B200C00 == 0x38200800:
             # A register offset can reach any chunk, so the chunk is that of the whole address. The
             # access keeps its index, and x28 becomes the base plus the chunk's offset.
             rm, option, vector = w >> 16 & 31, w >> 13 & 7, w >> 26 & 1
@@ -198,6 +242,10 @@ class Rewriter:
             self.emit("add x%d, x%d, x%d" % (rn, rn, after[1]))
         else:
             self.adjust(rn, after)
+        if written is not None and rn not in written:  # the next access through rn can use x28 as it is
+            self.cache, self.pending, self.kept = rn, [], True
+        if added < 0:
+            return self.count("memory_reused", after != 0)
         self.count("memory", added + (after != 0))
 
     def set_sp(self):
@@ -275,6 +323,7 @@ class Rewriter:
             target = pc + signed(w >> 5 & 0x7FFFF, 19) * 4
             if not self.is_code(target):
                 return False
+            self.keep()
             if abs(target - pc) < FAR_CONDITIONAL:
                 self.emit("b.%s %s" % (CONDITIONS[w & 15], self.label(target)))
                 self.count("direct_branch", 0)
@@ -288,6 +337,7 @@ class Rewriter:
             target = pc + signed(w >> 5 & 0x7FFFF, 19) * 4
             if not self.is_code(target):
                 return False
+            self.keep()
             register = "%s%d" % ("x" if w >> 31 else "w", w & 31)
             if abs(target - pc) < FAR_CONDITIONAL:
                 self.emit("%s %s, %s" % ("cbnz" if w >> 24 & 1 else "cbz", register, self.label(target)))
@@ -302,6 +352,7 @@ class Rewriter:
             target = pc + signed(w >> 5 & 0x3FFF, 14) * 4
             if not self.is_code(target):
                 return False
+            self.keep()
             bit = (w >> 31) << 5 | w >> 19 & 31
             register = "%s%d" % ("x" if bit >= 32 else "w", w & 31)
             taken = w >> 24 & 1
@@ -338,10 +389,23 @@ class Rewriter:
         return False
 
     def instruction(self, pc, w):
+        if pc in self.leaders:
+            self.cache = None
+        self.kept, before = False, self.cache
+        self.translate(pc, w)
+        if not self.kept:
+            self.cache = None
+        elif self.cache == before and (not self.pending or self.pending[-1] != pc) and pc not in self.stubs:
+            self.pending.append(pc)  # not an access through the cached register: something in between
+            if len(self.pending) > 8:
+                self.cache = None
+
+    def translate(self, pc, w):
         if self.branch(pc, w):
             return
         if w in PAC_HINTS:
             self.word(0xD503201F)
+            self.keep()
             return self.count("pac_hint", 0)
         if w & 0xFFE0001F == 0xD4000001:  # svc
             self.emit("adr x28, 1f")
@@ -350,6 +414,7 @@ class Rewriter:
             return self.count("svc", 1)
         if w & 0xFFFFFFE0 == 0xD53BD040:
             self.emit("ldr x%d, [x25, #%d]" % (w & 31, TPIDR_OFFSET))
+            self.keep({w & 31})
             return self.count("tls", 0)
         if w & 0xFFFFFFE0 == 0xD51BD040:
             self.emit("str x%d, [x25, #%d]" % (w & 31, TPIDR_OFFSET))
@@ -361,6 +426,7 @@ class Rewriter:
         if w & 0x1F000000 == 0x10000000:  # adr, adrp
             offset = signed((w >> 5 & 0x7FFFF) << 2 | w >> 29 & 3, 21)
             target = (pc & ~0xFFF) + (offset << 12) if w >> 31 else pc + offset
+            self.keep({w & 31})
             if w & 31 == 31:
                 return self.word(0xD503201F)
             return self.count("address", self.constant(w & 31, target) - 1)
@@ -369,6 +435,7 @@ class Rewriter:
         if self.stack_pointer(w):
             return
         self.word(w)
+        self.keep({w & 31})  # where every other instruction names the general register it writes
         self.count("unchanged", 0)
 
     def run(self):
@@ -381,14 +448,23 @@ class Rewriter:
             out.append(self.label(pc) + ":")
             self.instruction(pc, struct.unpack_from("<I", self.data, self.offset + pc - self.start)[0])
         out.append("\tbrk #0x3ff")
+        # Entry stubs come after the code, so that host addresses in the table below stay in order.
+        for pc, register in sorted(self.stubs.items()):
+            out.append("Ls_%s_%x:" % (self.name, pc))
+            self.add_base(register)
+            self.emit("b " + self.label(pc))
         out.append(".section __DATA,__const")
         out.append(".p2align 3")
         table = "Lguest_table_%s" % self.name
         out.append(".globl _guest_module_%s\n_guest_module_%s:" % (self.name, self.name))
-        out.append("\t.quad 0x%x, 0x%x, 0x%x, %s" % (self.start, self.end, self.entry, table))
+        out.append("\t.quad 0x%x, 0x%x, 0x%x, %s, Lguest_stubs_%s, %d" % (self.start, self.end, self.entry, table, self.name, len(self.stubs)))
         out.append(table + ":")
         for pc in range(self.start, self.end, 4):
             out.append("\t.quad " + self.label(pc))
+        # Where the code table differs from the table above: instruction index, entry stub.
+        out.append("Lguest_stubs_%s:" % self.name)
+        for pc in sorted(self.stubs):
+            out.append("\t.quad %d, Ls_%s_%x" % ((pc - self.start) // 4, self.name, pc))
         return "\n".join(out) + "\n"
 
 

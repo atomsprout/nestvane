@@ -209,3 +209,16 @@ edit("external/ruy/ruy/platform.h", [(
     "// Nestvane: the NEON kernels are assembly that does not fit in the registers left to the guest.\n"
     "#if 0\n#define RUY_PLATFORM_NEON 1\n")],
     "Nestvane: the NEON kernels")
+
+# The same switch for TensorFlow Lite's dot-product kernels, whose assembly takes more operands
+# than there are registers left. Without them it uses its NEON intrinsics.
+edit_all("external/tensorflow/tensorflow/lite/kernels/internal/optimized/neon_tensor_utils.cc",
+         "#ifdef __aarch64__\n", "#if defined(__aarch64__) && !defined(GOOGLE_L4T)  // Nestvane\n", 10, "!defined(GOOGLE_L4T)  // Nestvane")
+
+# gemmlowp, which TensorFlow Lite's older quantized kernels use, is in the same position: without
+# inline assembly it uses its portable kernels.
+edit("external/gemmlowp/internal/detect_platform.h", [(
+    "#if defined(__GNUC__) && !defined(__native_client__)\n#define GEMMLOWP_ALLOW_INLINE_ASM\n",
+    "// Nestvane: no inline assembly on arm64, it does not fit in the registers left to the guest.\n"
+    "#if defined(__GNUC__) && !defined(__native_client__) && !defined(__aarch64__)\n#define GEMMLOWP_ALLOW_INLINE_ASM\n")],
+    "Nestvane: no inline assembly on arm64")

@@ -5,7 +5,7 @@ Every ELF file in the tree is translated for a fixed load address and linked wit
 The tree is laid out as on a device (system/..., apex/...), from a build patched by
 experiments/aosp/patch.py.
 
-usage: build_guest.py <source tree> <output directory> [--segment '(16ull << 30)'] [--sparse [--chunk-shift 24]]
+usage: build_guest.py <source tree> <output directory> [--segment '(16ull << 30)'] [--sparse [--chunk-shift 24]] [--reuse]
 Run the result with: <output>/guest <output>/root /system/bin/sh -c '...'
 
 --sparse translates memory accesses through the per-chunk table and gives the guest a 39-bit address
@@ -24,6 +24,7 @@ FIRST_BASE = 0x10000000
 RESERVED = ["-ffixed-x18", "-ffixed-x25", "-ffixed-x26", "-ffixed-x27", "-ffixed-x28"]
 CHUNK_SHIFT = sys.argv[sys.argv.index("--chunk-shift") + 1] if "--chunk-shift" in sys.argv else "24"
 SPARSE = ["--table", "--chunk-shift", CHUNK_SHIFT] if "--sparse" in sys.argv else []
+REUSE = ["--reuse"] if "--reuse" in sys.argv else []
 
 
 def ndk():
@@ -71,7 +72,7 @@ def load_size(path):
 def translate(job):
     name, path, base, objects = job
     assembly = os.path.join(objects, name + ".S")
-    summary = subprocess.run([sys.executable, os.path.join(HERE, "rewrite.py"), *SPARSE, "--base", hex(base), "--name", name, path, assembly],
+    summary = subprocess.run([sys.executable, os.path.join(HERE, "rewrite.py"), *SPARSE, *REUSE, "--base", hex(base), "--name", name, path, assembly],
                              capture_output=True, text=True, check=True).stdout.splitlines()[0]
     subprocess.run(["clang", "-arch", "arm64", "-c", assembly, "-o", os.path.join(objects, name + ".o")], check=True)
     return name, summary

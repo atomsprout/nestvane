@@ -91,7 +91,8 @@ _Static_assert(__builtin_offsetof(struct Context, spare) == 848, "rewrite.py");
 #define ADDRESS_MASK 0x00ffffffffffffffull  // Bionic tags heap pointers in the top byte
 #define SIGBIT(number) (1ull << ((number) - 1))  // Linux signal masks: signal n is bit n - 1
 
-// One translated ELF. `info` is the block rewrite.py emits: text start, text end, entry, table.
+// One translated ELF. `info` is the block rewrite.py emits: text start, text end, entry, table of
+// host code per instruction, and the entry stubs (pairs of instruction index and host code, count).
 struct Module {
     const char* guest_path;  // NULL for the single static module named on the command line
     const uint64_t* info;
@@ -278,6 +279,11 @@ static int load_modules(const char* single) {
         const struct Module* module = &guest_modules[index];
         if (!module->image) continue;
         memcpy(code_table + (module->info[0] - code_low) / 4, (const void*)module->info[3], (module->info[1] - module->info[0]) * 2);
+        // An instruction that relies on what the one before left in the scratch register is entered
+        // through a stub when control arrives any other way than by falling into it.
+        const uint64_t* stubs = (const uint64_t*)module->info[4];
+        for (uint64_t index = 0; index < module->info[5]; ++index)
+            code_table[(module->info[0] - code_low) / 4 + stubs[index * 2]] = stubs[index * 2 + 1];
     }
     return 1;
 }
@@ -298,6 +304,17 @@ static uint64_t guest_code(uint64_t host_pc) {
             if (table[middle] <= host_pc) low = middle; else high = middle;
         }
         return module->info[0] + low * 4;
+    }
+    return 0;
+}
+
+// Where straight-line execution reaches a guest instruction, as opposed to host_code, which is where a
+// jump to it lands. 0 outside the modules.
+static uint64_t inline_code(uint64_t guest_pc) {
+    for (int index = 0; index < guest_module_count; ++index) {
+        const struct Module* module = &guest_modules[index];
+        if (module->image && guest_pc >= module->info[0] && guest_pc < module->info[1])
+            return ((const uint64_t*)module->info[3])[(guest_pc - module->info[0]) / 4];
     }
     return 0;
 }
@@ -1508,7 +1525,21 @@ static void continue_fault(struct Context* context) {
             if (untouched) guest_resume(context);
             if (!in_run) {
                 if (done > 0) {
-                    context->pc = t->fault.host_pc + 4;
+                    // Resuming loads the scratch register with the target, so the rest of this guest
+                    // instruction, which can only be its write-back, is done here, and the next one is
+                    // entered the way a jump would enter it.
+                    const uint64_t guest = guest_code(t->fault.host_pc), next = inline_code(guest + 4);
+                    uint64_t pc = t->fault.host_pc + 4;
+                    for (; next && pc < next; pc += 4) {
+                        const uint32_t w = *(const uint32_t*)pc;
+                        const unsigned rd = w & 31, rn = w >> 5 & 31;
+                        if (rd == 31 || rn == 31) break;
+                        if ((w & 0xFFC00000) == 0x91000000) context->x[rd] = context->x[rn] + (w >> 10 & 0xfff);
+                        else if ((w & 0xFFC00000) == 0xD1000000) context->x[rd] = context->x[rn] - (w >> 10 & 0xfff);
+                        else if ((w & 0xFFE0FC00) == 0x8B000000) context->x[rd] = context->x[rn] + ((w >> 16 & 31) == 31 ? 0 : context->x[w >> 16 & 31]);
+                        else break;
+                    }
+                    context->pc = next && pc == next ? host_code(guest + 4) : t->fault.host_pc + 4;
                     guest_resume(context);
                 }
                 // Not an instruction emulate_access knows. If another thread backed the chunk between
