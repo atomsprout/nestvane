@@ -5622,8 +5622,46 @@ bool ProbeLinux::switchThread(Machine& machine, std::chrono::steady_clock::time_
             runnable = true;
         }
     };
+    const auto pickNext = [&]() -> bool {
+        auto next = threads.upper_bound(currentTid);
+        for (size_t tested = 0; tested < threads.size(); ++tested) {
+            if (next == threads.end()) next = threads.begin();
+            if (next->second.wait != Wait::none || next->second.nextSliceAfter) { ++next; continue; }
+            if (next->first != currentTid) {
+                ++threadSwitches;
+                accountGuestCpu();
+                const auto retired = machine.cpu.retired;
+                auto output = std::move(machine.cpu.output);
+                machine.cpu.exclusiveSize = 0;
+                const auto previous = currentTid;
+                const bool exited = current->wait == Wait::exited;
+                if (!exited) current->saved = std::move(machine.cpu);
+                if (current->process != next->second.process) {
+                    current->process->segments = std::move(machine.segments);
+                    current->process->space = std::move(machine.space);
+                    machine.segments = std::move(next->second.process->segments);
+                    machine.space = std::move(next->second.process->space);
+                }
+                currentTid = next->first;
+                current = &next->second;
+                machine.cpu = std::move(current->saved);
+                machine.cpu.output = std::move(output);
+                machine.cpu.retired = retired;
+                if (exited) threads.erase(previous);
+            }
+            sliceEnd = machine.cpu.retired + 4096;
+            if (!current->pendingSignals.empty()) deliverPendingCaughtSignal(machine);
+            return true;
+        }
+        return false;
+    };
     if (*binderDeathsDirty) refreshBinderDeaths();
     if (!binderReferenceChanges->empty()) refreshBinderReferences();
+    // Looking at every thread's timers costs more than the switch itself once there are hundreds of
+    // threads, and a boot switches threads hundreds of thousands of times. Timers are looked at every
+    // 200 microseconds, and in between the next thread that can run is taken as it is.
+    if (now - lastTimerScan < microseconds(200) && pickNext()) return true;
+    lastTimerScan = now;
     updateTimers();
     while (!runnable && nextDeadline && now < deadline && !stop.stop_requested()) {
         if (dataSyncPending && now - lastDataSync >= seconds(2)) syncDataSoon();
@@ -5646,37 +5684,7 @@ bool ProbeLinux::switchThread(Machine& machine, std::chrono::steady_clock::time_
         updateTimers();
     }
     if (now >= deadline || stop.stop_requested()) return false;
-    auto next = threads.upper_bound(currentTid);
-    for (size_t tested = 0; tested < threads.size(); ++tested) {
-        if (next == threads.end()) next = threads.begin();
-        if (next->second.wait != Wait::none || next->second.nextSliceAfter) { ++next; continue; }
-        if (next->first != currentTid) {
-            ++threadSwitches;
-            accountGuestCpu();
-            const auto retired = machine.cpu.retired;
-            auto output = std::move(machine.cpu.output);
-            machine.cpu.exclusiveSize = 0;
-            const auto previous = currentTid;
-            const bool exited = current->wait == Wait::exited;
-            if (!exited) current->saved = std::move(machine.cpu);
-            if (current->process != next->second.process) {
-                current->process->segments = std::move(machine.segments);
-                current->process->space = std::move(machine.space);
-                machine.segments = std::move(next->second.process->segments);
-                machine.space = std::move(next->second.process->space);
-            }
-            currentTid = next->first;
-            current = &next->second;
-            machine.cpu = std::move(current->saved);
-            machine.cpu.output = std::move(output);
-            machine.cpu.retired = retired;
-            if (exited) threads.erase(previous);
-        }
-        sliceEnd = machine.cpu.retired + 4096;
-        if (!current->pendingSignals.empty()) deliverPendingCaughtSignal(machine);
-        return true;
-    }
-    return false;
+    return pickNext();
 }
 
 bool ProbeLinux::cloneThread(Machine& machine) {
@@ -7438,14 +7446,23 @@ std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedPr
           << " transient files=" << transientFiles << '/' << maxTransientFiles
           << " bpffs pins=" << pinnedObjects << '/' << maxBpfPins
           << " directories=" << directories.size() - ext4DirectoryCount << '/' << maxGuestDirectories << '\n';
-    const auto top = activeProcesses.begin() + std::min<size_t>(activeProcesses.size(), 8);
+    // NESTVANE_INIT_PROCESS_REPORT=<n> lists that many processes instead of the eight largest.
+    const char* wanted = std::getenv("NESTVANE_INIT_PROCESS_REPORT");
+    const auto top = activeProcesses.begin() + std::min<size_t>(activeProcesses.size(), wanted ? std::max(1, std::atoi(wanted)) : 8);
     std::partial_sort(activeProcesses.begin(), top, activeProcesses.end(),
                       [](const Process* a, const Process* b) { return a->cpuTime > b->cpuTime; });
     for (auto entry = activeProcesses.begin(); entry != top; ++entry) {
         const auto& process = **entry;
         const auto hostCPU = std::chrono::duration_cast<std::chrono::milliseconds>(process.cpuTime).count();
         tasks << "  guest process host CPU: " << hostCPU << " ms pid=" << process.id
-              << ' ' << (process.programName.empty() ? process.executable : process.programName) << '\n';
+              << ' ' << (process.programName.empty() ? process.executable : process.programName);
+        // A Java process is known by the name its main thread was given, not by app_process.
+        if (const auto main = threads.find(process.id); main != threads.end()) {
+            const auto end = std::find(main->second.name.begin(), main->second.name.end(), uint8_t{0});
+            tasks << " (" << std::string_view(reinterpret_cast<const char*>(main->second.name.data()),
+                                              size_t(end - main->second.name.begin())) << ')';
+        }
+        tasks << '\n';
     }
     const auto threadName = [](const Thread& thread) -> std::string_view {
         const auto end = std::find(thread.name.begin(), thread.name.end(), uint8_t{0});

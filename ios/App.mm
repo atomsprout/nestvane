@@ -540,7 +540,7 @@ static NSString* ThermalState() {
                 milestones += "[" + std::to_string(static_cast<long long>((now - bootStarted) * 1000)) + " ms] ";
                 milestones.append(event);
                 milestones += '\n';
-                constexpr size_t maxMilestoneBytes = 16 * 1024;
+                constexpr size_t maxMilestoneBytes = 256 * 1024;  // the whole boot, for reading stage and service times afterwards
                 if (milestones.size() > maxMilestoneBytes)
                     milestones.erase(0, milestones.find('\n', milestones.size() - maxMilestoneBytes) + 1);
                 // The guest logs thousands of lines while it boots, and each call here is on its time:

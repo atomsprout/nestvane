@@ -298,7 +298,9 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
         intervalSyscallSamples = 0;
         if (nativeExecution) snapshot << native::statistics() << timeReport() << faultSamples << linux.memoryReport(machine);
         snapshot << linux.workerReport(machine, linux.processId());
-        constexpr size_t androidTailLimit = 16 * 1024;
+        // NESTVANE_INIT_LOG_TAIL=<bytes> keeps more of the guest's log in each snapshot.
+        static const size_t androidTailLimit = std::getenv("NESTVANE_INIT_LOG_TAIL")
+            ? size_t(std::max(4096, std::atoi(std::getenv("NESTVANE_INIT_LOG_TAIL")))) : 16 * 1024;
         const std::string_view android = linux.recentAndroidOutput.empty()
             ? linux.androidOutput : linux.recentAndroidOutput;
         if (!android.empty()) {

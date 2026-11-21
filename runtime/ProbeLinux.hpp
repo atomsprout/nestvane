@@ -83,6 +83,7 @@ struct ProbeLinux {
     std::string workerReport(const Machine& machine, uint64_t observedProcess = 0) const;
     std::string memoryReport(const Machine& machine) const;
     // How long the scheduler slept because no guest thread could run, how often, and thread switches.
+    std::chrono::steady_clock::time_point lastTimerScan{};
     std::chrono::steady_clock::duration idleTime{};
     uint64_t idleWaits = 0, threadSwitches = 0;
     std::optional<std::pair<std::string_view, uint64_t>> guestCodeFile(const uint8_t* instruction) const;
