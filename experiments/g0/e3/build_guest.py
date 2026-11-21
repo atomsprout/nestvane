@@ -148,7 +148,12 @@ def main():
                     "ro.dalvik.vm.enable_uffd_gc=true",            # the collector the boot image is compiled for,
                     "ro.dalvik.vm.force_cmc_stw_compaction=true",  # without userfaultfd
                     "ro.zygote.disable_gl_preload=true",           # there is no graphics driver in the tree
-                    "ro.zygote=zygote64"], check=True)
+                    "ro.zygote=zygote64",
+                    "ro.debuggable=0", "dalvik.vm.jdwp-provider=none",  # no debugger connection: its plugin needs adbd
+                    # What the vendor image supplies on a device.
+                    "ro.product.cpu.abilist=arm64-v8a", "ro.product.cpu.abilist64=arm64-v8a", "ro.product.cpu.abilist32="], check=True)
+    for directory in ("data/dalvik-cache", "data/misc", "data/system", "dev/socket", "storage", "mnt"):
+        os.makedirs(os.path.join(root, directory), exist_ok=True)
     os.chmod(os.path.join(root, "dev/__properties__"), 0o644)
 
     # Test programs of our own, built like the platform: dynamic, against Bionic, registers reserved.
@@ -211,6 +216,24 @@ def main():
     environment = os.path.join(root, "root/init.environ.rc")
     if os.path.exists(environment) and os.path.exists(os.path.join(root, "system/bin/app_process64")):
         exports = [line.split(None, 2)[1:] for line in open(environment).read().splitlines() if line.strip().startswith("export ")]
+        # On a device derive_classpath works the class paths out at boot. Here they are read from the
+        # boot image, which only loads for the class path it was compiled with: the primary image
+        # names its jars, and the mainline extension lists its own after them.
+        def stored(path, key):
+            data = open(path, "rb").read()
+            start = data.find(key + b"\0") + len(key) + 1
+            return data, data[start:data.index(b"\0", start)].decode()
+        framework = os.path.join(root, "system/framework/arm64")
+        _, primary = stored(os.path.join(framework, "boot.oat"), b"bootclasspath")
+        jars = primary.split(":")
+        import re
+        for name in sorted(os.listdir(framework)):
+            if name.endswith(".oat"):
+                data, _ = stored(os.path.join(framework, name), b"bootclasspath")
+                for match in re.finditer(rb"/apex/[A-Za-z0-9._/-]+\.jar", data):
+                    if match.group().decode() not in jars:
+                        jars.append(match.group().decode())
+        exports += [["BOOTCLASSPATH", ":".join(jars)], ["DEX2OATBOOTCLASSPATH", primary]]
         launcher = os.path.join(out, "run-app-process.sh")
         open(launcher, "w").write("""#!/bin/sh
 # usage: run-app-process.sh [vm options...] <directory> [--zygote | <class>] [arguments]

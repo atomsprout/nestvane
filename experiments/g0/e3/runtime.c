@@ -975,14 +975,19 @@ static int load_image(struct Thread* thread, const struct Module* executable, ch
         memcpy(process->command_line + process->command_length, argv[index], length);
         process->command_length += length;
     }
+    // The strings are in argument order with the environment after them, as Linux lays them out:
+    // app_process overwrites its arguments as one block from argv[0] to the end of the last one.
     uint64_t cursor = stack_top;
     uint64_t pointers[argc + envc + 2];
+    for (int index = 0; index < argc + envc; ++index) cursor -= strlen(index < argc ? argv[index] : envp[index - argc]) + 1;
+    const uint64_t strings = cursor;
     for (int index = 0; index < argc + envc; ++index) {
         const char* text = index < argc ? argv[index] : envp[index - argc];
-        cursor -= strlen(text) + 1;
         strcpy((char*)base + cursor, text);
         pointers[index] = cursor;
+        cursor += strlen(text) + 1;
     }
+    cursor = strings;
     cursor -= 16;
     arc4random_buf(base + cursor, 16);
     const uint64_t random = cursor;
