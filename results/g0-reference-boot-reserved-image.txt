@@ -1,0 +1,21 @@
+# The reserved-register, fully compiled sdk_phone16k_arm64 image (experiments/aosp/patch.py) booted in
+# the Android emulator on the Mac: a real arm64 Linux kernel under the hypervisor, 4 processors, 4 GiB,
+# 16 KiB pages, first boot after wiping data. Times are milliseconds since kernel start.
+fingerprint: Android/sdk_phone16k_arm64/emu64a16k:17/CP2A.260605.016/eng.everet:userdebug/test-keys
+kernel: 6.12.58-android16-6-gccafb60de224-ab14828483
+boot_progress_start: 1424
+boot_progress_preload_start: 1725
+boot_progress_preload_end: 1947
+boot_progress_system_run: 2046
+boot_progress_pms_start: 2162
+boot_progress_pms_system_scan_start: 2183
+boot_progress_pms_data_scan_start: 2427
+boot_progress_pms_scan_end: 2428
+boot_progress_pms_ready: 2470
+boot_progress_ams_ready: 4260
+boot_progress_enable_screen: 5053
+sf_stop_bootanim: 5920
+Zygote64Timing: ZygotePreload took to complete: 222ms
+Zygote64Timing: ZygoteInit took to complete: 236ms
+SystemServerTiming: StartServices took to complete: 2491ms
+ActivityTaskManager: Displayed com.android.launcher3/.uioverrides.QuickstepLauncher at 6842
