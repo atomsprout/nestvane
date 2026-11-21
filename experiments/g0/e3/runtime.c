@@ -2551,9 +2551,31 @@ int GUEST_MAIN(int argc, char** argv, char** envp) {
     const uint64_t begin = now_ns();
     struct Thread* main_thread = new_process(1);
     struct Process* first = main_thread->process;
-    for (int fd = 0; fd < 3; ++fd) first->fds[fd] = dup(fd);
-    char* environment[] = {root ? "PATH=/system/bin" : "PATH=/nonexistent", "HOME=/", "TERM=dumb", "LANG=C",
-                           "ANDROID_ROOT=/system", "ANDROID_DATA=/data", NULL};
+    // G0E3_NULL_STDIO: the standard descriptors are /dev/null, as for a service that init starts.
+    for (int fd = 0; fd < 3; ++fd) first->fds[fd] = getenv("G0E3_NULL_STDIO") ? open("/dev/null", O_RDWR) : dup(fd);
+    char* environment[16] = {root ? "PATH=/system/bin" : "PATH=/nonexistent", "HOME=/", "TERM=dumb", "LANG=C",
+                             "ANDROID_ROOT=/system", "ANDROID_DATA=/data", NULL};
+    // G0E3_CONTROL_SOCKETS=name,name: listening sockets under /dev/socket that the first process
+    // inherits and finds through ANDROID_SOCKET_<name>, as init creates them for a service.
+    if (root && getenv("G0E3_CONTROL_SOCKETS")) {
+        char* names = strdup(getenv("G0E3_CONTROL_SOCKETS"));
+        int count = 6;
+        for (char* name = strtok(names, ","); name && count < 14; name = strtok(NULL, ",")) {
+            struct sockaddr_un address = {.sun_family = AF_UNIX};
+            snprintf(address.sun_path, sizeof address.sun_path, "%s/dev/socket/%s", root, name);
+            unlink(address.sun_path);
+            const int descriptor = socket(AF_UNIX, SOCK_STREAM, 0);
+            if (descriptor < 0 || bind(descriptor, (struct sockaddr*)&address, (socklen_t)SUN_LEN(&address)) != 0 || listen(descriptor, 16) != 0) {
+                fprintf(stderr, "[runtime] cannot create control socket %s: %s\n", address.sun_path, strerror(errno));
+                continue;
+            }
+            const int fd = (int)install_fd(first, descriptor, 3, 0);
+            char* variable = malloc(strlen(name) + 40);
+            sprintf(variable, "ANDROID_SOCKET_%s=%d", name, fd);
+            environment[count++] = variable;
+        }
+        environment[count] = NULL;
+    }
     if (!load_image(main_thread, executable, argv + 2, environment)) return 2;
     const int pid = first->pid;
     start_thread(main_thread);
