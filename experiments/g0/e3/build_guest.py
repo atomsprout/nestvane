@@ -132,6 +132,11 @@ def main():
             subprocess.run([ndk() + "clang", "--target=aarch64-linux-android35", "-O2", "-pie", *RESERVED, "-Wl,-z,max-page-size=16384",
                             os.path.join(HERE, "guest-tests", name), "-o", os.path.join(root, "system/bin/test-" + name[:-2])], check=True)
 
+    # The Java test program, built beforehand from guest-tests/Hello.java with javac and d8.
+    hello = os.path.join(os.path.dirname(out), "dex/hello.jar")
+    if os.path.exists(hello):
+        shutil.copy2(hello, os.path.join(root, "data/local/tmp/hello.jar"))
+
     # One module per distinct ELF file. Links to the same file share its translation.
     jobs, seen, base = [], set(), FIRST_BASE
     for directory, _, files in sorted(os.walk(root)):
@@ -192,6 +197,17 @@ exec "$here/${GUEST:-guest}" "$here/root" /system/bin/toybox env ANDROID_ROOT=/s
   /apex/com.android.art/bin/dalvikvm64 -Xusejit:false -Xnoimage-dex2oat -Xbootclasspath:%s "$@"
 """ % ":".join(jars))
         os.chmod(launcher, 0o755)
+        # The same runs as scripts for the iOS probe app (G0Art), which runs each by name under mksh.
+        # exec, so that the shell does not fork: every process reserves a whole segment of address space.
+        command = ("exec /system/bin/toybox env ANDROID_ROOT=/system ANDROID_DATA=/data ANDROID_ART_ROOT=/apex/com.android.art ANDROID_I18N_ROOT=/apex/com.android.i18n "
+                   "ANDROID_TZDATA_ROOT=/apex/com.android.tzdata /apex/com.android.art/bin/dalvikvm64 -Xusejit:false -Xnoimage-dex2oat "
+                   "-Xbootclasspath:%s %%s -cp /data/local/tmp/hello.jar Hello %%s\n" % ":".join(jars))
+        image = "-Xgc:CMC -Ximage:/system/framework/boot.art -Xnorelocate"
+        scripts = [("art_interpreted", command % ("-Xint", "interpreted")), ("art_image_interpreted", command % ("-Xint " + image, "image")),
+                   ("art_compiled", command % (image, "compiled")), ("b_art_interpreted", command % ("-Xint", "interpreted")),
+                   ("b_art_compiled", command % (image, "compiled"))]
+        with open(os.path.join(out, "scripts-android.bin"), "w") as file:
+            file.write("".join("%s\0%s\0" % script for script in scripts))
 
 
 if __name__ == "__main__":

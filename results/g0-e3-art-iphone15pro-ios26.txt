@@ -1,0 +1,14 @@
+probe=e3 bundle=com.everettjf.nestvane.g0art
+machine=iPhone16,1 os=Version 26.2 (Build 23C55) build_config=optimized
+traced=0 host_page=16384 kernel_page=16384 physical_memory_mib=7680 available_mib=6138 footprint_mib=5.6
+vm_map min=0x100590000 max=0xfc0000000 span_gib=58.99 virtual_size_gib=391.27
+e3 art_interpreted exit=0 bytes=40 sha=b153ba86a0ea ms=449
+e3 output hello from ART: interpreted sum=2999997|
+e3 art_image_interpreted exit=0 bytes=34 sha=2f0844baf384 ms=104
+e3 output hello from ART: image sum=2999997|
+e3 art_compiled exit=0 bytes=37 sha=bf55c7f71943 ms=83
+e3 output hello from ART: compiled sum=2999997|
+e3 b_art_interpreted exit=0 bytes=40 sha=b153ba86a0ea ms=198
+e3 b_art_compiled exit=0 bytes=37 sha=bf55c7f71943 ms=77
+e3 footprint_mib=96.0
+done probe=e3 elapsed_ms=2072

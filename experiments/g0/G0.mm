@@ -876,9 +876,14 @@ void e3() {
     [NSFileManager.defaultManager copyItemAtPath:[NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"root"] toPath:guestRoot error:&error];
     if (error) say("e3 root copy failed: %s", error.localizedDescription.UTF8String);
     // Installing the app drops the execute bits that the guest's shell checks before running a program.
-    NSString* programs = [guestRoot stringByAppendingPathComponent:@"system/bin"];
-    for (NSString* name in [NSFileManager.defaultManager contentsOfDirectoryAtPath:programs error:nil])
-        chmod([programs stringByAppendingPathComponent:name].fileSystemRepresentation, 0755);
+    NSMutableArray<NSString*>* programDirectories = [NSMutableArray arrayWithObject:@"system/bin"];
+    for (NSString* apex in [NSFileManager.defaultManager contentsOfDirectoryAtPath:[guestRoot stringByAppendingPathComponent:@"apex"] error:nil])
+        [programDirectories addObject:[NSString stringWithFormat:@"apex/%@/bin", apex]];
+    for (NSString* directory in programDirectories) {
+        NSString* programs = [guestRoot stringByAppendingPathComponent:directory];
+        for (NSString* name in [NSFileManager.defaultManager contentsOfDirectoryAtPath:programs error:nil])
+            chmod([programs stringByAppendingPathComponent:name].fileSystemRepresentation, 0755);
+    }
     NSString* work = [guestRoot stringByAppendingPathComponent:@"data/local/tmp/work/scripts"];
     [NSFileManager.defaultManager createDirectoryAtPath:work withIntermediateDirectories:YES attributes:nil error:nil];
     NSData* scripts = [NSData dataWithContentsOfFile:[NSBundle.mainBundle pathForResource:@"scripts-android" ofType:@"bin"]];

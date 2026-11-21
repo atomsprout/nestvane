@@ -702,7 +702,8 @@ static int open_proc_file(struct Process* p, const char* path) {
     const char* name = path + 11;
     const int is_maps = !strcmp(name, "maps"), is_stat = !strcmp(name, "stat"), is_command = !strcmp(name, "cmdline");
     if (!is_maps && !is_stat && !is_command) return -1;
-    char file[] = "/tmp/nestvane-proc-XXXXXX";
+    char file[1024];  // an iOS app can only write below its own temporary directory
+    snprintf(file, sizeof file, "%s/nestvane-proc-XXXXXX", getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp");
     const int descriptor = mkstemp(file);
     if (descriptor < 0) return -1;
     unlink(file);

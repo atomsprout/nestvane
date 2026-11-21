@@ -201,3 +201,10 @@ edit("external/tensorflow/tensorflow/lite/Android.bp", [(
     cflags: [
         "-DGOOGLE_L4T", // Nestvane: no assembly that uses the host runtime's registers.
 ''')], "Nestvane: no assembly that uses")
+
+# ruy's arm64 kernels are inline assembly whose operands and clobbers need more registers than are
+# left. Without them ruy uses its portable C++ kernels.
+edit("external/ruy/ruy/opt_set.h", [(
+    "// Default to all optimizations.\n#define RUY_OPT_SET (~0)\n",
+    "// Nestvane: no assembly, it does not fit in the registers left to the guest.\n#define RUY_OPT_SET (~RUY_OPT_BIT_ASM)\n")],
+    "Nestvane: no assembly")
