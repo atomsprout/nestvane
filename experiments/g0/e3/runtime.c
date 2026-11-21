@@ -2060,6 +2060,13 @@ void guest_syscall(struct Context* context) {
     case 178: r = t->tid; break;
     case 173: r = p->parent; break;
     case 174: case 175: case 176: case 177: r = 0; break;  // the guest sees itself as root, like the reference run
+    case 143: case 144: case 145: case 146: case 147: case 149: case 151: case 152: case 159: r = 0; break;  // set*uid, set*gid, setgroups
+    case 148: case 150:  // getresuid, getresgid
+        for (int index = 0; index < 3; ++index)
+            if (a[index]) *(uint32_t*)host(p, a[index]) = 0;
+        r = 0;
+        break;
+    case 158: r = 0; break;  // getgroups: none
     case 179: memset(host(p, a[0]), 0, 112); r = 0; break;
     case 214:
         pthread_mutex_lock(&p->memory_lock);
