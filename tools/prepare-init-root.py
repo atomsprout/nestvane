@@ -366,6 +366,9 @@ def collect(serial, readelf, destination, small_art_heap):
         for name in shell("ls", "-1", "/system/framework/arm64").splitlines():
             if re.fullmatch(r"boot(?:-[A-Za-z0-9_.+-]+)?\.(?:art|oat|vdex)", name):
                 framework.add(f"/system/framework/arm64/{name}")
+        # An image whose boot class path is compiled in full has no profile for it.
+        if not shell("ls", "-d", "/system/etc/boot-image.prof", "2>/dev/null", "||", "true"):
+            framework.discard("/system/etc/boot-image.prof")
         for guest in sorted(framework):
             local = root / guest.lstrip("/")
             local.parent.mkdir(parents=True, exist_ok=True)
