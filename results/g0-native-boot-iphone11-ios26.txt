@@ -49,3 +49,25 @@ A run after it, snapshot at 40 s: iOS physical footprint 2,203,934,048 bytes, 25
 the process limit. devicectl then reported "App terminated due to signal 9". The launcher was not displayed
 in any run. "preemptions 0 of 31723 signals" means the time slice signal never took effect on the phone
 (on the Mac it does); why has not been looked at.
+
+---- time slices and memory accounting ----
+The time slice signal never reached its handler on the phone: the guest ran on a dispatch queue's worker
+thread, and Darwin does not deliver pthread_kill to those. The app now runs the guest on a thread of its
+own. After that: preemptions 2336 of 30491 signals (10546 handled, 1212 outside guest code).
+The stage times did not change with it (StartPackageManagerService 11.8 s, StartSystemUI 31.1 s,
+USER_UNLOCKED 60.0 s in that run); the process was again gone after about 60 s, with a physical footprint
+of 2,445,257,344 bytes in the last snapshot.
+
+Where the memory is, from the snapshot at 30 s of the run before (footprint 1,855,034,008 bytes:
+internal 692,879,360, compressed 1,121,058,816). Host pages per guest address space, by vm_region_64; pages
+that processes share after fork are counted in each of them, so the rows add up to more than the footprint:
+  guest address spaces: 37, MiB resident 1210, dirty 811, compressed or swapped 1658
+    pid 229 /system/bin/app_process64: resident 316, dirty 194, swapped 236 MiB in 678 runs
+    pid 455 /system/bin/app_process64: resident 199, dirty 143, swapped 214 MiB in 382 runs
+    pid 486 /system/bin/app_process64: resident 176, dirty 133, swapped 196 MiB in 363 runs
+    pid 487 /system/bin/app_process64: resident 175, dirty 133, swapped 196 MiB in 362 runs
+    pid 168 /system/bin/app_process64: resident 157, dirty 114, swapped 196 MiB in 346 runs
+    pid 1 : resident 5, dirty 3, swapped 107 MiB in 162 runs
+    pid 201 /system/bin/surfaceflinger: resident 18, dirty 12, swapped 29 MiB in 134 runs
+The zygote and the processes forked from it hold most of it. How much of a forked process's share is
+really its own, and how iOS charges pages shared after fork, has not been separated yet.

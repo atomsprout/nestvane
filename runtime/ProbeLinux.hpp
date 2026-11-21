@@ -78,6 +78,7 @@ struct ProbeLinux {
         return retired <= sliceEnd && count <= sliceEnd - retired;
     }
     std::string workerReport(const Machine& machine, uint64_t observedProcess = 0) const;
+    std::string memoryReport(const Machine& machine) const;
     std::optional<std::pair<std::string_view, uint64_t>> guestCodeFile(const uint8_t* instruction) const;
     std::string guestCodeFileName(std::string_view backingPath) const;
     void setBootContext(std::string context);

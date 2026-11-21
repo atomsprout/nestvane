@@ -274,7 +274,7 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
         intervalUnattributed = 0;
         intervalSyscalls.fill({});
         intervalSyscallSamples = 0;
-        if (nativeExecution) snapshot << native::statistics() << faultSamples;
+        if (nativeExecution) snapshot << native::statistics() << faultSamples << linux.memoryReport(machine);
         snapshot << linux.workerReport(machine, linux.processId());
         constexpr size_t androidTailLimit = 16 * 1024;
         const std::string_view android = linux.recentAndroidOutput.empty()

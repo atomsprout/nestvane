@@ -99,6 +99,11 @@ public:
     } prelink;
 
     uint64_t reservedBytes() const { return reserved_; }
+    // Host pages behind the space's memory, in bytes: resident, written to, and moved to the compressor.
+    struct Usage { uint64_t resident = 0, dirty = 0, swapped = 0; };
+    Usage usage() const;
+    // The same for one range of guest addresses.
+    Usage usage(uint64_t address, uint64_t length) const;
     size_t runCount() const { return runs_.size(); }
 
 private:

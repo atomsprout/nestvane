@@ -172,6 +172,7 @@ struct Counters {
     uint64_t faultsBySignal[32] = {};
     uint64_t nativeTime = 0, activationTime = 0, tableBytes = 0;  // mach time units
     uint64_t unmapped = 0, backed = 0;
+    uint64_t sliceSignals = 0, sliceOutside = 0;
 } counters;
 
 void onSignal(int number, siginfo_t* info, void* raw) {
@@ -186,7 +187,9 @@ void onSignal(int number, siginfo_t* info, void* raw) {
         // Only between two guest instructions is everything the guest can see in its registers.
         uint64_t guestPc;
         bool atStart;
-        if (!ours || !inCode || !guestCode(pc, guestPc, atStart) || !atStart) return;
+        ++counters.sliceSignals;
+        if (!ours || !inCode) { ++counters.sliceOutside; return; }
+        if (!guestCode(pc, guestPc, atStart) || !atStart) return;
         running.preemptedPc = guestPc;
         reason = leftByPreemption;
     } else if (!ours || (pc >= reinterpret_cast<uint64_t>(&nestvane_native_enter) && pc < reinterpret_cast<uint64_t>(&nestvane_native_exit) + 256)) {
@@ -240,6 +243,11 @@ void prepareThread() {
     stack.ss_size = 256 * 1024;
     stack.ss_sp = mmap(nullptr, stack.ss_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
     sigaltstack(&stack, nullptr);
+    // Threads of a dispatch queue start with asynchronous signals blocked, and the guest may run on one.
+    sigset_t wanted;
+    sigemptyset(&wanted);
+    sigaddset(&wanted, preemptionSignal);
+    pthread_sigmask(SIG_UNBLOCK, &wanted, nullptr);
     static bool installed = false;
     if (installed) return;
     installed = true;
@@ -437,7 +445,8 @@ std::string statistics() {
         << ", interpreted after a fault " << counters.faults
         << " (SIGSEGV " << counters.faultsBySignal[SIGSEGV] << ", SIGBUS " << counters.faultsBySignal[SIGBUS]
         << ", SIGILL " << counters.faultsBySignal[SIGILL] << ", SIGTRAP " << counters.faultsBySignal[SIGTRAP]
-        << "), preemptions " << counters.preemptions << " of " << counters.ticks << " signals, traps " << counters.traps
+        << "), preemptions " << counters.preemptions << " of " << counters.ticks << " signals ("
+        << counters.sliceSignals << " handled, " << counters.sliceOutside << " outside guest code), traps " << counters.traps
         << ", lost " << counters.lost << '\n';
     static const mach_timebase_info_data_t base = [] { mach_timebase_info_data_t value; mach_timebase_info(&value); return value; }();
     const auto milliseconds = [&](uint64_t time) { return time * base.numer / base.denom / 1'000'000; };

@@ -184,6 +184,58 @@ void GuestSpace::freeChunk(uint64_t index) {
     offsets_[index] = voidOffset;
 }
 
+GuestSpace::Usage GuestSpace::usage(uint64_t guest, uint64_t length) const {
+    Usage total;
+    for (uint64_t done = 0; done < length;) {
+        const uint64_t part = contiguous(guest + done, length - done);
+        if (backed(guest + done)) {
+            vm_address_t address = reinterpret_cast<vm_address_t>(host(guest + done));
+            const vm_address_t end = address + part;
+            while (address < end) {
+                vm_size_t size = 0;
+                vm_region_extended_info_data_t info{};
+                mach_msg_type_number_t count = VM_REGION_EXTENDED_INFO_COUNT;
+                mach_port_t object = MACH_PORT_NULL;
+                const vm_address_t asked = address;
+                if (vm_region_64(mach_task_self(), &address, &size, VM_REGION_EXTENDED_INFO,
+                                   reinterpret_cast<vm_region_info_t>(&info), &count, &object) != KERN_SUCCESS || address >= end)
+                    break;
+                // The region may be larger than the range: take its share by length.
+                const uint64_t from = std::max<uint64_t>(address, asked), to = std::min<uint64_t>(address + size, end);
+                const double share = size ? double(to - from) / double(size) : 0;
+                total.resident += uint64_t(info.pages_resident * share) * page;
+                total.dirty += uint64_t(info.pages_dirtied * share) * page;
+                total.swapped += uint64_t(info.pages_swapped_out * share) * page;
+                address += size;
+            }
+        }
+        done += part;
+    }
+    return total;
+}
+
+GuestSpace::Usage GuestSpace::usage() const {
+    Usage total;
+    for (const auto& run : runs_) {
+        vm_address_t address = reinterpret_cast<vm_address_t>(run.memory);
+        const vm_address_t end = address + run.length;
+        while (address < end) {
+            vm_size_t length = 0;
+            vm_region_extended_info_data_t info{};
+            mach_msg_type_number_t count = VM_REGION_EXTENDED_INFO_COUNT;
+            mach_port_t object = MACH_PORT_NULL;
+            if (vm_region_64(mach_task_self(), &address, &length, VM_REGION_EXTENDED_INFO,
+                               reinterpret_cast<vm_region_info_t>(&info), &count, &object) != KERN_SUCCESS || address >= end)
+                break;
+            total.resident += uint64_t{info.pages_resident} * page;
+            total.dirty += uint64_t{info.pages_dirtied} * page;
+            total.swapped += uint64_t{info.pages_swapped_out} * page;
+            address += length;
+        }
+    }
+    return total;
+}
+
 uint64_t GuestSpace::contiguous(uint64_t address, uint64_t length) const {
     const uint64_t offset = offsets_[address >> chunkShift];
     uint64_t end = (address | (chunk - 1)) + 1;

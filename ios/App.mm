@@ -136,6 +136,10 @@ void AppendMemoryUsage(std::string& report) {
         report += "  peak iOS physical footprint bytes: " + std::to_string(memory.ledger_phys_footprint_peak) + "\n";
     if (count >= TASK_VM_INFO_REV4_COUNT)
         report += "  iOS process memory limit remaining bytes: " + std::to_string(memory.limit_bytes_remaining) + "\n";
+    // What the footprint is made of: anonymous memory, the compressed part of it, and file pages.
+    report += "  iOS memory bytes: internal " + std::to_string(memory.internal) + ", compressed " +
+              std::to_string(memory.compressed) + ", external " + std::to_string(memory.external) +
+              ", reusable " + std::to_string(memory.reusable) + ", resident " + std::to_string(memory.resident_size) + "\n";
 }
 } // namespace
 
@@ -452,7 +456,9 @@ static NSString* ThermalState() {
     UIApplication.sharedApplication.idleTimerDisabled = YES;
     self.status.text = apkInbox ? @"Starting Android…" : @"Running ARM64 ELF validation…";
     const auto displaySize = GuestDisplaySize(self.display.bounds.size);
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    // A thread of its own, not a dispatch queue's: the runtime ends guest time slices with a signal to
+    // this thread, and the system refuses to send one to a queue's worker thread.
+    NSThread* guestThread = [[NSThread alloc] initWithBlock:^{
         NSString* before = ThermalState();
         NSString* resources = NSBundle.mainBundle.resourcePath;
 #if defined(NESTVANE_PAGE_SIZE) && NESTVANE_PAGE_SIZE != 4096
@@ -679,7 +685,11 @@ static NSString* ThermalState() {
             self.run.enabled = YES;
             UIApplication.sharedApplication.idleTimerDisabled = NO;
         });
-    });
+    }];
+    guestThread.qualityOfService = NSQualityOfServiceUserInitiated;
+    guestThread.stackSize = 8 << 20;
+    guestThread.name = @"Android guest";
+    [guestThread start];
 }
 @end
 

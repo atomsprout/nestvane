@@ -7244,6 +7244,51 @@ std::string ProbeLinux::guestCodeFileName(std::string_view path) const {
     return relative;
 }
 
+// The host memory behind each guest process's address space, largest first.
+std::string ProbeLinux::memoryReport(const Machine& machine) const {
+    struct Row { uint64_t pid; std::string name; GuestSpace::Usage usage; size_t runs; };
+    std::vector<Row> rows;
+    GuestSpace::Usage total;
+    for (const auto& [id, process] : processes) {
+        const auto* space = process == current->process.get() ? machine.space.get() : process->space.get();
+        if (!space) continue;
+        rows.push_back({id, process->executable, space->usage(), space->runCount()});
+        total.resident += rows.back().usage.resident;
+        total.dirty += rows.back().usage.dirty;
+        total.swapped += rows.back().usage.swapped;
+    }
+    std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) {
+        return a.usage.dirty + a.usage.swapped > b.usage.dirty + b.usage.swapped;
+    });
+    std::ostringstream out;
+    constexpr uint64_t MiB = 1024 * 1024;
+    out << "  guest address spaces: " << rows.size() << ", MiB resident " << total.resident / MiB << ", dirty "
+        << total.dirty / MiB << ", compressed or swapped " << total.swapped / MiB << "\n";
+    for (size_t index = 0; index < rows.size() && index < 16; ++index)
+        out << "    pid " << rows[index].pid << " " << rows[index].name << ": resident " << rows[index].usage.resident / MiB
+            << ", dirty " << rows[index].usage.dirty / MiB << ", swapped " << rows[index].usage.swapped / MiB
+            << " MiB in " << rows[index].runs << " runs\n";
+    // NESTVANE_MEMORY_DETAIL=<part of a program's path>: the mappings of the first such process.
+    if (const char* wanted = std::getenv("NESTVANE_MEMORY_DETAIL")) {
+        for (const auto& [id, process] : processes) {
+            if (process->executable.find(wanted) == std::string::npos) continue;
+            const bool running = process == current->process.get();
+            const auto* space = running ? machine.space.get() : process->space.get();
+            if (!space) continue;
+            out << "    mappings of pid " << id << " " << process->executable << " (KiB dirty of KiB mapped):\n";
+            for (const auto& segment : running ? machine.segments : process->segments) {
+                const auto usage = space->usage(segment.address, (segment.mappedSize() + GuestSpace::page - 1) & ~(GuestSpace::page - 1));
+                if (!usage.dirty) continue;
+                out << "      0x" << std::hex << segment.address << std::dec << " " << usage.dirty / 1024 << " of " << segment.mappedSize() / 1024
+                    << " flags=" << segment.flags << (segment.anonymous ? " anonymous" : " file") << (segment.shared ? " shared" : "")
+                    << (segment.initialStack ? " stack" : "") << "\n";
+            }
+            break;
+        }
+    }
+    return out.str();
+}
+
 std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedProcess) const {
     std::string report;
     for (const auto& [path, tid] : propertyPollers) {
