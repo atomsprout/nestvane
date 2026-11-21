@@ -1,0 +1,34 @@
+启动对照日志摘录
+
+Andarium 1.0 Build 15，iPhone 17 Pro / iOS 27.0.1
+已配置的 Android 17，从 XCTest 启动 App 到识别桌面及实际点进 Settings。
+run 1 | ANDROID_DESKTOP_OBSERVED | 24.836941957473755 s
+run 1 | ANDROID_SETTINGS_RESPONDED | 27.602247953414917 s
+run 2 | ANDROID_DESKTOP_OBSERVED | 25.237952947616577 s
+run 2 | ANDROID_SETTINGS_RESPONDED | 28.94065499305725 s
+
+Nestvane，iPhone CX / iOS 26.2
+内部时钟。基线呈现了 Launcher 帧，触控未验证。候选在取得首帧前停止。
+iOS device 26.2 | process 2834 | thermal fair → serious
+[320 ms] Initializing local Android renderer
+[3135 ms] Local Android renderer initialized
+[3167 ms] Starting Android 17 init
+[94627 ms] Zygote: Preloading classes...
+[133485 ms] Zygote: end preload
+[158914 ms] SystemServerTiming: StartPackageManagerService
+[288424 ms] SystemServerTiming: StartSystemUI
+[490165 ms] SystemServerTiming: broadcastIntent-0-android.intent.action.USER_UNLOCKED took to complete: 193ms
+[493088 ms] SystemServerTiming: broadcastIntent-0-android.intent.action.BOOT_COMPLETED took to complete: 677ms
+[605777 ms] ActivityTaskManager: Displayed com.android.launcher3/.uioverrides.QuickstepLauncher for user 0: +1m52s801ms
+process 2834 | 605820 ms | presented 582 × 1058 Android pixels
+iOS device 26.2 | process 2843 | thermal serious → serious
+[324 ms] Initializing local Android renderer
+[3008 ms] Local Android renderer initialized
+[3041 ms] Starting Android 17 init
+
+Nestvane，Mac 的连续指令块开关对照
+同一 Android 17 镜像和 CX 数据副本。每轮前 15 亿条客体指令，两组保留原有宿主 AOT。
+off-1 | 28245 ms
+on-1 | 35857 ms | prepared blocks: 735582, guest instructions: 3098636
+on-2 | 34927 ms | prepared blocks: 735522, guest instructions: 3098318
+off-2 | 25947 ms
