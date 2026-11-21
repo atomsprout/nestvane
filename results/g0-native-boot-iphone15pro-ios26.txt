@@ -1,0 +1,67 @@
+Native boot in the app on iPhone 15 Pro, iOS 26.2, with the graphics frameworks
+date: 2026-11-21, tree at c752666 plus the larger root limit of this commit. App: nestvane-native with gfxstream
+and ANGLE embedded; root android17r-framework-full with lmkd, ro.config.low_ram=true,
+ro.hw_timeout_multiplier=10, the apps of APEX modules compiled ahead (21 of them), and the guest's package
+manager set to verify only; 1852 translations; the scheduler scans timers every 200 microseconds.
+Launched with xcrun devicectl device process launch --terminate-existing. Times are the app's own, from
+boot-milestones.txt and launcher-displayed.txt.
+
+run 1 (first launch after a fresh install: empty data volume, nothing cached)
+  [4 ms] Initializing local Android renderer
+  [47 ms] Local Android renderer initialized
+  [78 ms] Starting Android 17 init
+  [4050 ms] Zygote: Preloading classes...
+  [5085 ms] Zygote: end preload
+  [5834 ms] SystemServerTiming: StartPackageManagerService
+  [10402 ms] SystemServerTiming: StartSystemUI
+  [21651 ms] SystemServerTiming: broadcastIntent-0-android.intent.action.USER_UNLOCKED took to complete: 0ms
+  [25353 ms] ActivityTaskManager: Displayed com.android.launcher3/.uioverrides.QuickstepLauncher for user 0: +3s216ms
+  [30364 ms] SystemServerTiming: broadcastIntent-0-android.intent.action.BOOT_COMPLETED took to complete: 1ms
+  Android Launcher displayed after 25353 ms
+  iOS physical footprint bytes: 2146505232
+  iOS process memory limit remaining bytes: 4295945712
+
+run 2 (relaunch on the same data volume)
+  [6 ms] Initializing local Android renderer
+  [52 ms] Local Android renderer initialized
+  [92 ms] Starting Android 17 init
+  [2552 ms] Zygote: Preloading classes...
+  [3001 ms] Zygote: end preload
+  [3724 ms] SystemServerTiming: StartPackageManagerService
+  [4963 ms] SystemServerTiming: StartSystemUI
+  [9009 ms] SystemServerTiming: broadcastIntent-0-android.intent.action.USER_UNLOCKED took to complete: 0ms
+  [9032 ms] SystemServerTiming: broadcastIntent-0-android.intent.action.BOOT_COMPLETED took to complete: 7ms
+  [11168 ms] ActivityTaskManager: Displayed com.android.launcher3/.uioverrides.QuickstepLauncher for user 0: +1s571ms
+  Android Launcher displayed after 11168 ms
+  iOS physical footprint bytes: 2235160928
+  iOS process memory limit remaining bytes: 4207290016
+
+run 3 (relaunch on the same data volume)
+  [3 ms] Initializing local Android renderer
+  [31 ms] Local Android renderer initialized
+  [64 ms] Starting Android 17 init
+  [2488 ms] Zygote: Preloading classes...
+  [2927 ms] Zygote: end preload
+  [3607 ms] SystemServerTiming: StartPackageManagerService
+  [4753 ms] SystemServerTiming: StartSystemUI
+  [8713 ms] SystemServerTiming: broadcastIntent-0-android.intent.action.USER_UNLOCKED took to complete: 0ms
+  [8738 ms] SystemServerTiming: broadcastIntent-0-android.intent.action.BOOT_COMPLETED took to complete: 8ms
+  [10789 ms] ActivityTaskManager: Displayed com.android.launcher3/.uioverrides.QuickstepLauncher for user 0: +1s675ms
+  Android Launcher displayed after 10789 ms
+  iOS physical footprint bytes: 2235307352
+  iOS process memory limit remaining bytes: 4207143592
+
+Guest CPU per process at 16 s of run 3, ms, the eight largest:
+  5213  /system/bin/app_process64 (rs.media.module)
+  2209  /system/bin/app_process64 (system_server)
+  1313  /system/bin/app_process64 (ndroid.systemui)
+   846  /system/bin/app_process64 (main)
+   516  /system/bin/app_process64 (droid.launcher3)
+   468  /system/bin/surfaceflinger (surfaceflinger)
+   297  () 
+   151  /system/bin/audioserver (audioserver)
+  native execution time: 5169 ms in guest code, 1 ms mapping 1056 MiB of code tables
+  host thread time: 3733 ms in system calls, 3423 ms in the scheduler, of which 1323 ms asleep in 6321 waits; 630264 thread switches; costliest calls: 226:665ms/35191 222:604ms/43156 215:297ms/16920 44:293ms/3147 227:258
+
+The launcher is displayed after 25.4 s on the first boot and after 11.2 s and 10.8 s on the two after it.
+Touch was not tried. The old interpreter route took 605.8 s on this phone (PLAN.md).
