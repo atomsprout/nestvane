@@ -152,8 +152,13 @@ def main():
                     "ro.debuggable=0", "dalvik.vm.jdwp-provider=none",  # no debugger connection: its plugin needs adbd
                     # What the vendor image supplies on a device.
                     "ro.product.cpu.abilist=arm64-v8a", "ro.product.cpu.abilist64=arm64-v8a", "ro.product.cpu.abilist32="], check=True)
-    for directory in ("data/dalvik-cache", "data/misc", "data/system", "dev/socket", "storage", "mnt"):
+    for directory in ("data/dalvik-cache", "data/misc/profiles", "data/system", "data/media/0", "dev/socket", "storage/emulated/0",
+                      "mnt/user/0", "mnt/runtime/default", "mnt/runtime/read", "mnt/runtime/write", "mnt/runtime/full",
+                      "mnt/pass_through/0", "mnt/installer/0", "mnt/androidwritable/0"):
         os.makedirs(os.path.join(root, directory), exist_ok=True)
+    for link, target in (("etc", "system/etc"), ("bin", "system/bin")):  # as in Android's root directory
+        if not os.path.lexists(os.path.join(root, link)):
+            os.symlink(target, os.path.join(root, link))
     os.chmod(os.path.join(root, "dev/__properties__"), 0o644)
 
     # Test programs of our own, built like the platform: dynamic, against Bionic, registers reserved.
