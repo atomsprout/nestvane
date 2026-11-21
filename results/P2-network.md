@@ -718,3 +718,5 @@
 - Mac 使用相同镜像与数据副本交替执行各 25 亿条客体指令。省去等候诊断路径扫描前，耗时 48.258、46.670 秒。加入改动后为 46.569、49.814 秒。区间重叠，本轮未测出稳定收益。
 - iPhone 17 Pro 在进程 78380 中从 Launcher 点按 ScriptWidget 图标。约 46 秒后 Nestvane 宿主进程结束，测试尚未看到 My Widgets，未取得匹配的 iOS 终止报告。停止后项目客体数据通过 SQLite quick_check，提交代数 1902，仍有 4 个已安装 APK 和 Smoke 相机照片。
 - 客体 Unix 套接字发送成功后仅重新检查关注收端的 epoll 等待。普通读、ppoll 等既有等待路径保留原行为。宿主 ABI 验证覆盖了无关套接字发送不唤醒 epoll、关注的套接字到包后唤醒及读回。iPhoneOS Release 与开发签名通过，iPhone 17 Pro 原数据卷覆盖安装后以进程 78475 开始下一轮冷启动。此轮冷启动、Smoke 计数读回、OpenCalc 和 Editor 的结果仍待验证。
+- 匹配 Android 17 参考设备已从完整主映像和 Mainline 引导扩展重新生成 SystemUI 和 Launcher3QuickStep 的 speed ODEX/VDEX。主映像三件套保持字节一致，两个 ODEX 分别为 74,453,416 与 39,336,192 字节，候选镜像共 1,435,100,169 字节。此产物与用户空间宿主指令翻译独立，性能和实际加载待实测。
+- iPhone 测试设备切换到 iPhone CX（iOS 26.2）。CX 已配对并安装当前签名包，进程 2678 开始全新数据卷的 Android 17 启动。切换前 iPhone 17 Pro 的最后一个 Launcher 绘制记录为 497.027 秒，热状态 fair → serious。

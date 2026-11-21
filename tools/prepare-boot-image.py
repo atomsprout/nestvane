@@ -91,19 +91,22 @@ def check_reference_files(remote, root, files):
             raise SystemExit(f"Boot input differs from SDK reference: {path}")
 
 
+# Class loader contexts from the corresponding factory artifacts.
+LOCATION_PROVIDER = "/system/framework/com.android.location.provider.jar"
+WINDOW_EXTENSIONS = "/system_ext/framework/androidx.window.extensions.jar"
+WINDOW_SIDECAR = "/system_ext/framework/androidx.window.sidecar.jar"
+WINDOW_CONTEXT = f"PCL[]{{PCL[{WINDOW_EXTENSIONS}]#PCL[{WINDOW_SIDECAR}]}}"
+FRAMEWORK_LAUNCH_APPS = (
+    "/system_ext/priv-app/SystemUI/SystemUI.apk",
+    "/system_ext/priv-app/Launcher3QuickStep/Launcher3QuickStep.apk",
+)
+
+
 def precompile_framework_code(adb, remote, guest, stage, bootclasspath):
-    # These are the class loader contexts of the matching SDK's prebuilt files.
-    location_provider = "/system/framework/com.android.location.provider.jar"
-    extensions = "/system_ext/framework/androidx.window.extensions.jar"
-    sidecar = "/system_ext/framework/androidx.window.sidecar.jar"
-    window_context = f"PCL[]{{PCL[{extensions}]#PCL[{sidecar}]}}"
-    targets = (
-        ("/system/framework/services.jar", f"PCL[{location_provider}]"),
-        ("/system_ext/priv-app/SystemUI/SystemUI.apk", window_context),
-        ("/system_ext/priv-app/Launcher3QuickStep/Launcher3QuickStep.apk", window_context),
-    )
+    targets = (("/system/framework/services.jar", f"PCL[{LOCATION_PROVIDER}]"),) + tuple(
+        (source, WINDOW_CONTEXT) for source in FRAMEWORK_LAUNCH_APPS)
     check_reference_files(remote, guest, {source for source, _ in targets} |
-                          {location_provider, extensions, sidecar})
+                          {LOCATION_PROVIDER, WINDOW_EXTENSIONS, WINDOW_SIDECAR})
     # ART resolves the boot image location through the arm64 subdirectory.
     remote("mkdir", stage + "/arm64")
     for suffix in ("art", "oat", "vdex"):
@@ -131,7 +134,7 @@ def precompile_framework_code(adb, remote, guest, stage, bootclasspath):
                 raise SystemExit(f"Reference produced an empty {artifact.name}")
 
 
-def complete_boot_image(adb, remote, root, output, classpaths, active_modules):
+def complete_boot_image(adb, remote, root, output, classpaths, active_modules, precompile_apps):
     primary = classpaths["DEX2OATBOOTCLASSPATH"]
     full = classpaths["BOOTCLASSPATH"]
     server = classpaths["SYSTEMSERVERCLASSPATH"]
@@ -142,6 +145,8 @@ def complete_boot_image(adb, remote, root, output, classpaths, active_modules):
         raise SystemExit("Duplicate system-server classpath entries")
 
     reference_files = set()
+    if precompile_apps:
+        reference_files.update((*FRAMEWORK_LAUNCH_APPS, WINDOW_EXTENSIONS, WINDOW_SIDECAR))
     for jar in full + server + standalone:
         if jar.startswith("/apex/"):
             module = jar.split("/")[2]
@@ -201,6 +206,16 @@ def complete_boot_image(adb, remote, root, output, classpaths, active_modules):
                 pull(file, destination)
                 remote("mv", file, extension + "." + suffix)
 
+            boot_image = f"--boot-image={stage}/boot.art:{stage}/{extension_name}.art"
+
+            def compile_artifact(source, context, location, stem):
+                compile_code(["--compiler-filter=speed", boot_image,
+                              "--class-loader-context=" + context, "--oat-file=" + stem + ".odex",
+                              "--oat-location=" + str(location) + ".odex",
+                              "--output-vdex=" + stem + ".vdex"], [source])
+                for suffix in ("odex", "vdex"):
+                    pull(f"{stem}.{suffix}", guest / (str(location)[1:] + "." + suffix))
+
             for index, jar in enumerate(server + standalone):
                 source = Path(jar)
                 if jar.startswith("/apex/"):
@@ -212,14 +227,12 @@ def complete_boot_image(adb, remote, root, output, classpaths, active_modules):
                 context = f"PCL[{parents}]"
                 if index >= len(server):
                     context = "PCL[];" + context
-                stem = f"{stage}/{index:02d}"
-                compile_code(["--compiler-filter=speed",
-                              f"--boot-image={stage}/boot.art:{stage}/{extension_name}.art",
-                              "--class-loader-context=" + context, "--oat-file=" + stem + ".odex",
-                              "--oat-location=" + str(location) + ".odex",
-                              "--output-vdex=" + stem + ".vdex"], [jar])
-                for suffix in ("odex", "vdex"):
-                    pull(f"{stem}.{suffix}", guest / (str(location)[1:] + "." + suffix))
+                compile_artifact(jar, context, location, f"{stage}/{index:02d}")
+            if precompile_apps:
+                for apk in FRAMEWORK_LAUNCH_APPS:
+                    source = Path(apk)
+                    location = source.parent / "oat/arm64" / source.stem
+                    compile_artifact(apk, WINDOW_CONTEXT, location, f"{stage}/{source.stem}")
             guest.rename(output)
     finally:
         remote("rm", "-rf", stage)
@@ -341,8 +354,8 @@ def main():
         parser.error("--defer-zygote-preload requires --framework-diagnostic")
     if args.framework_apps and not args.framework_diagnostic:
         parser.error("--framework-apps requires --framework-diagnostic")
-    if args.precompile_framework_code and not args.framework_apps:
-        parser.error("--precompile-framework-code requires --framework-apps")
+    if args.precompile_framework_code and not (args.framework_apps or args.complete_existing_image):
+        parser.error("--precompile-framework-code requires --framework-apps or --complete-existing-image")
     if args.smoke_apk is not None:
         if not args.framework_apps:
             parser.error("--smoke-apk requires --framework-apps")
@@ -414,7 +427,8 @@ def main():
                    ".." in Path(path).parts for path in paths):
                 raise SystemExit(f"Unexpected JAR path in {name}")
             classpaths[name] = paths
-        complete_boot_image(adb, remote, args.root, args.output, classpaths, active_modules)
+        complete_boot_image(adb, remote, args.root, args.output, classpaths, active_modules,
+                            args.precompile_framework_code)
         return
 
     reference_files = set()
