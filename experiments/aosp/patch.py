@@ -169,12 +169,12 @@ edit("external/boringssl/Android.bp", [(
 ''')], "Nestvane: the assembly uses registers")
 
 # Follow-ups to the ART register lists above: both have static assertions about their length.
+# The JNI compiler takes up to four scratch registers from the list. They were X22-X29; they are now
+# X22, X23, X24 and X29.
 edit("art/compiler/jni/quick/arm64/calling_convention_arm64.cc", [(
     "  // Use X22-X29 from native callee saves.\n  constexpr size_t kStart = 3u;\n  constexpr size_t kLength = 8u;\n",
-    "  // Nestvane: use X22-X24. X25-X28 are not in the list any more.\n  constexpr size_t kStart = 3u;\n  constexpr size_t kLength = 3u;\n"),
-    ("                    Arm64ManagedRegister::FromXRegister(X29)));\n  static_assert((kAapcs64CoreCalleeSpillMask & ~kCoreCalleeSpillMask) == 0u);\n",
-     "                    Arm64ManagedRegister::FromXRegister(X24)));\n  static_assert((kAapcs64CoreCalleeSpillMask & ~kCoreCalleeSpillMask) == 0u);\n"),
-], "Nestvane: use X22-X24")
+    "  // Nestvane: use X22-X24 and X29. X25-X28 are not in the list any more.\n  constexpr size_t kStart = 3u;\n  constexpr size_t kLength = 4u;\n"),
+], "Nestvane: use X22-X24 and X29")
 edit("art/compiler/optimizing/fast_compiler_arm64.cc", [
     ("  vixl::aarch64::x11,\n  vixl::aarch64::x12,\n  vixl::aarch64::x13,\n  vixl::aarch64::x14,\n  vixl::aarch64::x15,\n};",
      "  vixl::aarch64::x11,\n  // Nestvane: four registers per class, to match the callee-saved list.\n};"),

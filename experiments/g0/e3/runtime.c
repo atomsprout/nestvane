@@ -22,6 +22,7 @@
 #include <sys/mman.h>
 #include <sys/param.h>
 #include <sys/resource.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/uio.h>
@@ -61,6 +62,7 @@ _Static_assert(__builtin_offsetof(struct Context, pc) == 792, "entry.S");
 _Static_assert(__builtin_offsetof(struct Context, host_sp) == 816, "entry.S");
 _Static_assert(__builtin_offsetof(struct Context, memory_table) == 824, "entry.S, rewrite.py");
 #define CHUNK_SHIFT 24
+#define SIGBIT(number) (1ull << ((number) - 1))  // Linux signal masks: signal n is bit n - 1
 
 // One translated ELF. `info` is the block rewrite.py emits: text start, text end, entry, table.
 struct Module {
@@ -84,12 +86,14 @@ struct Process {
     const struct Module* executable;
     uint64_t brk_start, brk, map_low, map_high;
     uint64_t map_hint;  // where the next search for free pages starts
-    uint8_t used[SEGMENT / PAGE / 8];  // one bit per page handed out by mmap
+    uint8_t used[SEGMENT / PAGE / 8];  // one bit per guest page that is mapped
     int fds[MAX_FDS];
     uint8_t cloexec[MAX_FDS];
     DIR* directories[MAX_FDS];
     struct { uint64_t handler, flags, mask; } actions[65];  // signal dispositions as the guest set them
     uint64_t pending;  // signals sent to the process and not yet taken by a thread
+    uint8_t queued[65][128];  // siginfo for signals sent with rt_tgsigqueueinfo
+    uint64_t has_queued;
     uint64_t chunks[SEGMENT >> CHUNK_SHIFT];  // every chunk is in the one segment here, so all hold the base
     struct Thread* threads[MAX_THREADS];
     int live_threads, exiting;
@@ -102,6 +106,7 @@ struct Thread {
     struct Process* process;
     pthread_t host;
     uint64_t blocked;
+    uint64_t pending;  // signals sent to this thread in particular
     uint64_t clear_tid;  // CLONE_CHILD_CLEARTID: zeroed and woken when the thread exits
     uint64_t alternate_stack, alternate_size;  // sigaltstack, as guest addresses
     struct { int code; uint64_t address; } fault;  // the host fault being turned into a guest SIGSEGV
@@ -284,8 +289,16 @@ static uint64_t allocate(struct Process* process, uint64_t length) {
 }
 
 static void release(struct Process* process, uint64_t address, uint64_t length) {
+    if (address & (PAGE - 1) || address + length > SEGMENT) return;
     map_none(process, address, length);
-    if (address >= process->map_low && address + length <= process->map_high) mark(process, address, length, 0);
+    mark(process, address, length, 0);
+}
+
+static int range_free(const struct Process* process, uint64_t address, uint64_t length) {
+    if (address < PAGE || address & (PAGE - 1) || address + length > SEGMENT) return 0;
+    for (uint64_t page = address / PAGE; page < (address + length) / PAGE; ++page)
+        if (page_used(process, page)) return 0;
+    return 1;
 }
 
 // Grows in place when the pages above are free, otherwise moves the mapping without copying it.
@@ -314,10 +327,14 @@ static long guest_mremap(struct Process* process, uint64_t address, uint64_t old
 static long guest_mmap(struct Process* process, uint64_t address, uint64_t length, int protection, int flags, long fd, uint64_t offset) {
     length = page_up(length);
     if (!length) return -22;
-    const int fixed = flags & (0x10 | 0x100000), anonymous = flags & 0x20, shared = flags & 1;  // MAP_FIXED, MAP_FIXED_NOREPLACE
-    if (fixed) {
+    const int fixed = flags & 0x10, no_replace = flags & 0x100000, anonymous = flags & 0x20, shared = flags & 1;
+    if (fixed || no_replace) {
         if (address & (PAGE - 1) || address + length > SEGMENT) return -22;
-        if (address >= process->map_low && address + length <= process->map_high) mark(process, address, length, 1);
+        if (no_replace && !fixed && !range_free(process, address, length)) return -17;  // MAP_FIXED_NOREPLACE
+        mark(process, address, length, 1);
+    } else if (address && range_free(process, address, length)) {
+        // A hint is honoured when the range is free: ART finds memory below 4 GiB this way.
+        mark(process, address, length, 1);
     } else if (!(address = allocate(process, length))) {
         return -12;
     }
@@ -341,6 +358,7 @@ static void map_module(struct Process* process, const struct Module* module) {
             if (pass == 0) {
                 const uint64_t low = address & ~(PAGE - 1), high = page_up(address + *(uint64_t*)(header + 40));
                 mmap(process->base + low, high - low, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
+                mark(process, low, high - low, 1);
             } else {
                 memcpy(process->base + address, image + *(uint64_t*)(header + 8), *(uint64_t*)(header + 32));
             }
@@ -367,6 +385,7 @@ static int load_image(struct Thread* thread, const struct Module* executable, ch
         }
     }
     mmap(base, SEGMENT, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
+    memset(process->used, 0, sizeof process->used);
     map_module(process, executable);
     if (interpreter) map_module(process, interpreter);
     process->executable = executable;
@@ -379,8 +398,8 @@ static int load_image(struct Thread* thread, const struct Module* executable, ch
     if (prelinked + PAGE > process->map_low) process->map_low = prelinked + PAGE;
     const uint64_t stack_top = SEGMENT - PAGE;
     process->map_high = process->map_hint = stack_top - STACK_SIZE - PAGE;
-    memset(process->used, 0, sizeof process->used);
     mmap(base + stack_top - STACK_SIZE, STACK_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
+    mark(process, stack_top - STACK_SIZE, STACK_SIZE, 1);
 
     int argc = 0, envc = 0;
     while (argv[argc]) ++argc;
@@ -500,7 +519,7 @@ static void terminate(struct Thread* thread, int status) {
     munmap(process->base, SEGMENT);
     pthread_mutex_lock(&lock);
     struct Process* parent = processes[process->parent % MAX_PROCESSES];
-    if (parent && parent->pid == process->parent) parent->pending |= 1ull << 17;  // SIGCHLD
+    if (parent && parent->pid == process->parent) parent->pending |= SIGBIT(17);  // SIGCHLD
     process->exited = 1;
     process->status = status;
     process->vfork_done = 1;
@@ -665,6 +684,48 @@ static const char* guest_path(const char* path) {
     return path;
 }
 
+// /proc files the guest reads about itself, generated into an unlinked temporary file.
+// Returns a host descriptor, or -1 when the path is not one of them.
+static int open_proc_file(struct Process* p, const char* path) {
+    if (strncmp(path, "/proc/self/", 11) != 0) return -1;
+    const char* name = path + 11;
+    const int is_maps = !strcmp(name, "maps"), is_stat = !strcmp(name, "stat");
+    if (!is_maps && !is_stat) return -1;
+    char file[] = "/tmp/nestvane-proc-XXXXXX";
+    const int descriptor = mkstemp(file);
+    if (descriptor < 0) return -1;
+    unlink(file);
+    FILE* out = fdopen(dup(descriptor), "w");
+    const uint64_t stack_top = SEGMENT - PAGE;
+    if (is_stat) {
+        // Field 28 is the start of the stack. Bionic looks it up in maps to size the main thread's stack.
+        fprintf(out, "%d (guest) R %d %d %d 0 -1 0 0 0 0 0 0 0 0 0 20 0 %d 0 0 0 0 -1 0 0 %llu", p->pid, p->parent, p->pid, p->pid,
+                p->live_threads, stack_top - 256);
+        for (int field = 29; field <= 52; ++field) fprintf(out, " 0");
+        fprintf(out, "\n");
+    } else {
+        for (uint64_t page = 1; page < SEGMENT / PAGE;) {
+            if (!page_used(p, page)) { ++page; continue; }
+            vm_address_t address = (vm_address_t)(p->base + page * PAGE);
+            vm_size_t size = 0;
+            vm_region_basic_info_data_64_t info;
+            mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+            mach_port_t object = MACH_PORT_NULL;
+            if (vm_region_64(mach_task_self(), &address, &size, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &count, &object) != KERN_SUCCESS) break;
+            uint64_t start = page * PAGE, end = (uint64_t)address - (uint64_t)p->base + size;
+            if (end > SEGMENT) end = SEGMENT;
+            uint64_t stop = start;
+            while (stop < end && page_used(p, stop / PAGE)) stop += PAGE;
+            fprintf(out, "%llx-%llx %c%c-p 00000000 00:00 0%s\n", start, stop, info.protection & VM_PROT_READ ? 'r' : '-',
+                    info.protection & VM_PROT_WRITE ? 'w' : '-', stop == stack_top ? "                          [stack]" : "");
+            page = stop / PAGE;
+        }
+    }
+    fclose(out);
+    lseek(descriptor, 0, SEEK_SET);
+    return descriptor;
+}
+
 static int host_directory(struct Process* process, long fd) { return (int)fd == -100 ? AT_FDCWD : host_fd(process, fd); }
 
 static int open_flags(long flags) {
@@ -794,9 +855,14 @@ static void enter_handler(struct Thread* t, struct Context* context, int number,
     sp = (sp - FRAME_SIZE) & ~15ull;
     uint8_t* frame = p->base + sp;
     memset(frame, 0, FRAME_VECTORS + 544);
-    *(int*)frame = number;
-    *(int*)(frame + 8) = code;
-    *(uint64_t*)(frame + 16) = address;
+    if (p->has_queued & SIGBIT(number)) {  // the sender supplied the siginfo
+        memcpy(frame, p->queued[number], 128);
+        p->has_queued &= ~SIGBIT(number);
+    } else {
+        *(int*)frame = number;
+        *(int*)(frame + 8) = code;
+        *(uint64_t*)(frame + 16) = address;
+    }
     *(uint64_t*)(frame + FRAME_STACK) = t->alternate_stack;
     *(int*)(frame + FRAME_STACK + 8) = t->alternate_size ? on_alternate : 2;  // SS_ONSTACK or SS_DISABLE
     *(uint64_t*)(frame + FRAME_STACK + 16) = t->alternate_size;
@@ -812,7 +878,7 @@ static void enter_handler(struct Thread* t, struct Context* context, int number,
     vectors[1] = 528;
     memcpy(vectors + 4, context->q, sizeof context->q);
 
-    t->blocked |= p->actions[number].mask | (p->actions[number].flags & 0x40000000 ? 0 : 1ull << number);  // SA_NODEFER
+    t->blocked |= p->actions[number].mask | (p->actions[number].flags & 0x40000000 ? 0 : SIGBIT(number));  // SA_NODEFER
     context->x[0] = (uint64_t)number;
     context->x[1] = sp;
     context->x[2] = sp + FRAME_UCONTEXT;
@@ -826,7 +892,7 @@ static void leave_handler(struct Thread* t, struct Context* context) {
     const uint8_t* frame = (const uint8_t*)context->sp;
     const uint64_t* machine = (const uint64_t*)(frame + FRAME_MACHINE);
     if (machine[33] < code_low || machine[33] >= code_high) terminate(t, 11);
-    t->blocked = *(const uint64_t*)(frame + FRAME_MASK) & ~(1ull << 9 | 1ull << 19);
+    t->blocked = *(const uint64_t*)(frame + FRAME_MASK) & ~(SIGBIT(9) | SIGBIT(19));
     memcpy(context->x, machine + 1, sizeof context->x);
     context->sp = (uint64_t)t->process->base + machine[32];
     context->pc = host_code(machine[33]);
@@ -841,9 +907,10 @@ static void deliver_signals(struct Thread* t, struct Context* context, uint64_t 
     struct Process* p = t->process;
     for (;;) {
         pthread_mutex_lock(&lock);
-        const uint64_t ready = p->pending & ~t->blocked;
-        const int number = ready ? __builtin_ctzll(ready) : 0;
-        if (number) p->pending &= ~(1ull << number);
+        const uint64_t ready = (p->pending | t->pending) & ~t->blocked;
+        const int number = ready ? __builtin_ctzll(ready) + 1 : 0;
+        if (number && t->pending & SIGBIT(number)) t->pending &= ~SIGBIT(number);
+        else if (number) p->pending &= ~SIGBIT(number);
         pthread_mutex_unlock(&lock);
         if (!number) return;
         const uint64_t handler = p->actions[number].handler;
@@ -863,7 +930,7 @@ static void continue_fault(struct Context* context) __attribute__((noreturn));
 static void continue_fault(struct Context* context) {
     struct Thread* t = context->thread;
     struct Process* p = t->process;
-    if (p->actions[11].handler <= 1 || t->blocked & (1ull << 11)) {
+    if (p->actions[11].handler <= 1 || t->blocked & SIGBIT(11)) {
         fprintf(stderr, "[runtime] pid %d: segmentation fault at guest address 0x%llx, pc 0x%llx\n", p->pid, t->fault.address,
                 guest_code(context->pc));
         terminate(t, 11);
@@ -900,6 +967,37 @@ static void on_host_fault(int number, siginfo_t* info, void* raw) {
     state->__pc = (uint64_t)&continue_fault;
 }
 
+// ---------------------------------------------------------------- logd
+
+// Android logs through a datagram socket to logd. The guest gets one end of a socket pair and this
+// thread prints what arrives, so that the guest's own diagnostics are visible.
+static void* print_log(void* raw) {
+    const int descriptor = (int)(intptr_t)raw;
+    static const char priorities[] = "??VDIWEF";
+    uint8_t packet[4096];
+    for (;;) {
+        const ssize_t length = recv(descriptor, packet, sizeof packet - 1, 0);
+        if (length <= 0) break;
+        packet[length] = 0;
+        if (length < 13) continue;  // header: log id, tid, time; then priority, tag, message
+        const char* tag = (const char*)packet + 12;
+        const char* message = tag + strlen(tag) + 1;
+        if (message >= (const char*)packet + length) message = "";
+        fprintf(stderr, "[logcat] %c %s: %s%s", priorities[packet[11] & 7], tag, message, message[0] && message[strlen(message) - 1] == '\n' ? "" : "\n");
+    }
+    close(descriptor);
+    return NULL;
+}
+
+static int open_log_socket(void) {
+    int pair[2];
+    if (socketpair(AF_UNIX, SOCK_DGRAM, 0, pair) != 0) return -1;
+    pthread_t thread;
+    pthread_create(&thread, NULL, print_log, (void*)(intptr_t)pair[1]);
+    pthread_detach(thread);
+    return pair[0];
+}
+
 // ---------------------------------------------------------------- futex
 
 // Waiters are keyed by host address, so a futex in memory shared between processes is not matched.
@@ -918,9 +1016,36 @@ static void futex_wake(uint8_t* address, int count) {
     pthread_mutex_unlock(&futex_lock);
 }
 
-static long guest_futex(struct Process* p, uint64_t address, int operation, uint32_t value, uint64_t timeout_address) {
+static long guest_futex(struct Process* p, uint64_t address, int operation, uint32_t value, uint64_t timeout_address,
+                        uint64_t second_address, uint32_t expected) {
     uint8_t* word = host(p, address);
     const int command = operation & 0x7f;
+    if (command == 3 || command == 4) {  // FUTEX_REQUEUE, FUTEX_CMP_REQUEUE: wake some, move the rest to another word
+        uint8_t* target = host(p, second_address);
+        uint64_t moves = timeout_address;  // the fourth argument is a count here
+        long total = 0;
+        pthread_mutex_lock(&futex_lock);
+        if (command == 4 && *(uint32_t*)word != expected) {
+            pthread_mutex_unlock(&futex_lock);
+            return -11;
+        }
+        for (struct Waiter* waiter = waiters; waiter; waiter = waiter->next) {
+            if (waiter->address != word || waiter->woken) continue;
+            if (value) {
+                waiter->woken = 1;
+                pthread_cond_signal(&waiter->wake);
+                --value;
+            } else if (moves) {
+                waiter->address = target;
+                --moves;
+            } else {
+                break;
+            }
+            ++total;
+        }
+        pthread_mutex_unlock(&futex_lock);
+        return total;
+    }
     if (command == 1 || command == 10) {  // FUTEX_WAKE, FUTEX_WAKE_BITSET
         int woken = 0;
         pthread_mutex_lock(&futex_lock);
@@ -1032,7 +1157,12 @@ void guest_syscall(struct Context* context) {
     case 49: r = RESULT(chdir(HP(a[0]))); break;
     case 52: r = RESULT(fchmod(host_fd(p, (long)a[0]), (mode_t)a[1])); break;
     case 53: r = RESULT(fchmodat(host_directory(p, (long)a[0]), HP(a[1]), (mode_t)a[2], 0)); break;
-    case 56: r = install_fd(p, openat(host_directory(p, (long)a[0]), HP(a[1]), open_flags((long)a[2]), (mode_t)a[3]), 0, (a[2] & 02000000) != 0); break;
+    case 56: {
+        int descriptor = open_proc_file(p, host(p, a[1]));
+        if (descriptor < 0) descriptor = openat(host_directory(p, (long)a[0]), HP(a[1]), open_flags((long)a[2]), (mode_t)a[3]);
+        r = install_fd(p, descriptor, 0, (a[2] & 02000000) != 0);
+        break;
+    }
     case 57:
         if (host_fd(p, (long)a[0]) < 0) { r = -9; break; }
         close_fd(p, (int)a[0]);
@@ -1085,7 +1215,7 @@ void guest_syscall(struct Context* context) {
         terminate(t, (int)(a[0] & 0xff) << 8);
     case 94: terminate(t, (int)(a[0] & 0xff) << 8);
     case 96: t->clear_tid = a[0]; r = t->tid; break;
-    case 98: r = guest_futex(p, a[0], (int)a[1], (uint32_t)a[2], a[3]); break;
+    case 98: r = guest_futex(p, a[0], (int)a[1], (uint32_t)a[2], a[3], a[4], (uint32_t)a[5]); break;
     case 99: r = 0; break;  // set_robust_list
     case 132: {  // sigaltstack: sp, flags, size
         uint64_t* old = host(p, a[1]);
@@ -1100,6 +1230,20 @@ void guest_syscall(struct Context* context) {
         break;
     }
     case 118: case 119: case 120: case 121: case 122: r = 0; break;  // scheduler parameters: SCHED_OTHER
+    case 140: r = 0; break;   // setpriority
+    case 141: r = 20; break;  // getpriority: nice 0, in the kernel's 20 - nice form
+    case 270: {  // process_vm_readv on the caller itself: ART copies memory this way when it may be unmapped
+        const uint64_t* local = host(p, a[1]);
+        const uint64_t* remote = host(p, a[3]);
+        if ((long)a[0] != p->pid || a[2] != 1 || a[4] != 1) { r = -38; break; }
+        const uint64_t from = remote[0] & 0x00ffffffffffffffull, length = remote[1] < local[1] ? remote[1] : local[1];
+        int mapped = from >= PAGE && from + length <= SEGMENT;
+        for (uint64_t page = from / PAGE; mapped && page <= (from + length - 1) / PAGE; ++page) mapped = page_used(p, page);
+        if (!mapped) { r = -14; break; }
+        memcpy(host(p, local[0]), p->base + from, length);
+        r = (long)length;
+        break;
+    }
     case 43: case 44: {  // statfs, fstatfs: report an ext4 volume
         uint64_t* out = host(p, a[1]);
         memset(out, 0, 120);
@@ -1111,7 +1255,22 @@ void guest_syscall(struct Context* context) {
         r = 0;
         break;
     }
-    case 198: r = -13; break;  // socket: the guest has no logd or property service to reach
+    case 198:  // socket: only the datagram socket that Android logging uses
+        if (a[0] == 1 && (a[1] & 0xf) == 2) r = install_fd(p, open_log_socket(), 0, (a[1] & 02000000) != 0);
+        else r = -13;
+        break;
+    case 203: r = host_fd(p, (long)a[0]) < 0 ? -9 : 0; break;  // connect on the log socket
+    case 240: {  // rt_tgsigqueueinfo: a signal with caller-supplied siginfo, as the unwinder sends to threads
+        if (a[2] < 1 || a[2] > 64 || (long)a[0] != p->pid) { r = -22; break; }
+        pthread_mutex_lock(&lock);
+        memcpy(p->queued[a[2]], host(p, a[3]), 128);
+        p->has_queued |= SIGBIT(a[2]);
+        p->pending |= SIGBIT(a[2]);
+        pthread_cond_broadcast(&changed);
+        pthread_mutex_unlock(&lock);
+        r = 0;
+        break;
+    }
     case 101: r = RESULT(nanosleep(host(p, a[0]), host(p, a[1]))); break;
     case 113: r = RESULT(clock_gettime(a[0] == 0 ? CLOCK_REALTIME : a[0] == 2 ? CLOCK_PROCESS_CPUTIME_ID : CLOCK_MONOTONIC, host(p, a[1]))); break;
     case 123: memset(host(p, a[2]), 0, a[1]); *(uint8_t*)host(p, a[2]) = 1; r = 8; break;
@@ -1122,7 +1281,16 @@ void guest_syscall(struct Context* context) {
         pthread_mutex_lock(&lock);
         struct Process* target = number == 129 && a[0] != 0 && (long)a[0] != p->pid ? processes[a[0] % MAX_PROCESSES] : p;
         if (target && number == 129 && a[0] != 0 && target->pid != (long)a[0]) target = NULL;
-        if (target && signal) target->pending |= 1ull << signal;
+        // tkill and tgkill name one thread of the caller's process.
+        struct Thread* thread = NULL;
+        const long tid = number == 130 ? (long)(int)a[0] : number == 131 ? (long)(int)a[1] : 0;
+        for (int index = 0; tid && index < MAX_THREADS; ++index)
+            if (p->threads[index] && p->threads[index]->tid == tid && !p->threads[index]->dead) thread = p->threads[index];
+        if (tid && !thread) target = NULL;
+        if (target && signal) {
+            if (thread) thread->pending |= SIGBIT(signal);
+            else target->pending |= SIGBIT(signal);
+        }
         pthread_cond_broadcast(&changed);
         pthread_mutex_unlock(&lock);
         r = target ? 0 : -3;
@@ -1132,7 +1300,7 @@ void guest_syscall(struct Context* context) {
         const uint64_t saved = t->blocked;
         pthread_mutex_lock(&lock);
         t->blocked = *(uint64_t*)host(p, a[0]);
-        while (!(p->pending & ~t->blocked)) pthread_cond_wait(&changed, &lock);
+        while (!((p->pending | t->pending) & ~t->blocked)) pthread_cond_wait(&changed, &lock);
         pthread_mutex_unlock(&lock);
         context->x[0] = (uint64_t)-4;
         const uint64_t temporary = t->blocked;
@@ -1159,9 +1327,36 @@ void guest_syscall(struct Context* context) {
         uint64_t* old = host(p, a[2]);
         const uint64_t previous = t->blocked;
         if (set) t->blocked = a[0] == 0 ? previous | *set : a[0] == 1 ? previous & ~*set : *set;
-        t->blocked &= ~(1ull << 9 | 1ull << 19);  // SIGKILL and SIGSTOP cannot be blocked
+        t->blocked &= ~(SIGBIT(9) | SIGBIT(19));  // SIGKILL and SIGSTOP cannot be blocked
         if (old) *old = previous;
         r = 0;
+        break;
+    }
+    case 137: {  // rt_sigtimedwait: take one of the signals in the set, as ART's signal catcher thread does
+        const uint64_t set = *(uint64_t*)host(p, a[0]);
+        const int64_t* timeout = host(p, a[2]);
+        pthread_mutex_lock(&lock);
+        r = -11;
+        for (;;) {
+            const uint64_t ready = (p->pending | t->pending) & set;
+            if (ready) {
+                r = __builtin_ctzll(ready) + 1;
+                if (t->pending & SIGBIT(r)) t->pending &= ~SIGBIT(r);
+                else p->pending &= ~SIGBIT(r);
+                if (a[1]) {
+                    memset(host(p, a[1]), 0, 128);
+                    *(int*)host(p, a[1]) = (int)r;
+                }
+                break;
+            }
+            if (timeout) {
+                struct timespec wait = {timeout[0], timeout[1]};
+                if (pthread_cond_timedwait_relative_np(&changed, &lock, &wait) != 0) break;
+            } else {
+                pthread_cond_wait(&changed, &lock);
+            }
+        }
+        pthread_mutex_unlock(&lock);
         break;
     }
     case 139:  // rt_sigreturn
@@ -1204,8 +1399,12 @@ void guest_syscall(struct Context* context) {
         pthread_mutex_lock(&p->memory_lock);
         if (a[0] >= p->brk_start && a[0] <= p->brk_start + BRK_LIMIT) {
             const uint64_t old = page_up(p->brk), wanted = page_up(a[0]);
-            if (wanted > old) mmap(p->base + old, wanted - old, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
-            else if (wanted < old) map_none(p, wanted, old - wanted);
+            if (wanted > old) {
+                mmap(p->base + old, wanted - old, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
+                mark(p, old, wanted - old, 1);
+            } else if (wanted < old) {
+                release(p, wanted, old - wanted);
+            }
             p->brk = a[0];
         }
         r = (long)p->brk;
@@ -1236,7 +1435,32 @@ void guest_syscall(struct Context* context) {
         pthread_mutex_unlock(&p->memory_lock);
         break;
     case 226: r = RESULT(mprotect(host(p, a[0]), page_up(a[1]), (int)a[2] & (PROT_READ | PROT_WRITE))); break;
-    case 233: r = 0; break;
+    case 227: case 232:  // msync, mincore: ART probes with these for unmapped address space
+        r = range_free(p, a[0] & ~(PAGE - 1), PAGE) ? -12 : 0;
+        if (r == 0 && number == 232) memset(host(p, a[2]), 1, page_up(a[1]) / PAGE);
+        break;
+    case 233: {  // madvise. MADV_DONTNEED must leave private anonymous pages reading as zero.
+        r = 0;
+        if (a[2] != 4) break;
+        const uint64_t start = a[0] & 0x00ffffffffffffffull, length = page_up(a[1]);
+        if (start & (PAGE - 1) || start + length > SEGMENT) { r = -22; break; }
+        for (uint64_t offset = 0; offset < length;) {
+            vm_address_t address = (vm_address_t)(p->base + start + offset);
+            vm_size_t size = 0;
+            vm_region_extended_info_data_t info;
+            mach_msg_type_number_t count = VM_REGION_EXTENDED_INFO_COUNT;
+            mach_port_t object = MACH_PORT_NULL;
+            if (vm_region_64(mach_task_self(), &address, &size, VM_REGION_EXTENDED_INFO, (vm_region_info_t)&info, &count, &object) != KERN_SUCCESS) break;
+            const uint64_t region_start = (uint64_t)address - (uint64_t)p->base, region_end = region_start + size;
+            if (region_start >= start + length) break;
+            const uint64_t from = region_start > start + offset ? region_start : start + offset;
+            const uint64_t to = region_end < start + length ? region_end : start + length;
+            if (!info.external_pager && info.protection != VM_PROT_NONE && info.pages_resident)
+                mmap(p->base + from, to - from, info.protection & (PROT_READ | PROT_WRITE), MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
+            offset = to - start;
+        }
+        break;
+    }
     case 260: r = guest_wait(p, (long)(int)a[0], a[1], (long)a[2]); break;
     case 278: arc4random_buf(host(p, a[0]), a[1]); r = (long)a[1]; break;
     case 0x4e56: {
@@ -1251,8 +1475,10 @@ void guest_syscall(struct Context* context) {
         r = -38;
     }
     if (trace > 1) fprintf(stderr, "[runtime] pid %d: %ld(%llx, %llx, %llx) = %ld\n", p->pid, number, a[0], a[1], a[2], r);
+    if (trace > 1 && r < 0 && (number == 56 || number == 79 || number == 48 || number == 78))
+        fprintf(stderr, "[runtime] pid %d:   path %s\n", p->pid, (const char*)host(p, number == 56 || number == 79 || number == 48 || number == 78 ? context->x[1] : 0));
     context->x[0] = (uint64_t)r;
-    if (p->pending & ~t->blocked) deliver_signals(t, context, t->blocked);
+    if ((p->pending | t->pending) & ~t->blocked) deliver_signals(t, context, t->blocked);
 }
 
 #ifndef GUEST_MAIN
