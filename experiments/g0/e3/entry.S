@@ -59,6 +59,13 @@ _guest_svc:
 	mov x0, x25
 	b _guest_resume
 
+// Where a guest signal handler returns: rt_sigreturn, issued like a rewritten svc.
+.globl _guest_signal_return
+_guest_signal_return:
+	mov x8, #139
+	adr x28, _guest_signal_return
+	b _guest_svc
+
 // void guest_enter(struct Context*): records the host stack and starts running the context.
 .globl _guest_enter
 _guest_enter:

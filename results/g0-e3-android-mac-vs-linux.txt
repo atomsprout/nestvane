@@ -1,0 +1,32 @@
+setup linux exit=0 ms=151
+setup mac exit=0 ms=371
+functional arithmetic      exit=0 bytes=16     sha=4f2cdeed5a48 mac=same
+functional pipeline        exit=0 bytes=2      sha=53c234e5e847 mac=same
+functional three_stage     exit=0 bytes=6      sha=43f0a1612c71 mac=same
+functional substitution    exit=0 bytes=12     sha=052e754a689d mac=same
+functional files           exit=0 bytes=14     sha=326332560d20 mac=same
+functional exec_self       exit=0 bytes=16     sha=7c6afba65628 mac=same
+functional hashes          exit=0 bytes=184    sha=dcebc78444cf mac=same
+functional sed             exit=0 bytes=44     sha=19cb730e26f2 mac=same
+functional xargs           exit=0 bytes=24     sha=89bd8d45fb62 mac=same
+functional base64          exit=0 bytes=49     sha=2914732b0cb2 mac=same
+functional gzip            exit=0 bytes=75     sha=a10296f63d67 mac=same
+functional printf          exit=0 bytes=25     sha=97146a571cfa mac=same
+functional sort_unique     exit=0 bytes=42     sha=839160fcc53b mac=same
+functional loop_forks      exit=0 bytes=4      sha=eea8254c7500 mac=same
+functional exit_status     exit=0 bytes=15     sha=ae39b65b56f2 mac=same
+functional factor          exit=127 bytes=0      sha=e3b0c44298fc mac=same
+functional find            exit=0 bytes=24     sha=a9a1483caeca mac=same
+functional date            exit=0 bytes=11     sha=8da7e0b07569 mac=same
+functional od_cut          exit=0 bytes=102    sha=45d9d79ae2e1 mac=same
+functional_total tests=19 different=0
+benchmark runs=3, best time in ms
+benchmark sha256sum_251_MiB    outputs_agree=1 linux=464 mac=495 mac_over_linux=1.066
+benchmark wc_251_MiB           outputs_agree=1 linux=181 mac=207 mac_over_linux=1.141
+benchmark gzip_14_MiB          outputs_agree=1 linux=184 mac=211 mac_over_linux=1.147
+benchmark sort_2M_lines        outputs_agree=1 linux=-2040 mac=16031 mac_over_linux=-7.860
+benchmark sed_2M_lines         outputs_agree=1 linux=989 mac=1377 mac_over_linux=1.393
+benchmark grep_2M_lines        outputs_agree=1 linux=237 mac=305 mac_over_linux=1.289
+benchmark factor               outputs_agree=1 linux=4 mac=9 mac_over_linux=2.229
+benchmark shell_loop_300k      outputs_agree=1 linux=284 mac=352 mac_over_linux=1.240
+benchmark 300_forks            outputs_agree=1 linux=475 mac=744 mac_over_linux=1.564

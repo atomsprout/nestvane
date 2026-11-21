@@ -157,3 +157,27 @@ edit("bionic/linker/linker_phdr.cpp", [(
     "      start = ReserveWithAlignmentPadding(load_size_, kLibraryAlignment, start_alignment, &gap_start_,\n"
     "                                          &gap_size_);\n"
     "    }\n")], "Nestvane: system call 0x4e56")
+
+# ---------------------------------------------------------------- hand-written assembly in libraries
+# BoringSSL's generated assembly uses x25-x28 as working registers. Its C implementations do not.
+edit("external/boringssl/Android.bp", [(
+    '''        "-DBORINGSSL_SHARED_LIBRARY",
+        "-DOPENSSL_SMALL",
+''', '''        "-DBORINGSSL_SHARED_LIBRARY",
+        "-DOPENSSL_SMALL",
+        "-DOPENSSL_NO_ASM", // Nestvane: the assembly uses registers owned by the host runtime.
+''')], "Nestvane: the assembly uses registers")
+
+# Follow-ups to the ART register lists above: both have static assertions about their length.
+edit("art/compiler/jni/quick/arm64/calling_convention_arm64.cc", [(
+    "  // Use X22-X29 from native callee saves.\n  constexpr size_t kStart = 3u;\n  constexpr size_t kLength = 8u;\n",
+    "  // Nestvane: use X22-X24. X25-X28 are not in the list any more.\n  constexpr size_t kStart = 3u;\n  constexpr size_t kLength = 3u;\n"),
+    ("                    Arm64ManagedRegister::FromXRegister(X29)));\n  static_assert((kAapcs64CoreCalleeSpillMask & ~kCoreCalleeSpillMask) == 0u);\n",
+     "                    Arm64ManagedRegister::FromXRegister(X24)));\n  static_assert((kAapcs64CoreCalleeSpillMask & ~kCoreCalleeSpillMask) == 0u);\n"),
+], "Nestvane: use X22-X24")
+edit("art/compiler/optimizing/fast_compiler_arm64.cc", [
+    ("  vixl::aarch64::x11,\n  vixl::aarch64::x12,\n  vixl::aarch64::x13,\n  vixl::aarch64::x14,\n  vixl::aarch64::x15,\n};",
+     "  vixl::aarch64::x11,\n  // Nestvane: four registers per class, to match the callee-saved list.\n};"),
+    ("  vixl::aarch64::d11,\n  vixl::aarch64::d12,\n  vixl::aarch64::d13,\n  vixl::aarch64::d14,\n  vixl::aarch64::d15,\n};", "  vixl::aarch64::d11,\n};"),
+    ("  vixl::aarch64::d19,\n  vixl::aarch64::d20,\n  vixl::aarch64::d21,\n  vixl::aarch64::d22,\n  vixl::aarch64::d23,\n};", "  vixl::aarch64::d19,\n};"),
+], "Nestvane: four registers per class")

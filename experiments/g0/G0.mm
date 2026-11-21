@@ -831,16 +831,28 @@ void e5() {
 
 extern "C" int guest_main(int argc, char** argv, char** envp);
 
+NSString* guestRoot;
+
 NSData* runGuest(NSString* script, double* milliseconds, int* status) {
     NSString* output = [NSTemporaryDirectory() stringByAppendingPathComponent:@"g0-guest-output"];
     fflush(stdout);
     const int saved = dup(1), file = open(output.fileSystemRepresentation, O_WRONLY | O_CREAT | O_TRUNC, 0600);
     dup2(file, 1);
     close(file);
+#ifdef G0_ANDROID
+    // The Bionic guest: mksh under a guest root, with the scripts in its work directory.
+    char* arguments[] = {(char*)"g0", (char*)guestRoot.fileSystemRepresentation, (char*)"/system/bin/sh", (char*)"-c",
+                         (char*)[@"cd /data/local/tmp/work && PATH=/system/bin sh scripts/" stringByAppendingString:script].UTF8String, nullptr, nullptr};
+#else
     char* arguments[] = {(char*)"g0", (char*)"./toybox", (char*)"toybox", (char*)"sh", (char*)"-c", (char*)script.UTF8String, nullptr};
+#endif
     char* environment[] = {nullptr};
     const uint64_t begin = nowNs();
+#ifdef G0_ANDROID
+    *status = guest_main(5, arguments, environment);
+#else
     *status = guest_main(6, arguments, environment);
+#endif
     *milliseconds = ms(nowNs() - begin);
     dup2(saved, 1);
     close(saved);
@@ -856,6 +868,21 @@ NSString* digest(NSData* data) {
 }
 
 void e3() {
+#ifdef G0_ANDROID
+    // The guest root ships in the bundle. The guest needs a writable copy.
+    guestRoot = [NSTemporaryDirectory() stringByAppendingPathComponent:@"g0-android-root"];
+    [NSFileManager.defaultManager removeItemAtPath:guestRoot error:nil];
+    NSError* error = nil;
+    [NSFileManager.defaultManager copyItemAtPath:[NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"root"] toPath:guestRoot error:&error];
+    if (error) say("e3 root copy failed: %s", error.localizedDescription.UTF8String);
+    // Installing the app drops the execute bits that the guest's shell checks before running a program.
+    NSString* programs = [guestRoot stringByAppendingPathComponent:@"system/bin"];
+    for (NSString* name in [NSFileManager.defaultManager contentsOfDirectoryAtPath:programs error:nil])
+        chmod([programs stringByAppendingPathComponent:name].fileSystemRepresentation, 0755);
+    NSString* work = [guestRoot stringByAppendingPathComponent:@"data/local/tmp/work/scripts"];
+    [NSFileManager.defaultManager createDirectoryAtPath:work withIntermediateDirectories:YES attributes:nil error:nil];
+    NSData* scripts = [NSData dataWithContentsOfFile:[NSBundle.mainBundle pathForResource:@"scripts-android" ofType:@"bin"]];
+#else
     NSString* work = [NSTemporaryDirectory() stringByAppendingPathComponent:@"g0-guest"];
     [NSFileManager.defaultManager removeItemAtPath:work error:nil];
     [NSFileManager.defaultManager createDirectoryAtPath:work withIntermediateDirectories:YES attributes:nil error:nil];
@@ -864,15 +891,23 @@ void e3() {
     chmod([work stringByAppendingPathComponent:@"toybox"].fileSystemRepresentation, 0755);
     chdir(work.fileSystemRepresentation);
     NSData* scripts = [NSData dataWithContentsOfFile:[NSBundle.mainBundle pathForResource:@"scripts" ofType:@"bin"]];
+#endif
     NSArray<NSString*>* fields = [[[NSString alloc] initWithData:scripts encoding:NSUTF8StringEncoding] componentsSeparatedByString:@"\0"];
     for (NSUInteger index = 0; index + 1 < fields.count; index += 2) {
         NSString* name = fields[index];
-        const bool benchmark = [name hasPrefix:@"b "];
+        const bool benchmark = [name hasPrefix:@"b "] || [name hasPrefix:@"b_"];
+#ifdef G0_ANDROID
+        // Scripts are files in the guest's work directory and are run by name.
+        [fields[index + 1] writeToFile:[work stringByAppendingPathComponent:name] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        NSString* script = name;
+#else
+        NSString* script = fields[index + 1];
+#endif
         double best = 1e18, elapsed = 0;
         int status = 0;
         NSData* output = nil;
         for (int round = 0; round < (benchmark ? 3 : 1); ++round) {
-            output = runGuest(fields[index + 1], &elapsed, &status);
+            output = runGuest(script, &elapsed, &status);
             if (elapsed < best) best = elapsed;
         }
         say("e3 %s exit=%d bytes=%lu sha=%s ms=%.0f", [name stringByReplacingOccurrencesOfString:@" " withString:@"_"].UTF8String, status,

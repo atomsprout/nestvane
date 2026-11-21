@@ -57,6 +57,31 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.everettjf.nestvane.g0guest
         CODE_SIGN_ENTITLEMENTS: Extended.entitlements
         GCC_PREPROCESSOR_DEFINITIONS: "G0_GUEST=1 GUEST_MAIN=guest_main SEGMENT=(2ull<<30)"
+  # The Bionic guest on the device: AOSP-built toybox, mksh, linker64 and libraries
+  # (run e3/build-android.sh first).
+  G0Android:
+    type: application
+    platform: iOS
+    sources:
+      - G0.mm
+      - e3/runtime.c
+      - e3/entry.S
+      - path: ../../generated/g0/e3/android/obj
+        optional: true
+        excludes: ["*.o"]
+      - path: ../../generated/g0/e3/android/root
+        optional: true
+        type: folder
+        buildPhase: resources
+      - path: ../../generated/g0/e3/android/scripts-android.bin
+        optional: true
+        buildPhase: resources
+    settings:
+      groups: [app]
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.everettjf.nestvane.g0android
+        CODE_SIGN_ENTITLEMENTS: Extended.entitlements
+        GCC_PREPROCESSOR_DEFINITIONS: "G0_GUEST=1 G0_ANDROID=1 GUEST_MAIN=guest_main SEGMENT=(9ull<<30)"
   # Embeds the generated code frameworks for E5.
   G0Code:
     type: application

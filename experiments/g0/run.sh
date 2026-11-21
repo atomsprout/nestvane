@@ -1,6 +1,6 @@
 #!/bin/sh
 # Builds a G0 probe app, installs it on a connected iPhone and runs the named probes without a debugger.
-#   G0_TEAM=<team id> experiments/g0/run.sh <device udid> <G0|G0Extended|G0Code|G0Guest> <probe>...
+#   G0_TEAM=<team id> experiments/g0/run.sh <device udid> <G0|G0Extended|G0Code|G0Guest|G0Android> <probe>...
 # G0Code embeds G0_CODE_COUNT frameworks of G0_CODE_MIB each (default 8 x 64 MiB).
 set -eu
 

@@ -80,16 +80,22 @@ struct Process {
     uint8_t* base;
     const struct Module* executable;
     uint64_t brk_start, brk, map_low, map_high;
+    uint64_t map_hint;  // where the next search for free pages starts
     uint8_t used[SEGMENT / PAGE / 8];  // one bit per page handed out by mmap
     int fds[MAX_FDS];
     uint8_t cloexec[MAX_FDS];
     DIR* directories[MAX_FDS];
-    uint64_t pipe_handler;  // 0 default, 1 ignore, otherwise a guest handler
+    // Signals: dispositions as the guest set them, and delivery state.
+    struct { uint64_t handler, flags, mask; } actions[65];
+    uint64_t pending, blocked;
+    struct { struct Context context; uint64_t blocked; } frames[4];  // contexts interrupted by handlers
+    int frame_count;
     uint64_t chunks[SEGMENT >> CHUNK_SHIFT];  // every chunk is in the one segment here, so all hold the base
     struct Context context;
 };
 
 void guest_enter(struct Context*) __attribute__((noreturn));
+void guest_signal_return(void);  // entry.S: what a guest handler returns to
 
 static const char* root;  // host directory that is the guest's "/", or NULL
 static size_t root_length;
@@ -116,9 +122,15 @@ static long linux_errno(int error) {
 }
 #define RESULT(value) ({ long result_ = (long)(value); result_ < 0 ? linux_errno(errno) : result_; })
 
-static void* host(struct Process* process, uint64_t address) { return address ? process->base + address : NULL; }
+// Bionic tags heap pointers in the top byte. The CPU ignores it on access, but the host kernel does not.
+static void* host(struct Process* process, uint64_t address) {
+    address &= 0x00ffffffffffffffull;
+    return address ? process->base + address : NULL;
+}
 
-static int host_fd(struct Process* process, long fd) {
+// Descriptors are 32-bit arguments. The upper half of the register is not defined.
+static int host_fd(struct Process* process, long wide) {
+    const int fd = (int)wide;
     return fd >= 0 && fd < MAX_FDS ? process->fds[fd] : -1;
 }
 
@@ -189,7 +201,9 @@ static int load_modules(const char* single) {
         if (module->info[1] > code_high) code_high = module->info[1];
     }
     if (code_low >= code_high) return 0;
-    code_table = mmap(NULL, (code_high - code_low) * 2, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    // One extra entry: the guest address code_high is where signal handlers return.
+    code_table = mmap(NULL, (code_high - code_low) * 2 + 8, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    code_table[(code_high - code_low) / 4] = (uint64_t)&guest_signal_return;
     for (int index = 0; index < guest_module_count; ++index) {
         const struct Module* module = &guest_modules[index];
         if (!module->image) continue;
@@ -218,12 +232,16 @@ static void mark(struct Process* process, uint64_t address, uint64_t length, int
 // First fit from the top of the mapping area, like Linux's top-down layout.
 static uint64_t allocate(struct Process* process, uint64_t length) {
     const uint64_t pages = length / PAGE, low = process->map_low / PAGE;
-    uint64_t run = 0;
-    for (uint64_t page = process->map_high / PAGE; page-- > low;) {
-        run = page_used(process, page) ? 0 : run + 1;
-        if (run == pages) {
-            mark(process, page * PAGE, length, 1);
-            return page * PAGE;
+    // Continue below the previous allocation, then retry once from the top.
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        uint64_t run = 0;
+        for (uint64_t page = (attempt ? process->map_high : process->map_hint) / PAGE; page-- > low;) {
+            run = page_used(process, page) ? 0 : run + 1;
+            if (run == pages) {
+                mark(process, page * PAGE, length, 1);
+                process->map_hint = page * PAGE;
+                return page * PAGE;
+            }
         }
     }
     return 0;
@@ -323,7 +341,7 @@ static int load_image(struct Process* process, const struct Module* executable, 
     process->map_low = process->brk_start + BRK_LIMIT;
     if (prelinked + PAGE > process->map_low) process->map_low = prelinked + PAGE;
     const uint64_t stack_top = SEGMENT - PAGE;
-    process->map_high = stack_top - STACK_SIZE - PAGE;
+    process->map_high = process->map_hint = stack_top - STACK_SIZE - PAGE;
     memset(process->used, 0, sizeof process->used);
     mmap(base + stack_top - STACK_SIZE, STACK_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
 
@@ -385,6 +403,8 @@ static void terminate(struct Process* process, int status) {
     for (int fd = 0; fd < MAX_FDS; ++fd) close_fd(process, fd);
     munmap(process->base, SEGMENT);
     pthread_mutex_lock(&lock);
+    struct Process* parent = processes[process->parent % MAX_PROCESSES];
+    if (parent && parent->pid == process->parent) parent->pending |= 1ull << 17;  // SIGCHLD
     process->exited = 1;
     process->status = status;
     process->vfork_done = 1;
@@ -420,7 +440,9 @@ static long guest_fork(struct Process* parent, uint64_t flags, uint64_t child_st
     child->brk = parent->brk;
     child->map_low = parent->map_low;
     child->map_high = parent->map_high;
-    child->pipe_handler = parent->pipe_handler;
+    child->map_hint = parent->map_hint;
+    memcpy(child->actions, parent->actions, sizeof child->actions);
+    child->blocked = parent->blocked;
     memcpy(child->used, parent->used, sizeof child->used);
     for (int fd = 0; fd < MAX_FDS; ++fd)
         if (parent->fds[fd] >= 0) {
@@ -519,7 +541,7 @@ static const char* guest_path(const char* path) {
     return path;
 }
 
-static int host_directory(struct Process* process, long fd) { return fd == -100 ? AT_FDCWD : host_fd(process, fd); }
+static int host_directory(struct Process* process, long fd) { return (int)fd == -100 ? AT_FDCWD : host_fd(process, fd); }
 
 static int open_flags(long flags) {
     int result = (int)(flags & 3);
@@ -603,7 +625,7 @@ static long vector_io(struct Process* process, long fd, uint64_t vector, long co
 
 // A write to a pipe with no reader kills a Linux process unless it handles SIGPIPE.
 static long written(struct Process* process, long result) {
-    if (result < 0 && errno == EPIPE && process->pipe_handler == 0) terminate(process, 13);
+    if (result < 0 && errno == EPIPE && process->actions[13].handler == 0) terminate(process, 13);
     return RESULT(result);
 }
 
@@ -622,6 +644,37 @@ static long guest_readlink(struct Process* p, long directory, const char* path, 
     if (length > size) length = size;
     memcpy(buffer, text, length);
     return (long)length;
+}
+
+// ---------------------------------------------------------------- signals
+
+// Runs the handler of one pending, unblocked signal on top of the current context. The interrupted
+// context is kept by the runtime and comes back with rt_sigreturn. siginfo and ucontext are not built.
+static void deliver_signals(struct Process* p, struct Context* context) {
+    for (;;) {
+        pthread_mutex_lock(&lock);
+        const uint64_t ready = p->pending & ~p->blocked;
+        const int number = ready ? __builtin_ctzll(ready) : 0;
+        if (number) p->pending &= ~(1ull << number);
+        pthread_mutex_unlock(&lock);
+        if (!number) return;
+        const uint64_t handler = p->actions[number].handler;
+        if (handler == 1) continue;  // SIG_IGN
+        if (handler == 0) {
+            if (number == 17 || number == 18 || number == 23 || number == 28) continue;  // ignored by default
+            terminate(p, number);
+        }
+        if (p->frame_count == 4) return;
+        p->frames[p->frame_count].context = *context;
+        p->frames[p->frame_count++].blocked = p->blocked;
+        p->blocked |= p->actions[number].mask | (p->actions[number].flags & 0x40000000 ? 0 : 1ull << number);  // SA_NODEFER
+        context->x[0] = (uint64_t)number;
+        context->x[1] = context->x[2] = 0;
+        context->x[30] = code_high;
+        context->sp = (context->sp - 256) & ~15ull;
+        context->pc = host_code(handler & 0x00ffffffffffffffull);
+        return;
+    }
 }
 
 // ---------------------------------------------------------------- system calls
@@ -742,24 +795,78 @@ void guest_syscall(struct Context* context) {
     case 96: r = p->pid; break;
     case 98: r = (a[1] & 0x7f) == 0 ? -11 : 0; break;
     case 99: case 132: r = 0; break;  // set_robust_list, sigaltstack
+    case 118: case 119: case 120: case 121: case 122: r = 0; break;  // scheduler parameters: SCHED_OTHER
+    case 43: case 44: {  // statfs, fstatfs: report an ext4 volume
+        uint64_t* out = host(p, a[1]);
+        memset(out, 0, 120);
+        out[0] = 0xEF53;
+        out[1] = PAGE;
+        out[2] = out[3] = out[4] = 1 << 20;
+        out[8] = 255;
+        out[9] = PAGE;
+        r = 0;
+        break;
+    }
+    case 198: r = -13; break;  // socket: the guest has no logd or property service to reach
     case 101: r = RESULT(nanosleep(host(p, a[0]), host(p, a[1]))); break;
     case 113: r = RESULT(clock_gettime(a[0] == 0 ? CLOCK_REALTIME : a[0] == 2 ? CLOCK_PROCESS_CPUTIME_ID : CLOCK_MONOTONIC, host(p, a[1]))); break;
     case 123: memset(host(p, a[2]), 0, a[1]); *(uint8_t*)host(p, a[2]) = 1; r = 8; break;
     case 124: sched_yield(); r = 0; break;
-    case 129: case 130: case 131:
-        if (number == 129 && (long)a[0] != p->pid && a[0] != 0) { r = a[1] == 0 ? 0 : -1; break; }
-        if (a[number == 131 ? 2 : 1] == 0) { r = 0; break; }
-        terminate(p, (int)a[number == 131 ? 2 : 1]);
-    case 134:
-        if (a[0] == 13) {
-            if (a[2]) *(uint64_t*)host(p, a[2]) = p->pipe_handler;
-            if (a[1]) p->pipe_handler = *(uint64_t*)host(p, a[1]);
-        } else if (a[2]) {
-            memset(host(p, a[2]), 0, 32);
+    case 129: case 130: case 131: {  // kill, tkill, tgkill
+        const uint64_t signal = a[number == 131 ? 2 : 1];
+        if (signal > 64) { r = -22; break; }
+        pthread_mutex_lock(&lock);
+        struct Process* target = number == 129 && a[0] != 0 && (long)a[0] != p->pid ? processes[a[0] % MAX_PROCESSES] : p;
+        if (target && number == 129 && a[0] != 0 && target->pid != (long)a[0]) target = NULL;
+        if (target && signal) target->pending |= 1ull << signal;
+        pthread_cond_broadcast(&changed);
+        pthread_mutex_unlock(&lock);
+        r = target ? 0 : -3;
+        break;
+    }
+    case 133: {  // rt_sigsuspend: wait with a temporary mask for a signal that has a handler to run
+        const uint64_t saved = p->blocked;
+        pthread_mutex_lock(&lock);
+        p->blocked = *(uint64_t*)host(p, a[0]);
+        while (!(p->pending & ~p->blocked)) pthread_cond_wait(&changed, &lock);
+        pthread_mutex_unlock(&lock);
+        context->x[0] = (uint64_t)-4;
+        deliver_signals(p, context);
+        // The handler runs with the temporary mask applied on top; the original comes back afterwards.
+        if (p->frame_count) p->frames[p->frame_count - 1].blocked = saved;
+        else p->blocked = saved;
+        return;
+    }
+    case 134: {  // rt_sigaction: handler, flags, restorer, mask
+        if (a[0] < 1 || a[0] > 64) { r = -22; break; }
+        uint64_t* old = host(p, a[2]);
+        const uint64_t* new = host(p, a[1]);
+        const uint64_t previous[4] = {p->actions[a[0]].handler, p->actions[a[0]].flags, 0, p->actions[a[0]].mask};
+        if (new) {
+            p->actions[a[0]].handler = new[0];
+            p->actions[a[0]].flags = new[1];
+            p->actions[a[0]].mask = new[3];
         }
+        if (old) memcpy(old, previous, sizeof previous);
         r = 0;
         break;
-    case 135: if (a[2]) memset(host(p, a[2]), 0, a[3]); r = 0; break;
+    }
+    case 135: {  // rt_sigprocmask
+        const uint64_t* set = host(p, a[1]);
+        uint64_t* old = host(p, a[2]);
+        const uint64_t previous = p->blocked;
+        if (set) p->blocked = a[0] == 0 ? previous | *set : a[0] == 1 ? previous & ~*set : *set;
+        p->blocked &= ~(1ull << 9 | 1ull << 19);  // SIGKILL and SIGSTOP cannot be blocked
+        if (old) *old = previous;
+        r = 0;
+        break;
+    }
+    case 139:  // rt_sigreturn
+        if (!p->frame_count) terminate(p, 11);
+        *context = p->frames[--p->frame_count].context;
+        p->blocked = p->frames[p->frame_count].blocked;
+        deliver_signals(p, context);
+        return;
     case 154: case 157: r = 0; break;
     case 155: case 156: r = p->pid; break;
     case 160: {
@@ -828,6 +935,7 @@ void guest_syscall(struct Context* context) {
     }
     if (trace > 1) fprintf(stderr, "[runtime] pid %d: %ld(%llx, %llx, %llx) = %ld\n", p->pid, number, a[0], a[1], a[2], r);
     context->x[0] = (uint64_t)r;
+    if (p->pending & ~p->blocked) deliver_signals(p, context);
 }
 
 #ifndef GUEST_MAIN
