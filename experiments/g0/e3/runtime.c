@@ -1944,6 +1944,8 @@ void guest_syscall(struct Context* context) {
             break;
         }
         case 4: r = RESULT(fcntl(descriptor, F_SETFL, (a[2] & 02000 ? O_APPEND : 0) | (a[2] & 04000 ? O_NONBLOCK : 0))); break;
+        case 6: case 7: case 37: case 38: r = 0; break;  // record locks: every guest process is in this one host process
+        case 5: case 36: *(uint16_t*)host(p, a[2]) = 2; r = 0; break;  // F_GETLK: F_UNLCK, nothing conflicts
         default: r = -22;
         }
         break;
@@ -1953,6 +1955,16 @@ void guest_syscall(struct Context* context) {
         else if (a[1] == 0x5401 && isatty(host_fd(p, (long)a[0]))) { memset(host(p, a[2]), 0, 36); r = 0; }
         else r = -25;
         break;
+    case 30: case 31: r = 0; break;  // ioprio_set, ioprio_get
+    case 32: r = host_fd(p, (long)a[0]) < 0 ? -9 : 0; break;  // flock
+    case 47: {  // fallocate: mode 0 extends the file
+        struct stat info;
+        const int descriptor = host_fd(p, (long)a[0]);
+        if (a[1] != 0 || fstat(descriptor, &info) != 0) { r = a[1] ? -95 : -9; break; }
+        r = (off_t)(a[2] + a[3]) > info.st_size ? RESULT(ftruncate(descriptor, (off_t)(a[2] + a[3]))) : 0;
+        break;
+    }
+    case 54: case 55: r = 0; break;  // fchownat, fchown: the guest is root and files have no other owner
     case 34: r = RESULT(mkdirat(host_directory(p, (long)a[0]), HP(a[1]), (mode_t)a[2])); break;
     case 35: r = RESULT(unlinkat(host_directory(p, (long)a[0]), HP(a[1]), a[2] & 0x200 ? AT_REMOVEDIR : 0)); break;
     case 36: r = RESULT(symlinkat(host(p, a[0]), host_directory(p, (long)a[1]), HP(a[2]))); break;
@@ -2096,6 +2108,34 @@ void guest_syscall(struct Context* context) {
         break;
     }
     case 101: r = RESULT(nanosleep(host(p, a[0]), host(p, a[1]))); break;
+    case 114:  // clock_getres
+        if (a[1]) {
+            int64_t* resolution = host(p, a[1]);
+            resolution[0] = 0;
+            resolution[1] = 1;
+        }
+        r = 0;
+        break;
+    case 115: {  // clock_nanosleep: relative, or until an absolute time on the clock
+        const int64_t* request = host(p, a[2]);
+        struct timespec wait = {request[0], request[1]};
+        if (a[1] & 1) {  // TIMER_ABSTIME
+            struct timespec now;
+            clock_gettime(a[0] == 0 ? CLOCK_REALTIME : CLOCK_MONOTONIC, &now);
+            wait.tv_sec -= now.tv_sec;
+            wait.tv_nsec -= now.tv_nsec;
+            if (wait.tv_nsec < 0) { wait.tv_nsec += 1000000000; --wait.tv_sec; }
+            if (wait.tv_sec < 0) { r = 0; break; }
+        }
+        r = RESULT(nanosleep(&wait, NULL));
+        break;
+    }
+    case 168:  // getcpu
+        if (a[0]) *(uint32_t*)host(p, a[0]) = 0;
+        if (a[1]) *(uint32_t*)host(p, a[1]) = 0;
+        r = 0;
+        break;
+    case 228: case 229: case 230: case 231: r = 0; break;  // mlock, munlock, mlockall, munlockall
     case 113: r = RESULT(clock_gettime(a[0] == 0 ? CLOCK_REALTIME : a[0] == 2 ? CLOCK_PROCESS_CPUTIME_ID : CLOCK_MONOTONIC, host(p, a[1]))); break;
     case 123: {  // sched_getaffinity: every processor of the host
         const long count = sysconf(_SC_NPROCESSORS_ONLN);

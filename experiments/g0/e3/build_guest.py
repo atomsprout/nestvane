@@ -118,8 +118,13 @@ def main():
     # A minimal linker configuration: one default namespace that can load everything, plus the "system"
     # namespace libnativeloader asks for, which holds nothing itself and resolves through the default
     # one so that no library is loaded twice. A booted device generates this with linkerconfig.
+    # Several APEXes carry their own copy of a common library. /system comes first in the search, then
+    # the APEXes that the platform itself is made of, so that one copy of each is used throughout.
+    def rank(directory):
+        order = ("/system/", "/apex/com.android.runtime/", "/apex/com.android.art/", "/apex/com.android.i18n/")
+        return (next((index for index, prefix in enumerate(order) if directory.startswith(prefix)), len(order)), directory)
     libraries = sorted({os.path.dirname(os.path.join(directory, name))[len(root):] for directory, _, files in os.walk(root)
-                        for name in files if name.endswith(".so") and "/hwasan" not in directory})
+                        for name in files if name.endswith(".so") and "/hwasan" not in directory}, key=rank)
     binaries = sorted({directory[len(root):] for directory, _, files in os.walk(root) if os.path.basename(directory) == "bin"})
     # libnativeloader also looks up one namespace per APEX, named after it.
     extra = ["system"] + sorted(name.replace(".", "_") for name in os.listdir(os.path.join(root, "apex"))) if os.path.isdir(os.path.join(root, "apex")) else ["system"]
@@ -180,7 +185,7 @@ def main():
             jobs.append((symbol, path, base, objects, guest))
             base = (base + size + 0x1ffff) & ~0xffff
     print("modules=%d prelinked 0x%x-0x%x" % (len(jobs), FIRST_BASE, base))
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(4, (os.cpu_count() or 8) - 2)) as pool:
         summaries = dict(pool.map(translate, [job[:4] for job in jobs]))
     for symbol, path, start, _, guest in jobs:
         print("%-58s base=0x%x %s" % (guest, start, " ".join(summaries[symbol].split()[:3])))
