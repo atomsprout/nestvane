@@ -458,15 +458,21 @@ void AnonymousPages::releaseBlock(size_t index) {
 const uint8_t* AnonymousPages::read(uint64_t offset, size_t length) const {
     if (offset >= size || length > size - offset || length > blockSize - offset % blockSize) return nullptr;
     static constexpr std::array<uint8_t, blockSize> zero{};
-    // A block lies within one chunk, so it is contiguous in host memory. Untouched memory reads as zero.
-    if (space) return space->backed(base + offset) ? space->host(base + offset) : zero.data() + offset % blockSize;
+    if (space) {
+        // Host memory is contiguous within a chunk only: the next chunk may be in another run, behind
+        // guard pages. Blocks count from the start of the store, so one may cross a chunk boundary.
+        if (length > GuestSpace::chunk - (base + offset) % GuestSpace::chunk) return nullptr;
+        // Untouched memory reads as zero.
+        return space->backed(base + offset) ? space->host(base + offset) : zero.data() + offset % blockSize;
+    }
     const auto* data = blocks[offset / blockSize].data;
     return (data ? data : zero.data()) + offset % blockSize;
 }
 
 void AnonymousPages::readInto(uint64_t offset, std::span<uint8_t> bytes) const {
     while (!bytes.empty()) {
-        const auto count = std::min(bytes.size(), blockSize - size_t(offset % blockSize));
+        auto count = std::min(bytes.size(), blockSize - size_t(offset % blockSize));
+        if (space) count = std::min<size_t>(count, GuestSpace::chunk - (base + offset) % GuestSpace::chunk);
         std::memcpy(bytes.data(), read(offset, count), count);
         offset += count;
         bytes = bytes.subspan(count);
@@ -730,7 +736,84 @@ bool Segment::prepareWrite(uint64_t offset, uint64_t length) {
     return true;
 }
 
+SharedBuffer::~SharedBuffer() {
+    if (mapping) munmap(mapping, reserved);
+}
+
+bool SharedBuffer::makeShareable() {
+    if (mapping) return true;
+    const size_t wanted = std::max<size_t>((bytes.size() + GuestSpace::page - 1) & ~(GuestSpace::page - 1), GuestSpace::page);
+    void* memory = mmap(nullptr, wanted, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    if (memory == MAP_FAILED) return false;
+    std::memcpy(memory, bytes.data(), bytes.size());
+    mapping = static_cast<uint8_t*>(memory);
+    length = bytes.size();
+    reserved = wanted;
+    bytes = {};
+    ++moves;
+    return true;
+}
+
+void SharedBuffer::resize(size_t size) {
+    if (!mapping) return bytes.resize(size);
+    if (size <= reserved) {
+        if (size < length) std::memset(mapping + size, 0, length - size);  // what is cut off reads as zero if it comes back
+        length = size;
+        return;
+    }
+    const size_t wanted = (size + GuestSpace::page - 1) & ~(GuestSpace::page - 1);
+    void* memory = mmap(nullptr, wanted, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    if (memory == MAP_FAILED) throw std::bad_alloc();
+    std::memcpy(memory, mapping, length);
+    munmap(mapping, reserved);
+    mapping = static_cast<uint8_t*>(memory);
+    length = size;
+    reserved = wanted;
+    ++moves;
+}
+
+bool SharedFileBytes::place(const std::shared_ptr<GuestSpace>& space, uint64_t address, uint64_t offset, uint64_t length) {
+    if (address % GuestSpace::page || offset % GuestSpace::page || length % GuestSpace::page || !pages.makeShareable()) return false;
+    if (placedMoves != pages.moves) replace();
+    unplace(space.get(), address, address + length);
+    placements.push_back({space, address, offset, length});
+    // Only what the storage holds now can be mapped. The rest follows when it grows.
+    const uint64_t available = offset < pages.capacity() ? std::min<uint64_t>(length, pages.capacity() - offset) : 0;
+    return !available || space->mapFrom(address, available, GuestSpace::read | GuestSpace::write, pages.data() + offset, true);
+}
+
+void SharedFileBytes::unplace(const GuestSpace* space, uint64_t start, uint64_t end) {
+    std::vector<Placement> kept;
+    for (const auto& placement : placements) {
+        const auto owner = placement.space.lock();
+        if (!owner) continue;
+        const uint64_t last = placement.address + placement.length;
+        if (owner.get() != space || last <= start || end <= placement.address) {
+            kept.push_back(placement);
+            continue;
+        }
+        if (placement.address < start) kept.push_back({placement.space, placement.address, placement.offset, start - placement.address});
+        if (end < last) kept.push_back({placement.space, end, placement.offset + (end - placement.address), last - end});
+    }
+    placements = std::move(kept);
+}
+
+void SharedFileBytes::replace() {
+    placedMoves = pages.moves;
+    for (const auto& placement : placements) {
+        const auto space = placement.space.lock();
+        if (!space || placement.offset >= pages.capacity()) continue;
+        space->mapFrom(placement.address, std::min<uint64_t>(placement.length, pages.capacity() - placement.offset),
+                       GuestSpace::read | GuestSpace::write, pages.data() + placement.offset, true);
+    }
+}
+
 void Machine::place(Segment& segment) {
+    if (space && segment.shared && !segment.beyondFileEnd && segment.address % GuestSpace::page == 0 &&
+        segment.fileOffset % GuestSpace::page == 0 && segment.mappedSize() % GuestSpace::page == 0) {
+        if (!segment.placed) segment.placed = segment.shared->place(space, segment.address, segment.fileOffset, segment.mappedSize());
+        return;
+    }
     if (!space || segment.shared || segment.beyondFileEnd || (segment.anonymousPages && segment.anonymousPages->guestSpace())) return;
     const auto size = (segment.mappedSize() + GuestSpace::page - 1) & ~(GuestSpace::page - 1);
     if (!size || segment.address % GuestSpace::page || segment.address + size > GuestSpace::size) return;

@@ -181,8 +181,13 @@ void changeRange(Machine& machine, uint64_t start, uint64_t end, std::optional<u
             pages.push_back(std::move(segment));
             continue;
         }
-        if (!retain && segment.anonymousPages)
+        if (!retain && segment.anonymousPages) {
             segment.anonymousPages->release(segment.fileOffset + left - segment.address, right - left);
+        } else if (!retain && machine.space && segment.shared && segment.placed) {
+            // Only what this segment mapped: a segment that is not placed may share a page with one that is.
+            segment.shared->unplace(machine.space.get(), left, right);
+            machine.space->unmap(left, right - left);
+        }
         const auto applyAdvice = [&](Segment& part) {
             if (!advice) return;
             switch (*advice) {
@@ -1451,6 +1456,7 @@ uint64_t ProbeLinux::resize(const WritableFile& file, uint64_t size) {
         if (pages - file.storage->pages.size() + allocated > limit) return uint64_t(-28);
     }
     file.storage->pages.resize(pages);
+    if (file.storage->placedMoves != file.storage->pages.moves) file.storage->replace();
     const auto zeroFrom = std::min(size, file.storage->size);
     const auto zeroTo = size < file.storage->size ? pages : size;
     std::fill(file.storage->pages.begin() + zeroFrom, file.storage->pages.begin() + zeroTo, 0);
@@ -5619,6 +5625,10 @@ bool ProbeLinux::forkProcess(Machine& machine) {
                 childSpace->unmap(segment.address, segment.mappedSize());
     }
     std::erase_if(child.process->segments, [](const Segment& segment) { return segment.omitOnFork; });
+    // The copy of the address space made shared mappings private. Map the storage into it again.
+    for (auto& segment : child.process->segments)
+        if (childSpace && segment.shared && segment.placed)
+            segment.shared->place(childSpace, segment.address, segment.fileOffset, segment.mappedSize());
     std::map<const AnonymousPages*, std::shared_ptr<AnonymousPages>> privateCopies;
     for (auto& segment : child.process->segments) {
         if (!segment.anonymousPages) {
@@ -8982,6 +8992,7 @@ uint64_t ProbeLinux::bpfMapCall(Machine& machine) {
             map->types = std::move(types);
             if (array || ring) {
                 map->values.pages.resize(bytes);
+                if (map->values.placedMoves != map->values.pages.moves) map->values.replace();
                 map->values.size = bytes;
             }
             const uint32_t access = flags & readOnly ? 0 : flags & writeOnly ? 1 : 2;

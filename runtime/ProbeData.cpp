@@ -129,6 +129,7 @@ void ProbeLinux::mountData(const std::string& databasePath) {
             file->persistent = true;
             file->storage->size = bytes.size();
             file->storage->pages.resize(allocation);
+            if (file->storage->placedMoves != file->storage->pages.moves) file->storage->replace();
             if (!bytes.empty()) std::memcpy(file->storage->pages.data(), bytes.data(), bytes.size());
             if (!label.empty()) file->attributes.emplace("security.selinux",
                                                         std::vector<uint8_t>(label.begin(), label.end()));

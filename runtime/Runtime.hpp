@@ -41,9 +41,56 @@ bool hasNativeSha256();
 Instruction decode(uint32_t word);
 bool endsBlock(Op op);
 
+// The bytes of storage that several mappings share. It behaves like a vector of bytes until it is
+// made shareable, which moves it to host pages of its own that can be mapped into guest address
+// spaces page for page. Growing it may move it again: `moved` then tells the owner.
+class SharedBuffer {
+public:
+    using value_type = uint8_t;
+    SharedBuffer() = default;
+    ~SharedBuffer();
+    SharedBuffer(const SharedBuffer&) = delete;
+    SharedBuffer& operator=(const SharedBuffer&) = delete;
+    SharedBuffer& operator=(const std::vector<uint8_t>& content) {
+        resize(content.size());
+        std::copy(content.begin(), content.end(), data());
+        return *this;
+    }
+    uint8_t* data() { return mapping ? mapping : bytes.data(); }
+    const uint8_t* data() const { return mapping ? mapping : bytes.data(); }
+    size_t size() const { return mapping ? length : bytes.size(); }
+    size_t capacity() const { return mapping ? reserved : bytes.capacity(); }
+    bool empty() const { return size() == 0; }
+    uint8_t* begin() { return data(); }
+    uint8_t* end() { return data() + size(); }
+    const uint8_t* begin() const { return data(); }
+    const uint8_t* end() const { return data() + size(); }
+    void resize(size_t size);
+    // Moves the bytes to shareable host pages. False if the host has no memory for it.
+    bool makeShareable();
+    bool shareable() const { return mapping != nullptr; }
+    // Counts the times the bytes have moved in host memory.
+    uint64_t moves = 0;
+
+private:
+    std::vector<uint8_t> bytes;
+    uint8_t* mapping = nullptr;
+    size_t length = 0, reserved = 0;
+};
+
 struct SharedFileBytes {
-    std::vector<uint8_t> pages;
+    SharedBuffer pages;
     uint64_t size = 0;
+    // Where the storage is mapped into guest address spaces, to map it again when it moves.
+    struct Placement { std::weak_ptr<GuestSpace> space; uint64_t address, offset, length; };
+    std::vector<Placement> placements;
+    uint64_t placedMoves = 0;
+    // Maps part of the storage at an address of a guest address space, shared with every other user.
+    bool place(const std::shared_ptr<GuestSpace>& space, uint64_t address, uint64_t offset, uint64_t length);
+    // Forgets the placements in a range that has been unmapped.
+    void unplace(const GuestSpace* space, uint64_t start, uint64_t end);
+    // Maps the storage again wherever it is placed, after it moved or grew.
+    void replace();
 };
 
 struct AnonymousBudget {
@@ -151,6 +198,7 @@ struct Segment {
     bool omitOnFork = false, wipeOnFork = false, sharedAnonymous = false;
     unsigned maxProtection = 7; // Linux PROT bits permitted for this mapping.
     const uint8_t* imageView = nullptr; // Borrowed immutable root bytes, kept alive by the image loader.
+    bool placed = false; // Shared storage that is mapped at this address of the guest address space.
 
     uint64_t mappedSize() const { return reservedSize ? reservedSize : bytes.size(); }
     uint64_t accessibleSize() const {
