@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <memory>
+#include <utility>
 #include <vector>
 
 namespace nestvane {
@@ -73,6 +74,25 @@ public:
     bool copyIn(uint64_t address, const void* from, uint64_t length);
     bool copyOut(void* to, uint64_t address, uint64_t length);
 
+    // Where translated code is mapped as it was translated for, so that it can run natively.
+    void addCode(uint64_t start, uint64_t end) { code_.push_back({start, end}); }
+    bool hasCode(uint64_t pc) const {
+        if (pc - lastCode_.start < lastCode_.length) return true;
+        for (const auto& range : code_)
+            if (pc >= range.start && pc < range.end) {
+                lastCode_ = {range.start, range.end - range.start};
+                return true;
+            }
+        return false;
+    }
+    // The records the dynamic linker reads to load translated files where they were translated for
+    // (see experiments/aosp/patch.py): where the process's table is, and which files are in it.
+    struct Prelink {
+        static constexpr uint64_t capacity = 2048;
+        uint64_t table = 0;
+        std::vector<std::pair<uint64_t, uint64_t>> files;  // device and inode
+    } prelink;
+
     uint64_t reservedBytes() const { return reserved_; }
     size_t runCount() const { return runs_.size(); }
 
@@ -94,6 +114,9 @@ private:
     uint8_t* used_ = nullptr;       // one bit per guest page that is mapped
     uint8_t* protection_ = nullptr; // two bits per guest page
     std::vector<Run> runs_;
+    struct CodeRange { uint64_t start, end; };
+    std::vector<CodeRange> code_;
+    mutable struct { uint64_t start = 0, length = 0; } lastCode_;
     uint64_t reserved_ = 0;
 };
 

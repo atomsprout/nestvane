@@ -57,6 +57,8 @@ struct ProbeLinux {
         return Machine(image, anonymousBudget, nativeMemory ? std::make_shared<GuestSpace>() : nullptr);
     }
     uint64_t dirtyAnonymousBytes() const { return anonymousBudget->dirty; }
+    // Whether the current thread is at translated code that its process has mapped where it belongs.
+    bool nativeAt(const Machine& machine) const { return machine.space && machine.space->hasCode(machine.cpu.pc); }
 
     // Handles only the implemented guest syscalls. Unknown calls remain visible to the probe.
     bool syscall(Machine& machine);
@@ -635,6 +637,9 @@ private:
     };
     std::map<std::pair<uint64_t, std::string>, std::vector<WholeFileLock>> wholeFileLocks;
     uint64_t stat(Machine& machine, uint64_t address, const Descriptor& fd, bool extended = false) const;
+    void notePrelink(Machine& machine, const Descriptor& fd, uint64_t status);
+    // By device and inode: the address a file was translated for, or 0 if it has no translation.
+    std::map<std::pair<uint64_t, uint64_t>, uint64_t> prelinkModules;
     uint64_t statx(Machine& machine) const;
     uint64_t resize(const WritableFile& file, uint64_t size);
     uint64_t readGraphics(Machine& machine, GraphicsPipeState& pipe, uint64_t address, uint64_t size);

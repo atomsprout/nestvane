@@ -1,4 +1,5 @@
 #include "ProbeLinux.hpp"
+#include "NativeCode.hpp"
 
 #include "BpfProgram.hpp"
 #include "BpfTypes.hpp"
@@ -413,7 +414,7 @@ ProbeLinux::ProbeLinux(uint64_t pid, uint64_t uid, uint64_t memoryLimit)
       current(&threads[pid]), currentTid(pid), nextTid(pid + 1) {
     current->process = std::make_shared<Process>();
     current->process->id = pid;
-    nativeMemory = pageSize == GuestSpace::page && std::getenv("NESTVANE_NATIVE_MEMORY");
+    nativeMemory = pageSize == GuestSpace::page && (std::getenv("NESTVANE_NATIVE_MEMORY") || native::enabled());
     processes.emplace(pid, current->process.get());
     current->process->userIds.fill(uint32_t(uid));
     current->process->groupIds.fill(uint32_t(uid));
@@ -1132,6 +1133,26 @@ bool ProbeLinux::exportExt4Mount(ProbeLinux& reader, std::string_view path) cons
     exported.covered.reset();
     reader.current->mountNamespace->mounts.emplace(path, std::move(exported));
     return true;
+}
+
+// Tells the dynamic linker where a translated file belongs, once per process and file: a record of
+// the file's device and inode, as fstat has just reported them at `status`, and the address.
+void ProbeLinux::notePrelink(Machine& machine, const Descriptor& fd, uint64_t status) {
+    if (fd.node != Node::regular || fd.temporary) return;
+    std::array<uint64_t, 3> record{};
+    if (!machine.readInto(status, {reinterpret_cast<uint8_t*>(record.data()), 16})) return;
+    const std::pair<uint64_t, uint64_t> identity{record[0], record[1]};
+    auto known = prelinkModules.find(identity);
+    if (known == prelinkModules.end()) {
+        const auto* module = native::moduleFor(fd.contents());
+        known = prelinkModules.emplace(identity, module ? module->base : 0).first;
+    }
+    auto& prelink = machine.space->prelink;
+    if (!known->second || prelink.files.size() >= GuestSpace::Prelink::capacity ||
+        std::find(prelink.files.begin(), prelink.files.end(), identity) != prelink.files.end()) return;
+    record[2] = known->second;
+    if (machine.write(prelink.table + prelink.files.size() * 24, {reinterpret_cast<const uint8_t*>(record.data()), 24}))
+        prelink.files.push_back(identity);
 }
 
 uint64_t ProbeLinux::stat(Machine& machine, uint64_t address, const Descriptor& fd, bool extended) const {
@@ -4830,6 +4851,7 @@ bool ProbeLinux::fileCall(Machine& machine) {
             break;
         case 80: // fstat
             x[0] = descriptor == descriptors().end() ? uint64_t(-9) : stat(machine, x[1], descriptor->second);
+            if (!x[0] && machine.space && machine.space->prelink.table) notePrelink(machine, descriptor->second, x[1]);
             break;
         case 291: // statx
             x[0] = statx(machine);
@@ -5045,6 +5067,14 @@ uint64_t ProbeLinux::map(Machine& machine) {
     }
     if (atAddress) changeRange(machine, start, end, {});
     if (!atAddress || (x[3] & fixedNoReplace)) nextMapping = std::max(nextMapping, end);
+    if (!anon && (x[2] & 4) && machine.space && native::enabled()) {
+        // Code of a translated file, mapped where it was translated for, runs natively from now on.
+        const auto& fd = descriptors().find(uint32_t(x[4]))->second;
+        if (const auto* module = fd.temporary ? nullptr : native::mappedCode(fd.contents(), start, x[5])) {
+            native::activate(*module);
+            machine.space->addCode(module->info[0], module->info[1]);
+        }
+    }
     if (imageLength) {
         Segment view{start, {}, flags, imageLength, false, {}, 0, false, sharing == 1, false, true};
         view.imageView = bytes.data();

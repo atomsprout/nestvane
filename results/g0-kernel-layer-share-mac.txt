@@ -1,0 +1,53 @@
+Where the existing runtime spends boot time (Mac, interpreter, no boot AOT blocks)
+date: 2026-11-21, tree at 0da2c66 plus uncommitted shared-storage edits, default memory mode
+command: NESTVANE_INIT_SAMPLE_CODE=1 NESTVANE_INIT_INSTRUCTION_LIMIT=40000000000 probe-init --init generated/android17-framework-full <fresh data db>
+method: macOS sample, 5 ms interval, 30 s windows over the whole run; own time of each frame of the main thread classified by the frames above it
+run: 40,000,000,000 guest instructions, 1,827,325 guest system calls, 560.8 s wall; stopped at the instruction limit after zygote began preloading (fresh data, so odrefresh/dex2oat ran first)
+
+file         interp  syscall    sched     wait    other
+s_001          5272       53        0        1        0
+s_002          5279       35        0        1        0
+s_003          5327        0        0        0        0
+s_004          5330        2        0        0        0
+s_005          5336        0        0        0        0
+s_006          5310        8        0        0        0
+s_007          5247       69        0        0        0
+s_008          5296       38        0        0        0
+s_009          5236       93        0        0        0
+s_010          5298       30        0        0        0
+s_011          5185      130        0        0        0
+s_012          5223       99        0        0        0
+s_013          5167      144        0        0        0
+s_014          5279       43        0        0        0
+s_015          5292       46        0        0        0
+s_016          5335        0        0        0        0
+s_017          5273       55        0        0        0
+s_018          5319        8        0        0        0
+s_019          3028        4        0        0        0
+
+interpreter                      98032   99.1% of main thread
+kernel: system calls               857    0.9% of main thread
+waiting                              2    0.0% of main thread
+
+kernel: system calls
+       577  nestvane::ProbeLinux::fileCall(nestvane::Machine&)
+       107  nestvane::ProbeLinux::map(nestvane::Machine&)
+        50  nestvane::ProbeLinux::syncData()
+        41  nestvane::(anonymous namespace)::protect(nestvane::Machine&, unsigned long long, unsigned 
+        30  nestvane::(anonymous namespace)::changeRange(nestvane::Machine&, unsigned long long, unsig
+        10  (self)
+         5  __bzero
+         5  nestvane::DenseBytes::size() const
+         4  nestvane::ProbeLinux::execProcess(nestvane::Machine&)
+         4  nestvane::(anonymous namespace)::fullyMapped(nestvane::Machine const&, unsigned long long,
+         4  nestvane::Segment::accessibleSize() const
+         4  nestvane::ProbeLinux::writeDescriptor(nestvane::Machine&, nestvane::ProbeLinux::Descriptor
+         4  nestvane::ProbeLinux::socketCall(nestvane::Machine&)
+         3  nestvane::ProbeLinux::eventCall(nestvane::Machine&)
+         2  nestvane::ProbeLinux::poll(nestvane::Machine&)
+         2  std::map<unsigned long long, std::shared_ptr<nestvane::ProbeLinux::Process>>::~map[abi:nqe
+         1  nestvane::(anonymous namespace)::writeEntropy(nestvane::Machine&, unsigned long long, unsi
+         1  nestvane::DenseBytes::mutableData()
+         1  std::basic_string<char>::push_back(char)
+         1  nestvane::Machine::write(unsigned long long, std::span<unsigned char const, 18446744073709
+         1  nestvane::AnonymousPages::discard(unsigned long long, unsigned long long)

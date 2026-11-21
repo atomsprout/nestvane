@@ -1,0 +1,29 @@
+Init probe with guest code running natively under the kernel layer (Mac)
+date: 2026-11-21, Apple silicon Mac, tree after bdd7238 plus the native execution batch
+root: generated/android17r-init-root, collected from the image rebuilt with reserved registers (experiments/aosp/patch.py)
+build: tools/probe-init-native.sh (1050 ELF files translated, 0 failed, guest addresses 0x80000000-0x9f7xxxxx; probe binary 1.57 GB)
+command: [NESTVANE_NATIVE=1] generated/probe-init-native --init generated/android17r-init-root   (same binary both ways)
+
+                         wall     user CPU   interpreted guest instructions   guest system calls (first phase)
+interpreter              20.5 s   19.5 s     1,407,666,097                    115,936
+native execution          5.6 s    0.5 s         2,057,375                     94,149
+
+The ten "verified" lines and the set of 33 processes that reach their entry point are the same in both
+runs (the order of process entries differs: scheduling is by time slice instead of instruction count).
+The native run used 0.8 s of CPU in all (user and system) over 5.6 s of wall time, so most of the wall
+time is spent with no guest thread runnable. What it waits for has not been looked at.
+
+native run, first phase (init up to the probe's stop):
+  native execution: modules 198/1050, runs 115341, syscalls 94167, interpreted after a fault 21138 (SIGSEGV 21118, SIGBUS 20, SIGILL 0, SIGTRAP 0), preemptions 2 of 2 signals, traps 34, lost 0
+
+verification lines of the native run:
+  stock vdc checkpoint commands verified: yes
+Runtime APEX ELF verified
+  property reader verified: yes
+  servicemanager.ready=true verified: yes
+  keystore.module_hash.sent=true verified: yes
+  odsign.key.done=1 verified: yes
+  odsign.verification.done=1 verified: yes
+  odsign.verification.success=1 verified: no
+  Runtime APEX activation verified: yes
+  linkerconfig generation verified: yes

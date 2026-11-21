@@ -239,6 +239,8 @@ struct Image {
     uint64_t entry;
     std::vector<Segment> segments;
     std::optional<Startup> startup;
+    // Text of translated files that this image loads where they were translated for.
+    std::vector<std::array<uint64_t, 2>> nativeCode{};
 };
 
 Image loadELF(std::span<const uint8_t> elf, uint64_t bias = 0);

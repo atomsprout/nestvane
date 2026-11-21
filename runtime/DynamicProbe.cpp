@@ -1,5 +1,6 @@
 #include "DynamicProbe.hpp"
 #include "AArch64.hpp"
+#include "NativeCode.hpp"
 #include "AndroidBootAot.hpp"
 #include "ProbeLinux.hpp"
 
@@ -86,6 +87,8 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
         case ProbeKind::dynamic: report << "Android 17 dynamic ELF probe\n"; break;
     }
     bool reachedExecutable = false;
+    const bool nativeExecution = native::enabled();
+    bool interpretNext = false;
     auto machine = linux.createMachine(image);
     auto& cpu = machine.cpu;
     const auto& startup = image.startup.value();
@@ -340,6 +343,24 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
             reachedExecutable = true;
             if (init) report << "  init entry reached after " << cpu.retired << " guest instructions\n";
         }
+        if (interpretNext) {
+            interpretNext = false;
+        } else if (nativeExecution && linux.nativeAt(machine) && !(init && linux.hasChildEntryAt(cpu.pc))) {
+            switch (native::run(machine)) {
+                case native::Exit::preempted:
+                    // The scheduler counts instructions: a slice of native code counts as one of its own.
+                    cpu.retired += 4096;
+                    break;
+                case native::Exit::lost:
+                    break;
+                default:
+                    // An svc, or something else that the interpreter does in native code's place.
+                    cpu.retired += 16;
+                    interpretNext = true;
+                    break;
+            }
+            continue;
+        }
         const auto* bytes = machine.readInstruction(cpu.pc);
         if (!bytes) {
             machine.fault(cpu.pc, cpu.pc);
@@ -556,6 +577,7 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
     }
     if (!linux.watchdogReport.empty())
         report << "  guest threads at Android Watchdog termination:\n" << linux.watchdogReport;
+    if (nativeExecution) report << native::statistics();
     report << linux.workerReport(machine,
         init && (unhandled || cpu.stop == Stop::fault || cpu.stop == Stop::unsupported) ? linux.processId() : 0);
     if (!linux.stderrOutput.empty()) report << "  guest stderr: " << linux.stderrOutput;

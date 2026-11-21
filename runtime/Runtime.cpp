@@ -1,4 +1,5 @@
 #include "Runtime.hpp"
+#include "NativeCode.hpp"
 
 #include <algorithm>
 #include <cerrno>
@@ -301,7 +302,15 @@ void setupStack(Machine& machine, const Startup& startup) {
     std::array<uint8_t, 16> random;
     std::random_device source;
     for (auto& value : random) value = static_cast<uint8_t>(source());
-    const uint64_t randomPointer = pushData(machine, platformPointer, random);
+    uint64_t randomPointer = pushData(machine, platformPointer, random);
+    // Room for the records that tell the dynamic linker where translated files belong. The kernel
+    // layer adds a file's record when the process first looks at the file.
+    uint64_t prelink = 0;
+    if (machine.space && native::enabled()) {
+        const std::vector<uint8_t> empty(GuestSpace::Prelink::capacity * 24);
+        prelink = pushData(machine, randomPointer & ~uint64_t{15}, empty);
+        machine.space->prelink = {prelink, {}};
+    }
 
     // Linux/AArch64 auxiliary vector key-value pairs.
     constexpr uint64_t hwcapCrc32 = uint64_t{1} << 7; // CRC32 and CRC32C at all operand widths.
@@ -319,10 +328,11 @@ void setupStack(Machine& machine, const Startup& startup) {
         11, ids[0], 12, ids[1], 13, ids[2], 14, ids[3],
         15, platformPointer, 16, hwcap, 17, 100, // AT_CLKTCK, the Linux guest USER_HZ.
         23, 0, 25, randomPointer, 31, name,
-        0, 0,
     });
+    if (prelink) initial.insert(initial.end(), {0x4e56, prelink, 0x4e57, GuestSpace::Prelink::capacity});
+    initial.insert(initial.end(), {0, 0});
     if (initial.size() % 2) initial.push_back(0);
-    machine.cpu.sp = pushData(machine, randomPointer & ~uint64_t{15},
+    machine.cpu.sp = pushData(machine, (prelink ? prelink : randomPointer) & ~uint64_t{15},
                               bytes(initial.data(), initial.size() * sizeof(initial.front())));
 }
 
@@ -335,8 +345,11 @@ Image loadELF(std::span<const uint8_t> elf, uint64_t bias) {
 Image loadDynamicELF(std::span<const uint8_t> elf, std::span<const uint8_t> linker,
                      std::string_view guestFilename, std::string_view interpreterPath,
                      std::vector<std::string> arguments, uint64_t uid) {
-    const uint64_t executableBias = field<uint16_t>(elf, 16) == 3 ? 0x4000'0000 : 0;
-    const uint64_t interpreterBase = 0x6000'0000;
+    // A translated file is loaded where it was translated for, and then its code can run natively.
+    const auto* nativeProgram = field<uint16_t>(elf, 16) == 3 ? native::moduleFor(elf) : nullptr;
+    const auto* nativeLinker = native::moduleFor(linker);
+    const uint64_t executableBias = nativeProgram ? nativeProgram->base : field<uint16_t>(elf, 16) == 3 ? 0x4000'0000 : 0;
+    const uint64_t interpreterBase = nativeLinker ? nativeLinker->base : 0x6000'0000;
     auto program = readELF(elf, executableBias, ImageKind::dynamicProgram);
     if (program.interpreter != interpreterPath || !program.programHeaders ||
         guestFilename.empty() || guestFilename.front() != '/') {
@@ -356,11 +369,18 @@ Image loadDynamicELF(std::span<const uint8_t> elf, std::span<const uint8_t> link
     image.startup = Startup{program.image.entry, interpreterBase, program.programHeaders,
                             program.programHeaderSize, program.programHeaderCount, std::string(guestFilename),
                             std::move(arguments), uid};
+    for (const auto* module : {nativeProgram, nativeLinker}) {
+        if (!module) continue;
+        native::activate(*module);
+        image.nativeCode.push_back({module->info[0], module->info[1]});
+    }
+    // The kernel layer watches for a new program reaching its entry point.
+    if (nativeProgram) native::trap(program.image.entry);
     return image;
 }
 
 std::string elfInterpreter(std::span<const uint8_t> elf) {
-    const auto bias = field<uint16_t>(elf, 16) == 3 ? 0x4000'0000 : 0;
+    const uint64_t bias = field<uint16_t>(elf, 16) == 3 ? 0x4000'0000 : 0;
     return readELF(elf, bias, ImageKind::dynamicProgram).interpreter;
 }
 
@@ -396,6 +416,8 @@ Machine::Machine(const Image& image, const std::shared_ptr<AnonymousBudget>& bud
         return a.address < b.address;
     });
     for (auto& segment : segments) place(segment);
+    if (space)
+        for (const auto& range : image.nativeCode) space->addCode(range[0], range[1]);
     cpu.pc = image.entry;
     if (image.startup) {
         setupStack(*this, *image.startup);
