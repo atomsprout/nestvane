@@ -468,7 +468,7 @@ private:
     struct Pipe {
         std::deque<uint8_t> data;
         std::weak_ptr<int> reader, writer;
-        static constexpr size_t capacity = 65536;
+        size_t capacity = 65536;
         uint16_t pollEvents(bool readEnd) const;
     };
     struct Pty {

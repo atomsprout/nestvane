@@ -5162,7 +5162,7 @@ uint64_t ProbeLinux::writeDescriptor(Machine& machine, const Descriptor& fd, uin
     if (fd.pipe) {
         if (!size) return 0;
         if (fd.pipe->reader.expired()) return uint64_t(-32);
-        const auto space = Pipe::capacity - fd.pipe->data.size();
+        const auto space = fd.pipe->capacity - fd.pipe->data.size();
         if (!space || (size <= pageSize && size > space)) return uint64_t(-11);
         const auto count = std::min<uint64_t>(size, space);
         std::vector<uint8_t> dataScratch;
@@ -9848,6 +9848,21 @@ bool ProbeLinux::syscall(Machine& machine) {
                     x[0] = number;
                     break;
                 }
+                case 1031: { // F_SETPIPE_SZ
+                    if (!fd.pipe) { x[0] = uint64_t(-9); break; }
+                    constexpr uint64_t maxPipeCapacity = 1024 * 1024;
+                    if (x[2] > INT32_MAX) { x[0] = invalid; break; }
+                    if (x[2] > maxPipeCapacity) { x[0] = uint64_t(-1); break; }
+                    const auto capacity = std::bit_ceil(std::max(x[2], pageSize));
+                    if (capacity < fd.pipe->data.size()) { x[0] = uint64_t(-16); break; }
+                    fd.pipe->capacity = capacity;
+                    x[0] = capacity;
+                    wakePollers();
+                    break;
+                }
+                case 1032: // F_GETPIPE_SZ
+                    x[0] = fd.pipe ? fd.pipe->capacity : uint64_t(-9);
+                    break;
                 case 1033: { // F_ADD_SEALS
                     if (!fd.temporary || !fd.temporary->memoryFile ||
                         (x[2] & ~uint64_t(sealSeal | sealShrink | sealGrow | sealWrite | sealFutureWrite))) {

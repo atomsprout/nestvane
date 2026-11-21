@@ -6128,6 +6128,34 @@ int main() {
     assert(call(63, {receiver, base + 512, 12}) == 0);
     assert(call(57, {receiver}) == 0 && call(57, {pipePoller}) == 0);
 
+    {
+        constexpr uint64_t maxPipeCapacity = 1024 * 1024;
+        constexpr uint64_t payload = 65536 + pageSize;
+        const auto buffer = call(222, {0, payload, 3, 0x22, uint64_t(-1), 0});
+        assert(int64_t(buffer) > 0);
+        assert(call(59, {base + 512, 0x800}) == 0);
+        const auto ends = load(base + 512);
+        const auto reader = uint32_t(ends), writer = uint32_t(ends >> 32);
+        assert(call(25, {reader, 1032}) == 65536);
+        assert(call(25, {writer, 1031, maxPipeCapacity}) == maxPipeCapacity);
+        assert(call(25, {reader, 1032}) == maxPipeCapacity);
+        assert(call(25, {reader, 1031, maxPipeCapacity + 1}) == uint64_t(-1));
+        assert(call(25, {reader, 1031, UINT64_MAX}) == uint64_t(-22));
+        assert(machine.store64(buffer + payload - 8, 0x12345678));
+        assert(call(64, {writer, buffer, payload}) == payload);
+        assert(call(25, {reader, 1031, 65536}) == uint64_t(-16));
+        assert(call(25, {reader, 1032}) == maxPipeCapacity);
+        assert(machine.store64(buffer + payload - 8, 0));
+        assert(call(63, {reader, buffer, payload}) == payload && load(buffer + payload - 8) == 0x12345678);
+        assert(call(25, {reader, 1031, pageSize + 1}) == 2 * pageSize);
+        assert(call(25, {writer, 1031, 1}) == pageSize);
+        assert(call(64, {writer, buffer, pageSize}) == pageSize);
+        assert(call(64, {writer, buffer, 1}) == uint64_t(-11));
+        assert(call(63, {reader, buffer, pageSize}) == pageSize);
+        assert(call(57, {writer}) == 0 && call(57, {reader}) == 0);
+        assert(call(215, {buffer, payload}) == 0);
+    }
+
     put(base + 120, "/system/bin/absent");
     const auto beforeExec = machine.cpu.pc;
     assert(call(221, {base + 120, 0, 0}) == uint64_t(-2));
