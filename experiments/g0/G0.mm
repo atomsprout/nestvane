@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/sysctl.h>
 #include <sys/utsname.h>
 #include <time.h>
@@ -409,6 +410,88 @@ void e2Generations() {
     for (int index = 0; index <= made; ++index) munmap(maps[index], size);
 }
 
+extern "C" int proc_pid_rusage(int pid, int flavor, rusage_info_t* buffer);
+
+uint64_t diskBytesWritten() {
+    rusage_info_v4 usage{};
+    if (proc_pid_rusage(getpid(), RUSAGE_INFO_V4, reinterpret_cast<rusage_info_t*>(&usage)) != 0) return 0;
+    return usage.ri_diskio_byteswritten;
+}
+
+// A zygote-like parent with many copy-on-write children that each read part of the inherited pages and
+// write a smaller part. Compares anonymous backing with an unlinked file mapped MAP_SHARED in the parent.
+void e2Zygote(bool fileBacked, int children, uint64_t parentBytes, int readPercent, int writePercent) {
+    const uint64_t page = vm_page_size, pages = parentBytes / page;
+    int descriptor = -1;
+    if (fileBacked) {
+        NSString* path = [NSTemporaryDirectory() stringByAppendingPathComponent:@"g0-zygote.bin"];
+        descriptor = open(path.fileSystemRepresentation, O_RDWR | O_CREAT | O_TRUNC, 0600);
+        unlink(path.fileSystemRepresentation);
+        ftruncate(descriptor, parentBytes);
+    }
+    const double footprintBefore = footprintMiB(), hostBefore = hostFreeMiB();
+    const uint64_t diskBefore = diskBytesWritten();
+    auto* parent = static_cast<uint8_t*>(mmap(nullptr, parentBytes, PROT_READ | PROT_WRITE, fileBacked ? MAP_SHARED : MAP_PRIVATE | MAP_ANON, descriptor, 0));
+    if (parent == MAP_FAILED) { say("e2 zygote mmap errno=%d", errno); return; }
+    uint64_t begin = nowNs();
+    for (uint64_t index = 0; index < pages; ++index) memset(parent + index * page, static_cast<int>(index | 1), page);
+    const uint64_t fillNs = nowNs() - begin;
+    const double footprintParent = footprintMiB();
+
+    static uint8_t* maps[256];
+    uint64_t remapNs = 0, readNs = 0, writeNs = 0, wrong = 0, readPages = 0, writtenPages = 0;
+    int made = 0;
+    for (int child = 0; child < children && child < 256; ++child) {
+        void* target = nullptr;
+        begin = nowNs();
+        if (remapCopy(parent, parentBytes, &target, VM_FLAGS_ANYWHERE) != KERN_SUCCESS) break;
+        remapNs += nowNs() - begin;
+        maps[made++] = static_cast<uint8_t*>(target);
+        auto* memory = static_cast<uint8_t*>(target);
+        // Each child reads and writes a different window so the union covers the whole parent.
+        const uint64_t first = static_cast<uint64_t>(child) * 7919 % pages;
+        begin = nowNs();
+        for (uint64_t count = 0; count < pages * readPercent / 100; ++count) {
+            const uint64_t index = (first + count) % pages;
+            if (memory[index * page + 5] != static_cast<uint8_t>(index | 1)) ++wrong;
+            ++readPages;
+        }
+        readNs += nowNs() - begin;
+        begin = nowNs();
+        for (uint64_t count = 0; count < pages * writePercent / 100; ++count) {
+            memory[(first + count) % pages * page + 9] = 0;
+            ++writtenPages;
+        }
+        writeNs += nowNs() - begin;
+    }
+    for (uint64_t index = 0; index < pages; ++index)
+        if (parent[index * page + 9] != static_cast<uint8_t>(index | 1)) ++wrong;
+    const double footprintChildren = footprintMiB(), hostChildren = hostFreeMiB();
+    const uint64_t diskAfter = diskBytesWritten();
+    sleep(3);
+    const uint64_t diskLater = diskBytesWritten();
+    say("e2 zygote backing=%s children=%d parent_mib=%.0f read_percent=%d write_percent=%d parent_fill_us_per_page=%.2f remap_mean_ms=%.3f "
+        "child_read_us_per_page=%.2f child_write_us_per_page=%.2f wrong=%llu footprint_mib start=%.1f parent_filled=%.1f with_children=%.1f "
+        "host_free_mib start=%.0f with_children=%.0f disk_written_mib during=%.1f after_3s=%.1f",
+        fileBacked ? "unlinked_file" : "anonymous", made, static_cast<double>(parentBytes) / MiB, readPercent, writePercent,
+        static_cast<double>(fillNs) / 1e3 / pages, made ? ms(remapNs) / made : 0, readPages ? static_cast<double>(readNs) / 1e3 / readPages : 0,
+        writtenPages ? static_cast<double>(writeNs) / 1e3 / writtenPages : 0, static_cast<unsigned long long>(wrong), footprintBefore,
+        footprintParent, footprintChildren, hostBefore, hostChildren, static_cast<double>(diskAfter - diskBefore) / MiB,
+        static_cast<double>(diskLater - diskBefore) / MiB);
+    for (int child = 0; child < made; ++child) munmap(maps[child], parentBytes);
+    munmap(parent, parentBytes);
+    if (descriptor >= 0) close(descriptor);
+}
+
+void e2Zygotes() {
+    // Shaped after the 16 KiB reference: about 44 MiB inherited per child, a quarter read, a tenth written.
+    e2Zygote(false, 32, 48 * MiB, 25, 10);
+    e2Zygote(true, 32, 48 * MiB, 25, 10);
+    e2Zygote(false, 64, 48 * MiB, 25, 10);
+    e2Zygote(true, 64, 48 * MiB, 25, 10);
+    e2Zygote(true, 64, 48 * MiB, 100, 0);
+}
+
 void e2() {
     e2Sparse(GiB, 64 * MiB);
     e2Sparse(GiB, 256 * MiB);
@@ -694,6 +777,7 @@ void* run(void* raw) {
     const uint64_t begin = nowNs();
     if ([probe isEqualToString:@"e1"]) e1();
     else if ([probe isEqualToString:@"e2"]) e2();
+    else if ([probe isEqualToString:@"e2zygote"]) e2Zygotes();
     else if ([probe isEqualToString:@"e4"]) e4();
     else if ([probe isEqualToString:@"e5"]) e5();
     else if ([probe isEqualToString:@"e5pressure"]) {

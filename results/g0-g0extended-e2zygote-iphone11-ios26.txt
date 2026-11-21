@@ -1,0 +1,10 @@
+probe=e2zygote bundle=com.everettjf.nestvane.g0extended
+machine=iPhone12,1 os=Version 26.0.1 (Build 23A355) build_config=optimized
+traced=0 host_page=16384 kernel_page=16384 physical_memory_mib=3853 available_mib=2343 footprint_mib=4.6
+vm_map min=0x1045d8000 max=0xfc0000000 span_gib=58.93 virtual_size_gib=391.08
+e2 zygote backing=anonymous children=32 parent_mib=48 read_percent=25 write_percent=10 parent_fill_us_per_page=3.35 remap_mean_ms=0.088 child_read_us_per_page=0.80 child_write_us_per_page=4.02 wrong=0 footprint_mib start=4.6 parent_filled=53.0 with_children=439.0 host_free_mib start=1452 with_children=1430 disk_written_mib during=0.0 after_3s=0.0
+e2 zygote backing=unlinked_file children=32 parent_mib=48 read_percent=25 write_percent=10 parent_fill_us_per_page=6.28 remap_mean_ms=0.145 child_read_us_per_page=0.91 child_write_us_per_page=5.03 wrong=0 footprint_mib start=6.4 parent_filled=6.4 with_children=160.5 host_free_mib start=1585 with_children=1457 disk_written_mib during=0.0 after_3s=0.0
+e2 zygote backing=anonymous children=64 parent_mib=48 read_percent=25 write_percent=10 parent_fill_us_per_page=2.71 remap_mean_ms=0.061 child_read_us_per_page=0.67 child_write_us_per_page=3.66 wrong=0 footprint_mib start=6.2 parent_filled=54.2 with_children=823.5 host_free_mib start=1632 with_children=1495 disk_written_mib during=0.0 after_3s=0.0
+e2 zygote backing=unlinked_file children=64 parent_mib=48 read_percent=25 write_percent=10 parent_fill_us_per_page=4.73 remap_mean_ms=0.071 child_read_us_per_page=0.74 child_write_us_per_page=3.80 wrong=0 footprint_mib start=6.1 parent_filled=6.1 with_children=314.4 host_free_mib start=1679 with_children=1399 disk_written_mib during=0.0 after_3s=0.0
+e2 zygote backing=unlinked_file children=64 parent_mib=48 read_percent=100 write_percent=0 parent_fill_us_per_page=2.32 remap_mean_ms=0.037 child_read_us_per_page=0.58 child_write_us_per_page=0.00 wrong=0 footprint_mib start=6.1 parent_filled=6.1 with_children=7.6 host_free_mib start=1690 with_children=1643 disk_written_mib during=0.0 after_3s=0.0
+done probe=e2zygote elapsed_ms=15968

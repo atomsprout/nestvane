@@ -1,0 +1,192 @@
+fingerprint=google/sdk_gphone16k_arm64/emu64a16k:16/BE2A.250530.026.F3/13894323:userdebug/dev-keys
+page_size=16384
+resumed=topResumedActivity=ActivityRecord{209363893 u0 com.google.android.apps.nexuslauncher/.NexusLauncherActivity t5}
+uptime_s=347.20
+meminfo_mib MemTotal=8045 MemFree=2112 MemAvailable=4723 AnonPages=1320 Shmem=27 Mapped=1128 SwapTotal=0 SwapFree=0
+total_mib group=all processes=140 RssAnon=4650 Pss_Anon=1320 Swap=0 SwapPss=0 RssShmem=74 Pss_Shmem=25 RssFile=5841 Pss_File=1103
+total_mib group=zygote_and_children processes=64 RssAnon=4449 Pss_Anon=1079 Swap=0 SwapPss=0 RssShmem=60 Pss_Shmem=14 RssFile=5293 Pss_File=961
+total_mib group=native processes=76 RssAnon=201 Pss_Anon=241 Swap=0 SwapPss=0 RssShmem=14 Pss_Shmem=11 RssFile=548 Pss_File=141
+process pid=6192 name=system_server zygote_child=1 RssAnon=146.0 Pss_Anon=98.3 Swap=0.0 SwapPss=0.0 RssShmem=3.0 Pss_Shmem=0.9 RssFile=257.8 Pss_File=132.4
+process pid=6446 name=com.android.systemui zygote_child=1 RssAnon=114.2 Pss_Anon=64.7 Swap=0.0 SwapPss=0.0 RssShmem=5.0 Pss_Shmem=0.8 RssFile=163.9 Pss_File=40.3
+process pid=8159 name=com.google.android.tts zygote_child=1 RssAnon=98.2 Pss_Anon=45.4 Swap=0.0 SwapPss=0.0 RssShmem=1.0 Pss_Shmem=0.3 RssFile=95.1 Pss_File=26.6
+process pid=6587 name=com.google.android.apps.nexuslauncher zygote_child=1 RssAnon=97.3 Pss_Anon=45.9 Swap=0.0 SwapPss=0.0 RssShmem=1.0 Pss_Shmem=0.1 RssFile=104.2 Pss_File=10.6
+process pid=6686 name=com.google.android.gms.persistent zygote_child=1 RssAnon=92.5 Pss_Anon=42.0 Swap=0.0 SwapPss=0.0 RssShmem=3.0 Pss_Shmem=1.0 RssFile=174.3 Pss_File=36.7
+process pid=6982 name=com.google.android.gms zygote_child=1 RssAnon=90.6 Pss_Anon=39.0 Swap=0.0 SwapPss=0.0 RssShmem=1.5 Pss_Shmem=0.4 RssFile=181.7 Pss_File=41.9
+process pid=7034 name=com.google.android.as zygote_child=1 RssAnon=90.3 Pss_Anon=39.0 Swap=0.0 SwapPss=0.0 RssShmem=1.0 Pss_Shmem=0.5 RssFile=137.4 Pss_File=58.1
+process pid=7173 name=com.google.android.googlequicksearchbox:search zygote_child=1 RssAnon=86.9 Pss_Anon=34.3 Swap=0.0 SwapPss=0.0 RssShmem=1.0 Pss_Shmem=0.5 RssFile=179.5 Pss_File=60.2
+process pid=7545 name=com.google.android.apps.messaging zygote_child=1 RssAnon=86.1 Pss_Anon=33.7 Swap=0.0 SwapPss=0.0 RssShmem=1.0 Pss_Shmem=0.5 RssFile=134.5 Pss_File=41.4
+process pid=7004 name=com.google.android.inputmethod.latin zygote_child=1 RssAnon=83.2 Pss_Anon=30.4 Swap=0.0 SwapPss=0.0 RssShmem=1.5 Pss_Shmem=0.4 RssFile=147.2 Pss_File=48.4
+process pid=6913 name=com.google.android.dialer zygote_child=1 RssAnon=78.4 Pss_Anon=26.2 Swap=0.0 SwapPss=0.0 RssShmem=2.0 Pss_Shmem=0.9 RssFile=93.5 Pss_File=26.9
+process pid=6969 name=com.google.android.apps.wellbeing zygote_child=1 RssAnon=78.1 Pss_Anon=25.2 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.1 RssFile=98.7 Pss_File=17.2
+process pid=7035 name=com.google.android.googlequicksearchbox:interactor zygote_child=1 RssAnon=76.8 Pss_Anon=23.7 Swap=0.0 SwapPss=0.0 RssShmem=1.0 Pss_Shmem=0.3 RssFile=135.1 Pss_File=34.9
+process pid=6621 name=com.android.settings zygote_child=1 RssAnon=73.3 Pss_Anon=24.4 Swap=0.0 SwapPss=0.0 RssShmem=1.0 Pss_Shmem=0.1 RssFile=110.1 Pss_File=26.5
+process pid=8398 name=com.google.android.settings.intelligence zygote_child=1 RssAnon=71.4 Pss_Anon=19.1 Swap=0.0 SwapPss=0.0 RssShmem=1.0 Pss_Shmem=0.1 RssFile=89.8 Pss_File=15.2
+process pid=7571 name=com.google.android.gms.unstable zygote_child=1 RssAnon=70.6 Pss_Anon=17.3 Swap=0.0 SwapPss=0.0 RssShmem=1.0 Pss_Shmem=0.1 RssFile=117.7 Pss_File=12.5
+process pid=7232 name=com.google.android.apps.photos zygote_child=1 RssAnon=70.2 Pss_Anon=17.4 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.1 RssFile=108.4 Pss_File=45.3
+process pid=6558 name=com.android.phone zygote_child=1 RssAnon=69.6 Pss_Anon=18.6 Swap=0.0 SwapPss=0.0 RssShmem=1.0 Pss_Shmem=0.1 RssFile=91.0 Pss_File=12.8
+process pid=8562 name=com.google.android.gms.ui zygote_child=1 RssAnon=69.5 Pss_Anon=17.1 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.1 RssFile=130.2 Pss_File=19.9
+process pid=7072 name=com.google.android.apps.messaging:rcs zygote_child=1 RssAnon=68.0 Pss_Anon=15.4 Swap=0.0 SwapPss=0.0 RssShmem=1.0 Pss_Shmem=0.1 RssFile=108.1 Pss_File=23.9
+process pid=7020 name=com.google.android.providers.media.module zygote_child=1 RssAnon=68.0 Pss_Anon=15.5 Swap=0.0 SwapPss=0.0 RssShmem=1.0 Pss_Shmem=0.1 RssFile=79.5 Pss_File=10.5
+process pid=8120 name=com.google.android.apps.safetyhub zygote_child=1 RssAnon=66.8 Pss_Anon=13.5 Swap=0.0 SwapPss=0.0 RssShmem=1.0 Pss_Shmem=0.1 RssFile=75.5 Pss_File=15.1
+process pid=7351 name=com.everettjf.scriptwidget zygote_child=1 RssAnon=66.6 Pss_Anon=21.5 Swap=0.0 SwapPss=0.0 RssShmem=8.0 Pss_Shmem=3.8 RssFile=68.0 Pss_File=3.3
+process pid=6569 name=com.google.android.bluetooth zygote_child=1 RssAnon=66.1 Pss_Anon=14.5 Swap=0.0 SwapPss=0.0 RssShmem=1.0 Pss_Shmem=0.1 RssFile=82.0 Pss_File=16.3
+process pid=6746 name=com.google.android.permissioncontroller zygote_child=1 RssAnon=66.1 Pss_Anon=13.3 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.1 RssFile=76.9 Pss_File=9.8
+process pid=7139 name=android.process.acore zygote_child=1 RssAnon=64.9 Pss_Anon=12.7 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.1 RssFile=67.5 Pss_File=4.2
+process pid=7128 name=com.google.android.deskclock zygote_child=1 RssAnon=64.5 Pss_Anon=11.7 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.1 RssFile=70.5 Pss_File=10.1
+process pid=7624 name=com.google.android.as.oss zygote_child=1 RssAnon=64.0 Pss_Anon=10.2 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.1 RssFile=61.0 Pss_File=5.9
+process pid=7900 name=com.google.android.rkpdapp zygote_child=1 RssAnon=63.0 Pss_Anon=10.4 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.1 RssFile=55.0 Pss_File=1.2
+process pid=6514 name=com.android.networkstack.process zygote_child=1 RssAnon=62.5 Pss_Anon=10.2 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.1 RssFile=64.5 Pss_File=3.9
+process pid=8514 name=com.android.chrome zygote_child=1 RssAnon=62.5 Pss_Anon=8.9 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.1 RssFile=61.0 Pss_File=7.5
+process pid=8563 name=com.google.android.marvin.talkback zygote_child=1 RssAnon=62.5 Pss_Anon=9.2 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.1 RssFile=69.0 Pss_File=16.2
+process pid=8340 name=com.google.android.partnersetup zygote_child=1 RssAnon=62.5 Pss_Anon=9.4 Swap=0.0 SwapPss=0.0 RssShmem=1.0 Pss_Shmem=0.1 RssFile=60.5 Pss_File=2.5
+process pid=6797 name=com.google.android.cellbroadcastreceiver zygote_child=1 RssAnon=62.1 Pss_Anon=9.1 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.1 RssFile=67.0 Pss_File=11.2
+process pid=7465 name=android.process.media zygote_child=1 RssAnon=62.0 Pss_Anon=9.2 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.1 RssFile=60.0 Pss_File=3.0
+process pid=8561 name=com.google.android.accessibility.switchaccess zygote_child=1 RssAnon=62.0 Pss_Anon=9.3 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.1 RssFile=63.5 Pss_File=9.2
+process pid=7575 name=com.google.android.apps.wallpaper zygote_child=1 RssAnon=61.8 Pss_Anon=8.7 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.1 RssFile=62.0 Pss_File=8.6
+process pid=8377 name=com.google.android.projection.gearhead:car zygote_child=1 RssAnon=61.7 Pss_Anon=8.4 Swap=0.0 SwapPss=0.0 RssShmem=1.0 Pss_Shmem=0.1 RssFile=57.0 Pss_File=3.8
+process pid=6603 name=com.google.android.ext.services zygote_child=1 RssAnon=61.6 Pss_Anon=9.0 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.1 RssFile=60.5 Pss_File=3.8
+process pid=8048 name=com.android.providers.calendar zygote_child=1 RssAnon=61.6 Pss_Anon=8.2 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.1 RssFile=57.0 Pss_File=1.4
+process pid=8021 name=com.android.managedprovisioning zygote_child=1 RssAnon=61.5 Pss_Anon=7.8 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.1 RssFile=54.5 Pss_File=3.6
+process pid=8202 name=.adservices zygote_child=1 RssAnon=61.5 Pss_Anon=8.0 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.1 RssFile=55.0 Pss_File=3.2
+process pid=8270 name=com.google.android.healthconnect.controller zygote_child=1 RssAnon=61.5 Pss_Anon=7.8 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.1 RssFile=52.5 Pss_File=3.1
+process pid=8297 name=com.google.android.ondevicepersonalization.services zygote_child=1 RssAnon=61.5 Pss_Anon=7.6 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.1 RssFile=49.0 Pss_File=0.8
+process pid=8428 name=com.google.android.photopicker zygote_child=1 RssAnon=61.4 Pss_Anon=8.0 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.1 RssFile=50.5 Pss_File=1.8
+process pid=6498 name=webview_zygote zygote_child=1 RssAnon=61.0 Pss_Anon=6.6 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=40.3 Pss_File=4.8
+process pid=7088 name=com.android.printspooler zygote_child=1 RssAnon=61.0 Pss_Anon=7.7 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.1 RssFile=52.0 Pss_File=1.5
+process pid=7193 name=com.android.keychain zygote_child=1 RssAnon=61.0 Pss_Anon=7.5 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.1 RssFile=53.0 Pss_File=3.0
+process pid=7746 name=com.android.imsserviceentitlement zygote_child=1 RssAnon=61.0 Pss_Anon=7.7 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.1 RssFile=53.5 Pss_File=4.1
+process pid=7844 name=com.google.android.onetimeinitializer zygote_child=1 RssAnon=61.0 Pss_Anon=7.5 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.1 RssFile=48.5 Pss_File=1.5
+process pid=7920 name=com.android.camera2 zygote_child=1 RssAnon=61.0 Pss_Anon=7.5 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.1 RssFile=52.5 Pss_File=3.1
+process pid=7983 name=com.android.devicediagnostics zygote_child=1 RssAnon=61.0 Pss_Anon=7.6 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.1 RssFile=55.0 Pss_File=6.3
+process pid=7998 name=com.android.dynsystem zygote_child=1 RssAnon=61.0 Pss_Anon=7.4 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.1 RssFile=50.5 Pss_File=0.9
+process pid=8130 name=com.android.localtransport zygote_child=1 RssAnon=61.0 Pss_Anon=7.4 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.1 RssFile=51.5 Pss_File=1.0
+process pid=8242 name=com.google.android.federatedcompute zygote_child=1 RssAnon=61.0 Pss_Anon=7.6 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.1 RssFile=48.0 Pss_File=0.8
+process pid=8460 name=com.android.externalstorage zygote_child=1 RssAnon=61.0 Pss_Anon=7.5 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.1 RssFile=50.5 Pss_File=1.0
+process pid=7794 name=com.android.traceur zygote_child=1 RssAnon=61.0 Pss_Anon=7.8 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.1 RssFile=55.0 Pss_File=4.2
+process pid=8099 name=com.android.shell zygote_child=1 RssAnon=61.0 Pss_Anon=7.4 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.1 RssFile=51.0 Pss_File=1.3
+process pid=8319 name=com.google.android.packageinstaller zygote_child=1 RssAnon=61.0 Pss_Anon=7.4 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.1 RssFile=49.5 Pss_File=2.7
+process pid=6546 name=com.android.se zygote_child=1 RssAnon=60.9 Pss_Anon=7.5 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.1 RssFile=50.0 Pss_File=1.0
+process pid=8023 name=com.android.dynsystem:dynsystem zygote_child=1 RssAnon=60.9 Pss_Anon=7.5 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.1 RssFile=51.0 Pss_File=1.0
+process pid=6129 name=zygote64 zygote_child=0 RssAnon=60.8 Pss_Anon=5.2 Swap=0.0 SwapPss=0.0 RssShmem=1.0 Pss_Shmem=0.2 RssFile=144.8 Pss_File=29.0
+process pid=8161 name=com.google.android.configupdater zygote_child=1 RssAnon=60.8 Pss_Anon=7.4 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.1 RssFile=50.5 Pss_File=1.4
+process pid=7090 name=com.android.emulator.multidisplay zygote_child=1 RssAnon=60.5 Pss_Anon=7.3 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.1 RssFile=48.5 Pss_File=0.9
+process pid=6127 name=/system/bin/surfaceflinger zygote_child=0 RssAnon=18.5 Pss_Anon=19.3 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=20.4 Pss_File=8.4
+process pid=567 name=media.swcodec zygote_child=0 RssAnon=11.5 Pss_Anon=12.2 Swap=0.0 SwapPss=0.0 RssShmem=1.0 Pss_Shmem=0.3 RssFile=37.8 Pss_File=16.2
+process pid=6128 name=/system/bin/audioserver zygote_child=0 RssAnon=8.5 Pss_Anon=8.8 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.0 RssFile=23.9 Pss_File=9.1
+process pid=554 name=/system/bin/cameraserver zygote_child=0 RssAnon=8.0 Pss_Anon=8.4 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=25.5 Pss_File=6.3
+process pid=558 name=media.extractor zygote_child=0 RssAnon=8.0 Pss_Anon=8.7 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=26.3 Pss_File=5.8
+process pid=564 name=/system/bin/mediaserver zygote_child=0 RssAnon=7.5 Pss_Anon=8.8 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.0 RssFile=27.4 Pss_File=4.4
+process pid=470 name=/vendor/bin/hw/android.hardware.graphics.composer3-service.ranchu zygote_child=0 RssAnon=7.0 Pss_Anon=7.6 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=10.0 Pss_File=1.8
+process pid=456 name=/vendor/bin/hw/android.hardware.graphics.allocator-service.ranchu zygote_child=0 RssAnon=6.0 Pss_Anon=6.6 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=6.4 Pss_File=0.4
+process pid=217 name=/system/bin/logd zygote_child=0 RssAnon=5.1 Pss_Anon=5.6 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=3.5 Pss_File=0.7
+process pid=3467 name=/apex/com.android.adbd/bin/adbd zygote_child=0 RssAnon=5.0 Pss_Anon=5.4 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.1 RssFile=6.0 Pss_File=2.1
+process pid=454 name=/vendor/bin/hw/android.hardware.camera.provider@2.7-service-google zygote_child=0 RssAnon=5.0 Pss_Anon=5.6 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=15.5 Pss_File=6.6
+process pid=460 name=/vendor/bin/hw/android.hardware.media.c2@1.0-service-goldfish zygote_child=0 RssAnon=5.0 Pss_Anon=5.5 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=15.0 Pss_File=6.5
+process pid=1 name=/system/bin/init zygote_child=0 RssAnon=4.0 Pss_Anon=4.7 Swap=0.0 SwapPss=0.0 RssShmem=11.0 Pss_Shmem=9.6 RssFile=7.0 Pss_File=1.8
+process pid=251 name=/system/bin/keystore2 zygote_child=0 RssAnon=3.5 Pss_Anon=4.8 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=12.0 Pss_File=5.0
+process pid=6061 name=/vendor/bin/hw/android.hardware.audio.service zygote_child=0 RssAnon=3.5 Pss_Anon=4.4 Swap=0.0 SwapPss=0.0 RssShmem=0.5 Pss_Shmem=0.0 RssFile=13.0 Pss_File=7.9
+process pid=559 name=media.metrics zygote_child=0 RssAnon=3.0 Pss_Anon=3.8 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=6.9 Pss_File=1.0
+process pid=6126 name=/system/bin/netd zygote_child=0 RssAnon=3.0 Pss_Anon=3.4 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=9.5 Pss_File=4.5
+process pid=98 name=/system/bin/ueventd zygote_child=0 RssAnon=3.0 Pss_Anon=3.0 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=6.5 Pss_File=1.2
+process pid=238 name=/system/bin/vold zygote_child=0 RssAnon=2.5 Pss_Anon=3.3 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=7.0 Pss_File=1.6
+process pid=453 name=/vendor/bin/hw/android.hardware.camera.provider.ranchu zygote_child=0 RssAnon=2.5 Pss_Anon=3.5 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=9.4 Pss_File=1.3
+process pid=516 name=/system/bin/gpuservice zygote_child=0 RssAnon=2.5 Pss_Anon=3.2 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=7.0 Pss_File=0.9
+process pid=540 name=/system/bin/drmserver zygote_child=0 RssAnon=2.5 Pss_Anon=2.9 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=7.5 Pss_File=0.6
+process pid=557 name=/system/bin/installd zygote_child=0 RssAnon=2.5 Pss_Anon=3.1 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=5.5 Pss_File=0.6
+process pid=220 name=/system/bin/servicemanager zygote_child=0 RssAnon=2.0 Pss_Anon=2.6 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=5.0 Pss_File=0.8
+process pid=252 name=/vendor/bin/hw/android.hardware.security.keymint-service zygote_child=0 RssAnon=2.0 Pss_Anon=2.3 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=7.0 Pss_File=2.0
+process pid=448 name=/apex/com.android.os.statsd/bin/statsd zygote_child=0 RssAnon=2.0 Pss_Anon=2.8 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=4.5 Pss_File=1.1
+process pid=461 name=/vendor/bin/hw/android.hardware.radio-service.ranchu zygote_child=0 RssAnon=2.0 Pss_Anon=2.4 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=7.5 Pss_File=2.1
+process pid=466 name=/vendor/bin/hw/android.hardware.sensors-service.multihal zygote_child=0 RssAnon=2.0 Pss_Anon=2.5 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=5.5 Pss_File=0.9
+process pid=484 name=/apex/com.android.hardware.neuralnetworks/bin/hw/android.hardware.neuralnetworks-service-sample-all zygote_child=0 RssAnon=2.0 Pss_Anon=2.8 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=9.0 Pss_File=3.3
+process pid=515 name=/system/bin/credstore zygote_child=0 RssAnon=2.0 Pss_Anon=2.2 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=7.0 Pss_File=1.0
+process pid=96 name=/system/bin/init zygote_child=0 RssAnon=2.0 Pss_Anon=2.5 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=6.0 Pss_File=1.0
+process pid=214 name=/system/bin/prng_seeder zygote_child=0 RssAnon=1.5 Pss_Anon=2.0 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=5.0 Pss_File=2.5
+process pid=224 name=/system/system_ext/bin/hwservicemanager zygote_child=0 RssAnon=1.5 Pss_Anon=2.1 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=5.0 Pss_File=0.8
+process pid=250 name=/system/bin/hw/android.system.suspend-service zygote_child=0 RssAnon=1.5 Pss_Anon=2.1 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=4.5 Pss_File=0.4
+process pid=459 name=/vendor/bin/hw/android.hardware.health-service.example zygote_child=0 RssAnon=1.5 Pss_Anon=1.9 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=5.0 Pss_File=0.4
+process pid=467 name=/vendor/bin/hw/android.hardware.usb-service.example zygote_child=0 RssAnon=1.5 Pss_Anon=1.9 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=4.5 Pss_File=0.2
+process pid=468 name=/vendor/bin/hw/android.hardware.wifi-service zygote_child=0 RssAnon=1.5 Pss_Anon=1.9 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=5.5 Pss_File=1.3
+process pid=469 name=/vendor/bin/hw/android.hardware.bluetooth-service.default zygote_child=0 RssAnon=1.5 Pss_Anon=1.9 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=5.5 Pss_File=0.4
+process pid=472 name=/vendor/bin/hw/android.hardware.lights-service.example zygote_child=0 RssAnon=1.5 Pss_Anon=1.9 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=4.0 Pss_File=1.0
+process pid=474 name=/apex/com.android.hardware.cas/bin/hw/android.hardware.cas-service.example zygote_child=0 RssAnon=1.5 Pss_Anon=1.6 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=3.5 Pss_File=0.1
+process pid=485 name=/apex/com.android.hardware.neuralnetworks/bin/hw/android.hardware.neuralnetworks-service-sample-limited zygote_child=0 RssAnon=1.5 Pss_Anon=2.4 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=7.0 Pss_File=2.0
+process pid=488 name=/apex/com.android.hardware.neuralnetworks/bin/hw/android.hardware.neuralnetworks-shim-service-sample zygote_child=0 RssAnon=1.5 Pss_Anon=2.6 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=8.5 Pss_File=3.6
+process pid=490 name=/apex/com.android.hardware.power/bin/hw/android.hardware.power-service.example zygote_child=0 RssAnon=1.5 Pss_Anon=1.8 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=4.5 Pss_File=1.0
+process pid=494 name=/apex/com.android.hardware.threadnetwork/bin/hw/android.hardware.threadnetwork-service zygote_child=0 RssAnon=1.5 Pss_Anon=1.5 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=3.5 Pss_File=0.2
+process pid=525 name=/vendor/bin/hw/android.hardware.uwb-service zygote_child=0 RssAnon=1.5 Pss_Anon=1.9 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=4.0 Pss_File=0.5
+process pid=543 name=/system/bin/traced zygote_child=0 RssAnon=1.5 Pss_Anon=1.9 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=3.0 Pss_File=0.4
+process pid=552 name=/system/bin/logcat zygote_child=0 RssAnon=1.5 Pss_Anon=1.6 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=3.5 Pss_File=0.2
+process pid=556 name=/system/bin/incidentd zygote_child=0 RssAnon=1.5 Pss_Anon=1.9 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=4.5 Pss_File=0.5
+process pid=565 name=/system/bin/storaged zygote_child=0 RssAnon=1.5 Pss_Anon=1.9 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=5.0 Pss_File=0.5
+process pid=566 name=/system/bin/wificond zygote_child=0 RssAnon=1.5 Pss_Anon=2.0 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=5.5 Pss_File=0.7
+process pid=568 name=/system/bin/gatekeeperd zygote_child=0 RssAnon=1.5 Pss_Anon=1.9 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=5.0 Pss_File=0.4
+process pid=6130 name=/system/bin/iptables-restore zygote_child=0 RssAnon=1.5 Pss_Anon=1.7 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=2.5 Pss_File=0.2
+process pid=6131 name=/system/bin/ip6tables-restore zygote_child=0 RssAnon=1.5 Pss_Anon=1.8 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=2.5 Pss_File=0.2
+process pid=6397 name=/vendor/bin/hw/android.hardware.biometrics.fingerprint-service.ranchu zygote_child=0 RssAnon=1.5 Pss_Anon=1.9 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=5.0 Pss_File=0.3
+process pid=6419 name=/apex/com.android.tethering/bin/ot-daemon zygote_child=0 RssAnon=1.5 Pss_Anon=2.1 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=6.0 Pss_File=2.0
+process pid=6458 name=/vendor/bin/hw/android.hardware.gnss-service.ranchu zygote_child=0 RssAnon=1.5 Pss_Anon=1.8 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=5.0 Pss_File=0.6
+process pid=12534 name=sleep zygote_child=0 RssAnon=1.0 Pss_Anon=1.3 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=3.5 Pss_File=0.2
+process pid=218 name=/system/bin/lmkd zygote_child=0 RssAnon=1.0 Pss_Anon=1.8 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=3.0 Pss_File=0.4
+process pid=225 name=/system/bin/sh zygote_child=0 RssAnon=1.0 Pss_Anon=1.4 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=2.5 Pss_File=0.3
+process pid=228 name=/vendor/bin/qemu-props zygote_child=0 RssAnon=1.0 Pss_Anon=1.2 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=3.0 Pss_File=0.2
+process pid=254 name=/apex/com.android.hardware.gatekeeper/bin/hw/android.hardware.gatekeeper-service.nonsecure zygote_child=0 RssAnon=1.0 Pss_Anon=2.0 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=6.0 Pss_File=3.2
+process pid=278 name=/system/bin/tombstoned zygote_child=0 RssAnon=1.0 Pss_Anon=1.1 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=2.0 Pss_File=0.2
+process pid=451 name=/system/system_ext/bin/hw/android.hidl.allocator@1.0-service zygote_child=0 RssAnon=1.0 Pss_Anon=1.5 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=3.0 Pss_File=0.1
+process pid=471 name=/vendor/bin/hw/android.hardware.identity-service.example zygote_child=0 RssAnon=1.0 Pss_Anon=1.8 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=5.5 Pss_File=0.9
+process pid=473 name=/apex/com.android.hardware.authsecret/bin/hw/android.hardware.authsecret-service.example zygote_child=0 RssAnon=1.0 Pss_Anon=1.5 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=3.5 Pss_File=0.2
+process pid=475 name=/apex/com.android.hardware.contexthub/bin/hw/android.hardware.contexthub-service.example zygote_child=0 RssAnon=1.0 Pss_Anon=1.7 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=4.0 Pss_File=1.1
+process pid=492 name=/apex/com.android.hardware.rebootescrow/bin/hw/android.hardware.rebootescrow-service.default zygote_child=0 RssAnon=1.0 Pss_Anon=1.5 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=3.5 Pss_File=0.2
+process pid=493 name=/apex/com.android.hardware.thermal/bin/hw/android.hardware.thermal-service.example zygote_child=0 RssAnon=1.0 Pss_Anon=1.5 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=3.0 Pss_File=0.2
+process pid=497 name=/apex/com.android.hardware.vibrator/bin/hw/android.hardware.vibrator-service.example zygote_child=0 RssAnon=1.0 Pss_Anon=1.7 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=4.0 Pss_File=1.1
+process pid=511 name=/apex/com.google.android.widevine/bin/hw/android.hardware.drm-service.widevine zygote_child=0 RssAnon=1.0 Pss_Anon=1.9 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=6.0 Pss_File=3.0
+process pid=542 name=/system/bin/traced_probes zygote_child=0 RssAnon=1.0 Pss_Anon=1.5 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=3.0 Pss_File=0.5
+process pid=551 name=/system/bin/mdnsd zygote_child=0 RssAnon=1.0 Pss_Anon=1.5 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=2.5 Pss_File=0.3
+process pid=553 name=/vendor/bin/bt_vhci_forwarder zygote_child=0 RssAnon=1.0 Pss_Anon=1.3 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=3.5 Pss_File=0.2
+process pid=6055 name=sh zygote_child=0 RssAnon=1.0 Pss_Anon=1.3 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=2.5 Pss_File=0.1
+process pid=6429 name=/apex/com.android.hardware.threadnetwork/bin/ot-rcp zygote_child=0 RssAnon=1.0 Pss_Anon=1.1 Swap=0.0 SwapPss=0.0 RssShmem=0.0 Pss_Shmem=0.0 RssFile=2.5 Pss_File=0.1
+aging pgscan_kswapd=0 pgscan_direct=0 pgsteal_kswapd=0 SwapTotal_kb=0
+touched_mib group=all processes=139 anon=4704 low=2593 high=2593 shared=2820 file_private=764 Pss_Anon=1318
+touched_mib group=zygote_children processes=63 anon=4404 low=2293 high=2293 shared=2772 file_private=654 Pss_Anon=1074
+touched_mib group=zygotes processes=2 anon=122 low=76 high=76 shared=94 file_private=21 Pss_Anon=12
+touched_mib group=native processes=75 anon=240 low=240 high=240 shared=0 file_private=99 Pss_Anon=240
+touched pid=6192 name=system_server anon=146.6 low=124.6 high=124.6 shared=39.7 file_private=14.2 Pss_Anon=98.3
+touched pid=6446 name=com.android.systemui anon=114.6 low=90.9 high=90.9 shared=41.1 file_private=10.7 Pss_Anon=64.7
+touched pid=8159 name=com.google.android.tts anon=97.4 low=65.9 high=65.9 shared=43.1 file_private=11.2 Pss_Anon=45.4
+touched pid=6587 name=com.google.android.apps.nexuslauncher anon=97.2 low=70.0 high=70.0 shared=42.4 file_private=10.6 Pss_Anon=45.9
+touched pid=6686 name=com.google.android.gms.persistent anon=92.8 low=64.3 high=64.3 shared=41.9 file_private=10.6 Pss_Anon=42.0
+touched pid=7034 name=com.google.android.as anon=90.6 low=61.4 high=61.4 shared=42.8 file_private=13.3 Pss_Anon=39.0
+touched pid=6982 name=com.google.android.gms anon=90.5 low=61.5 high=61.5 shared=42.6 file_private=10.9 Pss_Anon=39.0
+touched pid=7173 name=com.google.android.googlequicksearchbox:search anon=86.1 low=55.5 high=55.5 shared=43.0 file_private=10.4 Pss_Anon=34.3
+touched pid=7545 name=com.google.android.apps.messaging anon=86.1 low=55.7 high=55.7 shared=43.6 file_private=10.4 Pss_Anon=33.7
+touched pid=7004 name=com.google.android.inputmethod.latin anon=82.5 low=53.6 high=53.6 shared=43.2 file_private=12.8 Pss_Anon=30.4
+touched pid=6913 name=com.google.android.dialer anon=78.9 low=47.1 high=47.1 shared=43.8 file_private=10.1 Pss_Anon=26.2
+touched pid=6969 name=com.google.android.apps.wellbeing anon=77.8 low=46.6 high=46.6 shared=43.7 file_private=10.1 Pss_Anon=25.2
+touched pid=7035 name=com.google.android.googlequicksearchbox:interactor anon=76.1 low=44.1 high=44.1 shared=43.5 file_private=10.2 Pss_Anon=23.7
+touched pid=6621 name=com.android.settings anon=73.8 low=48.8 high=48.8 shared=40.4 file_private=10.1 Pss_Anon=24.4
+touched pid=8398 name=com.google.android.settings.intelligence anon=71.8 low=39.5 high=39.5 shared=43.8 file_private=10.1 Pss_Anon=19.1
+touched pid=7232 name=com.google.android.apps.photos anon=70.4 low=37.4 high=37.4 shared=44.1 file_private=10.2 Pss_Anon=17.4
+touched pid=7571 name=com.google.android.gms.unstable anon=70.2 low=38.0 high=38.0 shared=44.0 file_private=10.3 Pss_Anon=17.3
+touched pid=6558 name=com.android.phone anon=70.2 low=41.7 high=41.7 shared=42.5 file_private=10.1 Pss_Anon=18.6
+touched pid=8562 name=com.google.android.gms.ui anon=70.0 low=37.4 high=37.4 shared=44.0 file_private=10.2 Pss_Anon=17.1
+touched pid=7072 name=com.google.android.apps.messaging:rcs anon=68.4 low=35.6 high=35.6 shared=44.1 file_private=10.1 Pss_Anon=15.4
+touched pid=7020 name=com.google.android.providers.media.module anon=67.8 low=36.5 high=36.5 shared=43.6 file_private=10.4 Pss_Anon=15.5
+touched pid=6569 name=com.google.android.bluetooth anon=66.6 low=35.6 high=35.6 shared=43.2 file_private=10.5 Pss_Anon=14.5
+touched pid=8120 name=com.google.android.apps.safetyhub anon=66.6 low=33.1 high=33.1 shared=44.3 file_private=10.1 Pss_Anon=13.5
+touched pid=6746 name=com.google.android.permissioncontroller anon=66.1 low=34.1 high=34.1 shared=43.8 file_private=10.1 Pss_Anon=13.3
+touched pid=7351 name=com.everettjf.scriptwidget anon=65.9 low=39.8 high=39.8 shared=35.4 file_private=10.1 Pss_Anon=21.5
+touched pid=7139 name=android.process.acore anon=65.2 low=34.1 high=34.1 shared=43.6 file_private=10.1 Pss_Anon=12.7
+touched pid=7128 name=com.google.android.deskclock anon=65.0 low=30.3 high=30.3 shared=44.5 file_private=10.1 Pss_Anon=11.7
+touched pid=7900 name=com.google.android.rkpdapp anon=64.1 low=27.7 high=27.7 shared=44.8 file_private=10.1 Pss_Anon=10.4
+touched pid=7624 name=com.google.android.as.oss anon=63.4 low=29.5 high=29.5 shared=44.3 file_private=10.1 Pss_Anon=10.2
+touched pid=8561 name=com.google.android.accessibility.switchaccess anon=63.1 low=26.7 high=26.7 shared=45.0 file_private=10.1 Pss_Anon=9.3
+touched pid=6514 name=com.android.networkstack.process anon=63.0 low=30.2 high=30.2 shared=43.9 file_private=10.2 Pss_Anon=10.2
+touched pid=8563 name=com.google.android.marvin.talkback anon=62.9 low=26.4 high=26.4 shared=44.9 file_private=10.1 Pss_Anon=9.2
+touched pid=8514 name=com.android.chrome anon=62.9 low=26.4 high=26.4 shared=45.1 file_private=10.1 Pss_Anon=8.9
+touched pid=8340 name=com.google.android.partnersetup anon=62.8 low=28.8 high=28.8 shared=44.5 file_private=10.1 Pss_Anon=9.4
+touched pid=7465 name=android.process.media anon=62.7 low=26.9 high=26.9 shared=44.6 file_private=10.1 Pss_Anon=9.2
+touched pid=6797 name=com.google.android.cellbroadcastreceiver anon=62.5 low=28.4 high=28.4 shared=44.5 file_private=10.1 Pss_Anon=9.1
+touched pid=8377 name=com.google.android.projection.gearhead:car anon=62.4 low=25.7 high=25.7 shared=45.1 file_private=10.1 Pss_Anon=8.4
+touched pid=6603 name=com.google.android.ext.services anon=62.3 low=28.0 high=28.0 shared=44.5 file_private=10.1 Pss_Anon=9.0
+touched pid=7575 name=com.google.android.apps.wallpaper anon=62.2 low=27.4 high=27.4 shared=44.6 file_private=10.1 Pss_Anon=8.7
+touched pid=8202 name=.adservices anon=62.0 low=25.0 high=25.0 shared=45.1 file_private=10.1 Pss_Anon=8.0
