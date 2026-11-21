@@ -5219,6 +5219,28 @@ int main() {
     }
 
     {
+        constexpr auto pair = base + 0x300, incoming = base + 0x320, outgoing = base + 0x340;
+        constexpr uint64_t truncate = 0x20, nonblock = 0x40;
+        assert(machine.store64(outgoing, 0x07060504030201ULL));
+        for (uint64_t type : {2, 5, 1}) { // SOCK_DGRAM, SOCK_SEQPACKET, SOCK_STREAM
+            assert(call(199, {1, type, 0, pair}) == 0);
+            const auto sender = uint32_t(load(pair)), receiver = uint32_t(load(pair) >> 32);
+            assert(call(206, {sender, outgoing, 7, 0}) == 7);
+            assert(call(207, {receiver, UINT64_MAX, 3, truncate}) == uint64_t(-14));
+            assert(machine.store64(incoming, 0));
+            assert(call(207, {receiver, incoming, 3, truncate}) == (type == 1 ? 3 : 7));
+            assert(load(incoming) == 0x030201);
+            if (type == 1) assert(call(207, {receiver, incoming, 4, nonblock}) == 4);
+            assert(call(207, {receiver, incoming, 3, truncate | nonblock}) == uint64_t(-11));
+            assert(call(206, {sender, outgoing, 4, 0}) == 4);
+            assert(call(207, {receiver, 0, 0, truncate}) == (type == 1 ? 0 : 4));
+            if (type == 1) assert(call(207, {receiver, incoming, 4, nonblock}) == 4);
+            assert(call(207, {receiver, incoming, 3, nonblock}) == uint64_t(-11));
+            assert(call(57, {sender}) == 0 && call(57, {receiver}) == 0);
+        }
+    }
+
+    {
         linux.captureAndroidLogs = true;
         unsigned snapshots = 0;
         linux.watchdogObserver = [&](std::string_view report) {

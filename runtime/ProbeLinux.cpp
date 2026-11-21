@@ -2234,9 +2234,10 @@ bool ProbeLinux::eventCall(Machine& machine) {
     return true;
 }
 
-uint64_t ProbeLinux::socketRead(Machine& machine, const Descriptor& fd, uint64_t address, uint64_t size) {
+uint64_t ProbeLinux::socketRead(Machine& machine, const Descriptor& fd, uint64_t address, uint64_t size,
+                                bool reportPacketSize) {
     auto& endpoint = *fd.socket;
-    if (!size) return 0;
+    if (!size && (!reportPacketSize || endpoint.type == 1)) return 0;
     if (endpoint.inetDatagram()) return receiveInetDatagram(machine, endpoint, address, size);
     if (endpoint.inetError && endpoint.inbox.empty()) return uint64_t(-std::exchange(endpoint.inetError, 0));
     if (endpoint.inbox.empty()) {
@@ -2259,13 +2260,14 @@ uint64_t ProbeLinux::socketRead(Machine& machine, const Descriptor& fd, uint64_t
         consumeSocketStream(endpoint, count);
         return count;
     }
-    auto& packet = endpoint.inbox.front().payload;
-    const auto count = std::min<uint64_t>(size, packet.size());
+    const auto& packet = endpoint.inbox.front().payload;
+    const size_t packetSize = packet.size();
+    const auto count = std::min<uint64_t>(size, packetSize);
     if (count && !machine.write(address, std::span(packet).first(count))) return uint64_t(-14);
-    endpoint.queuedBytes -= packet.size();
+    endpoint.queuedBytes -= packetSize;
     endpoint.inbox.pop_front();
     wakePollers();
-    return count;
+    return reportPacketSize ? packetSize : count;
 }
 
 void ProbeLinux::consumeSocketStream(SocketState& endpoint, size_t count) {
@@ -3493,8 +3495,10 @@ bool ProbeLinux::socketCall(Machine& machine) {
                 x[0] = result;
                 break;
             }
-            if (x[4] || x[5] || (x[3] & ~(send ? 0x4040ULL : 0x140ULL))) return false;
-            const auto& endpoint = *fd->second.socket;
+            constexpr uint64_t truncate = 0x20; // MSG_TRUNC, ignored for UNIX streams.
+            const auto receiveFlags = 0x140ULL | (socket->family == 1 ? truncate : 0);
+            if (x[4] || x[5] || (x[3] & ~(send ? 0x4040ULL : receiveFlags))) return false;
+            const auto& endpoint = *socket;
             const auto peer = endpoint.peer.lock();
             const bool blocking = !(x[3] & 0x40) && !(fd->second.effectiveFlags() & 0x800);
             const bool waitAll = !send && (x[3] & 0x100) && blocking &&
@@ -3502,7 +3506,7 @@ bool ProbeLinux::socketCall(Machine& machine) {
                 !peer->sendShutdown && !endpoint.receiveShutdown;
             if (waitAll && waitForSocketTimeout(endpoint.receiveTimeout)) return true;
             const auto result = send ? socketWrite(machine, fd->second, x[1], x[2])
-                                     : socketRead(machine, fd->second, x[1], x[2]);
+                                     : socketRead(machine, fd->second, x[1], x[2], x[3] & truncate);
             if (result == uint64_t(-11) && blocking &&
                 (!waitAll && waitForSocketTimeout(send ? endpoint.sendTimeout : endpoint.receiveTimeout))) return true;
             current->deadline.reset();

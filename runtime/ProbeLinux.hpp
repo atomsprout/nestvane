@@ -706,7 +706,8 @@ private:
     void wakeRecordLockWaiters(const WritableFile& file);
     void releaseRecordLocks(const Descriptor& fd, uint64_t owner);
     uint64_t readDirectory(Machine& machine, const Descriptor& fd) const;
-    uint64_t socketRead(Machine& machine, const Descriptor& fd, uint64_t address, uint64_t size);
+    uint64_t socketRead(Machine& machine, const Descriptor& fd, uint64_t address, uint64_t size,
+                        bool reportPacketSize = false);
     using SocketVector = std::array<uint64_t, 2>; // Guest iovec: pointer and length.
     uint64_t socketWrite(Machine& machine, const Descriptor& fd, uint64_t address, uint64_t size);
     uint64_t socketWrite(Machine& machine, const Descriptor& fd, std::span<const SocketVector> vectors,
