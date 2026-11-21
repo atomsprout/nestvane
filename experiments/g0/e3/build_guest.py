@@ -133,6 +133,18 @@ def main():
     os.makedirs(os.path.join(root, "linkerconfig"), exist_ok=True)
     open(os.path.join(root, "linkerconfig/ld.config.txt"), "w").write("\n".join(lines) + "\n")
 
+    # System properties: what the build wrote for the image, then what this runtime needs. There is no
+    # init to run a property service, so they are fixed in one file (see properties.py).
+    properties = [path for path in (os.path.join(root, "system/build.prop"), os.path.join(root, "system/etc/prop.default")) if os.path.exists(path)]
+    os.makedirs(os.path.join(root, "dev"), exist_ok=True)
+    subprocess.run([sys.executable, os.path.join(HERE, "properties.py"), os.path.join(root, "dev/__properties__"), *properties,
+                    "dalvik.vm.usejit=false",                      # no memory can be made executable
+                    "ro.dalvik.vm.enable_uffd_gc=true",            # the collector the boot image is compiled for,
+                    "ro.dalvik.vm.force_cmc_stw_compaction=true",  # without userfaultfd
+                    "ro.zygote.disable_gl_preload=true",           # there is no graphics driver in the tree
+                    "ro.zygote=zygote64"], check=True)
+    os.chmod(os.path.join(root, "dev/__properties__"), 0o644)
+
     # Test programs of our own, built like the platform: dynamic, against Bionic, registers reserved.
     for name in sorted(os.listdir(os.path.join(HERE, "guest-tests"))):
         if name.endswith(".c"):

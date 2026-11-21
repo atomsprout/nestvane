@@ -1,0 +1,71 @@
+probe=e3 bundle=com.everettjf.nestvane.g0sparse
+machine=iPhone12,1 os=Version 26.0.1 (Build 23A355) build_config=optimized
+traced=0 host_page=16384 kernel_page=16384 physical_memory_mib=3853 available_mib=2343 footprint_mib=5.2
+vm_map min=0x100894000 max=0xfc0000000 span_gib=58.99 virtual_size_gib=391.26
+e3 setup exit=0 bytes=0 sha=e3b0c44298fc ms=1256
+e3 output 
+e3 f_arithmetic exit=0 bytes=16 sha=4f2cdeed5a48 ms=9
+e3 output 42 1048576 14 2|
+e3 f_pipeline exit=0 bytes=2 sha=53c234e5e847 ms=27
+e3 output 2|
+e3 f_three_stage exit=0 bytes=6 sha=43f0a1612c71 ms=1117
+e3 output 3|2|1|
+e3 f_substitution exit=0 bytes=12 sha=052e754a689d ms=19
+e3 output 5 4 3 2 1|9|
+e3 f_files exit=0 bytes=14 sha=326332560d20 ms=54
+e3 output f1|f2|f3|18|1|
+e3 f_exec_self exit=0 bytes=16 sha=7c6afba65628 ms=35
+e3 output exec-ok|3|2|1|1|
+e3 f_hashes exit=0 bytes=184 sha=dcebc78444cf ms=56
+e3 output 18020ff6fb7bdb0b71ae56dd622943f5ee5055f2e193a3d2c09cfe9add0f1b71  small|e14b5ca7b013d090f6e22e6ca0c883e4  small|9d53808ba4ef52ae4447350c1511a2b142d1c274  small|1563462124 289026 small|
+e3 f_sed exit=0 bytes=44 sha=19cb730e26f2 ms=59
+e3 output 8c639cbe7e6079be79e65fa080c1fd994a42f2c1  -|
+e3 f_xargs exit=0 bytes=24 sha=89bd8d45fb62 ms=351
+e3 output      40   20000  108894|
+e3 f_base64 exit=0 bytes=49 sha=2914732b0cb2 ms=93
+e3 output 0e18f474700e4cf9591602abf5ce957ccddf6d79  -|same|
+e3 f_gzip exit=0 bytes=75 sha=a10296f63d67 ms=59
+e3 output 107696|18020ff6fb7bdb0b71ae56dd622943f5ee5055f2e193a3d2c09cfe9add0f1b71  -|
+e3 f_printf exit=0 bytes=25 sha=97146a571cfa ms=18
+e3 output  3.14 ok ff 1.234568e+04|
+e3 f_sort_unique exit=0 bytes=42 sha=839160fcc53b ms=48
+e3 output      10 10|     10 1|      9 |      1 500|
+e3 f_loop_forks exit=0 bytes=4 sha=eea8254c7500 ms=881
+e3 output 100|
+e3 f_exit_status exit=0 bytes=15 sha=ae39b65b56f2 ms=10
+e3 output 3|recovered|ok|
+e3 f_factor exit=127 bytes=0 sha=e3b0c44298fc ms=9
+e3 output 
+e3 f_find exit=0 bytes=24 sha=a9a1483caeca ms=37
+e3 output t|t/a|t/a/b|t/a/b/f|t/c|
+e3 f_date exit=0 bytes=11 sha=8da7e0b07569 ms=18
+e3 output 1970-01-02|
+e3 f_od_cut exit=0 bytes=102 sha=45d9d79ae2e1 ms=44426
+e3 output  32 66 31 36 30 61 64 61 34 38 65 64 62 63 65 37| 30 35 37 35 33 61 38 39 31 31 32 36 35 35 32 36|999|
+e3 b_sha256sum_251_MiB exit=0 bytes=70 sha=2ad25a47f9bd ms=1448
+e3 b_wc_251_MiB exit=0 bytes=32 sha=c16e8aed3a28 ms=633
+e3 b_gzip_14_MiB exit=0 bytes=8 sha=e8377d9f9408 ms=609
+e3 b_sort_2M_lines exit=0 bytes=2 sha=4355a46b19d3 ms=44191
+e3 b_sed_2M_lines exit=0 bytes=36 sha=79bd19b71964 ms=3678
+e3 b_grep_2M_lines exit=0 bytes=7 sha=703c6208a51c ms=1187
+e3 b_factor exit=127 bytes=0 sha=e3b0c44298fc ms=9
+e3 b_shell_loop_300k exit=0 bytes=7 sha=2d5c043a952d ms=1100
+e3 b_300_forks exit=0 bytes=4 sha=f807fe6dc767 ms=2835
+e3 t_faults exit=0 bytes=232 sha=751fe00fe37c ms=26
+e3 output null load: handled=1000 address=0x40 code=1|read-only store: handled=1000 address_ok=1 code=2 value=0|protected load: handled=1000 address_ok=1 code=2|redirected: landing_calls=1000|siglongjmp: handled=100|stack overflow: handled=1|
+e3 t_memory exit=0 bytes=460 sha=d86cbd6ac653 ms=19
+e3 output untouched memory reads zero: ok|touched bytes kept: ok|scalar accesses across chunks: ok|pairs and indexed accesses across chunks: ok|memcpy, memmove, memset, strlen across chunks: ok|pread into a buffer across chunks: ok|write and read across chunks: ok|fork: child sees the copy: ok|fork: parent keeps its memory: ok|madvise across chunks zeroes: ok|mprotect across chunks: ok|mremap keeps contents: ok|munmap: ok|memory after munmap is fresh: ok|failures=0|
+e3 t_threads exit=0 bytes=88 sha=2e5a2e895aa8 ms=348
+e3 output counter=1600000 expected=1600000 thread_local_sum=5600000 expected=5600000|relay turn=0|
+e3 art_interpreted exit=0 bytes=40 sha=b153ba86a0ea ms=633
+e3 output hello from ART: interpreted sum=2999997|
+e3 art_image_interpreted exit=0 bytes=34 sha=2f0844baf384 ms=185
+e3 output hello from ART: image sum=2999997|
+e3 art_compiled exit=0 bytes=37 sha=bf55c7f71943 ms=148
+e3 output hello from ART: compiled sum=2999997|
+e3 b_art_interpreted exit=0 bytes=40 sha=b153ba86a0ea ms=386
+e3 b_art_compiled exit=0 bytes=37 sha=bf55c7f71943 ms=141
+e3 art_bench exit=0 bytes=309 sha=2651024a49ce ms=11509
+e3 output random_ints ms=1459 check=1088946592|sort_ints ms=8566 check=1033843|repeat ms=60 check=11700000|split ms=168 check=1800000|sort_strings ms=375 check=5|join ms=96 check=11699999|replace_upper ms=380 check=1912891756|utf8 ms=73 check=11699999|crc32 ms=187 check=438197918|reverse ms=29 check=44|total ms=11399|
+e3 footprint_mib=187.1
+done probe=e3 elapsed_ms=236557

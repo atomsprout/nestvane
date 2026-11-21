@@ -1228,8 +1228,7 @@ static long put_stat(int result, const struct stat* from, struct LinuxStat* to) 
     to->ino = from->st_ino;
     to->mode = from->st_mode;
     to->nlink = from->st_nlink;
-    to->uid = from->st_uid;
-    to->gid = from->st_gid;
+    to->uid = to->gid = 0;  // the guest is root and owns its files, whoever owns them on the host
     to->rdev = (uint64_t)from->st_rdev;
     to->size = from->st_size;
     to->blksize = from->st_blksize;

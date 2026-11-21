@@ -222,3 +222,11 @@ edit("external/tensorflow/tensorflow/lite/Android.bp", [(
     '        "-DGOOGLE_L4T", // Nestvane: no assembly that uses the host runtime\'s registers.\n'
     '        "-DTFLITE_WITH_RUY", // Nestvane: no gemmlowp kernels, which are assembly on arm64.\n')],
     "-DTFLITE_WITH_RUY")
+
+# The static library that most users link is built from its own list of flags.
+edit("external/tensorflow/tensorflow/lite/tflite_static.bp", [(
+    '        "-DNAMESPACE_FOR_HASH_FUNCTIONS=farmhash",\n',
+    '        "-DNAMESPACE_FOR_HASH_FUNCTIONS=farmhash",\n'
+    '        "-DGOOGLE_L4T", // Nestvane: no assembly kernels, as in tflite_defaults.\n'
+    '        "-DTFLITE_WITH_RUY",\n')],
+    "-DGOOGLE_L4T")
