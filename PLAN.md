@@ -60,9 +60,9 @@ iOS「文件」导入与客体安装助手已经实现。用户选择的 APK 以
 
 1. 保留现有无 JIT 路径，收集各启动阶段的客体 ELF、文件偏移、解释和 AOT 指令数，以及宿主执行、文件 I/O、Binder、等待和绘制成本。
 2. 做可开关的镜像绑定 AOT 批次。先覆盖采样确认的 Bionic、ART 和系统库基本块，再扩大到同一镜像的 `boot*.oat`。生成代码随 Release App 签名，只接受匹配的不可变客体指令。差分比较跨页读写、异常、寄存器和可变映射回退。用真实启动对照评估耗时、包体积和内存，再扩大覆盖。
-3. 按实测启动关键路径评估 ART 预编译产物复用和非关键工作的后移。保留 Binder、原版包管理、输入、图形和相机验收。若 AOT 扩覆盖后仍有数量级差距，在独立原型里用同一台 iPhone 17 Pro 对照原生 User-mode Linux、线程解释器和并行客体调度的收益，建立后续架构决策的测量依据。
+3. 按实测启动关键路径评估 ART 预编译产物复用和非关键工作的后移。保留 Binder、原版包管理、输入、图形和相机验收。若 AOT 扩覆盖后仍有数量级差距，在独立原型里用同一台 iPhone CX 对照原生 User-mode Linux、预编译指令分派和并行客体调度的收益，建立后续架构决策的测量依据。
 
-参考 Kernarium 的 Android 17 版 Andarium。其 AOT 构建流程覆盖指定 ARM64 ELF 和 `boot*.oat`，以 Android 发布版本和不可变代码页校验控制绑定。其 Android 数据快照保存磁盘状态，运行内存休眠用于同一宿主进程内恢复。Kernarium 的宿主 CPU、内核和图形路径与 Nestvane 不同，性能记录用于选择实验，iPhone 17 Pro 的验收以 Nestvane 实测为准。[AOT 实现](https://github.com/imxieyi/Kernarium/blob/main/tools/aot/README.md) · [架构](https://github.com/imxieyi/Kernarium/blob/main/docs/architecture.md) · [优化记录](https://github.com/imxieyi/Kernarium/blob/main/docs/optimization-history.md)
+参考 Kernarium 的 Android 17 版 Andarium。其 AOT 构建流程覆盖指定 ARM64 ELF 和 `boot*.oat`，以 Android 发布版本和不可变代码页校验控制绑定。其 Android 数据快照保存磁盘状态，运行内存休眠用于同一宿主进程内恢复。Kernarium 的宿主 CPU、内核和图形路径与 Nestvane 不同，此前在同一台 iPhone 17 Pro 测得 Andarium 两次冷启动到 Settings 分别为 27.602 和 28.941 秒，当前 iPhone CX 的目标以 Nestvane 真机实测为准。[AOT 实现](https://github.com/imxieyi/Kernarium/blob/main/tools/aot/README.md) · [架构](https://github.com/imxieyi/Kernarium/blob/main/docs/architecture.md) · [优化记录](https://github.com/imxieyi/Kernarium/blob/main/docs/optimization-history.md)
 
 ## 首个开发批次
 
