@@ -244,6 +244,31 @@ def replace_line(path, pattern, value):
     path.write_text(updated)
 
 
+def set_property(path, key, value):
+    """Sets a property in a build.prop file to one value, whatever lines it had for it."""
+    lines = [line for line in path.read_text().splitlines() if not line.startswith(key + "=")]
+    path.write_text("\n".join(lines + [f"{key}={value}"]) + "\n")
+
+
+def copy_prebuilt_code(adb, remote, guest):
+    """Takes the image's own compiled code for every JAR and APK that is in the guest root."""
+    listing = remote("find", "/system", "/system_ext", "/product", "/vendor", "-path", "*/oat/arm64/*", "-type", "f")
+    count = 0
+    for path in sorted(listing.splitlines()):
+        match = re.fullmatch(r"(/[A-Za-z0-9_.+/-]+)/oat/arm64/([A-Za-z0-9_.+@-]+)\.(odex|vdex|art)", path)
+        if not match:
+            continue
+        owner = guest / match[1].lstrip("/")
+        # Code of an APEX JAR is under /system/framework, named after the JAR's path.
+        if not any((owner / (match[2] + suffix)).is_file() for suffix in (".apk", ".jar")) and match[1] != "/system/framework":
+            continue
+        local = guest / path.lstrip("/")
+        local.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(adb + ["pull", path, str(local)], check=True, stdout=subprocess.DEVNULL)
+        count += 1
+    print(f"Added {count} files of compiled code from the image", flush=True)
+
+
 def write_guest_hardware_profile(guest):
     # The guest has no Bluetooth controller or location hardware bridge.
     config = guest / "system/etc/sysconfig/nestvane-hardware.xml"
@@ -264,11 +289,12 @@ def make_framework_root(base, image, guest, defer_zygote_preload, hardware_timeo
     shutil.copytree(base, guest)
     write_guest_hardware_profile(guest)
     target = guest / "system/framework/arm64"
-    for path in target.iterdir():
-        if re.fullmatch(r"boot(?:-[A-Za-z0-9_.+-]+)?\.(?:art|oat|vdex)", path.name):
-            path.unlink()
-    for path in image.iterdir():
-        shutil.copyfile(path, target / path.name)
+    if image is not None:
+        for path in target.iterdir():
+            if re.fullmatch(r"boot(?:-[A-Za-z0-9_.+-]+)?\.(?:art|oat|vdex)", path.name):
+                path.unlink()
+        for path in image.iterdir():
+            shutil.copyfile(path, target / path.name)
 
     init_rc = guest / "system/etc/init/hw/init.rc"
     target = guest / TETHERING_LOADER
@@ -282,10 +308,17 @@ def make_framework_root(base, image, guest, defer_zygote_preload, hardware_timeo
         print(f"Staged Tethering loader SHA-256 {hashlib.sha256(tethering_loader).hexdigest()}", flush=True)
     # The host supplies /data for this profile, so fs_mgr does not queue its normal event.
     replace_line(init_rc, r"^([ \t]+)trigger boot$", r"\1trigger boot\n\1trigger nonencrypted")
-    replace_line(guest / "product/etc/build.prop", r"^ro\.dalvik\.vm\.enable_uffd_gc=[^\r\n]*$",
-                 "ro.dalvik.vm.enable_uffd_gc=false")
     system_properties = guest / "system/build.prop"
-    replace_line(system_properties, r"^dalvik\.vm\.usejit=[^\r\n]*$", "dalvik.vm.usejit=false")
+    if image is not None:
+        replace_line(guest / "product/etc/build.prop", r"^ro\.dalvik\.vm\.enable_uffd_gc=[^\r\n]*$",
+                     "ro.dalvik.vm.enable_uffd_gc=false")
+    else:
+        # The image's code is compiled for the mark-compact collector. The guest kernel has no
+        # userfaultfd, so the collector compacts with the world stopped.
+        set_property(system_properties, "ro.dalvik.vm.force_cmc_stw_compaction", "true")
+        # The boot image's code is translated for the address it was compiled for.
+        set_property(system_properties, "dalvik.vm.extra-opts", "-Xnorelocate")
+    set_property(system_properties, "dalvik.vm.usejit", "false")
     # ART creates a code-cache memory file for every app even with JIT disabled.
     values = system_properties.read_text().rstrip("\n")
     cache = "dalvik.vm.jitmaxsize=8m"
@@ -337,6 +370,9 @@ def main():
                         help="Include launcher, SystemUI and package-management apps from the matching reference")
     parser.add_argument("--precompile-framework-code", action="store_true",
                         help="Add offline speed-compiled services.jar, SystemUI and Launcher code")
+    parser.add_argument("--prebuilt-code", action="store_true",
+                        help="The image carries compiled code for its own collector (a build patched by "
+                             "experiments/aosp/patch.py): keep its boot image and take its compiled code")
     parser.add_argument("--smoke-apk", type=Path,
                         help="Stage the APK from tools/build-smoke-apk.sh for an install and launch check")
     parser.add_argument("--tethering-loader", type=Path,
@@ -352,6 +388,8 @@ def main():
         parser.error("--complete-existing-image reuses the staged primary image and cannot reassemble the guest")
     if args.defer_zygote_preload and not args.framework_diagnostic:
         parser.error("--defer-zygote-preload requires --framework-diagnostic")
+    if args.prebuilt_code and (not args.framework_diagnostic or args.precompile_framework_code):
+        parser.error("--prebuilt-code requires --framework-diagnostic and replaces --precompile-framework-code")
     if args.framework_apps and not args.framework_diagnostic:
         parser.error("--framework-apps requires --framework-diagnostic")
     if args.precompile_framework_code and not (args.framework_apps or args.complete_existing_image):
@@ -479,23 +517,26 @@ def main():
         ]
         for jar in jars:
             command.extend(("--dex-file=" + jar, "--dex-location=" + jar))
-        subprocess.run(adb + ["shell", shlex.join(command)], check=True)
+        if not args.prebuilt_code:
+            subprocess.run(adb + ["shell", shlex.join(command)], check=True)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=args.output.parent) as temporary:
             root = Path(temporary) / "arm64"
             root.mkdir()
-            for suffix in ("art", "oat", "vdex"):
+            for suffix in () if args.prebuilt_code else ("art", "oat", "vdex"):
                 name = f"boot.{suffix}"
                 subprocess.run(adb + ["pull", f"{stage}/{name}", str(root / name)], check=True)
                 if (root / name).stat().st_size == 0:
                     raise SystemExit(f"Reference produced an empty {name}")
             if args.framework_diagnostic:
                 guest = Path(temporary) / "guest"
-                make_framework_root(args.root, root, guest, args.defer_zygote_preload,
+                make_framework_root(args.root, None if args.prebuilt_code else root, guest, args.defer_zygote_preload,
                                     args.hardware_timeout_multiplier, tethering_loader)
                 if args.framework_apps:
                     copy_framework_apps(adb, remote, active_modules, guest)
                     capture_framework_app_policy(adb, remote, guest)
+                if args.prebuilt_code:
+                    copy_prebuilt_code(adb, remote, guest)
                 if args.precompile_framework_code:
                     check_reference_files(
                         remote, guest, {active_modules[module] for module in FRAMEWORK_APP_APEXES}

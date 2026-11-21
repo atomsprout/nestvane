@@ -36,17 +36,20 @@ struct NativeContext {
     uint64_t unused[2];
     uint64_t spare;         // scratch for rewritten code that sets sp
     uint64_t fpsr;
+    uint64_t svcEntry;      // nestvane_native_svc: rewritten code in other images jumps to it through here
     // Filled by the signal handler.
     uint64_t faultPc, faultAddress;
 };
 int nestvane_native_enter(NativeContext*);
 void nestvane_native_exit();
+void nestvane_native_svc();
 }
 
 static_assert(offsetof(NativeContext, sp) == 248 && offsetof(NativeContext, q) == 256 && offsetof(NativeContext, nzcv) == 768);
 static_assert(offsetof(NativeContext, tpidr) == 784 && offsetof(NativeContext, pc) == 792 && offsetof(NativeContext, base) == 800);
 static_assert(offsetof(NativeContext, table) == 808 && offsetof(NativeContext, hostSp) == 816);
 static_assert(offsetof(NativeContext, memoryTable) == 824 && offsetof(NativeContext, spare) == 848 && offsetof(NativeContext, fpsr) == 856);
+static_assert(offsetof(NativeContext, svcEntry) == 864);  // tools/build-native-code.py
 
 namespace nestvane::native {
 namespace {
@@ -67,7 +70,8 @@ struct Loaded {
 
 struct Registry {
     std::vector<Loaded> modules;                      // ordered by host code address
-    std::unordered_map<uint64_t, size_t> byKey;
+    std::unordered_map<uint64_t, std::vector<size_t>> byKey;   // the translations of one file content, by address
+    std::unordered_map<const Module*, size_t> byModule;
     uint64_t low = 0, high = 0;                       // guest addresses of all translated code
     uint64_t* table = nullptr;                        // host code for guest pc at table[(pc - low) / 4]
     uint64_t codeStart = 0, codeEnd = 0;              // host addresses of all translated code
@@ -77,7 +81,11 @@ struct Registry {
 Registry& registry() {
     static Registry instance = [] {
         Registry result;
+#ifdef NESTVANE_NATIVE_DEFAULT
+        result.wanted = true;
+#else
         result.wanted = std::getenv("NESTVANE_NATIVE") != nullptr;
+#endif
         if (!result.wanted || nestvane_native_module_count == 0) return result;
         uint64_t low = UINT64_MAX, high = 0;
         for (int index = 0; index < nestvane_native_module_count; ++index) {
@@ -89,7 +97,14 @@ Registry& registry() {
         }
         std::sort(result.modules.begin(), result.modules.end(),
                   [](const Loaded& a, const Loaded& b) { return a.codeStart < b.codeStart; });
-        for (size_t index = 0; index < result.modules.size(); ++index) result.byKey[result.modules[index].module->key] = index;
+        for (size_t index = 0; index < result.modules.size(); ++index) {
+            result.byKey[result.modules[index].module->key].push_back(index);
+            result.byModule[result.modules[index].module] = index;
+        }
+        for (auto& [key, copies] : result.byKey)
+            std::sort(copies.begin(), copies.end(), [&](size_t a, size_t b) {
+                return result.modules[a].module->base < result.modules[b].module->base;
+            });
         result.low = low;
         result.high = high;
         // Untouched entries cost nothing: modules are copied in when a process first maps them.
@@ -99,8 +114,7 @@ Registry& registry() {
             return result;
         }
         result.codeStart = result.modules.front().codeStart;
-        // The last module's stubs and far paths follow its code. Nothing else of ours is that close.
-        result.codeEnd = result.modules.back().table[result.modules.back().count - 1] + (uint64_t{64} << 20);
+        result.codeEnd = result.modules.back().table[result.modules.back().count - 1] + 256;
         return result;
     }();
     return instance;
@@ -116,7 +130,9 @@ Loaded* loadedFor(uint64_t hostPc) {
 // exactly there. False outside translated code.
 bool guestCode(uint64_t hostPc, uint64_t& guestPc, bool& atStart) {
     const auto* loaded = loadedFor(hostPc);
-    if (!loaded || hostPc >= registry().codeEnd) return false;
+    // Stubs and out-of-line paths follow a module's last instruction. Nothing in them can fault, and
+    // the translations are in several images, so what lies beyond is not known to be code at all.
+    if (!loaded || hostPc >= loaded->table[loaded->count - 1] + 256) return false;
     uint64_t low = 0, high = loaded->count;
     while (high - low > 1) {
         const uint64_t middle = (low + high) / 2;
@@ -229,17 +245,17 @@ uint64_t contentKey(std::span<const uint8_t> file) {
     return (value ^ file.size()) * 0x100000001b3ULL;
 }
 
-const Module* moduleFor(std::span<const uint8_t> file) {
+const Module* moduleFor(std::span<const uint8_t> file, unsigned copy) {
     auto& all = registry();
     if (all.modules.empty() || file.size() < 64 || std::memcmp(file.data(), "\x7f" "ELF", 4) != 0) return nullptr;
     const auto found = all.byKey.find(contentKey(file));
-    if (found == all.byKey.end() || all.modules[found->second].module->size != file.size()) return nullptr;
-    return all.modules[found->second].module;
+    if (found == all.byKey.end() || copy >= found->second.size()) return nullptr;
+    const auto* module = all.modules[found->second[copy]].module;
+    return module->size == file.size() ? module : nullptr;
 }
 
 const Module* mappedCode(std::span<const uint8_t> file, uint64_t address, uint64_t offset) {
-    const auto* module = moduleFor(file);
-    if (!module) return nullptr;
+    if (!moduleFor(file)) return nullptr;
     uint64_t headers;
     uint16_t entrySize, count;
     std::memcpy(&headers, file.data() + 32, 8);
@@ -256,15 +272,17 @@ const Module* mappedCode(std::span<const uint8_t> file, uint64_t address, uint64
         std::memcpy(&virtualAddress, entry + 16, 8);
         if (type != 1 || !(flags & 1)) continue;
         constexpr uint64_t mask = ~(GuestSpace::page - 1);
-        if ((fileOffset & mask) == offset && module->base + (virtualAddress & mask) == address) return module;
+        if ((fileOffset & mask) != offset) continue;
+        for (unsigned copy = 0; const auto* module = moduleFor(file, copy); ++copy)
+            if (module->base + (virtualAddress & mask) == address) return module;
     }
     return nullptr;
 }
 
 void activate(const Module& module) {
     auto& all = registry();
-    const auto found = all.byKey.find(module.key);
-    if (found == all.byKey.end()) return;
+    const auto found = all.byModule.find(&module);
+    if (found == all.byModule.end()) return;
     auto& loaded = all.modules[found->second];
     if (loaded.active) return;
     loaded.active = true;
@@ -302,6 +320,7 @@ Exit run(Machine& machine) {
     context.pc = entry;
     context.table = reinterpret_cast<uint64_t>(all.table) - all.low * 2;
     context.memoryTable = reinterpret_cast<uint64_t>(space.offsets());
+    context.svcEntry = reinterpret_cast<uint64_t>(&nestvane_native_svc);
 
     running.thread = pthread_self();
     running.since.store(mach_absolute_time(), std::memory_order_relaxed);

@@ -10,7 +10,8 @@ device=$1
 target=$2
 shift 2
 out="$root/generated/g0"
-frameworks="$out/frameworks-${G0_CODE_COUNT:-8}x${G0_CODE_MIB:-64}"
+# G0_FRAMEWORKS_DIR embeds the frameworks of that directory instead (see native-frameworks.sh).
+frameworks="${G0_FRAMEWORKS_DIR:-$out/frameworks-${G0_CODE_COUNT:-8}x${G0_CODE_MIB:-64}}"
 mkdir -p "$out/reports"
 
 if [ "$target" = G0Code ] && [ ! -d "$frameworks" ]; then

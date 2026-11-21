@@ -56,6 +56,7 @@ std::unique_ptr<GuestSpace> GuestSpace::fork() const {
     if (!tables) return nullptr;
     std::unique_ptr<GuestSpace> child(new GuestSpace(tables));
     child->code_ = code_;
+    child->interpreted_ = interpreted_;
     child->prelink = prelink;
     for (const auto& run : runs_) {
         uint8_t* memory = child->reserve(nullptr, guardBefore + run.length + guardAfter);

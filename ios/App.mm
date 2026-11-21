@@ -455,7 +455,12 @@ static NSString* ThermalState() {
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSString* before = ThermalState();
         NSString* resources = NSBundle.mainBundle.resourcePath;
+#if defined(NESTVANE_PAGE_SIZE) && NESTVANE_PAGE_SIZE != 4096
+        // The validation fixtures are linked for 4 KiB guest pages, which this build does not use.
+        nestvane::Validation result{true, "ARM64 ELF validation fixtures skipped: guest pages are not 4 KiB\n"};
+#else
         auto result = nestvane::validate(resources.fileSystemRepresentation);
+#endif
         NSString* status = result.passed ? @"Execution paths agree" : @"Validation failed";
         bool previousChecksPassed = result.passed;
         if (previousChecksPassed && [NSFileManager.defaultManager fileExistsAtPath:

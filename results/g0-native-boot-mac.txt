@@ -1,0 +1,35 @@
+Whole boot with guest code running natively, on the Mac, without a graphics backend
+date: 2026-11-21, Apple silicon Mac (12 cores; the kernel layer runs one guest thread at a time)
+root: generated/android17r-framework-full = tools/prepare-boot-image.py emulator-5554 --root generated/android17r-init-root
+      --output generated/android17r-framework-full --framework-diagnostic --framework-apps --prebuilt-code,
+      then the BPF loader of tools/build-netbpfload.py staged as with --tethering-loader
+code: tools/build-native-code.py generated/native-code generated/android17r-framework-full generated/g0/android-full/apex
+      1830 translations, 0 failed: 1222 files (1124 distinct by content) and 608 spares for files that one process
+      loads twice; guest addresses 0x80000000-0xd2980000,
+      12 dynamic libraries
+command: NESTVANE_NATIVE=1 NESTVANE_INIT_WALL_SECONDS=45 NESTVANE_INIT_INSTRUCTION_LIMIT=40000000000
+         generated/probe-init-native --init generated/android17r-framework-full <fresh data db>
+times: seconds since the probe started, from when each line reached the probe's standard error
+
+The Mac probe has no graphics backend, so SurfaceFlinger aborts ("no suitable EGLConfig found") each time
+it starts, and init restarts the zygote with it. The boot therefore never gets past the start of
+system_server here; what the lines below show is how long the stages before that take. The first zygote is
+killed by that restart while it preloads, the second one finishes.
+
+   1.55 [Android boot] Starting Android 17 init
+   4.23 [Android boot] SurfaceFlinger: SurfaceFlinger is starting
+   4.39 [Android boot] Zygote: Preloading classes...
+   4.49 [Android boot] Guest native abort: PID=203 TID=210 u:r:surfaceflinger:s0: no suitable EGLConfig found, giving up (format: 1, vendor: Android, 
+   8.18 [Android boot] Zygote: Preloading classes...
+   8.48 [Android boot] Zygote: end preload
+   8.75 [Android boot] SystemServer: Entered the Android system server!
+   8.93 [Android boot] SystemServerTiming: InitBeforeStartServices took to complete: 181ms
+   8.93 [Android boot] SystemServerTiming: StartServices
+   9.19 [Android boot] SurfaceFlinger: SurfaceFlinger is starting
+   9.20 [Android boot] Guest native abort: PID=310 TID=314 u:r:surfaceflinger:s0: no suitable EGLConfig found, giving up (format: 1, vendor: Android, 
+  13.19 [Android boot] Zygote: Preloading classes...
+  13.36 [Android boot] Zygote: end preload
+  13.48 [Android boot] SystemServer: Entered the Android system server!
+
+  native execution: modules 825/1830, runs 993609, syscalls 944456, interpreted after a fault 48623 (SIGSEGV 44382, SIGBUS 4241, SIGILL 0, SIGTRAP 0), preemptions 389 of 860 signals, traps 141, lost 0
+(the whole 45 s run; system_server was entered 9 times in it)

@@ -22,8 +22,10 @@ struct Module {
 // Whether guest code runs natively: translations are linked in and NESTVANE_NATIVE is set.
 bool enabled();
 uint64_t contentKey(std::span<const uint8_t> file);
-// The translation of an ELF file, or null.
-const Module* moduleFor(std::span<const uint8_t> file);
+// A translation of an ELF file, or null. Files with the same bytes can exist under several paths and
+// be loaded together, so there may be several translations, each for an address of its own: `copy`
+// counts them from 0.
+const Module* moduleFor(std::span<const uint8_t> file, unsigned copy = 0);
 // The module, if mapping `file` from `offset` at `address` puts its code where it was translated for.
 const Module* mappedCode(std::span<const uint8_t> file, uint64_t address, uint64_t offset);
 // Makes a module's code reachable. Until then a jump to it leaves native execution.

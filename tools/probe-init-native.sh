@@ -19,5 +19,6 @@ xcrun clang++ -O2 -std=c++20 -Iruntime -DNESTVANE_PAGE_SIZE=16384 -c tools/no-ao
 xcrun clang++ -O2 -std=c++20 -Iruntime -DNESTVANE_PAGE_SIZE=16384 -c tools/probe-dynamic.cpp -o "$build/probe-dynamic.o"
 xcrun clang -c runtime/NativeEntry.S -o "$build/NativeEntry.o"
 xcrun clang -O1 -c generated/native-code/modules.c -o "$build/modules.o"
-xcrun clang++ "$build"/*.o -Wl,-filelist,generated/native-code/objects.txt -lsqlite3 -o generated/probe-init-native 2> >(grep -v "branch island" >&2)
+xcrun clang++ "$build"/*.o -Lgenerated/native-code/lib $(cat generated/native-code/libraries.txt) -Wl,-rpath,@executable_path/native-code/lib \
+    -lsqlite3 -o generated/probe-init-native
 NESTVANE_NATIVE=1 generated/probe-init-native --init "$root"

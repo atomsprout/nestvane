@@ -309,7 +309,7 @@ void setupStack(Machine& machine, const Startup& startup) {
     if (machine.space && native::enabled()) {
         const std::vector<uint8_t> empty(GuestSpace::Prelink::capacity * 24);
         prelink = pushData(machine, randomPointer & ~uint64_t{15}, empty);
-        machine.space->prelink = {prelink, {}};
+        machine.space->prelink = {prelink, {}, {}, {}};
     }
 
     // Linux/AArch64 auxiliary vector key-value pairs.
@@ -369,8 +369,9 @@ Image loadDynamicELF(std::span<const uint8_t> elf, std::span<const uint8_t> link
     image.startup = Startup{program.image.entry, interpreterBase, program.programHeaders,
                             program.programHeaderSize, program.programHeaderCount, std::string(guestFilename),
                             std::move(arguments), uid};
+    image.interpreted = !nativeProgram || !nativeLinker;
     for (const auto* module : {nativeProgram, nativeLinker}) {
-        if (!module) continue;
+        if (!module || image.interpreted) continue;
         native::activate(*module);
         image.nativeCode.push_back({module->info[0], module->info[1]});
     }
@@ -416,6 +417,7 @@ Machine::Machine(const Image& image, const std::shared_ptr<AnonymousBudget>& bud
         return a.address < b.address;
     });
     for (auto& segment : segments) place(segment);
+    if (space && image.interpreted) space->dropCode();
     if (space)
         for (const auto& range : image.nativeCode) space->addCode(range[0], range[1]);
     cpu.pc = image.entry;

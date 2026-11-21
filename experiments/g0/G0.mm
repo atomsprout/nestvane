@@ -6,6 +6,8 @@
 
 #include <CommonCrypto/CommonDigest.h>
 #include <dlfcn.h>
+#include <mach-o/dyld.h>
+#include <mach-o/loader.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <mach/mach.h>
@@ -825,6 +827,64 @@ void e5() {
         totalCold ? static_cast<double>(totalBytes) / MiB / (static_cast<double>(totalCold) / 1e9) : 0, footprintMiB());
 }
 
+// ---------------------------------------------------------------- E6
+// Loads the translations of a whole system image (tools/build-native-code.py --ios, packed by
+// native-frameworks.sh) and reads every page of them once: how long the loader takes with this much
+// signed code and this many pointers to fix up, and what it costs in memory.
+
+void e6() {
+    const uint64_t page = vm_page_size;
+    NSString* frameworks = NSBundle.mainBundle.privateFrameworksPath;
+    NSArray<NSString*>* names = [[[NSFileManager.defaultManager contentsOfDirectoryAtPath:frameworks error:nil]
+        filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"SELF BEGINSWITH 'G0CodeNative'"]] sortedArrayUsingSelector:@selector(compare:)];
+    say("e6 frameworks=%lu footprint_mib=%.1f", static_cast<unsigned long>(names.count), footprintMiB());
+    uint64_t allOpen = 0, allTouch = 0, allBytes = 0;
+    for (NSString* name in names) {
+        NSString* stem = name.stringByDeletingPathExtension;
+        NSString* path = [[frameworks stringByAppendingPathComponent:name] stringByAppendingPathComponent:stem];
+        uint64_t begin = nowNs();
+        void* handle = dlopen(path.fileSystemRepresentation, RTLD_NOW | RTLD_LOCAL);
+        const uint64_t openNs = nowNs() - begin;
+        if (!handle) { say("e6 %s dlopen failed: %s", stem.UTF8String, dlerror()); continue; }
+        const mach_header_64* header = nullptr;
+        intptr_t slide = 0;
+        for (uint32_t image = _dyld_image_count(); image-- > 0;) {
+            const char* loaded = _dyld_get_image_name(image);
+            if (loaded && strstr(loaded, stem.UTF8String)) {
+                header = reinterpret_cast<const mach_header_64*>(_dyld_get_image_header(image));
+                slide = _dyld_get_image_vmaddr_slide(image);
+                break;
+            }
+        }
+        if (!header) { say("e6 %s image not found", stem.UTF8String); continue; }
+        const uint64_t afterOpen = nowNs();
+        uint64_t text = 0, data = 0, sum = 0, textNs = 0, dataNs = 0;
+        const auto* command = reinterpret_cast<const load_command*>(header + 1);
+        for (uint32_t index = 0; index < header->ncmds; ++index) {
+            if (command->cmd == LC_SEGMENT_64) {
+                const auto* segment = reinterpret_cast<const segment_command_64*>(command);
+                const bool isText = strcmp(segment->segname, "__TEXT") == 0;
+                if (isText || strncmp(segment->segname, "__DATA", 6) == 0) {
+                    const auto* start = reinterpret_cast<const uint8_t*>(segment->vmaddr + slide);
+                    begin = nowNs();
+                    for (uint64_t offset = 0; offset < segment->vmsize; offset += page) sum += start[offset];
+                    (isText ? textNs : dataNs) += nowNs() - begin;
+                    (isText ? text : data) += segment->vmsize;
+                }
+            }
+            command = reinterpret_cast<const load_command*>(reinterpret_cast<const uint8_t*>(command) + command->cmdsize);
+        }
+        say("e6 %s dlopen_ms=%.1f text_mib=%.1f text_first_read_ms=%.1f data_mib=%.1f data_first_read_ms=%.1f footprint_mib=%.1f checksum=%llu",
+            stem.UTF8String, ms(openNs), static_cast<double>(text) / MiB, ms(textNs), static_cast<double>(data) / MiB, ms(dataNs),
+            footprintMiB(), static_cast<unsigned long long>(sum));
+        allOpen += openNs;
+        allTouch += nowNs() - afterOpen;
+        allBytes += text + data;
+    }
+    say("e6 total mib=%.1f dlopen_ms=%.1f first_read_ms=%.1f footprint_mib=%.1f", static_cast<double>(allBytes) / MiB, ms(allOpen),
+        ms(allTouch), footprintMiB());
+}
+
 #ifdef G0_GUEST
 // ---------------------------------------------------------------- E3 on the device
 // Runs the rewritten toybox (experiments/g0/e3) inside this app with the scripts of compare.py.
@@ -935,6 +995,7 @@ void* run(void* raw) {
     else if ([probe isEqualToString:@"e2zygote"]) e2Zygotes();
     else if ([probe isEqualToString:@"e4"]) e4();
     else if ([probe isEqualToString:@"e5"]) e5();
+    else if ([probe isEqualToString:@"e6"]) e6();
     else if ([probe isEqualToString:@"x18"]) x18();
 #ifdef G0_GUEST
     else if ([probe isEqualToString:@"e3"]) e3();

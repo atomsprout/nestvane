@@ -75,7 +75,9 @@ public:
     bool copyOut(void* to, uint64_t address, uint64_t length);
 
     // Where translated code is mapped as it was translated for, so that it can run natively.
-    void addCode(uint64_t start, uint64_t end) { code_.push_back({start, end}); }
+    void addCode(uint64_t start, uint64_t end) { if (!interpreted_) code_.push_back({start, end}); }
+    // For a process that has code without a translation: none of its code runs natively any more.
+    void dropCode() { interpreted_ = true; code_.clear(); lastCode_ = {}; }
     bool hasCode(uint64_t pc) const {
         if (pc - lastCode_.start < lastCode_.length) return true;
         for (const auto& range : code_)
@@ -91,6 +93,8 @@ public:
         static constexpr uint64_t capacity = 2048;
         uint64_t table = 0;
         std::vector<std::pair<uint64_t, uint64_t>> files;  // device and inode
+        std::vector<uint64_t> addresses;                   // where each of them is to be loaded next
+        std::vector<uint64_t> used;                        // every address given out so far
     } prelink;
 
     uint64_t reservedBytes() const { return reserved_; }
@@ -117,6 +121,7 @@ private:
     struct CodeRange { uint64_t start, end; };
     std::vector<CodeRange> code_;
     mutable struct { uint64_t start = 0, length = 0; } lastCode_;
+    bool interpreted_ = false;
     uint64_t reserved_ = 0;
 };
 

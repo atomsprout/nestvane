@@ -241,6 +241,9 @@ struct Image {
     std::optional<Startup> startup;
     // Text of translated files that this image loads where they were translated for.
     std::vector<std::array<uint64_t, 2>> nativeCode{};
+    // The program or its dynamic linker has no translation. Translated libraries must then be
+    // interpreted too: native code that returned into the program would not find it.
+    bool interpreted = false;
 };
 
 Image loadELF(std::span<const uint8_t> elf, uint64_t bias = 0);

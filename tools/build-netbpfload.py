@@ -4,6 +4,7 @@
 import argparse
 import base64
 from concurrent.futures import ThreadPoolExecutor
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -60,14 +61,14 @@ def stage_sources(root):
         shutil.copytree(root / source, root / "include" / destination)
     for name in ("btf", "libbpf", "libbpf_common", "libbpf_legacy", "libbpf_version"):
         shutil.copyfile(root / "external/libbpf/src" / f"{name}.h", root / "include/bpf" / f"{name}.h")
-    subprocess.run(
-        ["git", "apply", "--check", str(HERE / "patches/aosp-netbpfload-interpreter.patch")],
-        cwd=root, check=True,
-    )
-    subprocess.run(
-        ["git", "apply", str(HERE / "patches/aosp-netbpfload-interpreter.patch")],
-        cwd=root, check=True,
-    )
+    # Inside another repository git would apply the patch relative to that repository's root, and
+    # skip every file without a word: keep it from finding one above the staging directory.
+    environment = {**os.environ, "GIT_CEILING_DIRECTORIES": str(root.parent)}
+    for arguments in (["--check"], []):
+        subprocess.run(["git", "apply", *arguments, str(HERE / "patches/aosp-netbpfload-interpreter.patch")],
+                       cwd=root, check=True, env=environment)
+    if "kNestvaneInterpretedBpf" not in (root / "bpf/loader/NetBpfLoad.cpp").read_text():
+        raise SystemExit("The loader patch did not apply")
 
 
 def stage_reference(root, adb):
@@ -121,10 +122,12 @@ def main():
         subprocess.run([
             str(clang), "-std=gnu++20", "-DNESTVANE_INTERPRETED_BPF", "-D__ANDROID_APEX__",
             "-U_FORTIFY_SOURCE", "-O2", "-fPIE", "-I", "include", "-c", "bpf/loader/NetBpfLoad.cpp",
+            # The registers a host runtime keeps when it runs guest code natively (experiments/aosp/patch.py).
+            "-ffixed-x18", "-ffixed-x25", "-ffixed-x26", "-ffixed-x27", "-ffixed-x28",
             "-o", "netbpfload.o",
         ], cwd=root, check=True)
         subprocess.run([
-            str(clang), "-nostdlib++", "-pie", "netbpfload.o", "-Llib",
+            str(clang), "-nostdlib++", "-pie", "-Wl,-z,max-page-size=16384", "netbpfload.o", "-Llib",
             "-lbase", "-llog", "-lbpf", "-l:libc++.so", "-o", "netbpfload",
         ], cwd=root, check=True)
         shutil.move(root / "netbpfload", output)

@@ -65,10 +65,93 @@ targets:
       configs:
         Release:
           GCC_OPTIMIZATION_LEVEL: "2"
+  # Android from an image built with experiments/aosp/patch.py, with its code translated ahead of time
+  # (tools/prepare-ios-native.sh) and run natively in place of the interpreter.
+  nestvane-native:
+    type: application
+    platform: iOS
+    sources:
+      - path: ios
+      - path: runtime
+        excludes:
+          - NoNativeCode.cpp
+      - path: generated/AOT.cpp
+      - path: generated/native-code/modules.c
+        optional: true
+      - path: generated/guests
+        buildPhase: resources
+      - path: generated/native-app/android17-init-root
+        type: folder
+        optional: true
+        buildPhase: resources
+    dependencies:
+      - sdk: UIKit.framework
+      - sdk: UniformTypeIdentifiers.framework
+      - sdk: AVFoundation.framework
+      - sdk: CoreMedia.framework
+      - sdk: CoreVideo.framework
+      - sdk: CoreGraphics.framework
+      - sdk: libsqlite3.tbd
+      - framework: generated/native-code/ios/lib/libnative-0.dylib
+        embed: true
+      - framework: generated/native-code/ios/lib/libnative-1.dylib
+        embed: true
+      - framework: generated/native-code/ios/lib/libnative-2.dylib
+        embed: true
+      - framework: generated/native-code/ios/lib/libnative-3.dylib
+        embed: true
+      - framework: generated/native-code/ios/lib/libnative-4.dylib
+        embed: true
+      - framework: generated/native-code/ios/lib/libnative-5.dylib
+        embed: true
+      - framework: generated/native-code/ios/lib/libnative-6.dylib
+        embed: true
+      - framework: generated/native-code/ios/lib/libnative-7.dylib
+        embed: true
+      - framework: generated/native-code/ios/lib/libnative-8.dylib
+        embed: true
+      - framework: generated/native-code/ios/lib/libnative-9.dylib
+        embed: true
+      - framework: generated/native-code/ios/lib/libnative-10.dylib
+        embed: true
+      - framework: generated/native-code/ios/lib/libnative-11.dylib
+        embed: true
+    info:
+      path: generated/Info-native.plist
+      properties:
+        CFBundleDisplayName: nestvane native
+        NSCameraUsageDescription: Nestvane shares the rear camera with Android apps when you use their camera.
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+          UISceneConfigurations:
+            UIWindowSceneSessionRoleApplication:
+              - UISceneConfigurationName: Validation
+                UISceneDelegateClassName: SceneDelegate
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.everettjf.nestvane.native
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CURRENT_PROJECT_VERSION: "1"
+        MARKETING_VERSION: "0.1.0"
+        HEADER_SEARCH_PATHS: "$(SRCROOT)/runtime"
+        GCC_PREPROCESSOR_DEFINITIONS: "$(inherited) NESTVANE_PAGE_SIZE=16384 NESTVANE_NATIVE_DEFAULT=1"
+        CODE_SIGN_STYLE: Automatic
+      configs:
+        Release:
+          GCC_OPTIMIZATION_LEVEL: "2"
 schemes:
   nestvane:
     build:
       targets:
         nestvane: all
+    run:
+      config: Release
+  nestvane-native:
+    build:
+      targets:
+        nestvane-native: all
     run:
       config: Release

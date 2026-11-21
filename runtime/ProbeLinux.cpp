@@ -1142,17 +1142,32 @@ void ProbeLinux::notePrelink(Machine& machine, const Descriptor& fd, uint64_t st
     std::array<uint64_t, 3> record{};
     if (!machine.readInto(status, {reinterpret_cast<uint8_t*>(record.data()), 16})) return;
     const std::pair<uint64_t, uint64_t> identity{record[0], record[1]};
-    auto known = prelinkModules.find(identity);
-    if (known == prelinkModules.end()) {
-        const auto* module = native::moduleFor(fd.contents());
-        known = prelinkModules.emplace(identity, module ? module->base : 0).first;
-    }
+    // Inode numbers are not kept for what a file is: the same number can come to stand for another file.
     auto& prelink = machine.space->prelink;
-    if (!known->second || prelink.files.size() >= GuestSpace::Prelink::capacity ||
+    if (!native::moduleFor(fd.contents()) || prelink.files.size() >= GuestSpace::Prelink::capacity ||
         std::find(prelink.files.begin(), prelink.files.end(), identity) != prelink.files.end()) return;
-    record[2] = known->second;
-    if (machine.write(prelink.table + prelink.files.size() * 24, {reinterpret_cast<const uint8_t*>(record.data()), 24}))
+    // The same bytes may be several files, and each needs a translation of its own in one process.
+    const auto contents = fd.contents();
+    const native::Module* module = nullptr;
+    for (unsigned copy = 0; (module = native::moduleFor(contents, copy)); ++copy)
+        if (std::find(prelink.used.begin(), prelink.used.end(), module->base) == prelink.used.end()) break;
+    if (!module) {
+        if (static const bool report = std::getenv("NESTVANE_NATIVE_TRACE"); report)
+            std::fprintf(stderr, "[native] no translation left for %s (device %llu inode %llu) in pid %llu\n", fd.path.c_str(),
+                         static_cast<unsigned long long>(record[0]), static_cast<unsigned long long>(record[1]),
+                         static_cast<unsigned long long>(processId()));
+        return;
+    }
+    if (static const bool report = std::getenv("NESTVANE_NATIVE_TRACE"); report && fd.path.find(std::getenv("NESTVANE_NATIVE_TRACE")) != std::string::npos)
+        std::fprintf(stderr, "[native] prelink %s (device %llu inode %llu) at 0x%llx in pid %llu\n", fd.path.c_str(),
+                     static_cast<unsigned long long>(record[0]), static_cast<unsigned long long>(record[1]),
+                     static_cast<unsigned long long>(module->base), static_cast<unsigned long long>(processId()));
+    record[2] = module->base;
+    if (machine.write(prelink.table + prelink.files.size() * 24, {reinterpret_cast<const uint8_t*>(record.data()), 24})) {
         prelink.files.push_back(identity);
+        prelink.addresses.push_back(module->base);
+        prelink.used.push_back(module->base);
+    }
 }
 
 uint64_t ProbeLinux::stat(Machine& machine, uint64_t address, const Descriptor& fd, bool extended) const {
@@ -4923,7 +4938,18 @@ uint64_t ProbeLinux::map(Machine& machine) {
     const auto start = atAddress ? x[0] : lowHint ? hint : freeMappingAddress(machine, nextMapping, length);
     if (start < lowMappingFloor || start > mappingLimit - length) return noMemory;
     const auto end = start + length;
-    if ((x[3] & fixedNoReplace) && overlaps(start, false)) return uint64_t(-17);
+    if ((x[3] & fixedNoReplace) && overlaps(start, false)) {
+        if (std::getenv("NESTVANE_NATIVE_TRACE") && start >= 0x8000'0000 && start < mappingFloor) {
+            std::fprintf(stderr, "[native] pid %llu: 0x%llx+0x%llx is taken:", static_cast<unsigned long long>(processId()),
+                         static_cast<unsigned long long>(start), static_cast<unsigned long long>(length));
+            for (const auto& segment : machine.segments)
+                if (start < segment.address + segment.mappedSize() && segment.address < start + length)
+                    std::fprintf(stderr, " 0x%llx+0x%llx", static_cast<unsigned long long>(segment.address),
+                                 static_cast<unsigned long long>(segment.mappedSize()));
+            std::fprintf(stderr, "\n");
+        }
+        return uint64_t(-17);
+    }
     if (start < mappingFloor && (end > mappingFloor || (atAddress && overlaps(start, true))))
         return noMemory;
     if (atAddress && !(x[3] & fixedNoReplace) && start >= mappingFloor && end > nextMapping) return noMemory;
@@ -5073,6 +5099,32 @@ uint64_t ProbeLinux::map(Machine& machine) {
         if (const auto* module = fd.temporary ? nullptr : native::mappedCode(fd.contents(), start, x[5])) {
             native::activate(*module);
             machine.space->addCode(module->info[0], module->info[1]);
+            // Linker namespaces can load one file more than once. The next load of this file goes to
+            // another translation of the same bytes, if there is one that the process does not use.
+            auto& prelink = machine.space->prelink;
+            const auto record = std::find(prelink.addresses.begin(), prelink.addresses.end(), module->base);
+            if (record != prelink.addresses.end()) {
+                const auto contents = fd.contents();
+                const native::Module* next = nullptr;
+                for (unsigned copy = 0; (next = native::moduleFor(contents, copy)); ++copy)
+                    if (std::find(prelink.used.begin(), prelink.used.end(), next->base) == prelink.used.end()) break;
+                if (next && machine.store64(prelink.table + (record - prelink.addresses.begin()) * 24 + 16, next->base)) {
+                    *record = next->base;
+                    prelink.used.push_back(next->base);
+                }
+            }
+        } else {
+            // Code that can only be interpreted. Native code that calls it would look for it in the
+            // table of translated code, where it is not, so the whole process is interpreted from here on.
+            machine.space->dropCode();
+            if (static const bool report = std::getenv("NESTVANE_NATIVE_TRACE"); report) {
+                const auto* known = fd.temporary ? nullptr : native::moduleFor(fd.contents());
+                std::fprintf(stderr, "[native] interpreted code: %s at 0x%llx offset 0x%llx (%s) in pid %llu %s, %zu prelinked\n", fd.path.c_str(),
+                             static_cast<unsigned long long>(start), static_cast<unsigned long long>(x[5]),
+                             known ? "translated for another address" : "no translation",
+                             static_cast<unsigned long long>(processId()), current->process->executable.c_str(),
+                             machine.space->prelink.files.size());
+            }
         }
     }
     if (imageLength) {
@@ -10559,9 +10611,12 @@ bool ProbeLinux::syscall(Machine& machine) {
             break;
         }
         case 216: { // mremap of an anonymous range, including fragments left by mprotect.
-            constexpr uint64_t mayMove = 1, fixed = 2;
+            // MREMAP_DONTUNMAP leaves the old range mapped and empty. ART's compacting collector moves
+            // its heap aside this way.
+            constexpr uint64_t mayMove = 1, fixed = 2, dontUnmap = 4;
             const auto flags = x[3];
-            if ((flags & ~(mayMove | fixed)) || ((flags & fixed) && !(flags & mayMove)) ||
+            if ((flags & ~(mayMove | fixed | dontUnmap)) || ((flags & (fixed | dontUnmap)) && !(flags & mayMove)) ||
+                ((flags & dontUnmap) && x[1] != x[2]) ||
                 !x[1] || !x[2] || x[1] > maxReservation || x[2] > maxReservation ||
                 x[0] % pageSize || ((flags & fixed) && x[4] % pageSize)) { x[0] = invalid; break; }
             const auto length = pageAlignedLength(x[1]), newSize = pageAlignedLength(x[2]);
@@ -10591,6 +10646,9 @@ bool ProbeLinux::syscall(Machine& machine) {
                 target = x[4];
                 if (target < mappingFloor || target > mappingLimit - newSize ||
                     (source < target + newSize && target < source + length)) { x[0] = invalid; break; }
+            } else if (flags & dontUnmap) {
+                target = freeMappingAddress(machine, next, newSize);
+                if (!target) { x[0] = noMemory; break; }
             } else if (newSize > length) {
                 const bool room = source <= mappingLimit - newSize &&
                     std::none_of(machine.segments.begin(), machine.segments.end(), [&](const Segment& candidate) {
@@ -10613,7 +10671,11 @@ bool ProbeLinux::syscall(Machine& machine) {
             moved.omitOnFork = mapping->omitOnFork;
             moved.wipeOnFork = mapping->wipeOnFork;
             moved.sharedAnonymous = mapping->sharedAnonymous;
-            if (lazy) {
+            // In a guest address space the pages themselves move, unless the two ranges overlap.
+            const bool movePages = lazy && machine.space && target != source &&
+                                   !(source < target + newSize && target < source + length);
+            if (movePages) {
+            } else if (lazy) {
                 moved.anonymousPages = AnonymousPages::allocate(newSize, anonymousBudget);
                 if (!moved.anonymousPages) { x[0] = noMemory; break; }
                 bool copied = true;
@@ -10645,14 +10707,34 @@ bool ProbeLinux::syscall(Machine& machine) {
             }
             machine.segments.erase(mapping, after);
             if (flags & fixed) changeRange(machine, target, target + newSize, {});
-            if (lazy && machine.space) {
+            if (movePages) {
+                moved.anonymousPages = AnonymousPages::allocateIn(machine.space, target, newSize);
+                if (!moved.anonymousPages || !machine.space->move(source, target, std::min(length, newSize))) { x[0] = noMemory; break; }
+                // The old range goes, or with MREMAP_DONTUNMAP is mapped afresh below.
+                if (!(flags & dontUnmap)) machine.space->unmap(source, length);
+            } else if (lazy && machine.space) {
                 // The contents were gathered outside the address space, because the old and the new
-                // range may overlap. Now that the target is free they go to their place in it.
+                // range overlap. Now that the target is free they go to their place in it.
                 auto placed = AnonymousPages::allocateIn(machine.space, target, newSize);
                 if (!placed || !moved.anonymousPages->copyTo(*placed, 0, 0, newSize)) { x[0] = noMemory; break; }
                 moved.anonymousPages = std::move(placed);
             }
+            const auto movedFlags = moved.flags;
+            const bool omitOnFork = moved.omitOnFork, wipeOnFork = moved.wipeOnFork;
             machine.insertSegment(std::move(moved));
+            if (flags & dontUnmap) {
+                Segment fresh{source, {}, movedFlags, sparse || lazy ? length : 0, false, {}, 0, true};
+                fresh.omitOnFork = omitOnFork;
+                fresh.wipeOnFork = wipeOnFork;
+                if (lazy) {
+                    fresh.anonymousPages = machine.space ? AnonymousPages::allocateIn(machine.space, source, length)
+                                                         : AnonymousPages::allocate(length, anonymousBudget);
+                    if (!fresh.anonymousPages) { x[0] = noMemory; break; }
+                } else if (!sparse) {
+                    fresh.bytes.resize(length);
+                }
+                machine.insertSegment(std::move(fresh));
+            }
             next = std::max(next, target + newSize);
             machine.cpu.exclusiveSize = 0;
             x[0] = target;
