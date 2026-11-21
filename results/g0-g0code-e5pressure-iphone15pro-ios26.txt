@@ -1,0 +1,16 @@
+probe=e5pressure bundle=com.everettjf.nestvane.g0code
+machine=iPhone16,1 os=Version 26.2 (Build 23C55) build_config=optimized
+traced=0 host_page=16384 kernel_page=16384 physical_memory_mib=7680 available_mib=3370 footprint_mib=6.1
+vm_map min=0x10037c000 max=0x458000000 span_gib=13.37 virtual_size_gib=391.14
+e5 pressure dirtied_mib=3114 host_free_mib before=3726 after=2802
+e5 frameworks=8
+e5 G0Code0 text_mib=64.0 dlopen_ms=7.21 first_touch=read first_touch_ms=115.7 first_touch_us_per_page=28.25 second_touch_ms=0.03 run_all_ms=14.9 run_minst_per_s=1126 footprint_mib=9.0 checksum=24468536760510
+e5 G0Code1 text_mib=64.0 dlopen_ms=6.32 first_touch=execute first_touch_ms=94.3 first_touch_us_per_page=23.02 second_touch_ms=4.80 run_all_ms=18.3 run_minst_per_s=915 footprint_mib=9.2 checksum=0
+e5 G0Code2 text_mib=64.0 dlopen_ms=6.34 first_touch=read first_touch_ms=63.9 first_touch_us_per_page=15.61 second_touch_ms=0.02 run_all_ms=15.6 run_minst_per_s=1076 footprint_mib=9.2 checksum=24484255357626
+e5 G0Code3 text_mib=64.0 dlopen_ms=6.07 first_touch=execute first_touch_ms=64.8 first_touch_us_per_page=15.81 second_touch_ms=3.76 run_all_ms=13.8 run_minst_per_s=1213 footprint_mib=9.2 checksum=0
+e5 G0Code4 text_mib=64.0 dlopen_ms=5.73 first_touch=read first_touch_ms=63.8 first_touch_us_per_page=15.57 second_touch_ms=0.02 run_all_ms=13.9 run_minst_per_s=1206 footprint_mib=9.3 checksum=24565674313390
+e5 G0Code5 text_mib=64.0 dlopen_ms=5.58 first_touch=execute first_touch_ms=96.2 first_touch_us_per_page=23.48 second_touch_ms=4.84 run_all_ms=20.0 run_minst_per_s=840 footprint_mib=9.3 checksum=0
+e5 G0Code6 text_mib=64.0 dlopen_ms=6.94 first_touch=read first_touch_ms=118.4 first_touch_us_per_page=28.92 second_touch_ms=0.03 run_all_ms=17.3 run_minst_per_s=969 footprint_mib=9.3 checksum=24472367092250
+e5 G0Code7 text_mib=64.0 dlopen_ms=6.08 first_touch=execute first_touch_ms=99.9 first_touch_us_per_page=24.38 second_touch_ms=5.05 run_all_ms=21.2 run_minst_per_s=791 footprint_mib=9.4 checksum=0
+e5 total text_mib=512.0 dlopen_ms=50.3 first_touch_ms=716.9 second_touch_ms=18.6 first_touch_mib_per_s=714 footprint_mib=9.4
+done probe=e5pressure elapsed_ms=1292

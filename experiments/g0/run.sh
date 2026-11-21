@@ -1,6 +1,6 @@
 #!/bin/sh
 # Builds a G0 probe app, installs it on a connected iPhone and runs the named probes without a debugger.
-#   G0_TEAM=<team id> experiments/g0/run.sh <device udid> <G0|G0Extended|G0Code> <probe>...
+#   G0_TEAM=<team id> experiments/g0/run.sh <device udid> <G0|G0Extended|G0Code|G0Guest> <probe>...
 # G0Code embeds G0_CODE_COUNT frameworks of G0_CODE_MIB each (default 8 x 64 MiB).
 set -eu
 
@@ -32,7 +32,7 @@ _g0_code_begin:
 _g0_code_end:
 ret
 EOF
-        xcrun -sdk iphoneos clang -target arm64-apple-ios17.0 -dynamiclib \
+        xcrun -sdk iphoneos clang -target arm64-apple-ios26.0 -dynamiclib \
             -install_name "@rpath/$name.framework/$name" -o "$bundle/$name" "$out/$name.s"
         cat > "$bundle/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -45,13 +45,18 @@ EOF
 <key>CFBundlePackageType</key><string>FMWK</string>
 <key>CFBundleShortVersionString</key><string>0.1.0</string>
 <key>CFBundleVersion</key><string>1</string>
-<key>MinimumOSVersion</key><string>17.0</string>
+<key>MinimumOSVersion</key><string>26.0</string>
 </dict></plist>
 EOF
         rm "$out/$name.bin" "$out/$name.s"
         index=$((index + 1))
     done
     mv "$frameworks.tmp" "$frameworks"
+fi
+
+if [ "$target" = G0Guest ]; then
+    [ -f "$out/e3/toybox-hostlr.s" ] || { echo "run experiments/g0/e3/build.sh first"; exit 1; }
+    python3 "$here/e3/compare.py" --export "$out/e3/scripts.bin"
 fi
 
 cd "$here"
@@ -68,7 +73,7 @@ xcrun devicectl device install app --device "$device" "$app" > "$out/install-$ta
     || { tail -20 "$out/install-$target.log"; exit 1; }
 
 for probe in "$@"; do
-    xcrun devicectl device process launch --device "$device" --terminate-existing --console "$bundle" "$probe" \
+    xcrun devicectl device process launch --device "$device" --terminate-existing --console ${G0_ENV:+--environment-variables "$G0_ENV"} "$bundle" "$probe" \
         > "$out/launch-$target-$probe.log" 2>&1 || echo "launch of $probe exited with $?"
     xcrun devicectl device copy from --device "$device" --domain-type appDataContainer --domain-identifier "$bundle" \
         --source "Documents/$probe.txt" --destination "$out/reports/$target-$probe.txt" > /dev/null 2>&1 \

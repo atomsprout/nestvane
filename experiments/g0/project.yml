@@ -1,7 +1,7 @@
 name: g0
 options:
   deploymentTarget:
-    iOS: "17.0"
+    iOS: "26.0"
 settingGroups:
   app:
     CLANG_CXX_LANGUAGE_STANDARD: c++20
@@ -34,6 +34,29 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.everettjf.nestvane.g0extended
         CODE_SIGN_ENTITLEMENTS: Extended.entitlements
+  # E3 on the device: the rewritten toybox and its runtime (run e3/build.sh first).
+  G0Guest:
+    type: application
+    platform: iOS
+    sources:
+      - G0.mm
+      - e3/runtime.c
+      - e3/entry.S
+      - path: ../../generated/g0/e3/toybox-hostlr.s
+        optional: true
+        buildPhase: sources
+      - path: ../../generated/g0/e3/toybox.elf
+        optional: true
+        buildPhase: resources
+      - path: ../../generated/g0/e3/scripts.bin
+        optional: true
+        buildPhase: resources
+    settings:
+      groups: [app]
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.everettjf.nestvane.g0guest
+        CODE_SIGN_ENTITLEMENTS: Extended.entitlements
+        GCC_PREPROCESSOR_DEFINITIONS: "G0_GUEST=1 GUEST_MAIN=guest_main SEGMENT=(2ull<<30)"
   # Embeds the generated code frameworks for E5.
   G0Code:
     type: application

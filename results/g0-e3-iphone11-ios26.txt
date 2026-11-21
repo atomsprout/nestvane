@@ -1,0 +1,37 @@
+probe=e3 bundle=com.everettjf.nestvane.g0guest
+machine=iPhone12,1 os=Version 26.0.1 (Build 23A355) build_config=optimized
+traced=0 host_page=16384 kernel_page=16384 physical_memory_mib=3853 available_mib=2343 footprint_mib=5.0
+vm_map min=0x100ff0000 max=0xfc0000000 span_gib=58.98 virtual_size_gib=391.08
+e3 setup exit=0 bytes=0 sha=e3b0c44298fc ms=798
+e3 f_arithmetic exit=0 bytes=16 sha=4f2cdeed5a48 ms=1
+e3 f_pipeline exit=0 bytes=2 sha=53c234e5e847 ms=1
+e3 f_three_stage exit=0 bytes=6 sha=43f0a1612c71 ms=422
+e3 f_substitution exit=0 bytes=12 sha=052e754a689d ms=1
+e3 f_files exit=0 bytes=14 sha=326332560d20 ms=10
+e3 f_exec_self exit=0 bytes=16 sha=7c6afba65628 ms=2
+e3 f_hashes exit=0 bytes=184 sha=dcebc78444cf ms=8
+e3 f_sed exit=0 bytes=44 sha=19cb730e26f2 ms=42
+e3 f_xargs exit=0 bytes=24 sha=89bd8d45fb62 ms=20
+e3 f_base64 exit=0 bytes=49 sha=2914732b0cb2 ms=47
+e3 f_gzip exit=0 bytes=75 sha=cca29559bd41 ms=7
+e3 f_printf exit=0 bytes=25 sha=97146a571cfa ms=1
+e3 f_bc exit=0 bytes=105 sha=a7562d7a8f72 ms=1
+e3 f_sort_unique exit=0 bytes=42 sha=839160fcc53b ms=11
+e3 f_loop_forks exit=0 bytes=4 sha=eea8254c7500 ms=20
+e3 f_exit_status exit=0 bytes=15 sha=ae39b65b56f2 ms=1
+e3 f_factor exit=0 bytes=89 sha=fba14f70674c ms=64
+e3 f_find exit=0 bytes=24 sha=a9a1483caeca ms=12
+e3 f_date exit=0 bytes=11 sha=8da7e0b07569 ms=1
+e3 f_od_cut exit=0 bytes=102 sha=45d9d79ae2e1 ms=1649
+e3 b_sha256sum_251_MiB exit=0 bytes=70 sha=2ad25a47f9bd ms=2064
+e3 b_wc_251_MiB exit=0 bytes=32 sha=c16e8aed3a28 ms=616
+e3 b_gzip_14_MiB exit=0 bytes=9 sha=28a913e99ad5 ms=115
+e3 b_sort_2M_lines exit=0 bytes=2 sha=4355a46b19d3 ms=3057
+e3 b_sed_2M_lines exit=0 bytes=36 sha=79bd19b71964 ms=1596
+e3 b_grep_2M_lines exit=0 bytes=7 sha=703c6208a51c ms=709
+e3 b_factor exit=0 bytes=35 sha=6d547c0eb211 ms=64
+e3 b_shell_loop_300k exit=0 bytes=7 sha=2d5c043a952d ms=1785
+e3 b_300_forks exit=0 bytes=4 sha=f807fe6dc767 ms=60
+e3 b_bc_pi_2000_digits exit=0 bytes=36 sha=584213977181 ms=3188
+e3 footprint_mib=6.9
+done probe=e3 elapsed_ms=43103

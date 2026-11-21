@@ -4,6 +4,7 @@
 
 #import <UIKit/UIKit.h>
 
+#include <CommonCrypto/CommonDigest.h>
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -18,6 +19,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
 #include <sys/sysctl.h>
 #include <sys/utsname.h>
 #include <time.h>
@@ -769,6 +771,65 @@ void e5() {
         totalCold ? static_cast<double>(totalBytes) / MiB / (static_cast<double>(totalCold) / 1e9) : 0, footprintMiB());
 }
 
+#ifdef G0_GUEST
+// ---------------------------------------------------------------- E3 on the device
+// Runs the rewritten toybox (experiments/g0/e3) inside this app with the scripts of compare.py.
+
+extern "C" int guest_main(int argc, char** argv, char** envp);
+
+NSData* runGuest(NSString* script, double* milliseconds, int* status) {
+    NSString* output = [NSTemporaryDirectory() stringByAppendingPathComponent:@"g0-guest-output"];
+    fflush(stdout);
+    const int saved = dup(1), file = open(output.fileSystemRepresentation, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    dup2(file, 1);
+    close(file);
+    char* arguments[] = {(char*)"g0", (char*)"./toybox", (char*)"toybox", (char*)"sh", (char*)"-c", (char*)script.UTF8String, nullptr};
+    char* environment[] = {nullptr};
+    const uint64_t begin = nowNs();
+    *status = guest_main(6, arguments, environment);
+    *milliseconds = ms(nowNs() - begin);
+    dup2(saved, 1);
+    close(saved);
+    return [NSData dataWithContentsOfFile:output];
+}
+
+NSString* digest(NSData* data) {
+    unsigned char hash[CC_SHA256_DIGEST_LENGTH];
+    CC_SHA256(data.bytes, static_cast<CC_LONG>(data.length), hash);
+    NSMutableString* text = [NSMutableString string];
+    for (int index = 0; index < 6; ++index) [text appendFormat:@"%02x", hash[index]];
+    return text;
+}
+
+void e3() {
+    NSString* work = [NSTemporaryDirectory() stringByAppendingPathComponent:@"g0-guest"];
+    [NSFileManager.defaultManager removeItemAtPath:work error:nil];
+    [NSFileManager.defaultManager createDirectoryAtPath:work withIntermediateDirectories:YES attributes:nil error:nil];
+    [NSFileManager.defaultManager copyItemAtPath:[NSBundle.mainBundle pathForResource:@"toybox" ofType:@"elf"]
+                                          toPath:[work stringByAppendingPathComponent:@"toybox"] error:nil];
+    chmod([work stringByAppendingPathComponent:@"toybox"].fileSystemRepresentation, 0755);
+    chdir(work.fileSystemRepresentation);
+    NSData* scripts = [NSData dataWithContentsOfFile:[NSBundle.mainBundle pathForResource:@"scripts" ofType:@"bin"]];
+    NSArray<NSString*>* fields = [[[NSString alloc] initWithData:scripts encoding:NSUTF8StringEncoding] componentsSeparatedByString:@"\0"];
+    for (NSUInteger index = 0; index + 1 < fields.count; index += 2) {
+        NSString* name = fields[index];
+        const bool benchmark = [name hasPrefix:@"b "];
+        double best = 1e18, elapsed = 0;
+        int status = 0;
+        NSData* output = nil;
+        for (int round = 0; round < (benchmark ? 3 : 1); ++round) {
+            output = runGuest(fields[index + 1], &elapsed, &status);
+            if (elapsed < best) best = elapsed;
+        }
+        say("e3 %s exit=%d bytes=%lu sha=%s ms=%.0f", [name stringByReplacingOccurrencesOfString:@" " withString:@"_"].UTF8String, status,
+            static_cast<unsigned long>(output.length), digest(output).UTF8String, best);
+        if (getenv("G0_SHOW_OUTPUT") && !benchmark && output.length < 600)
+            say("e3 output %s", [[[NSString alloc] initWithData:output encoding:NSUTF8StringEncoding] stringByReplacingOccurrencesOfString:@"\n" withString:@"|"].UTF8String);
+    }
+    say("e3 footprint_mib=%.1f", footprintMiB());
+}
+#endif
+
 void* run(void* raw) {
     NSString* probe = (__bridge_transfer NSString*)raw;
     NSString* documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
@@ -780,6 +841,9 @@ void* run(void* raw) {
     else if ([probe isEqualToString:@"e2zygote"]) e2Zygotes();
     else if ([probe isEqualToString:@"e4"]) e4();
     else if ([probe isEqualToString:@"e5"]) e5();
+#ifdef G0_GUEST
+    else if ([probe isEqualToString:@"e3"]) e3();
+#endif
     else if ([probe isEqualToString:@"e5pressure"]) {
         // Dirty most of the app's memory budget first so the file cache holding the code is likely evicted.
         const uint64_t size = os_proc_available_memory() - 256 * MiB;
