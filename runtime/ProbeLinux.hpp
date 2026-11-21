@@ -639,6 +639,8 @@ private:
     std::map<std::pair<uint64_t, std::string>, std::vector<WholeFileLock>> wholeFileLocks;
     uint64_t stat(Machine& machine, uint64_t address, const Descriptor& fd, bool extended = false) const;
     void notePrelink(Machine& machine, const Descriptor& fd, uint64_t status);
+    // Page-aligned copies of read-only files whose bytes are not page-aligned where they are kept.
+    std::map<const uint8_t*, std::span<const uint8_t>> alignedFiles;
     uint64_t statx(Machine& machine) const;
     uint64_t resize(const WritableFile& file, uint64_t size);
     uint64_t readGraphics(Machine& machine, GraphicsPipeState& pipe, uint64_t address, uint64_t size);

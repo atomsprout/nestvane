@@ -776,16 +776,26 @@ bool SharedBuffer::makeShareable() {
 }
 
 void SharedBuffer::resize(size_t size) {
-    if (!mapping) return bytes.resize(size);
+    // Large storage lives in pages of its own from the start: the parts nothing has written take no
+    // memory, as in a file system that keeps files sparse.
+    constexpr size_t sparseFrom = 64 * 1024;
+    if (!mapping && (size < sparseFrom || !makeShareable())) return bytes.resize(size);
     if (size <= reserved) {
         if (size < length) std::memset(mapping + size, 0, length - size);  // what is cut off reads as zero if it comes back
         length = size;
         return;
     }
-    const size_t wanted = (size + GuestSpace::page - 1) & ~(GuestSpace::page - 1);
+    // Room to grow into costs only address space. The pages move to the new place as they are: a copy
+    // would give memory to every page of the file that nothing has written.
+    const size_t wanted = std::max<size_t>((size + GuestSpace::page - 1) & ~(GuestSpace::page - 1),
+                                           reserved + std::min<size_t>(reserved, 64 * 1024 * 1024));
     void* memory = mmap(nullptr, wanted, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
     if (memory == MAP_FAILED) throw std::bad_alloc();
-    std::memcpy(memory, mapping, length);
+    vm_address_t target = reinterpret_cast<vm_address_t>(memory);
+    vm_prot_t current, maximum;
+    if (vm_remap(mach_task_self(), &target, reserved, 0, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE, mach_task_self(),
+                 reinterpret_cast<vm_address_t>(mapping), FALSE, &current, &maximum, VM_INHERIT_SHARE) != KERN_SUCCESS)
+        std::memcpy(memory, mapping, length);
     munmap(mapping, reserved);
     mapping = static_cast<uint8_t*>(memory);
     length = size;

@@ -40,6 +40,7 @@ struct NativeContext {
     uint64_t fpsr;
     uint64_t svcEntry;      // nestvane_native_svc: rewritten code in other images jumps to it through here
     uint64_t trapEntry;     // nestvane_native_trap, likewise
+    uint64_t signalReturn;  // the guest pc of the signal return trampoline
     // Filled by the signal handler.
     uint64_t faultPc, faultAddress;
 };
@@ -47,6 +48,7 @@ int nestvane_native_enter(NativeContext*);
 void nestvane_native_exit();
 void nestvane_native_svc();
 void nestvane_native_trap();
+void nestvane_native_signal_return();
 }
 
 static_assert(offsetof(NativeContext, sp) == 248 && offsetof(NativeContext, q) == 256 && offsetof(NativeContext, nzcv) == 768);
@@ -54,6 +56,7 @@ static_assert(offsetof(NativeContext, tpidr) == 784 && offsetof(NativeContext, p
 static_assert(offsetof(NativeContext, table) == 808 && offsetof(NativeContext, hostSp) == 816);
 static_assert(offsetof(NativeContext, memoryTable) == 824 && offsetof(NativeContext, spare) == 848 && offsetof(NativeContext, fpsr) == 856);
 static_assert(offsetof(NativeContext, svcEntry) == 864 && offsetof(NativeContext, trapEntry) == 872);  // tools/build-native-code.py
+static_assert(offsetof(NativeContext, signalReturn) == 880);  // NativeEntry.S
 
 namespace nestvane::native {
 namespace {
@@ -83,6 +86,7 @@ struct Registry {
     uint64_t codeStart = 0, codeEnd = 0;              // host addresses of all translated code
     bool wanted = false;
     const char* failure = nullptr;
+    uint64_t signalPage = 0;                                   // guest address of the signal return trampoline's page
 };
 
 Registry& registry() {
@@ -116,6 +120,9 @@ Registry& registry() {
         // The entry for guest pc is 2 * pc from a page boundary, in this table as in each module's own.
         low &= ~uint64_t{0xffff};
         high = (high + 0xffff) & ~uint64_t{0xffff};
+        // One more page of guest addresses, for the signal return trampoline (see signalReturnPage).
+        result.signalPage = high;
+        high += 0x10000;
         result.low = low;
         result.high = high;
         // Only address space: a module's table is mapped in when a process first maps the module, and
@@ -125,6 +132,15 @@ Registry& registry() {
             result.modules.clear();
             result.failure = "no address space for the table of translated code";
             return result;
+        }
+        // The trampoline's entries: whichever of its instructions a handler returns to, native code
+        // leaves there and the interpreter runs the trampoline.
+        uint64_t* entries = result.table + (result.signalPage - low) / 4;
+        if (mmap(entries, GuestSpace::page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0) != MAP_FAILED) {
+            entries[1] = reinterpret_cast<uint64_t>(&nestvane_native_signal_return);
+            result.traps.insert(entries[1]);
+        } else {
+            result.signalPage = 0;
         }
         result.codeStart = result.modules.front().codeStart;
         result.codeEnd = result.modules.back().codeStart + result.modules.back().starts[result.modules.back().count - 1] + 256;
@@ -265,6 +281,8 @@ bool enabled() { return !registry().modules.empty(); }
 
 const char* failure() { return registry().failure; }
 
+uint64_t signalReturnPage() { return registry().modules.empty() ? 0 : registry().signalPage; }
+
 uint64_t contentKey(std::span<const uint8_t> file) {
     uint64_t value = 0xcbf29ce484222325ULL;
     for (const uint8_t byte : file.first(std::min<size_t>(file.size(), 16384))) value = (value ^ byte) * 0x100000001b3ULL;
@@ -369,6 +387,7 @@ Exit run(Machine& machine) {
     context.memoryTable = reinterpret_cast<uint64_t>(space.offsets());
     context.svcEntry = reinterpret_cast<uint64_t>(&nestvane_native_svc);
     context.trapEntry = reinterpret_cast<uint64_t>(&nestvane_native_trap);
+    context.signalReturn = all.signalPage + 4;
 
     running.thread = pthread_self();
     const uint64_t entered = mach_absolute_time();

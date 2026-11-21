@@ -1,5 +1,6 @@
 #include "ProbeLinux.hpp"
 #include "NativeCode.hpp"
+#include <sys/mman.h>
 
 #include "BpfProgram.hpp"
 #include "BpfTypes.hpp"
@@ -1491,11 +1492,14 @@ uint64_t ProbeLinux::resize(const WritableFile& file, uint64_t size) {
         const auto limit = file.memoryFile ? std::max(maxWritableBytes, memoryLimit / 2) : maxWritableBytes;
         if (pages - file.storage->pages.size() + allocated > limit) return uint64_t(-28);
     }
+    const uint64_t before = file.storage->pages.size();
     file.storage->pages.resize(pages);
     if (file.storage->placedMoves != file.storage->pages.moves) file.storage->replace();
     const auto zeroFrom = std::min(size, file.storage->size);
-    const auto zeroTo = size < file.storage->size ? pages : size;
-    std::fill(file.storage->pages.begin() + zeroFrom, file.storage->pages.begin() + zeroTo, 0);
+    // What the storage gains reads as zero already, and writing zeros there would give every page of
+    // a sparse file host memory: a property area is 128 KiB of which a few pages are used.
+    const auto zeroTo = size < file.storage->size ? pages : std::min<uint64_t>(size, before);
+    if (zeroFrom < zeroTo) std::fill(file.storage->pages.begin() + zeroFrom, file.storage->pages.begin() + zeroTo, 0);
     file.storage->size = size;
     return 0;
 }
@@ -5053,6 +5057,21 @@ uint64_t ProbeLinux::map(Machine& machine) {
         // The root loader and retained read-only APEX mounts own these bytes throughout the boot.
         if (!(x[2] & 2) && !fd.temporary && !fd.apkRequest && files.contains(fd.path))
             imageLength = bytes.size() & ~(pageSize - 1);
+        if (machine.space && imageLength && reinterpret_cast<uintptr_t>(bytes.data()) % GuestSpace::page) {
+            // A file inside a mounted image starts wherever its blocks are. Guest address spaces map
+            // whole host pages, so such a file gets one page-aligned copy that every process maps,
+            // instead of a copy per process.
+            auto& aligned = alignedFiles[raw.data()];
+            if (aligned.size() != raw.size()) {
+                const auto capacity = (raw.size() + GuestSpace::page - 1) & ~(GuestSpace::page - 1);
+                void* memory = mmap(nullptr, capacity, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+                if (memory != MAP_FAILED) {
+                    std::memcpy(memory, raw.data(), raw.size());
+                    aligned = {static_cast<const uint8_t*>(memory), raw.size()};
+                }
+            }
+            if (aligned.size() == raw.size()) bytes = aligned.subspan(x[5], bytes.size());
+        }
     }
     const bool sparse = anon && !x[2];
     const bool lazy = anon && !sparse && sharing == 2 && length >= lazyAnonymousThreshold;
@@ -7271,7 +7290,8 @@ std::string ProbeLinux::memoryReport(const Machine& machine) const {
     // NESTVANE_MEMORY_DETAIL=<part of a program's path>: the mappings of the first such process.
     if (const char* wanted = std::getenv("NESTVANE_MEMORY_DETAIL")) {
         for (const auto& [id, process] : processes) {
-            if (process->executable.find(wanted) == std::string::npos) continue;
+            if (std::string_view(wanted).starts_with("pid:") ? std::to_string(id) != wanted + 4
+                                                             : process->executable.find(wanted) == std::string::npos) continue;
             const bool running = process == current->process.get();
             const auto* space = running ? machine.space.get() : process->space.get();
             if (!space) continue;
@@ -7730,7 +7750,8 @@ uint64_t ProbeLinux::loopIoctl(Machine& machine, const Descriptor& fd) {
 uint64_t ProbeLinux::signalRestorer(Machine& machine) {
     auto& process = *current->process;
     if (process.signalTrampoline) return process.signalTrampoline;
-    const auto address = freeMappingAddress(machine, process.nextMapping, pageSize);
+    const bool fixed = machine.space && native::signalReturnPage();
+    const auto address = fixed ? native::signalReturnPage() : freeMappingAddress(machine, process.nextMapping, pageSize);
     if (!address || !allowsBacking(machine, address, address + pageSize, pageSize, memoryLimit)) return 0;
     // Guest Linux trampoline. The leading NOP matches the ARM64 vDSO unwinding convention.
     constexpr std::array<uint32_t, 4> code{0xd503201f, 0x52801168, 0xd4000001, 0xd4200000};
@@ -7738,7 +7759,7 @@ uint64_t ProbeLinux::signalRestorer(Machine& machine) {
     std::memcpy(page.bytes.mutableData(), code.data(), sizeof(code));
     machine.insertSegment(std::move(page));
     process.signalTrampoline = address + sizeof(code[0]);
-    process.nextMapping = std::max(process.nextMapping, address + pageSize);
+    if (!fixed) process.nextMapping = std::max(process.nextMapping, address + pageSize);
     return process.signalTrampoline;
 }
 

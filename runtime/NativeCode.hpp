@@ -23,6 +23,10 @@ struct Module {
 bool enabled();
 // Why translations that are linked in and wanted cannot be used, or null.
 const char* failure();
+// The guest address where the kernel layer puts the page of its signal return trampoline in a process
+// whose code runs natively, or 0. A handler's return looks its return address up in the table of
+// translated code, which has an entry for this address: the trampoline starts 4 bytes into the page.
+uint64_t signalReturnPage();
 uint64_t contentKey(std::span<const uint8_t> file);
 // A translation of an ELF file, or null. Files with the same bytes can exist under several paths and
 // be loaded together, so there may be several translations, each for an address of its own: `copy`

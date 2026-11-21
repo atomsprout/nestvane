@@ -8,6 +8,7 @@
 #define CTX_HOST_SP 816
 #define CTX_MEMORY_TABLE 824
 #define CTX_FPSR 856
+#define CTX_SIGNAL_RETURN 880
 
 .text
 .p2align 2
@@ -131,6 +132,15 @@ _nestvane_native_svc:
 _nestvane_native_trap:
 	SAVE_GUEST
 	mov w0, #4
+
+	b _nestvane_native_exit
+
+// What the table of translated code holds for the kernel layer's signal return trampoline, which is
+// no translated code: a handler that returns to it leaves native code there.
+.globl _nestvane_native_signal_return
+_nestvane_native_signal_return:
+	ldr x28, [x25, #CTX_SIGNAL_RETURN]
+	b _nestvane_native_trap
 
 // Leaves guest code with the reason in w0 and the context in x25. The guest's registers are in the
 // context already: SAVE_GUEST put them there, or the signal handler did before it sent the thread here.
