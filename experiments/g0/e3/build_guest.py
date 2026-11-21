@@ -140,7 +140,7 @@ def main():
                             os.path.join(HERE, "guest-tests", name), "-o", os.path.join(root, "system/bin/test-" + name[:-2])], check=True)
 
     # The Java test programs, built beforehand from guest-tests/*.java with javac and d8.
-    for name in ("hello.jar", "bench.jar"):
+    for name in ("hello.jar", "bench.jar", "preload.jar", "preloaded-classes"):
         if os.path.exists(os.path.join(os.path.dirname(out), "dex", name)):
             shutil.copy2(os.path.join(os.path.dirname(out), "dex", name), os.path.join(root, "data/local/tmp", name))
 
@@ -214,7 +214,8 @@ exec "$here/${GUEST:-guest}" "$here/root" /system/bin/toybox env ANDROID_ROOT=/s
         scripts = [("art_interpreted", command % ("-Xint", "interpreted")), ("art_image_interpreted", command % ("-Xint " + image, "image")),
                    ("art_compiled", command % (image, "compiled")), ("b_art_interpreted", command % ("-Xint", "interpreted")),
                    ("b_art_compiled", command % (image, "compiled")),
-                   ("art_bench", (command % (image, "")).replace("hello.jar Hello", "bench.jar Bench"))]
+                   ("art_bench", (command % (image, "")).replace("hello.jar Hello", "bench.jar Bench")),
+                   ("art_preload", (command % (image, "/data/local/tmp/preloaded-classes")).replace("hello.jar Hello", "preload.jar Preload"))]
         tests = [("t_" + name[5:], name + "\n") for name in sorted(os.listdir(os.path.join(root, "system/bin"))) if name.startswith("test-")]
         subprocess.run([sys.executable, os.path.join(HERE, "compare-android.py"), "--export", os.path.join(out, "scripts-android.bin")], check=True)
         with open(os.path.join(out, "scripts-android.bin"), "a") as file:

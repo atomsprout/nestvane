@@ -25,6 +25,10 @@ access to the second can also be reached by an indirect branch or a signal retur
 something else, so each of them gets an entry stub that works the address out again: the code table
 points at the stub, and straight-line execution does not pass through it.
 
+With --table --split-index, an access with a register offset first uses the chunk of its base
+register, which does not have to wait for the index, and checks that the address is in the same
+chunk. If it is not, a path placed out of line looks the address's chunk up.
+
 With --host-lr, bl and ret stay native calls and returns and x30 holds a host address. Without it,
 x30 holds the guest return address and every return goes through the table.
 
