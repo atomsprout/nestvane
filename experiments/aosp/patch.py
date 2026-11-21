@@ -230,3 +230,18 @@ edit("external/tensorflow/tensorflow/lite/tflite_static.bp", [(
     '        "-DGOOGLE_L4T", // Nestvane: no assembly kernels, as in tflite_defaults.\n'
     '        "-DTFLITE_WITH_RUY",\n')],
     "-DGOOGLE_L4T")
+
+# There is no JIT on the host: a method that is not compiled ahead of time runs in the interpreter
+# for good. So the boot image, the mainline boot class path extension, the system server and the
+# apps are compiled in full rather than by profile, and nothing is left for the device to compile.
+edit_all("build/soong/java/dexpreopt_config.go", 'compilerFilter:       "speed-profile",', 'compilerFilter:       "speed", // Nestvane', 2, '"speed", // Nestvane')
+edit("build/soong/java/dexpreopt_config.go", [
+    ('mainlineBcpCompilerFilter := "verify"', 'mainlineBcpCompilerFilter := "speed" // Nestvane: was verify'),
+    ('mainlineBcpCompilerFilter = "speed-profile"', 'mainlineBcpCompilerFilter = "speed"')],
+    "Nestvane: was verify")
+edit("device/generic/goldfish/64bitonly/product/sdk_phone16k_arm64.mk", [(
+    "\nPRODUCT_NAME := sdk_phone16k_arm64\n",
+    "\n# Nestvane: compile everything ahead of time, there is no JIT on the host.\n"
+    "PRODUCT_SYSTEM_SERVER_COMPILER_FILTER := speed\nPRODUCT_DEX_PREOPT_DEFAULT_COMPILER_FILTER := speed\n"
+    "\nPRODUCT_NAME := sdk_phone16k_arm64\n")],
+    "Nestvane: compile everything ahead of time")

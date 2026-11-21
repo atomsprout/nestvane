@@ -200,6 +200,20 @@ def main():
                 os.symlink("toybox", os.path.join(root, "system/bin", applet))
     print("program=%s bytes=%d" % (program, os.path.getsize(program)))
 
+    # A launcher for app_process with the environment init gives its services (init.environ.rc), which
+    # names the boot class path. `run-app-process.sh -Xzygote /system/bin --zygote` starts the zygote.
+    environment = os.path.join(root, "root/init.environ.rc")
+    if os.path.exists(environment) and os.path.exists(os.path.join(root, "system/bin/app_process64")):
+        exports = [line.split(None, 2)[1:] for line in open(environment).read().splitlines() if line.strip().startswith("export ")]
+        launcher = os.path.join(out, "run-app-process.sh")
+        open(launcher, "w").write("""#!/bin/sh
+# usage: run-app-process.sh [vm options...] <directory> [--zygote | <class>] [arguments]
+here=$(dirname "$0")
+exec "$here/${GUEST:-guest}" "$here/root" /system/bin/toybox env %s \\
+  /system/bin/app_process64 -Xnorelocate -Xnoimage-dex2oat "$@"
+""" % " ".join("%s=%s" % (name, value) for name, value in exports))
+        os.chmod(launcher, 0o755)
+
     # A launcher for dalvikvm with the boot class path in the order the boot image was compiled for.
     if os.path.exists(os.path.join(root, "apex/com.android.art/bin/dalvikvm64")):
         jars = ["/apex/com.android.art/javalib/%s.jar" % name for name in ("core-oj", "core-libart", "okhttp", "bouncycastle", "apache-xml")]
