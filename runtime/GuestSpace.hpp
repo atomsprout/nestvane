@@ -94,6 +94,7 @@ public:
         static constexpr uint64_t capacity = 2048;
         uint64_t table = 0;
         std::vector<std::pair<uint64_t, uint64_t>> files;  // device and inode
+        std::vector<uint64_t> keys;                        // the content key of the file each stood for
         std::vector<uint64_t> addresses;                   // where each of them is to be loaded next
         std::vector<uint64_t> used;                        // every address given out so far
     } prelink;

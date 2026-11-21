@@ -1,0 +1,54 @@
+Native boot in the app on iPhone 17 Pro, iOS 27.0.1, with the graphics frameworks
+date: 2026-11-21, app built at 55681d5 (the same build as on the iPad Air: nestvane-native with gfxstream and
+ANGLE embedded, root android17r-framework-full with lmkd, ro.config.low_ram=true, ro.hw_timeout_multiplier=10).
+Launched with xcrun devicectl device process launch --terminate-existing. Times are the app's own, from
+boot-milestones.txt and launcher-displayed.txt.
+
+run 1 (first launch after a fresh install: empty data volume, nothing cached)
+  [8 ms] Initializing local Android renderer
+  [2431 ms] Local Android renderer initialized
+  [2475 ms] Starting Android 17 init
+  [6228 ms] Zygote: Preloading classes...
+  [7108 ms] Zygote: end preload
+  [7795 ms] SystemServerTiming: StartPackageManagerService
+  [12201 ms] SystemServerTiming: StartSystemUI
+  [31111 ms] SystemServerTiming: broadcastIntent-0-android.intent.action.USER_UNLOCKED took to complete: 0ms
+  [36279 ms] ActivityTaskManager: Displayed com.android.launcher3/.uioverrides.QuickstepLauncher for user 0: +4s703ms
+  [52763 ms] SystemServerTiming: broadcastIntent-0-android.intent.action.BOOT_COMPLETED took to complete: 1ms
+  Android Launcher displayed after 36279 ms
+  iOS physical footprint bytes: 2144047736
+  iOS process memory limit remaining bytes: 4298403208
+
+run 2 (relaunch on the same data volume)
+  [5 ms] Initializing local Android renderer
+  [77 ms] Local Android renderer initialized
+  [115 ms] Starting Android 17 init
+  [3634 ms] Zygote: Preloading classes...
+  [4418 ms] Zygote: end preload
+  [5067 ms] SystemServerTiming: StartPackageManagerService
+  [6777 ms] SystemServerTiming: StartSystemUI
+  [11410 ms] SystemServerTiming: broadcastIntent-0-android.intent.action.USER_UNLOCKED took to complete: 0ms
+  [11631 ms] SystemServerTiming: broadcastIntent-0-android.intent.action.BOOT_COMPLETED took to complete: 7ms
+  [14341 ms] ActivityTaskManager: Displayed com.android.launcher3/.uioverrides.QuickstepLauncher for user 0: +2s530ms
+  Android Launcher displayed after 14341 ms
+  iOS physical footprint bytes: 2184942272
+  iOS process memory limit remaining bytes: 4257508672
+
+run 3 (relaunch on the same data volume)
+  [4 ms] Initializing local Android renderer
+  [59 ms] Local Android renderer initialized
+  [98 ms] Starting Android 17 init
+  [3479 ms] Zygote: Preloading classes...
+  [4302 ms] Zygote: end preload
+  [5029 ms] SystemServerTiming: StartPackageManagerService
+  [6688 ms] SystemServerTiming: StartSystemUI
+  [11263 ms] SystemServerTiming: broadcastIntent-0-android.intent.action.USER_UNLOCKED took to complete: 0ms
+  [11283 ms] SystemServerTiming: broadcastIntent-0-android.intent.action.BOOT_COMPLETED took to complete: 1ms
+  [13775 ms] ActivityTaskManager: Displayed com.android.launcher3/.uioverrides.QuickstepLauncher for user 0: +1s993ms
+  Android Launcher displayed after 13775 ms
+  iOS physical footprint bytes: 2229146928
+  iOS process memory limit remaining bytes: 4213304016
+
+The launcher is displayed after 36.3 s on the first boot and after 14.3 s and 13.8 s on the two after it.
+Touch was not tried. On the M3 iPad Air the same build took 12.4 s and 12.2 s; why this phone is slower in
+every stage has not been looked at.

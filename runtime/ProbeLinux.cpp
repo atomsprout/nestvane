@@ -1146,10 +1146,20 @@ void ProbeLinux::notePrelink(Machine& machine, const Descriptor& fd, uint64_t st
     const std::pair<uint64_t, uint64_t> identity{record[0], record[1]};
     // Inode numbers are not kept for what a file is: the same number can come to stand for another file.
     auto& prelink = machine.space->prelink;
-    if (!native::moduleFor(fd.contents()) || prelink.files.size() >= GuestSpace::Prelink::capacity ||
-        std::find(prelink.files.begin(), prelink.files.end(), identity) != prelink.files.end()) return;
-    // The same bytes may be several files, and each needs a translation of its own in one process.
     const auto contents = fd.contents();
+    const auto* first = native::moduleFor(contents);
+    const auto known = std::find(prelink.files.begin(), prelink.files.end(), identity);
+    if (known != prelink.files.end()) {
+        // The numbers are in the table already. If they were another file's when they went in, the
+        // record would send this file to that file's address: it comes out, and this file gets its own.
+        const size_t slot = known - prelink.files.begin();
+        if (first && prelink.keys[slot] == first->key) return;
+        const std::array<uint64_t, 3> none{};
+        machine.write(prelink.table + slot * 24, {reinterpret_cast<const uint8_t*>(none.data()), 24});
+        *known = {0, 0};
+    }
+    if (!first || prelink.files.size() >= GuestSpace::Prelink::capacity) return;
+    // The same bytes may be several files, and each needs a translation of its own in one process.
     const native::Module* module = nullptr;
     for (unsigned copy = 0; (module = native::moduleFor(contents, copy)); ++copy)
         if (std::find(prelink.used.begin(), prelink.used.end(), module->base) == prelink.used.end()) break;
@@ -1167,6 +1177,7 @@ void ProbeLinux::notePrelink(Machine& machine, const Descriptor& fd, uint64_t st
     record[2] = module->base;
     if (machine.write(prelink.table + prelink.files.size() * 24, {reinterpret_cast<const uint8_t*>(record.data()), 24})) {
         prelink.files.push_back(identity);
+        prelink.keys.push_back(module->key);
         prelink.addresses.push_back(module->base);
         prelink.used.push_back(module->base);
     }

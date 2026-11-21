@@ -309,7 +309,7 @@ void setupStack(Machine& machine, const Startup& startup) {
     if (machine.space && native::enabled()) {
         const std::vector<uint8_t> empty(GuestSpace::Prelink::capacity * 24);
         prelink = pushData(machine, randomPointer & ~uint64_t{15}, empty);
-        machine.space->prelink = {prelink, {}, {}, {}};
+        machine.space->prelink = {prelink, {}, {}, {}, {}};
     }
 
     // Linux/AArch64 auxiliary vector key-value pairs.
