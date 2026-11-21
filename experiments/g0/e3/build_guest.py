@@ -74,7 +74,8 @@ def translate(job):
     assembly = os.path.join(objects, name + ".S")
     summary = subprocess.run([sys.executable, os.path.join(HERE, "rewrite.py"), *SPARSE, *REUSE, "--base", hex(base), "--name", name, path, assembly],
                              capture_output=True, text=True, check=True).stdout.splitlines()[0]
-    subprocess.run(["clang", "-arch", "arm64", "-c", assembly, "-o", os.path.join(objects, name + ".o")], check=True)
+    # Straight to the assembler: the files have nothing to preprocess, and the largest are gigabytes.
+    subprocess.run(["clang", "-arch", "arm64", "-x", "assembler", "-c", assembly, "-o", os.path.join(objects, name + ".o")], check=True)
     return name, summary
 
 

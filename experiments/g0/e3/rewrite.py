@@ -100,12 +100,12 @@ class Rewriter:
 
     def flush_far(self):
         for pc, address, register in self.far:
-            self.out.append("Lf_%s_%x:" % (self.name, pc))
+            self.out.append("Lf%x:" % pc)
             self.emit(address)
             self.emit("ubfx x28, x28, #%d, #%d" % (CHUNK_SHIFT, CHUNK_BITS))
             self.emit("ldr x28, [x27, x28, lsl #3]")
             self.emit("add x28, x28, x%d" % register)
-            self.emit("b Lb_%s_%x" % (self.name, pc))
+            self.emit("b Lb%x" % pc)
         self.far = []
 
     def keep(self, written=()):
@@ -137,7 +137,9 @@ class Rewriter:
         self.emit(".long 0x%08x" % (value & 0xFFFFFFFF))
 
     def label(self, address):
-        return ("g_%s_%x" if self.symbols else "Lg_%s_%x") % (self.name, address)
+        # Local to the file unless symbols are wanted, so the module's name need not be in it: a large
+        # module has millions of them.
+        return "g_%s_%x" % (self.name, address) if self.symbols else "Li%x" % address
 
     def is_code(self, address):
         return self.start <= address < self.end and address % 4 == 0
@@ -258,9 +260,9 @@ class Rewriter:
                 # not wait for the index, and a check that leaves the flags alone covers the rest.
                 self.emit("eor x28, x28, x%d" % rn)
                 self.emit("ubfx x28, x28, #%d, #%d" % (CHUNK_SHIFT, CHUNK_BITS))
-                self.emit("cbnz x28, Lf_%s_%x" % (self.name, pc))
+                self.emit("cbnz x28, Lf%x" % pc)
                 self.add_base(rn)
-                self.out.append("Lb_%s_%x:" % (self.name, pc))
+                self.out.append("Lb%x:" % pc)
                 if not self.far:
                     self.far_since = len(self.out)
                 self.far.append((pc, address, rn))
@@ -427,7 +429,15 @@ class Rewriter:
         if pc in self.leaders:
             self.cache = None
         self.kept, before = False, self.cache
-        self.translate(pc, w)
+        mark = len(self.out)
+        try:
+            self.translate(pc, w)
+        except (KeyError, IndexError, ValueError, AssertionError):
+            # Not an instruction but data that sits in the code, in a form no instruction takes.
+            del self.out[mark:]
+            self.far = [entry for entry in self.far if entry[0] != pc]
+            self.word(w)
+            self.count("undecodable", 0)
         if not self.kept:
             self.cache = None
         elif self.cache == before and (not self.pending or self.pending[-1] != pc) and pc not in self.stubs:
@@ -494,7 +504,7 @@ class Rewriter:
         out.append("\tbrk #0x3ff")
         # Entry stubs come after the code, so that host addresses in the table below stay in order.
         for pc, register in sorted(self.stubs.items()):
-            out.append("Ls_%s_%x:" % (self.name, pc))
+            out.append("Ls%x:" % pc)
             self.add_base(register)
             self.emit("b " + self.label(pc))
         self.flush_far()
@@ -509,7 +519,7 @@ class Rewriter:
         # Where the code table differs from the table above: instruction index, entry stub.
         out.append("Lguest_stubs_%s:" % self.name)
         for pc in sorted(self.stubs):
-            out.append("\t.quad %d, Ls_%s_%x" % ((pc - self.start) // 4, self.name, pc))
+            out.append("\t.quad %d, Ls%x" % ((pc - self.start) // 4, pc))
         return "\n".join(out) + "\n"
 
 

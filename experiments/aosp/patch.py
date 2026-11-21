@@ -253,3 +253,15 @@ edit("external/tensorflow/Android.bp", [(
     '        "-DGOOGLE_L4T", // Nestvane: no assembly kernels, as in tflite_defaults.\n'
     '        "-DTFLITE_WITH_RUY",\n')],
     "-DGOOGLE_L4T")
+
+# An ART test lists every callee-saved register as clobbered by its assembly, which the compiler
+# refuses for reserved ones.
+edit("art/runtime/arch/stub_test.cc", [(
+    '"x22", "x23", "x24", "x25", "x26", "x27", "x28", "x30",', '"x22", "x23", "x24", "x30",  // Nestvane: without x25-x28')],
+    "Nestvane: without x25-x28")
+
+# Compiled in full, the images no longer fit in the emulator's 1.8 GiB of dynamic partitions.
+edit("device/generic/goldfish/64bitonly/product/sdk_phone16k_arm64.mk", [(
+    "BOARD_EMULATOR_DYNAMIC_PARTITIONS_SIZE ?= $(shell expr 1800 \\* 1048576 )",
+    "BOARD_EMULATOR_DYNAMIC_PARTITIONS_SIZE ?= $(shell expr 4096 \\* 1048576 )  # Nestvane: was 1800")],
+    "Nestvane: was 1800")
