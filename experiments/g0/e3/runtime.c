@@ -29,6 +29,7 @@
 #include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/sysctl.h>
 #include <sys/time.h>
 #include <sys/uio.h>
 #include <time.h>
@@ -48,7 +49,7 @@
 #define STACK_SIZE (8ull << 20)
 #define BRK_LIMIT (128ull << 20)
 #define ROOT_BRK_START (64ull << 20)  // with a guest root, modules are prelinked above the heap
-#define MAX_FDS 256
+#define MAX_FDS 1024
 #define MAX_PROCESSES 1024
 #define MAX_THREADS 256
 
@@ -487,7 +488,6 @@ static void free_chunk(struct Process* process, uint64_t chunk) {
         mmap(memory, GUARD_AFTER, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
         mmap(memory + CHUNK - GUARD_BEFORE, GUARD_BEFORE, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
         unreserve(memory + GUARD_AFTER, CHUNK - GUARD_AFTER - GUARD_BEFORE);
-        count_reserved(GUARD_AFTER + GUARD_BEFORE);  // the two runs have a guard each where they had none
         *add_run(process) = right;
     }
     process->chunks[chunk] = VOID_OFFSET;
@@ -1147,10 +1147,13 @@ static const char* guest_path(const char* path) {
 // /proc files the guest reads about itself, generated into an unlinked temporary file.
 // Returns a host descriptor, or -1 when the path is not one of them.
 static int open_proc_file(struct Process* p, const char* path) {
-    if (strncmp(path, "/proc/self/", 11) != 0) return -1;
-    const char* name = path + 11;
+    // What the C library and ART read to count processors and memory.
+    const int is_processors = !strcmp(path, "/sys/devices/system/cpu/online") || !strcmp(path, "/sys/devices/system/cpu/possible") ||
+                              !strcmp(path, "/sys/devices/system/cpu/present");
+    const int is_memory = !strcmp(path, "/proc/meminfo");
+    const char* name = strncmp(path, "/proc/self/", 11) == 0 ? path + 11 : "";
     const int is_maps = !strcmp(name, "maps"), is_stat = !strcmp(name, "stat"), is_command = !strcmp(name, "cmdline");
-    if (!is_maps && !is_stat && !is_command) return -1;
+    if (!is_maps && !is_stat && !is_command && !is_processors && !is_memory) return -1;
     char file[1024];  // an iOS app can only write below its own temporary directory
     snprintf(file, sizeof file, "%s/nestvane-proc-XXXXXX", getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp");
     const int descriptor = mkstemp(file);
@@ -1158,7 +1161,15 @@ static int open_proc_file(struct Process* p, const char* path) {
     unlink(file);
     FILE* out = fdopen(dup(descriptor), "w");
     const uint64_t stack_top = SEGMENT - PAGE;
-    if (is_command) {
+    if (is_processors) {
+        const long count = sysconf(_SC_NPROCESSORS_ONLN);
+        fprintf(out, count > 1 ? "0-%ld\n" : "0\n", count - 1);
+    } else if (is_memory) {
+        uint64_t memory = 0;
+        size_t size = sizeof memory;
+        sysctlbyname("hw.memsize", &memory, &size, NULL, 0);
+        fprintf(out, "MemTotal:       %llu kB\nMemFree:        %llu kB\nMemAvailable:   %llu kB\n", memory >> 10, memory >> 11, memory >> 11);
+    } else if (is_command) {
         fwrite(p->command_line, 1, p->command_length, out);
     } else if (is_stat) {
         // Field 28 is the start of the stack. Bionic looks it up in maps to size the main thread's stack.
@@ -1854,6 +1865,11 @@ void guest_syscall(struct Context* context) {
     case 94: terminate(t, (int)(a[0] & 0xff) << 8);
     case 96: t->clear_tid = a[0]; r = t->tid; break;
     case 98: r = guest_futex(p, a[0], (int)a[1], (uint32_t)a[2], a[3], a[4], (uint32_t)a[5]); break;
+    case 90:  // capget: no capabilities, in the header's version 3 layout
+        if (a[1]) memset(host(p, a[1]), 0, 24);
+        r = 0;
+        break;
+    case 91: r = 0; break;  // capset
     case 99: r = 0; break;  // set_robust_list
     case 132: {  // sigaltstack: sp, flags, size
         uint64_t* old = host(p, a[1]);
@@ -1916,7 +1932,14 @@ void guest_syscall(struct Context* context) {
     }
     case 101: r = RESULT(nanosleep(host(p, a[0]), host(p, a[1]))); break;
     case 113: r = RESULT(clock_gettime(a[0] == 0 ? CLOCK_REALTIME : a[0] == 2 ? CLOCK_PROCESS_CPUTIME_ID : CLOCK_MONOTONIC, host(p, a[1]))); break;
-    case 123: memset(host(p, a[2]), 0, a[1]); *(uint8_t*)host(p, a[2]) = 1; r = 8; break;
+    case 123: {  // sched_getaffinity: every processor of the host
+        const long count = sysconf(_SC_NPROCESSORS_ONLN);
+        if (a[1] < 8) { r = -22; break; }
+        memset(host(p, a[2]), 0, a[1]);
+        *(uint64_t*)host(p, a[2]) = count >= 64 ? ~0ull : (1ull << count) - 1;
+        r = 8;
+        break;
+    }
     case 124: sched_yield(); r = 0; break;
     case 129: case 130: case 131: {  // kill, tkill, tgkill
         const uint64_t signal = a[number == 131 ? 2 : 1];
@@ -2163,11 +2186,13 @@ int GUEST_MAIN(int argc, char** argv, char** envp) {
     const int status = first->status;
     processes[first->pid % MAX_PROCESSES] = NULL;
     free_tables(first);
+    int orphans = 0;
+    for (int index = 0; index < MAX_PROCESSES; ++index) orphans += processes[index] && !processes[index]->exited;
     pthread_mutex_unlock(&lock);
     if (getenv("G0E3_STATS"))
         fprintf(stderr, "[runtime] pid=%d status=0x%x elapsed_ms=%.1f system_calls=%llu forks=%llu fork_mean_us=%.1f chunks_backed_on_touch=%llu "
-                "accesses_emulated=%llu reserved_peak_mib=%lld reserved_now_mib=%lld\n", pid, status, (double)(now_ns() - begin) / 1e6, syscall_count,
-                fork_count, fork_count ? (double)fork_ns / 1e3 / (double)fork_count : 0, lazy_count, emulated_count, reserved_peak >> 20,
-                reserved_bytes >> 20);
+                "accesses_emulated=%llu reserved_peak_mib=%lld reserved_now_mib=%lld processes_left=%d\n", pid, status, (double)(now_ns() - begin) / 1e6,
+                syscall_count, fork_count, fork_count ? (double)fork_ns / 1e3 / (double)fork_count : 0, lazy_count, emulated_count,
+                reserved_peak >> 20, reserved_bytes >> 20, orphans);
     return status & 0x7f ? 128 + (status & 0x7f) : status >> 8;
 }

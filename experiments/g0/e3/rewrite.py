@@ -33,7 +33,7 @@ address, given with --base. --name sets the module name used in symbols, so that
 can be linked into one program. Each module exports _guest_module_<name>: its text start, text end,
 entry point and code table.
 
-usage: rewrite.py [--host-lr] [--table] [--chunk-shift 24] [--reuse] [--symbols] [--base 0x...] [--name module] <elf> <output.s>
+usage: rewrite.py [--host-lr] [--table] [--chunk-shift 24] [--reuse] [--split-index] [--symbols] [--base 0x...] [--name module] <elf> <output.s>
 """
 import struct
 import sys
@@ -45,7 +45,9 @@ ADDRESS_BITS = 39  # of a guest address, with --table
 CHUNK_SHIFT = int(sys.argv[sys.argv.index("--chunk-shift") + 1]) if "--chunk-shift" in sys.argv else 24  # 16 MiB chunks
 CHUNK_BITS = ADDRESS_BITS - CHUNK_SHIFT
 CONDITIONS = "eq ne hs lo mi pl vs vc hi ls ge lt gt le al nv".split()
-FAR_CONDITIONAL = 0x60000  # b.cond and cbz reach 1 MiB; translated code is up to about 1.8 times larger
+# Conditional branches reach 1 MiB and test-and-branch 32 KiB of host code. Translated code is up to
+# about 2.5 times larger overall and more in places, so guest distances beyond these get a long form.
+FAR_CONDITIONAL, FAR_TEST = 0x30000, 0x1000
 # xpaclri, pacia1716 ... autibsp: the hint-space pointer authentication instructions.
 PAC_HINTS = {0xD50320FF, 0xD503211F, 0xD503215F, 0xD503219F, 0xD50321DF, 0xD503231F, 0xD503233F, 0xD503235F,
              0xD503237F, 0xD503239F, 0xD50323BF, 0xD50323DF, 0xD50323FF}
@@ -79,6 +81,8 @@ class Rewriter:
         # --reuse: the base register whose host address x28 holds, the instructions emitted since
         # that have not disturbed it, and the entry stubs: guest pc -> base register.
         self.reuse = "--reuse" in sys.argv
+        # --split-index: see memory(). The accesses whose address is in another chunk than their base.
+        self.split, self.far = "--split-index" in sys.argv, []
         self.cache, self.pending, self.kept, self.stubs, self.leaders = None, [], False, {}, set()
         if self.reuse:
             for pc in range(self.start, self.end, 4):
@@ -89,6 +93,16 @@ class Rewriter:
                     self.leaders.add(pc + signed(w >> 5 & 0x7FFFF, 19) * 4)
                 elif w & 0x7E000000 == 0x36000000:
                     self.leaders.add(pc + signed(w >> 5 & 0x3FFF, 14) * 4)
+
+    def flush_far(self):
+        for pc, address, register in self.far:
+            self.out.append("Lf_%s_%x:" % (self.name, pc))
+            self.emit(address)
+            self.emit("ubfx x28, x28, #%d, #%d" % (CHUNK_SHIFT, CHUNK_BITS))
+            self.emit("ldr x28, [x27, x28, lsl #3]")
+            self.emit("add x28, x28, x%d" % register)
+            self.emit("b Lb_%s_%x" % (self.name, pc))
+        self.far = []
 
     def keep(self, written=()):
         """This instruction leaves x28 alone and writes only these registers."""
@@ -228,13 +242,27 @@ class Rewriter:
             rm, option, vector = w >> 16 & 31, w >> 13 & 7, w >> 26 & 1
             amount = (4 if vector and w >> 23 & 1 else w >> 30) if w >> 12 & 1 else 0
             if option == 3:
-                self.emit("add x28, x%d, x%d, lsl #%d" % (rn, rm, amount))
+                address = "add x28, x%d, x%d, lsl #%d" % (rn, rm, amount)
             else:
-                self.emit("add x28, x%d, %s%d, %s #%d" % (rn, "x" if option & 1 else "w", rm, {2: "uxtw", 6: "sxtw", 7: "sxtx"}[option], amount))
-            self.emit("ubfx x28, x28, #%d, #%d" % (CHUNK_SHIFT, CHUNK_BITS))
-            self.emit("ldr x28, [x27, x28, lsl #3]")
-            self.emit("add x28, x28, x%d" % rn)
-            added = 4
+                address = "add x28, x%d, %s%d, %s #%d" % (rn, "x" if option & 1 else "w", rm, {2: "uxtw", 6: "sxtw", 7: "sxtx"}[option], amount)
+            self.emit(address)
+            if self.split:
+                # Nearly always the address is in the base register's chunk. Looking that chunk up does
+                # not wait for the index, and a check that leaves the flags alone covers the rest.
+                self.emit("eor x28, x28, x%d" % rn)
+                self.emit("ubfx x28, x28, #%d, #%d" % (CHUNK_SHIFT, CHUNK_BITS))
+                self.emit("cbnz x28, Lf_%s_%x" % (self.name, pc))
+                self.add_base(rn)
+                self.out.append("Lb_%s_%x:" % (self.name, pc))
+                if not self.far:
+                    self.far_since = len(self.out)
+                self.far.append((pc, address, rn))
+                added = 7
+            else:
+                self.emit("ubfx x28, x28, #%d, #%d" % (CHUNK_SHIFT, CHUNK_BITS))
+                self.emit("ldr x28, [x27, x28, lsl #3]")
+                self.emit("add x28, x28, x%d" % rn)
+                added = 4
         else:
             added = self.add_base(rn)
         self.word(plain & ~(31 << 5) | SCRATCH << 5)
@@ -356,7 +384,7 @@ class Rewriter:
             bit = (w >> 31) << 5 | w >> 19 & 31
             register = "%s%d" % ("x" if bit >= 32 else "w", w & 31)
             taken = w >> 24 & 1
-            if abs(target - pc) < 0x2800:
+            if abs(target - pc) < FAR_TEST:
                 self.emit("%s %s, #%d, %s" % ("tbnz" if taken else "tbz", register, bit, self.label(target)))
                 self.count("direct_branch", 0)
             else:  # the rewritten code is larger, so a far test-and-branch may no longer reach
@@ -446,13 +474,23 @@ class Rewriter:
         out.append("_guest_code_%s:" % self.name)
         for pc in range(self.start, self.end, 4):
             out.append(self.label(pc) + ":")
-            self.instruction(pc, struct.unpack_from("<I", self.data, self.offset + pc - self.start)[0])
+            w, = struct.unpack_from("<I", self.data, self.offset + pc - self.start)
+            self.instruction(pc, w)
+            # The far paths of --split-index go where execution does not fall through, within reach of
+            # the checks that branch to them: after an unconditional branch, or else behind a jump.
+            if self.far and (w & 0xFC000000 == 0x14000000 or w & 0xFFFFFC1F in (0xD65F0000, 0xD61F0000)):
+                self.flush_far()
+            elif self.far and len(out) - self.far_since > 40000:
+                self.emit("b 1f")
+                self.flush_far()
+                out.append("1:")
         out.append("\tbrk #0x3ff")
         # Entry stubs come after the code, so that host addresses in the table below stay in order.
         for pc, register in sorted(self.stubs.items()):
             out.append("Ls_%s_%x:" % (self.name, pc))
             self.add_base(register)
             self.emit("b " + self.label(pc))
+        self.flush_far()
         out.append(".section __DATA,__const")
         out.append(".p2align 3")
         table = "Lguest_table_%s" % self.name

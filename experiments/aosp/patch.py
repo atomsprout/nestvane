@@ -215,10 +215,10 @@ edit("external/ruy/ruy/platform.h", [(
 edit_all("external/tensorflow/tensorflow/lite/kernels/internal/optimized/neon_tensor_utils.cc",
          "#ifdef __aarch64__\n", "#if defined(__aarch64__) && !defined(GOOGLE_L4T)  // Nestvane\n", 10, "!defined(GOOGLE_L4T)  // Nestvane")
 
-# gemmlowp, which TensorFlow Lite's older quantized kernels use, is in the same position: without
-# inline assembly it uses its portable kernels.
-edit("external/gemmlowp/internal/detect_platform.h", [(
-    "#if defined(__GNUC__) && !defined(__native_client__)\n#define GEMMLOWP_ALLOW_INLINE_ASM\n",
-    "// Nestvane: no inline assembly on arm64, it does not fit in the registers left to the guest.\n"
-    "#if defined(__GNUC__) && !defined(__native_client__) && !defined(__aarch64__)\n#define GEMMLOWP_ALLOW_INLINE_ASM\n")],
-    "Nestvane: no inline assembly on arm64")
+# gemmlowp's arm64 kernels are assembly of the same kind. TensorFlow Lite only instantiates them
+# when it is not told to use ruy for everything.
+edit("external/tensorflow/tensorflow/lite/Android.bp", [(
+    '        "-DGOOGLE_L4T", // Nestvane: no assembly that uses the host runtime\'s registers.\n',
+    '        "-DGOOGLE_L4T", // Nestvane: no assembly that uses the host runtime\'s registers.\n'
+    '        "-DTFLITE_WITH_RUY", // Nestvane: no gemmlowp kernels, which are assembly on arm64.\n')],
+    "-DTFLITE_WITH_RUY")

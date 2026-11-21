@@ -106,7 +106,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.everettjf.nestvane.g0art
         CODE_SIGN_ENTITLEMENTS: Extended.entitlements
         GCC_PREPROCESSOR_DEFINITIONS: "G0_GUEST=1 G0_ANDROID=1 GUEST_MAIN=guest_main SEGMENT=(16ull<<30)"
-  # The same guest with the sparse address space (build_guest.py --sparse).
+  # The same guest with the sparse address space (build_guest.py --sparse --chunk-shift 20 --reuse --split-index).
   G0Sparse:
     type: application
     platform: iOS
@@ -129,7 +129,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.everettjf.nestvane.g0sparse
         CODE_SIGN_ENTITLEMENTS: Extended.entitlements
-        GCC_PREPROCESSOR_DEFINITIONS: "G0_GUEST=1 G0_ANDROID=1 GUEST_MAIN=guest_main SPARSE=1"
+        GCC_PREPROCESSOR_DEFINITIONS: "G0_GUEST=1 G0_ANDROID=1 GUEST_MAIN=guest_main SPARSE=1 CHUNK_SHIFT=20"
   # Embeds the generated code frameworks for E5.
   G0Code:
     type: application

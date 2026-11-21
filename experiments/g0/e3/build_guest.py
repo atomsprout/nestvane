@@ -5,7 +5,7 @@ Every ELF file in the tree is translated for a fixed load address and linked wit
 The tree is laid out as on a device (system/..., apex/...), from a build patched by
 experiments/aosp/patch.py.
 
-usage: build_guest.py <source tree> <output directory> [--segment '(16ull << 30)'] [--sparse [--chunk-shift 24]] [--reuse]
+usage: build_guest.py <source tree> <output directory> [--segment '(16ull << 30)'] [--sparse [--chunk-shift 24] [--split-index]] [--reuse]
 Run the result with: <output>/guest <output>/root /system/bin/sh -c '...'
 
 --sparse translates memory accesses through the per-chunk table and gives the guest a 39-bit address
@@ -24,7 +24,7 @@ FIRST_BASE = 0x10000000
 RESERVED = ["-ffixed-x18", "-ffixed-x25", "-ffixed-x26", "-ffixed-x27", "-ffixed-x28"]
 CHUNK_SHIFT = sys.argv[sys.argv.index("--chunk-shift") + 1] if "--chunk-shift" in sys.argv else "24"
 SPARSE = ["--table", "--chunk-shift", CHUNK_SHIFT] if "--sparse" in sys.argv else []
-REUSE = ["--reuse"] if "--reuse" in sys.argv else []
+REUSE = [flag for flag in ("--reuse", "--split-index") if flag in sys.argv]
 
 
 def ndk():
@@ -139,10 +139,10 @@ def main():
             subprocess.run([ndk() + "clang", "--target=aarch64-linux-android35", "-O2", "-pie", *RESERVED, "-Wl,-z,max-page-size=16384",
                             os.path.join(HERE, "guest-tests", name), "-o", os.path.join(root, "system/bin/test-" + name[:-2])], check=True)
 
-    # The Java test program, built beforehand from guest-tests/Hello.java with javac and d8.
-    hello = os.path.join(os.path.dirname(out), "dex/hello.jar")
-    if os.path.exists(hello):
-        shutil.copy2(hello, os.path.join(root, "data/local/tmp/hello.jar"))
+    # The Java test programs, built beforehand from guest-tests/*.java with javac and d8.
+    for name in ("hello.jar", "bench.jar"):
+        if os.path.exists(os.path.join(os.path.dirname(out), "dex", name)):
+            shutil.copy2(os.path.join(os.path.dirname(out), "dex", name), os.path.join(root, "data/local/tmp", name))
 
     # One module per distinct ELF file. Links to the same file share its translation.
     jobs, seen, base = [], set(), FIRST_BASE
@@ -213,7 +213,8 @@ exec "$here/${GUEST:-guest}" "$here/root" /system/bin/toybox env ANDROID_ROOT=/s
         image = "-Xgc:CMC -Ximage:/system/framework/boot.art -Xnorelocate"
         scripts = [("art_interpreted", command % ("-Xint", "interpreted")), ("art_image_interpreted", command % ("-Xint " + image, "image")),
                    ("art_compiled", command % (image, "compiled")), ("b_art_interpreted", command % ("-Xint", "interpreted")),
-                   ("b_art_compiled", command % (image, "compiled"))]
+                   ("b_art_compiled", command % (image, "compiled")),
+                   ("art_bench", (command % (image, "")).replace("hello.jar Hello", "bench.jar Bench"))]
         tests = [("t_" + name[5:], name + "\n") for name in sorted(os.listdir(os.path.join(root, "system/bin"))) if name.startswith("test-")]
         subprocess.run([sys.executable, os.path.join(HERE, "compare-android.py"), "--export", os.path.join(out, "scripts-android.bin")], check=True)
         with open(os.path.join(out, "scripts-android.bin"), "a") as file:
