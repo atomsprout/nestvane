@@ -181,3 +181,23 @@ edit("art/compiler/optimizing/fast_compiler_arm64.cc", [
     ("  vixl::aarch64::d11,\n  vixl::aarch64::d12,\n  vixl::aarch64::d13,\n  vixl::aarch64::d14,\n  vixl::aarch64::d15,\n};", "  vixl::aarch64::d11,\n};"),
     ("  vixl::aarch64::d19,\n  vixl::aarch64::d20,\n  vixl::aarch64::d21,\n  vixl::aarch64::d22,\n  vixl::aarch64::d23,\n};", "  vixl::aarch64::d19,\n};"),
 ], "Nestvane: four registers per class")
+
+# TensorFlow Lite's hand-written arm64 depthwise convolution names x25-x28. GOOGLE_L4T is its own
+# switch for building without that assembly.
+edit("external/tensorflow/tensorflow/lite/Android.bp", [(
+    '''    name: "tflite_defaults",
+    vendor_available: true,
+    host_supported: true,
+    header_libs: [
+        "tensorflow_headers",
+    ],
+    cflags: [
+''', '''    name: "tflite_defaults",
+    vendor_available: true,
+    host_supported: true,
+    header_libs: [
+        "tensorflow_headers",
+    ],
+    cflags: [
+        "-DGOOGLE_L4T", // Nestvane: no assembly that uses the host runtime's registers.
+''')], "Nestvane: no assembly that uses")

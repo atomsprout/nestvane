@@ -37,8 +37,10 @@
 #define ROOT_BRK_START (64ull << 20)  // with a guest root, modules are prelinked above the heap
 #define MAX_FDS 256
 #define MAX_PROCESSES 1024
+#define MAX_THREADS 256
 
 struct Process;
+struct Thread;
 
 struct Context {
     uint64_t x[31];
@@ -49,6 +51,7 @@ struct Context {
     uint64_t base, table, host_sp;
     uint64_t memory_table;  // table mode: per-chunk offsets from guest to host addresses
     struct Process* process;
+    struct Thread* thread;
 };
 _Static_assert(__builtin_offsetof(struct Context, sp) == 248, "entry.S");
 _Static_assert(__builtin_offsetof(struct Context, q) == 256, "entry.S");
@@ -85,12 +88,23 @@ struct Process {
     int fds[MAX_FDS];
     uint8_t cloexec[MAX_FDS];
     DIR* directories[MAX_FDS];
-    // Signals: dispositions as the guest set them, and delivery state.
-    struct { uint64_t handler, flags, mask; } actions[65];
-    uint64_t pending, blocked;
+    struct { uint64_t handler, flags, mask; } actions[65];  // signal dispositions as the guest set them
+    uint64_t pending;  // signals sent to the process and not yet taken by a thread
+    uint64_t chunks[SEGMENT >> CHUNK_SHIFT];  // every chunk is in the one segment here, so all hold the base
+    struct Thread* threads[MAX_THREADS];
+    int live_threads, exiting;
+    pthread_mutex_t memory_lock;  // guards the address-space bookkeeping and the descriptor table
+};
+
+// One guest thread is one host thread. The first thread's tid is the process's pid.
+struct Thread {
+    int tid, dead;
+    struct Process* process;
+    pthread_t host;
+    uint64_t blocked;
+    uint64_t clear_tid;  // CLONE_CHILD_CLEARTID: zeroed and woken when the thread exits
     struct { struct Context context; uint64_t blocked; } frames[4];  // contexts interrupted by handlers
     int frame_count;
-    uint64_t chunks[SEGMENT >> CHUNK_SHIFT];  // every chunk is in the one segment here, so all hold the base
     struct Context context;
 };
 
@@ -136,12 +150,15 @@ static int host_fd(struct Process* process, long wide) {
 
 static long install_fd(struct Process* process, int descriptor, int minimum, int cloexec) {
     if (descriptor < 0) return linux_errno(errno);
+    pthread_mutex_lock(&process->memory_lock);
     for (int fd = minimum; fd < MAX_FDS; ++fd)
         if (process->fds[fd] < 0) {
             process->fds[fd] = descriptor;
             process->cloexec[fd] = (uint8_t)cloexec;
+            pthread_mutex_unlock(&process->memory_lock);
             return fd;
         }
+    pthread_mutex_unlock(&process->memory_lock);
     close(descriptor);
     return -24;
 }
@@ -313,7 +330,8 @@ static void map_module(struct Process* process, const struct Module* module) {
 
 // Puts the executable, its interpreter and a fresh stack into the process's segment and points its
 // context at the entry, as the kernel does for execve.
-static int load_image(struct Process* process, const struct Module* executable, char** argv, char** envp) {
+static int load_image(struct Thread* thread, const struct Module* executable, char** argv, char** envp) {
+    struct Process* process = thread->process;
     uint8_t* base = process->base;
     const uint8_t* image = executable->image;
     const uint64_t phoff = *(uint64_t*)(image + 32);
@@ -371,11 +389,12 @@ static int load_image(struct Process* process, const struct Module* executable, 
     *stack++ = 0;
     memcpy(stack, auxv, sizeof auxv);
 
-    struct Context* context = &process->context;
+    struct Context* context = &thread->context;
     const uint64_t host_sp = context->host_sp;
     memset(context, 0, sizeof *context);
     context->host_sp = host_sp;
     context->process = process;
+    context->thread = thread;
     context->base = (uint64_t)base;
     for (uint64_t index = 0; index < SEGMENT >> CHUNK_SHIFT; ++index) process->chunks[index] = (uint64_t)base;
     context->memory_table = (uint64_t)process->chunks;
@@ -387,19 +406,77 @@ static int load_image(struct Process* process, const struct Module* executable, 
 
 // ---------------------------------------------------------------- processes
 
-static struct Process* new_process(int parent) {
+static struct Thread* new_thread(struct Process* process, int tid) {
+    struct Thread* thread = calloc(1, sizeof *thread);
+    thread->tid = tid;
+    thread->process = process;
+    for (int index = 0; index < MAX_THREADS; ++index)
+        if (!process->threads[index]) {
+            process->threads[index] = thread;
+            ++process->live_threads;
+            return thread;
+        }
+    free(thread);
+    return NULL;
+}
+
+// A new process with its first thread. The caller fills in memory and descriptors.
+static struct Thread* new_process(int parent) {
     struct Process* process = calloc(1, sizeof *process);
     for (int fd = 0; fd < MAX_FDS; ++fd) process->fds[fd] = -1;
+    pthread_mutex_init(&process->memory_lock, NULL);
     pthread_mutex_lock(&lock);
     process->pid = next_pid++;
     process->parent = parent;
     processes[process->pid % MAX_PROCESSES] = process;
+    struct Thread* thread = new_thread(process, process->pid);
     pthread_mutex_unlock(&lock);
-    return process;
+    return thread;
 }
 
-static void terminate(struct Process* process, int status) __attribute__((noreturn));
-static void terminate(struct Process* process, int status) {
+static void futex_wake(uint8_t* address, int count);
+
+// Ends the calling thread only. The thread's memory stays until the process is reaped.
+static void finish_thread(struct Thread* thread) __attribute__((noreturn));
+static void finish_thread(struct Thread* thread) {
+    struct Process* process = thread->process;
+    if (thread->clear_tid && !process->exiting) {
+        *(int*)(process->base + thread->clear_tid) = 0;
+        futex_wake(process->base + thread->clear_tid, 1);
+    }
+    pthread_mutex_lock(&lock);
+    thread->dead = 1;
+    --process->live_threads;
+    pthread_cond_broadcast(&changed);
+    pthread_mutex_unlock(&lock);
+    pthread_exit(NULL);
+}
+
+static void on_thread_stop(int number) {
+    (void)number;
+    pthread_exit(NULL);
+}
+
+// Ends the whole process from one of its threads.
+static void terminate(struct Thread* thread, int status) __attribute__((noreturn));
+static void terminate(struct Thread* thread, int status) {
+    struct Process* process = thread->process;
+    pthread_mutex_lock(&lock);
+    if (process->exiting) {  // another thread got here first
+        pthread_mutex_unlock(&lock);
+        finish_thread(thread);
+    }
+    process->exiting = 1;
+    // Stop the other threads: they are host threads running guest code or blocked in the host.
+    for (int index = 0; index < MAX_THREADS; ++index) {
+        struct Thread* other = process->threads[index];
+        if (other && other != thread && !other->dead) {
+            other->dead = 1;
+            --process->live_threads;
+            pthread_kill(other->host, SIGUSR1);
+        }
+    }
+    pthread_mutex_unlock(&lock);
     for (int fd = 0; fd < MAX_FDS; ++fd) close_fd(process, fd);
     munmap(process->base, SEGMENT);
     pthread_mutex_lock(&lock);
@@ -413,22 +490,23 @@ static void terminate(struct Process* process, int status) {
     pthread_exit(NULL);
 }
 
-static void* run_process(void* raw) {
-    guest_enter(&((struct Process*)raw)->context);
+static void* run_thread(void* raw) {
+    guest_enter(&((struct Thread*)raw)->context);
 }
 
-static void start_thread(struct Process* process) {
-    pthread_t thread;
+static void start_thread(struct Thread* thread) {
     pthread_attr_t attributes;
     pthread_attr_init(&attributes);
     pthread_attr_setstacksize(&attributes, 1 << 20);
     pthread_attr_setdetachstate(&attributes, PTHREAD_CREATE_DETACHED);
-    pthread_create(&thread, &attributes, run_process, process);
+    pthread_create(&thread->host, &attributes, run_thread, thread);
 }
 
-static long guest_fork(struct Process* parent, uint64_t flags, uint64_t child_stack, uint64_t child_tid) {
+static long guest_fork(struct Thread* caller, uint64_t flags, uint64_t child_stack, uint64_t child_tid) {
     const uint64_t begin = now_ns();
-    struct Process* child = new_process(parent->pid);
+    struct Process* parent = caller->process;
+    struct Thread* thread = new_process(parent->pid);
+    struct Process* child = thread->process;
     vm_address_t address = 0;
     vm_prot_t current, maximum;
     if (vm_remap(mach_task_self(), &address, SEGMENT, 0, VM_FLAGS_ANYWHERE, mach_task_self(), (vm_address_t)parent->base, TRUE,
@@ -442,7 +520,6 @@ static long guest_fork(struct Process* parent, uint64_t flags, uint64_t child_st
     child->map_high = parent->map_high;
     child->map_hint = parent->map_hint;
     memcpy(child->actions, parent->actions, sizeof child->actions);
-    child->blocked = parent->blocked;
     memcpy(child->used, parent->used, sizeof child->used);
     for (int fd = 0; fd < MAX_FDS; ++fd)
         if (parent->fds[fd] >= 0) {
@@ -450,23 +527,48 @@ static long guest_fork(struct Process* parent, uint64_t flags, uint64_t child_st
             child->cloexec[fd] = parent->cloexec[fd];
         }
     // Registers hold guest addresses, so only the base and the stack pointer change.
-    child->context = parent->context;
-    child->context.process = child;
-    child->context.base = (uint64_t)child->base;
+    thread->blocked = caller->blocked;
+    thread->clear_tid = flags & 0x00200000 ? child_tid : 0;
+    thread->context = caller->context;
+    thread->context.process = child;
+    thread->context.thread = thread;
+    thread->context.base = (uint64_t)child->base;
     for (uint64_t index = 0; index < SEGMENT >> CHUNK_SHIFT; ++index) child->chunks[index] = (uint64_t)child->base;
-    child->context.memory_table = (uint64_t)child->chunks;
-    child->context.sp = child_stack ? (uint64_t)child->base + child_stack : parent->context.sp - (uint64_t)parent->base + (uint64_t)child->base;
-    child->context.x[0] = 0;
+    thread->context.memory_table = (uint64_t)child->chunks;
+    thread->context.sp = child_stack ? (uint64_t)child->base + child_stack : caller->context.sp - (uint64_t)parent->base + (uint64_t)child->base;
+    thread->context.x[0] = 0;
     if (flags & 0x01000000 && child_tid) *(int*)(child->base + child_tid) = child->pid;  // CLONE_CHILD_SETTID
     __atomic_add_fetch(&fork_count, 1, __ATOMIC_RELAXED);
     __atomic_add_fetch(&fork_ns, now_ns() - begin, __ATOMIC_RELAXED);
-    start_thread(child);
+    const int pid = child->pid;
+    start_thread(thread);
     if (flags & 0x4000) {  // CLONE_VFORK: the parent waits until the child execs or exits
         pthread_mutex_lock(&lock);
         while (!child->vfork_done) pthread_cond_wait(&changed, &lock);
         pthread_mutex_unlock(&lock);
     }
-    return child->pid;
+    return pid;
+}
+
+// clone with CLONE_VM | CLONE_THREAD: a new thread in the same address space.
+static long guest_clone_thread(struct Thread* caller, uint64_t flags, uint64_t stack, uint64_t parent_tid, uint64_t tls, uint64_t child_tid) {
+    struct Process* process = caller->process;
+    pthread_mutex_lock(&lock);
+    struct Thread* thread = new_thread(process, next_pid++);
+    pthread_mutex_unlock(&lock);
+    if (!thread) return -11;
+    thread->blocked = caller->blocked;
+    thread->clear_tid = flags & 0x00200000 ? child_tid : 0;
+    thread->context = caller->context;
+    thread->context.thread = thread;
+    thread->context.sp = (uint64_t)process->base + (stack & 0x00ffffffffffffffull);
+    thread->context.x[0] = 0;
+    if (flags & 0x00080000) thread->context.tpidr = tls;  // CLONE_SETTLS
+    if (flags & 0x00100000 && parent_tid) *(int*)(process->base + parent_tid) = thread->tid;  // CLONE_PARENT_SETTID
+    if (flags & 0x01000000 && child_tid) *(int*)(process->base + child_tid) = thread->tid;
+    const int tid = thread->tid;
+    start_thread(thread);
+    return tid;
 }
 
 static long guest_wait(struct Process* process, long pid, uint64_t status_address, long options) {
@@ -483,8 +585,7 @@ static long guest_wait(struct Process* process, long pid, uint64_t status_addres
             const int result = child->pid;
             if (status_address) *(int*)host(process, status_address) = child->status;
             pthread_mutex_unlock(&lock);
-            free(child);
-            return result;
+            return result;  // the process record is small and stays: late thread signals may still look at it
         }
         if (!children) { pthread_mutex_unlock(&lock); return -10; }
         if (options & 1) { pthread_mutex_unlock(&lock); return 0; }
@@ -501,7 +602,8 @@ static char** copy_strings(struct Process* process, uint64_t address) {
     return copy;
 }
 
-static long guest_exec(struct Process* process, const char* path, uint64_t argv, uint64_t envp) {
+static long guest_exec(struct Thread* thread, const char* path, uint64_t argv, uint64_t envp) {
+    struct Process* process = thread->process;
     struct stat info;
     if (stat(path, &info) != 0) return linux_errno(errno);
     const struct Module* module = module_for_stat(&info);
@@ -510,7 +612,7 @@ static long guest_exec(struct Process* process, const char* path, uint64_t argv,
     char** environment = copy_strings(process, envp);
     for (int fd = 0; fd < MAX_FDS; ++fd)
         if (process->cloexec[fd]) close_fd(process, fd);
-    if (!load_image(process, module, arguments, environment)) terminate(process, 127 << 8);
+    if (!load_image(thread, module, arguments, environment)) terminate(thread, 127 << 8);
     pthread_mutex_lock(&lock);
     process->vfork_done = 1;
     pthread_cond_broadcast(&changed);
@@ -624,8 +726,8 @@ static long vector_io(struct Process* process, long fd, uint64_t vector, long co
 }
 
 // A write to a pipe with no reader kills a Linux process unless it handles SIGPIPE.
-static long written(struct Process* process, long result) {
-    if (result < 0 && errno == EPIPE && process->actions[13].handler == 0) terminate(process, 13);
+static long written(struct Thread* thread, long result) {
+    if (result < 0 && errno == EPIPE && thread->process->actions[13].handler == 0) terminate(thread, 13);
     return RESULT(result);
 }
 
@@ -650,10 +752,11 @@ static long guest_readlink(struct Process* p, long directory, const char* path, 
 
 // Runs the handler of one pending, unblocked signal on top of the current context. The interrupted
 // context is kept by the runtime and comes back with rt_sigreturn. siginfo and ucontext are not built.
-static void deliver_signals(struct Process* p, struct Context* context) {
+static void deliver_signals(struct Thread* t, struct Context* context) {
+    struct Process* p = t->process;
     for (;;) {
         pthread_mutex_lock(&lock);
-        const uint64_t ready = p->pending & ~p->blocked;
+        const uint64_t ready = p->pending & ~t->blocked;
         const int number = ready ? __builtin_ctzll(ready) : 0;
         if (number) p->pending &= ~(1ull << number);
         pthread_mutex_unlock(&lock);
@@ -662,12 +765,12 @@ static void deliver_signals(struct Process* p, struct Context* context) {
         if (handler == 1) continue;  // SIG_IGN
         if (handler == 0) {
             if (number == 17 || number == 18 || number == 23 || number == 28) continue;  // ignored by default
-            terminate(p, number);
+            terminate(t, number);
         }
-        if (p->frame_count == 4) return;
-        p->frames[p->frame_count].context = *context;
-        p->frames[p->frame_count++].blocked = p->blocked;
-        p->blocked |= p->actions[number].mask | (p->actions[number].flags & 0x40000000 ? 0 : 1ull << number);  // SA_NODEFER
+        if (t->frame_count == 4) return;
+        t->frames[t->frame_count].context = *context;
+        t->frames[t->frame_count++].blocked = t->blocked;
+        t->blocked |= p->actions[number].mask | (p->actions[number].flags & 0x40000000 ? 0 : 1ull << number);  // SA_NODEFER
         context->x[0] = (uint64_t)number;
         context->x[1] = context->x[2] = 0;
         context->x[30] = code_high;
@@ -677,10 +780,76 @@ static void deliver_signals(struct Process* p, struct Context* context) {
     }
 }
 
+// ---------------------------------------------------------------- futex
+
+// Waiters are keyed by host address, so a futex in memory shared between processes is not matched.
+struct Waiter { uint8_t* address; pthread_cond_t wake; int woken; struct Waiter* next; };
+static pthread_mutex_t futex_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct Waiter* waiters;
+
+static void futex_wake(uint8_t* address, int count) {
+    pthread_mutex_lock(&futex_lock);
+    for (struct Waiter* waiter = waiters; waiter && count > 0; waiter = waiter->next)
+        if (waiter->address == address && !waiter->woken) {
+            waiter->woken = 1;
+            pthread_cond_signal(&waiter->wake);
+            --count;
+        }
+    pthread_mutex_unlock(&futex_lock);
+}
+
+static long guest_futex(struct Process* p, uint64_t address, int operation, uint32_t value, uint64_t timeout_address) {
+    uint8_t* word = host(p, address);
+    const int command = operation & 0x7f;
+    if (command == 1 || command == 10) {  // FUTEX_WAKE, FUTEX_WAKE_BITSET
+        int woken = 0;
+        pthread_mutex_lock(&futex_lock);
+        for (struct Waiter* waiter = waiters; waiter && (uint32_t)woken < value; waiter = waiter->next)
+            if (waiter->address == word && !waiter->woken) {
+                waiter->woken = 1;
+                pthread_cond_signal(&waiter->wake);
+                ++woken;
+            }
+        pthread_mutex_unlock(&futex_lock);
+        return woken;
+    }
+    if (command != 0 && command != 9) return -38;  // FUTEX_WAIT, FUTEX_WAIT_BITSET
+    struct Waiter waiter = {word, PTHREAD_COND_INITIALIZER, 0, NULL};
+    pthread_mutex_lock(&futex_lock);
+    if (*(uint32_t*)word != value) {
+        pthread_mutex_unlock(&futex_lock);
+        return -11;
+    }
+    waiter.next = waiters;
+    waiters = &waiter;
+    int result = 0;
+    const int64_t* timeout = host(p, timeout_address);
+    if (timeout) {
+        // FUTEX_WAIT takes a relative time. FUTEX_WAIT_BITSET takes an absolute one on the guest's clock.
+        struct timespec now, until = {timeout[0], timeout[1]};
+        if (command == 9) {
+            clock_gettime(operation & 256 ? CLOCK_REALTIME : CLOCK_MONOTONIC, &now);
+            until.tv_sec -= now.tv_sec;
+            until.tv_nsec -= now.tv_nsec;
+            if (until.tv_nsec < 0) { until.tv_nsec += 1000000000; --until.tv_sec; }
+            if (until.tv_sec < 0) until.tv_sec = until.tv_nsec = 0;
+        }
+        while (!waiter.woken && result == 0) result = pthread_cond_timedwait_relative_np(&waiter.wake, &futex_lock, &until);
+    } else {
+        while (!waiter.woken) pthread_cond_wait(&waiter.wake, &futex_lock);
+    }
+    for (struct Waiter** link = &waiters; *link; link = &(*link)->next)
+        if (*link == &waiter) { *link = waiter.next; break; }
+    pthread_mutex_unlock(&futex_lock);
+    return waiter.woken ? 0 : -110;
+}
+
 // ---------------------------------------------------------------- system calls
 
 void guest_syscall(struct Context* context) {
-    struct Process* p = context->process;
+    struct Thread* t = context->thread;
+    struct Process* p = t->process;
+    if (p->exiting) finish_thread(t);
     const uint64_t* a = context->x;
     const long number = (long)a[8];
     long r;
@@ -761,9 +930,9 @@ void guest_syscall(struct Context* context) {
     case 61: r = guest_getdents(p, (long)a[0], host(p, a[1]), a[2]); break;
     case 62: r = RESULT(lseek(host_fd(p, (long)a[0]), (off_t)a[1], (int)a[2])); break;
     case 63: r = RESULT(read(host_fd(p, (long)a[0]), host(p, a[1]), a[2])); break;
-    case 64: r = written(p, write(host_fd(p, (long)a[0]), host(p, a[1]), a[2])); break;
+    case 64: r = written(t, write(host_fd(p, (long)a[0]), host(p, a[1]), a[2])); break;
     case 65: r = RESULT(vector_io(p, (long)a[0], a[1], (long)a[2], 0)); break;
-    case 66: r = written(p, vector_io(p, (long)a[0], a[1], (long)a[2], 1)); break;
+    case 66: r = written(t, vector_io(p, (long)a[0], a[1], (long)a[2], 1)); break;
     case 67: r = RESULT(pread(host_fd(p, (long)a[0]), host(p, a[1]), a[2], (off_t)a[3])); break;
     case 68: r = RESULT(pwrite(host_fd(p, (long)a[0]), host(p, a[1]), a[2], (off_t)a[3])); break;
     case 73: {
@@ -791,9 +960,12 @@ void guest_syscall(struct Context* context) {
     }
     case 82: case 83: r = RESULT(fsync(host_fd(p, (long)a[0]))); break;
     case 88: r = RESULT(utimensat(host_directory(p, (long)a[0]), HP(a[1]), host(p, a[2]), a[3] & 0x100 ? AT_SYMLINK_NOFOLLOW : 0)); break;
-    case 93: case 94: terminate(p, (int)(a[0] & 0xff) << 8);
-    case 96: r = p->pid; break;
-    case 98: r = (a[1] & 0x7f) == 0 ? -11 : 0; break;
+    case 93:  // exit: this thread only, unless it is the last one
+        if (p->live_threads > 1) finish_thread(t);
+        terminate(t, (int)(a[0] & 0xff) << 8);
+    case 94: terminate(t, (int)(a[0] & 0xff) << 8);
+    case 96: t->clear_tid = a[0]; r = t->tid; break;
+    case 98: r = guest_futex(p, a[0], (int)a[1], (uint32_t)a[2], a[3]); break;
     case 99: case 132: r = 0; break;  // set_robust_list, sigaltstack
     case 118: case 119: case 120: case 121: case 122: r = 0; break;  // scheduler parameters: SCHED_OTHER
     case 43: case 44: {  // statfs, fstatfs: report an ext4 volume
@@ -825,16 +997,16 @@ void guest_syscall(struct Context* context) {
         break;
     }
     case 133: {  // rt_sigsuspend: wait with a temporary mask for a signal that has a handler to run
-        const uint64_t saved = p->blocked;
+        const uint64_t saved = t->blocked;
         pthread_mutex_lock(&lock);
-        p->blocked = *(uint64_t*)host(p, a[0]);
-        while (!(p->pending & ~p->blocked)) pthread_cond_wait(&changed, &lock);
+        t->blocked = *(uint64_t*)host(p, a[0]);
+        while (!(p->pending & ~t->blocked)) pthread_cond_wait(&changed, &lock);
         pthread_mutex_unlock(&lock);
         context->x[0] = (uint64_t)-4;
-        deliver_signals(p, context);
+        deliver_signals(t, context);
         // The handler runs with the temporary mask applied on top; the original comes back afterwards.
-        if (p->frame_count) p->frames[p->frame_count - 1].blocked = saved;
-        else p->blocked = saved;
+        if (t->frame_count) t->frames[t->frame_count - 1].blocked = saved;
+        else t->blocked = saved;
         return;
     }
     case 134: {  // rt_sigaction: handler, flags, restorer, mask
@@ -854,18 +1026,18 @@ void guest_syscall(struct Context* context) {
     case 135: {  // rt_sigprocmask
         const uint64_t* set = host(p, a[1]);
         uint64_t* old = host(p, a[2]);
-        const uint64_t previous = p->blocked;
-        if (set) p->blocked = a[0] == 0 ? previous | *set : a[0] == 1 ? previous & ~*set : *set;
-        p->blocked &= ~(1ull << 9 | 1ull << 19);  // SIGKILL and SIGSTOP cannot be blocked
+        const uint64_t previous = t->blocked;
+        if (set) t->blocked = a[0] == 0 ? previous | *set : a[0] == 1 ? previous & ~*set : *set;
+        t->blocked &= ~(1ull << 9 | 1ull << 19);  // SIGKILL and SIGSTOP cannot be blocked
         if (old) *old = previous;
         r = 0;
         break;
     }
     case 139:  // rt_sigreturn
-        if (!p->frame_count) terminate(p, 11);
-        *context = p->frames[--p->frame_count].context;
-        p->blocked = p->frames[p->frame_count].blocked;
-        deliver_signals(p, context);
+        if (!t->frame_count) terminate(t, 11);
+        *context = t->frames[--t->frame_count].context;
+        t->blocked = t->frames[t->frame_count].blocked;
+        deliver_signals(t, context);
         return;
     case 154: case 157: r = 0; break;
     case 155: case 156: r = p->pid; break;
@@ -894,11 +1066,13 @@ void guest_syscall(struct Context* context) {
     case 166: r = umask((mode_t)a[0]); break;
     case 167: r = 0; break;
     case 169: r = RESULT(gettimeofday(host(p, a[0]), NULL)); break;
-    case 172: case 178: r = p->pid; break;
+    case 172: r = p->pid; break;
+    case 178: r = t->tid; break;
     case 173: r = p->parent; break;
     case 174: case 175: case 176: case 177: r = 0; break;  // the guest sees itself as root, like the reference run
     case 179: memset(host(p, a[0]), 0, 112); r = 0; break;
     case 214:
+        pthread_mutex_lock(&p->memory_lock);
         if (a[0] >= p->brk_start && a[0] <= p->brk_start + BRK_LIMIT) {
             const uint64_t old = page_up(p->brk), wanted = page_up(a[0]);
             if (wanted > old) mmap(p->base + old, wanted - old, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
@@ -906,18 +1080,32 @@ void guest_syscall(struct Context* context) {
             p->brk = a[0];
         }
         r = (long)p->brk;
+        pthread_mutex_unlock(&p->memory_lock);
         break;
-    case 215: release(p, a[0], page_up(a[1])); r = 0; break;
-    case 216: r = guest_mremap(p, a[0], page_up(a[1]), page_up(a[2]), a[3] & 1); break;
+    case 215:
+        pthread_mutex_lock(&p->memory_lock);
+        release(p, a[0] & 0x00ffffffffffffffull, page_up(a[1]));
+        pthread_mutex_unlock(&p->memory_lock);
+        r = 0;
+        break;
+    case 216:
+        pthread_mutex_lock(&p->memory_lock);
+        r = guest_mremap(p, a[0] & 0x00ffffffffffffffull, page_up(a[1]), page_up(a[2]), a[3] & 1);
+        pthread_mutex_unlock(&p->memory_lock);
+        break;
     case 220:
-        if (a[0] & 0x10000) { r = -38; break; }  // CLONE_THREAD
-        r = guest_fork(p, a[0], a[1], a[4]);
+        if (a[0] & 0x10000) r = guest_clone_thread(t, a[0], a[1], a[2], a[3], a[4]);  // CLONE_THREAD
+        else r = guest_fork(t, a[0], a[1], a[4]);
         break;
     case 221:
-        r = guest_exec(p, HP(a[0]), a[1], a[2]);
+        r = guest_exec(t, HP(a[0]), a[1], a[2]);
         if (r == 0) return;  // the context now describes the new image
         break;
-    case 222: r = guest_mmap(p, a[0], a[1], (int)a[2], (int)a[3], (long)a[4], a[5]); break;
+    case 222:
+        pthread_mutex_lock(&p->memory_lock);
+        r = guest_mmap(p, a[0] & 0x00ffffffffffffffull, a[1], (int)a[2], (int)a[3], (long)a[4], a[5]);
+        pthread_mutex_unlock(&p->memory_lock);
+        break;
     case 226: r = RESULT(mprotect(host(p, a[0]), page_up(a[1]), (int)a[2] & (PROT_READ | PROT_WRITE))); break;
     case 233: r = 0; break;
     case 260: r = guest_wait(p, (long)(int)a[0], a[1], (long)a[2]); break;
@@ -935,7 +1123,7 @@ void guest_syscall(struct Context* context) {
     }
     if (trace > 1) fprintf(stderr, "[runtime] pid %d: %ld(%llx, %llx, %llx) = %ld\n", p->pid, number, a[0], a[1], a[2], r);
     context->x[0] = (uint64_t)r;
-    if (p->pending & ~p->blocked) deliver_signals(p, context);
+    if (p->pending & ~t->blocked) deliver_signals(t, context);
 }
 
 #ifndef GUEST_MAIN
@@ -961,16 +1149,18 @@ int GUEST_MAIN(int argc, char** argv, char** envp) {
     const struct Module* executable = module_for_file(path);
     if (!executable) { fprintf(stderr, "[runtime] %s is not a translated module\n", path); return 2; }
     signal(SIGPIPE, SIG_IGN);
+    signal(SIGUSR1, on_thread_stop);
 
     const uint64_t begin = now_ns();
-    struct Process* first = new_process(1);
+    struct Thread* main_thread = new_process(1);
+    struct Process* first = main_thread->process;
     first->base = mmap(NULL, SEGMENT, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
     for (int fd = 0; fd < 3; ++fd) first->fds[fd] = dup(fd);
     char* environment[] = {root ? "PATH=/system/bin" : "PATH=/nonexistent", "HOME=/", "TERM=dumb", "LANG=C",
                            "ANDROID_ROOT=/system", "ANDROID_DATA=/data", NULL};
-    if (!load_image(first, executable, argv + 2, environment)) return 2;
+    if (!load_image(main_thread, executable, argv + 2, environment)) return 2;
     const int pid = first->pid;
-    start_thread(first);
+    start_thread(main_thread);
 
     pthread_mutex_lock(&lock);
     while (!first->exited) pthread_cond_wait(&changed, &lock);

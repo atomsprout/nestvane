@@ -36,7 +36,7 @@ configure() {  # <name> <api level> <source dir> <extra c flags> <extra ld flags
     local link="-fuse-ld=lld -rtlib=compiler-rt -Wl,-z,defs -Wl,--gc-sections -Wl,--build-id=sha1 -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384 $xom_link -resource-dir $clang/lib/clang/$(basename "$(dirname "$(dirname "$resource")")") $ldflags"
     rm -rf "$work/$name"
     cmake -G Ninja -S "$source" -B "$work/$name" \
-        -DCMAKE_BUILD_TYPE=Release -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=aarch64 -DANDROID=TRUE -DCMAKE_PLATFORM_NO_VERSIONED_SONAME=ON -DANDROID_PLATFORM_LEVEL="$api" -DANDROID_NATIVE_API_LEVEL="$api" \
+        -DCMAKE_BUILD_TYPE=Release -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=aarch64 -DANDROID=TRUE -DCMAKE_PLATFORM_NO_VERSIONED_SONAME=ON -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DANDROID_PLATFORM_LEVEL="$api" -DANDROID_NATIVE_API_LEVEL="$api" \
         -DCMAKE_C_COMPILER="$clang/bin/clang" -DCMAKE_CXX_COMPILER="$clang/bin/clang++" -DCMAKE_ASM_COMPILER="$clang/bin/clang" \
         -DCMAKE_AR="$clang/bin/llvm-ar" -DCMAKE_RANLIB="$clang/bin/llvm-ranlib" -DCMAKE_NM="$clang/bin/llvm-nm" \
         -DCMAKE_C_COMPILER_TARGET="aarch64-linux-android$api" -DCMAKE_CXX_COMPILER_TARGET="aarch64-linux-android$api" \

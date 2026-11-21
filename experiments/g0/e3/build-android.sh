@@ -24,6 +24,12 @@ for library in "$source"/system/lib64/*.so "$source"/system/lib64/bootstrap/*.so
     [ -f "$library" ] && cp "$library" "$out/root/system/lib64/$(basename "$library")"
 done
 
+# Test programs of our own, built like the platform: dynamic, against Bionic, registers reserved.
+for test in "$here"/guest-tests/*.c; do
+    "$ndk/bin/clang" --target=aarch64-linux-android35 -O2 -pie -ffixed-x18 -ffixed-x25 -ffixed-x26 -ffixed-x27 -ffixed-x28 \
+        -Wl,-z,max-page-size=16384 "$test" -o "$out/root/system/bin/test-$(basename "$test" .c)"
+done
+
 # Every module gets a fixed load address. The linker asks the runtime for it (system call 0x4e56).
 base=$((0x10000000))
 modules=()
