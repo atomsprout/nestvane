@@ -710,3 +710,6 @@
 - iPhone 17 Pro 进程 78380 通过 iOS「文件」安装 Editor 1.98 和 ScriptWidget 1.0.0。安装完成后导出的客体数据库通过 SQLite quick_check，提交代数 1831，包管理注册包含两款应用。正式安装路径下的 APK 与来源文件逐字节一致。Editor 为 269,122 字节，SHA-256 为 `343d17e11d0914e1a7708df2781580a0413e52501c0a41d91f7ef725d9615fe9`。ScriptWidget 为 28,533,228 字节，SHA-256 为 `542bee031d0a30d06244c0560876122940c0c56a7154dc149f1d7017ad83ce45`。两款应用的使用仍待复测。
 - 同一进程从 Launcher 触摸打开 OpenCalc 3.2.0。XCUITest 识别到计算器界面后点击 AC 和 7，下一轮真机截图确认显示 7。该自动化因未识别截图中的乘号结束，尚未测完 7×8。紧接着的 Smoke 启动测试未能离开计算器界面，未到达相机。
 - Mac 使用同版客体与 iPhone 17 Pro 数据卷副本执行启动采样。Launcher Displayed 位于 400–420 秒之间。第 420 秒累计执行约 183.83 亿条客体指令，其中约 5.16 亿条进入现有 AOT 路径，约占 2.8%。400–420 秒窗口采到 740 个客体指令样本，libart.so 占 414 个，Bionic libc.so 占 60 个，boot.oat 占 48 个。这些是 Mac 采样的指令占比，真机耗时仍以真机日志为准。
+- 同一 iPhone 17 Pro 进程的后续测试通过 iOS 工具栏的 Android Back 返回 Launcher，再从抽屉打开 Smoke，点 Increment 后客体画面从 0 变为 1。此前点击工具栏 Home 后仍留在 OpenCalc。客体 RecentTasks 日志显示 OpenCalc 和 Settings 的任务在用户设置未完成时启动。独立宿主启动正在核对访客设置值和对应初始化路径。OpenCalc 依据截图坐标重试五个按键后画面仍显示 7，未复现 56。
+- Smoke 相机活动已在同一进程打开。相机测试在 180 秒预览窗口内未确认预览，途中真机客体截图显示 Waiting for Android camera permission。后续测试保持客体进程并继续等待授权和 Camera2 预览。
+- Mac 同一运行时和数据副本上的实验仅给 Zygote 增加 `--enable-lazy-preload`。客体进入 SystemServer，随后 `PerfettoTrace.native_register` 抛出 UnsatisfiedLinkError。该分支未进入 Launcher，已停止，生产镜像未变更。
