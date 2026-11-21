@@ -1,0 +1,31 @@
+setup art-sparse exit=0 ms=783
+setup art exit=0 ms=792
+f_arithmetic           exit=0 sha=4f2cdeed5a48 other=same ms=40 other_ms=40 ratio=1.010
+f_pipeline             exit=0 sha=53c234e5e847 other=same ms=44 other_ms=44 ratio=1.003
+f_three_stage          exit=0 sha=43f0a1612c71 other=same ms=585 other_ms=559 ratio=1.047
+f_substitution         exit=0 sha=052e754a689d other=same ms=45 other_ms=44 ratio=1.031
+f_files                exit=0 sha=326332560d20 other=same ms=55 other_ms=55 ratio=0.997
+f_exec_self            exit=0 sha=7c6afba65628 other=same ms=49 other_ms=50 ratio=0.993
+f_hashes               exit=0 sha=dcebc78444cf other=same ms=56 other_ms=57 ratio=0.984
+f_sed                  exit=0 sha=19cb730e26f2 other=same ms=75 other_ms=75 ratio=0.996
+f_xargs                exit=0 sha=89bd8d45fb62 other=same ms=144 other_ms=142 ratio=1.018
+f_base64               exit=0 sha=2914732b0cb2 other=same ms=85 other_ms=81 ratio=1.041
+f_gzip                 exit=0 sha=a10296f63d67 other=same ms=70 other_ms=59 ratio=1.181
+f_printf               exit=0 sha=97146a571cfa other=same ms=42 other_ms=44 ratio=0.962
+f_sort_unique          exit=0 sha=839160fcc53b other=same ms=53 other_ms=55 ratio=0.962
+f_loop_forks           exit=0 sha=eea8254c7500 other=same ms=296 other_ms=303 ratio=0.979
+f_exit_status          exit=0 sha=ae39b65b56f2 other=same ms=42 other_ms=41 ratio=1.015
+f_factor               exit=127 sha=e3b0c44298fc other=same ms=40 other_ms=40 ratio=1.009
+f_find                 exit=0 sha=a9a1483caeca other=same ms=51 other_ms=50 ratio=1.026
+f_date                 exit=0 sha=8da7e0b07569 other=same ms=44 other_ms=44 ratio=1.000
+f_od_cut               exit=0 sha=45d9d79ae2e1 other=same ms=16260 other_ms=16075 ratio=1.012
+b_sha256sum_251_MiB    exit=0 sha=2ad25a47f9bd other=same ms=614 other_ms=522 ratio=1.178
+b_wc_251_MiB           exit=0 sha=c16e8aed3a28 other=same ms=292 other_ms=235 ratio=1.247
+b_gzip_14_MiB          exit=0 sha=e8377d9f9408 other=same ms=465 other_ms=238 ratio=1.948
+b_sort_2M_lines        exit=0 sha=4355a46b19d3 other=same ms=16397 other_ms=16187 ratio=1.013
+b_sed_2M_lines         exit=0 sha=79bd19b71964 other=same ms=1714 other_ms=1420 ratio=1.207
+b_grep_2M_lines        exit=0 sha=703c6208a51c other=same ms=458 other_ms=339 ratio=1.348
+b_factor               exit=127 sha=e3b0c44298fc other=same ms=40 other_ms=39 ratio=1.005
+b_shell_loop_300k      exit=0 sha=2d5c043a952d other=same ms=467 other_ms=386 ratio=1.209
+b_300_forks            exit=0 sha=f807fe6dc767 other=same ms=811 other_ms=832 ratio=0.974
+total scripts=28 different=0

@@ -5,7 +5,7 @@ Every ELF file in the tree is translated for a fixed load address and linked wit
 The tree is laid out as on a device (system/..., apex/...), from a build patched by
 experiments/aosp/patch.py.
 
-usage: build_guest.py <source tree> <output directory> [--segment '(16ull << 30)'] [--sparse]
+usage: build_guest.py <source tree> <output directory> [--segment '(16ull << 30)'] [--sparse [--chunk-shift 24]]
 Run the result with: <output>/guest <output>/root /system/bin/sh -c '...'
 
 --sparse translates memory accesses through the per-chunk table and gives the guest a 39-bit address
@@ -22,7 +22,8 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIRST_BASE = 0x10000000
 RESERVED = ["-ffixed-x18", "-ffixed-x25", "-ffixed-x26", "-ffixed-x27", "-ffixed-x28"]
-SPARSE = ["--table"] if "--sparse" in sys.argv else []
+CHUNK_SHIFT = sys.argv[sys.argv.index("--chunk-shift") + 1] if "--chunk-shift" in sys.argv else "24"
+SPARSE = ["--table", "--chunk-shift", CHUNK_SHIFT] if "--sparse" in sys.argv else []
 
 
 def ndk():
@@ -174,7 +175,8 @@ def main():
     subprocess.run([sys.executable, os.path.join(HERE, "modules.py"), os.path.join(objects, "modules.c")]
                    + ["%s=%s@%d" % (symbol, guest, start) for symbol, _, start, _, guest in jobs], check=True)
     program = os.path.join(out, "guest")
-    subprocess.run(["clang", "-O2", "-arch", "arm64", "-DSPARSE" if SPARSE else "-DSEGMENT=" + segment, os.path.join(HERE, "runtime.c"), os.path.join(HERE, "entry.S"),
+    subprocess.run(["clang", "-O2", "-arch", "arm64", "-DCHUNK_SHIFT=" + CHUNK_SHIFT, "-DSPARSE" if SPARSE else "-DSEGMENT=" + segment,
+                    os.path.join(HERE, "runtime.c"), os.path.join(HERE, "entry.S"),
                     os.path.join(objects, "modules.c")] + [os.path.join(objects, job[0] + ".o") for job in jobs] + ["-o", program], check=True)
 
     # toybox picks its command from the name it is run as, so give every command a link, as Android does.
@@ -211,8 +213,10 @@ exec "$here/${GUEST:-guest}" "$here/root" /system/bin/toybox env ANDROID_ROOT=/s
         scripts = [("art_interpreted", command % ("-Xint", "interpreted")), ("art_image_interpreted", command % ("-Xint " + image, "image")),
                    ("art_compiled", command % (image, "compiled")), ("b_art_interpreted", command % ("-Xint", "interpreted")),
                    ("b_art_compiled", command % (image, "compiled"))]
-        with open(os.path.join(out, "scripts-android.bin"), "w") as file:
-            file.write("".join("%s\0%s\0" % script for script in scripts))
+        tests = [("t_" + name[5:], name + "\n") for name in sorted(os.listdir(os.path.join(root, "system/bin"))) if name.startswith("test-")]
+        subprocess.run([sys.executable, os.path.join(HERE, "compare-android.py"), "--export", os.path.join(out, "scripts-android.bin")], check=True)
+        with open(os.path.join(out, "scripts-android.bin"), "a") as file:
+            file.write("".join("%s\0%s\0" % script for script in tests + scripts))
 
 
 if __name__ == "__main__":

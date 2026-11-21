@@ -2,7 +2,7 @@
 // host memory at an offset, fork is a copy-on-write vm_remap, and Linux system calls are served by
 // the host. It implements what toybox and ART's dalvikvm need, static (musl) or dynamic (Bionic).
 //
-// Guest memory comes in 16 MiB chunks, each with its own offset to host memory. Built plainly, one
+// Guest memory comes in chunks (16 MiB unless CHUNK_SHIFT says otherwise), each with its own offset to host memory. Built plainly, one
 // process is one block of SEGMENT bytes and every chunk has the same offset, which rewritten code
 // keeps in a register. Built with -DSPARSE (for code rewritten with --table), the guest has a 39-bit
 // address space and a chunk gets host memory only when something in it is mapped: see "guest memory".
@@ -76,7 +76,9 @@ _Static_assert(__builtin_offsetof(struct Context, pc) == 792, "entry.S");
 _Static_assert(__builtin_offsetof(struct Context, host_sp) == 816, "entry.S");
 _Static_assert(__builtin_offsetof(struct Context, memory_table) == 824, "entry.S, rewrite.py");
 _Static_assert(__builtin_offsetof(struct Context, spare) == 848, "rewrite.py");
-#define CHUNK_SHIFT 24
+#ifndef CHUNK_SHIFT
+#define CHUNK_SHIFT 24  // must match rewrite.py --chunk-shift
+#endif
 #define CHUNK (1ull << CHUNK_SHIFT)
 #define CHUNKS (SEGMENT >> CHUNK_SHIFT)
 // The offset of a chunk without host memory. It leads above every address a process can map, on
@@ -162,6 +164,7 @@ static struct Process* processes[MAX_PROCESSES];
 static int next_pid = 100;
 static int trace;
 static uint64_t syscall_count, fork_count, fork_ns, lazy_count, emulated_count;
+static int64_t reserved_bytes, reserved_peak;  // host address space held by guest memory, over all processes
 
 static uint64_t now_ns(void) { return clock_gettime_nsec_np(CLOCK_UPTIME_RAW); }
 static uint64_t page_up(uint64_t value) { return (value + PAGE - 1) & ~(PAGE - 1); }
@@ -355,9 +358,20 @@ static struct Run* add_run(struct Process* process) {
     return &process->runs[process->run_count++];
 }
 
+static void count_reserved(int64_t bytes) {
+    const int64_t now = __atomic_add_fetch(&reserved_bytes, bytes, __ATOMIC_RELAXED);
+    if (now > reserved_peak) reserved_peak = now;
+}
+
 static uint8_t* reserve(uint8_t* hint, uint64_t length) {
     void* result = mmap(hint, length, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (result != MAP_FAILED) count_reserved((int64_t)length);
     return result == MAP_FAILED ? NULL : result;
+}
+
+static void unreserve(uint8_t* memory, uint64_t length) {
+    munmap(memory, length);
+    count_reserved(-(int64_t)length);
 }
 
 // Gives host memory to chunks [first, last), none of which has any. It continues the run on either
@@ -375,7 +389,7 @@ static int back_range(struct Process* process, uint64_t first, uint64_t last) {
             before->length += length;
             run = before;
         } else if (got) {
-            munmap(got, length);
+            unreserve(got, length);
         }
     }
     if (!run && after) {
@@ -387,7 +401,7 @@ static int back_range(struct Process* process, uint64_t first, uint64_t last) {
             after->length += length;
             run = after;
         } else if (got) {
-            munmap(got, length);
+            unreserve(got, length);
         }
     }
     if (!run) {
@@ -438,50 +452,74 @@ static void free_chunk(struct Process* process, uint64_t chunk) {
     uint8_t* memory = run->host + (guest - run->guest);
     const int first = guest == run->guest, last = guest + CHUNK == run->guest + run->length;
     if (first && last) {
-        munmap(memory - GUARD_BEFORE, GUARD_BEFORE + CHUNK + GUARD_AFTER);
+        unreserve(memory - GUARD_BEFORE, GUARD_BEFORE + CHUNK + GUARD_AFTER);
         *run = process->runs[--process->run_count];
     } else if (first) {
         mmap(memory + CHUNK - GUARD_BEFORE, GUARD_BEFORE, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
-        munmap(memory - GUARD_BEFORE, CHUNK);
+        unreserve(memory - GUARD_BEFORE, CHUNK);
         run->host += CHUNK;
         run->guest += CHUNK;
         run->length -= CHUNK;
     } else if (last) {
         mmap(memory, GUARD_AFTER, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
-        munmap(memory + GUARD_AFTER, CHUNK);
+        unreserve(memory + GUARD_AFTER, CHUNK);
         run->length -= CHUNK;
     } else {
         const struct Run right = {guest + CHUNK, run->guest + run->length - guest - CHUNK, memory + CHUNK};
         run->length = guest - run->guest;
         mmap(memory, GUARD_AFTER, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
         mmap(memory + CHUNK - GUARD_BEFORE, GUARD_BEFORE, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
-        munmap(memory + GUARD_AFTER, CHUNK - GUARD_AFTER - GUARD_BEFORE);
+        unreserve(memory + GUARD_AFTER, CHUNK - GUARD_AFTER - GUARD_BEFORE);
+        count_reserved(GUARD_AFTER + GUARD_BEFORE);  // the two runs have a guard each where they had none
         *add_run(process) = right;
     }
     process->chunks[chunk] = VOID_OFFSET;
 }
 #endif
 
+// Returns the host memory of every run. The tables stay: other threads of a process that is
+// exiting may still look at them.
+static void free_space(struct Process* process) {
+    for (int index = 0; index < process->run_count; ++index)
+        unreserve(process->runs[index].host - GUARD_BEFORE, GUARD_BEFORE + process->runs[index].length + GUARD_AFTER);
+    process->run_count = 0;
+}
+
+// The rest, once no thread of the process can run any more.
+static void free_tables(struct Process* process) {
+    if (process->space) munmap(process->space, space_size());
+    free(process->runs);
+    process->space = process->runs = NULL;
+    process->run_capacity = 0;
+}
+
+static void* empty_space;
+
+static void make_empty_space(void) {
+    uint64_t* block = mmap(NULL, space_size(), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    for (uint64_t chunk = 0; chunk < CHUNKS; ++chunk) block[chunk] = VOID_OFFSET;
+    empty_space = block;
+}
+
 // Empties the address space. A sparse one starts with no host memory, a plain one with all of it.
 static int reset_space(struct Process* process) {
-    for (int index = 0; index < process->run_count; ++index)
-        munmap(process->runs[index].host - GUARD_BEFORE, GUARD_BEFORE + process->runs[index].length + GUARD_AFTER);
-    process->run_count = 0;
+    // The tables of an empty address space are a copy-on-write copy of one that is filled in once, so
+    // that a process only pays for the parts of them it uses.
+    static pthread_once_t once = PTHREAD_ONCE_INIT;
+    pthread_once(&once, make_empty_space);
+    void* empty = empty_space;
+    free_space(process);
     if (process->space) munmap(process->space, space_size());
-    void* block = mmap(NULL, space_size(), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-    if (block == MAP_FAILED) return 0;
-    attach_space(process, block);
-    for (uint64_t chunk = 0; chunk < CHUNKS; ++chunk) process->chunks[chunk] = VOID_OFFSET;
+    vm_address_t block = 0;
+    vm_prot_t current, maximum;
+    if (vm_remap(mach_task_self(), &block, space_size(), 0, VM_FLAGS_ANYWHERE, mach_task_self(), (vm_address_t)empty, TRUE, &current, &maximum,
+                 VM_INHERIT_COPY) != KERN_SUCCESS)
+        return 0;
+    attach_space(process, (void*)block);
 #ifndef SPARSE
     if (!back_range(process, 0, CHUNKS)) return 0;
 #endif
     return 1;
-}
-
-static void free_space(struct Process* process) {
-    for (int index = 0; index < process->run_count; ++index)
-        munmap(process->runs[index].host - GUARD_BEFORE, GUARD_BEFORE + process->runs[index].length + GUARD_AFTER);
-    process->run_count = 0;
 }
 
 // How much of [address, address + length) is contiguous in host memory from its start.
@@ -621,32 +659,49 @@ static int map_anonymous(struct Process* process, uint64_t address, uint64_t len
     return map_pages(process, address, length, protection, MAP_PRIVATE | MAP_ANON, -1, 0);
 }
 
-// Grows in place when the pages above are free, otherwise moves the mapping without copying it.
-static long guest_mremap(struct Process* process, uint64_t address, uint64_t old, uint64_t wanted, int may_move) {
-    if (wanted <= old) {
-        if (wanted < old) release(process, address + wanted, old - wanted);
-        return (long)address;
-    }
-    const int protection = page_protection(process, address / PAGE);
-    int room = address + wanted <= process->map_high;
-    for (uint64_t page = (address + old) / PAGE; room && page < (address + wanted) / PAGE; ++page) room = !page_used(process, page);
-    if (room) return map_anonymous(process, address + old, wanted - old, protection) ? (long)address : -12;
-    uint64_t target;
-    if (!may_move || !(target = allocate(process, wanted, wanted < LAZY_MINIMUM)) || !map_anonymous(process, target, wanted, protection)) return -12;
-    for (uint64_t done = 0; done < old;) {
-        uint64_t part = piece(process, address + done, old - done);
-        if (chunk_backed(process, (address + done) >> CHUNK_SHIFT)) {
-            vm_address_t destination = (vm_address_t)host(process, target + done);  // backs the target if it was not
-            const uint64_t room_there = piece(process, target + done, old - done);
-            if (room_there < part) part = room_there;
+// Moves the pages of [from, from + length) to `to` without copying them. Both ranges are mapped.
+static int move_pages(struct Process* process, uint64_t from, uint64_t to, uint64_t length) {
+    for (uint64_t done = 0; done < length;) {
+        uint64_t part = piece(process, from + done, length - done);
+        if (chunk_backed(process, (from + done) >> CHUNK_SHIFT)) {
+            vm_address_t destination = (vm_address_t)host(process, to + done);  // backs the target if it was not
+            const uint64_t room = piece(process, to + done, length - done);
+            if (room < part) part = room;
             vm_prot_t current, maximum;
             if (vm_remap(mach_task_self(), &destination, part, 0, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE, mach_task_self(),
-                         (vm_address_t)host(process, address + done), FALSE, &current, &maximum, VM_INHERIT_COPY) != KERN_SUCCESS)
-                return -12;
+                         (vm_address_t)host(process, from + done), FALSE, &current, &maximum, VM_INHERIT_COPY) != KERN_SUCCESS)
+                return 0;
         }
         done += part;
     }
-    release(process, address, old);
+    return 1;
+}
+
+// mremap. Flags: 1 MREMAP_MAYMOVE, 2 MREMAP_FIXED, 4 MREMAP_DONTUNMAP (the old range stays mapped and
+// reads as zero afterwards, which ART's compacting collector uses to empty a space).
+static long guest_mremap(struct Process* process, uint64_t address, uint64_t old, uint64_t wanted, int flags, uint64_t target) {
+    if (address & (PAGE - 1) || address + old > SEGMENT || !wanted) return -22;
+    const int protection = page_protection(process, address / PAGE);
+    if (!(flags & 6)) {
+        if (wanted <= old) {
+            if (wanted < old) release(process, address + wanted, old - wanted);
+            return (long)address;
+        }
+        // Grow in place when the pages above are free.
+        int room = address + wanted <= process->map_high;
+        for (uint64_t page = (address + old) / PAGE; room && page < (address + wanted) / PAGE; ++page) room = !page_used(process, page);
+        if (room) return map_anonymous(process, address + old, wanted - old, protection) ? (long)address : -12;
+        if (!(flags & 1)) return -12;
+    }
+    if (flags & 2) {
+        if (target & (PAGE - 1) || target + wanted > SEGMENT || (target < address + old && address < target + wanted)) return -22;
+    } else if (!(target = allocate(process, wanted, wanted < LAZY_MINIMUM))) {
+        return -12;
+    }
+    const uint64_t moved = old < wanted ? old : wanted;
+    if (!map_anonymous(process, target, wanted, protection) || !move_pages(process, address, target, moved)) return -12;
+    if (flags & 4) map_pages(process, address, old, protection, MAP_PRIVATE | MAP_ANON, -1, 0);
+    else release(process, address, old);
     return (long)target;
 }
 
@@ -884,9 +939,7 @@ static void terminate(struct Thread* thread, int status) {
     }
     pthread_mutex_unlock(&lock);
     for (int fd = 0; fd < MAX_FDS; ++fd) close_fd(process, fd);
-    pthread_mutex_lock(&process->memory_lock);
-    free_space(process);
-    pthread_mutex_unlock(&process->memory_lock);
+    free_space(process);  // without the lock: a thread stopped above may have held it
     pthread_mutex_lock(&lock);
     struct Process* parent = processes[process->parent % MAX_PROCESSES];
     if (parent && parent->pid == process->parent) parent->pending |= SIGBIT(17);  // SIGCHLD
@@ -1012,6 +1065,7 @@ static long guest_wait(struct Process* process, long pid, uint64_t status_addres
             if (!child->exited) continue;
             child->reaped = 1;
             processes[index] = NULL;
+            free_tables(child);
             const int result = child->pid;
             if (status_address) *(int*)host(process, status_address) = child->status;
             pthread_mutex_unlock(&lock);
@@ -1341,8 +1395,8 @@ static int guest_address(struct Process* p, uint64_t address, uint64_t* guest) {
 static int emulate_access(struct Thread* t, struct Context* context) {
     struct Process* p = t->process;
     const uint32_t w = *(const uint32_t*)t->fault.host_pc;
-    const unsigned rn = w >> 5 & 31, vector = w >> 26 & 1;
-    unsigned registers[2] = {w & 31, 0};
+    const unsigned rn = w >> 5 & 31;
+    unsigned vector = w >> 26 & 1, registers[4] = {w & 31, 0, 0, 0};
     int count = 1, load, extend = 0, wide = 1, size_log = (int)(w >> 30);
     int64_t offset = 0, write_back = 0;
     if ((w & 0x3A000000) == 0x28000000) {  // pair
@@ -1379,6 +1433,14 @@ static int emulate_access(struct Thread* t, struct Context* context) {
             offset = mode == 1 ? 0 : immediate;
             write_back = mode & 1 ? immediate : 0;
         }
+    } else if ((w & 0xBFBF0000) == 0x0C000000) {  // ld1 and st1 of one to four whole vector registers
+        const unsigned opcode = w >> 12 & 15;
+        count = opcode == 7 ? 1 : opcode == 10 ? 2 : opcode == 6 ? 3 : opcode == 2 ? 4 : 0;
+        if (!count) return 0;  // ld2 to ld4 interleave their elements
+        for (int index = 1; index < count; ++index) registers[index] = (registers[0] + (unsigned)index) & 31;
+        vector = 1;
+        size_log = w >> 30 & 1 ? 4 : 3;
+        load = w >> 22 & 1;
     } else {
         return 0;
     }
@@ -1391,7 +1453,7 @@ static int emulate_access(struct Thread* t, struct Context* context) {
             t->fault.code = page < SEGMENT / PAGE && page_used(p, page) ? 2 : 1;
             return -1;
         }
-    uint8_t bytes[32] = {0};
+    uint8_t bytes[64] = {0};
     if (load) {
         copy_out(p, bytes, address, total);
         for (int index = 0; index < count; ++index) {
@@ -1427,22 +1489,24 @@ static void continue_fault(struct Context* context) __attribute__((noreturn));
 static void continue_fault(struct Context* context) {
     struct Thread* t = context->thread;
     struct Process* p = t->process;
+    if (p->exiting) finish_thread(t);  // the fault is from the process's memory going away
     uint64_t address = t->fault.host_address;
     t->fault.address = address;
-    if (guest_address(p, t->fault.host_address, &address)) {
-        t->fault.address = address;
-        const struct Run* run = run_of_host(p, t->fault.host_address);
-        const int in_run = run && t->fault.host_address - (uint64_t)run->host < run->length;
-        if (address < SEGMENT && page_used(p, address / PAGE)) {
-            t->fault.code = 2;  // SEGV_ACCERR, unless one of the cases below applies
-            if (!run && !chunk_backed(p, address >> CHUNK_SHIFT)) {
-                materialize(p, address >> CHUNK_SHIFT);
-                guest_resume(context);
-            }
+    pthread_mutex_lock(&p->memory_lock);  // other threads change the runs
+    const int known = guest_address(p, t->fault.host_address, &address);
+    const struct Run* run = run_of_host(p, t->fault.host_address);
+    const int in_void = known && !run, in_run = run && t->fault.host_address - (uint64_t)run->host < run->length;
+    const int mapped = known && address < SEGMENT && page_used(p, address / PAGE);
+    const int untouched = mapped && in_void && !chunk_backed(p, address >> CHUNK_SHIFT);
+    if (untouched) materialize(p, address >> CHUNK_SHIFT);
+    if (known) t->fault.address = address;
+    if (mapped) t->fault.code = 2;  // SEGV_ACCERR, unless one of the cases below applies
+    const int done = mapped && !untouched && !in_run ? emulate_access(t, context) : 0;
+    pthread_mutex_unlock(&p->memory_lock);
+    if (known) {
+        if (mapped) {
+            if (untouched) guest_resume(context);
             if (!in_run) {
-                pthread_mutex_lock(&p->memory_lock);
-                const int done = emulate_access(t, context);
-                pthread_mutex_unlock(&p->memory_lock);
                 if (done > 0) {
                     context->pc = t->fault.host_pc + 4;
                     guest_resume(context);
@@ -1966,7 +2030,7 @@ void guest_syscall(struct Context* context) {
         break;
     case 216:
         pthread_mutex_lock(&p->memory_lock);
-        r = guest_mremap(p, a[0] & ADDRESS_MASK, page_up(a[1]), page_up(a[2]), a[3] & 1);
+        r = guest_mremap(p, a[0] & ADDRESS_MASK, page_up(a[1]), page_up(a[2]), (int)a[3], a[4] & ADDRESS_MASK);
         pthread_mutex_unlock(&p->memory_lock);
         break;
     case 220:
@@ -2066,10 +2130,13 @@ int GUEST_MAIN(int argc, char** argv, char** envp) {
     pthread_mutex_lock(&lock);
     while (!first->exited) pthread_cond_wait(&changed, &lock);
     const int status = first->status;
+    processes[first->pid % MAX_PROCESSES] = NULL;
+    free_tables(first);
     pthread_mutex_unlock(&lock);
     if (getenv("G0E3_STATS"))
         fprintf(stderr, "[runtime] pid=%d status=0x%x elapsed_ms=%.1f system_calls=%llu forks=%llu fork_mean_us=%.1f chunks_backed_on_touch=%llu "
-                "accesses_emulated=%llu\n", pid, status, (double)(now_ns() - begin) / 1e6, syscall_count, fork_count,
-                fork_count ? (double)fork_ns / 1e3 / (double)fork_count : 0, lazy_count, emulated_count);
+                "accesses_emulated=%llu reserved_peak_mib=%lld reserved_now_mib=%lld\n", pid, status, (double)(now_ns() - begin) / 1e6, syscall_count,
+                fork_count, fork_count ? (double)fork_ns / 1e3 / (double)fork_count : 0, lazy_count, emulated_count, reserved_peak >> 20,
+                reserved_bytes >> 20);
     return status & 0x7f ? 128 + (status & 0x7f) : status >> 8;
 }

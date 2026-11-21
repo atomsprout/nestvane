@@ -27,7 +27,7 @@ address, given with --base. --name sets the module name used in symbols, so that
 can be linked into one program. Each module exports _guest_module_<name>: its text start, text end,
 entry point and code table.
 
-usage: rewrite.py [--host-lr] [--table] [--symbols] [--base 0x...] [--name module] <elf> <output.s>
+usage: rewrite.py [--host-lr] [--table] [--chunk-shift 24] [--symbols] [--base 0x...] [--name module] <elf> <output.s>
 """
 import struct
 import sys
@@ -35,7 +35,9 @@ import sys
 BASE, SCRATCH, TABLE, CONTEXT = 27, 28, 26, 25
 TPIDR_OFFSET = 784
 BASE_OFFSET, MEMORY_TABLE_OFFSET, SPARE_OFFSET = 800, 824, 848
-CHUNK_SHIFT, CHUNK_BITS = 24, 15  # 16 MiB chunks of a 39-bit guest address space
+ADDRESS_BITS = 39  # of a guest address, with --table
+CHUNK_SHIFT = int(sys.argv[sys.argv.index("--chunk-shift") + 1]) if "--chunk-shift" in sys.argv else 24  # 16 MiB chunks
+CHUNK_BITS = ADDRESS_BITS - CHUNK_SHIFT
 CONDITIONS = "eq ne hs lo mi pl vs vc hi ls ge lt gt le al nv".split()
 FAR_CONDITIONAL = 0x60000  # b.cond and cbz reach 1 MiB; translated code is up to about 1.8 times larger
 # xpaclri, pacia1716 ... autibsp: the hint-space pointer authentication instructions.
@@ -394,7 +396,7 @@ def main():
     arguments, options = [], {}
     values = iter(sys.argv[1:])
     for argument in values:
-        if argument in ("--base", "--name"):
+        if argument in ("--base", "--name", "--chunk-shift"):
             options[argument] = next(values)
         elif not argument.startswith("--"):
             arguments.append(argument)
