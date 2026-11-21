@@ -842,6 +842,19 @@ void Machine::place(Segment& segment) {
     // segment starts in it, which a 16 KiB image does not do.
     for (const auto& other : segments)
         if (&other != &segment && other.address < segment.address + size && segment.address + segment.mappedSize() <= other.address) return;
+    // Read-only file contents that the loader keeps for the whole boot are mapped copy-on-write from
+    // that one copy, so that processes share the pages until one of them writes.
+    if (segment.imageView && !segment.anonymousPages && segment.mappedSize() == size &&
+        reinterpret_cast<uintptr_t>(segment.imageView) % GuestSpace::page == 0 &&
+        space->mapFrom(segment.address, size, GuestSpace::read | GuestSpace::write, segment.imageView, false)) {
+        if (auto mapped = AnonymousPages::allocateIn(space, segment.address, size, false)) {
+            segment.imageView = nullptr;
+            segment.anonymousPages = std::move(mapped);
+            segment.fileOffset = 0;
+            segment.reservedSize = size;
+            return;
+        }
+    }
     auto pages = AnonymousPages::allocateIn(space, segment.address, size);
     if (!pages) return;
     const auto length = segment.accessibleSize();
