@@ -65,7 +65,8 @@ void ProbeLinux::mountData(const std::string& databasePath) {
                                        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nullptr);
     std::unique_ptr<sqlite3, decltype(&sqlite3_close)> database(raw, sqlite3_close);
     if (opened != SQLITE_OK || !execute(raw,
-        "PRAGMA fullfsync=ON; PRAGMA synchronous=FULL; PRAGMA busy_timeout=2000;"
+        "PRAGMA fullfsync=ON; PRAGMA synchronous=FULL; PRAGMA busy_timeout=2000; PRAGMA temp_store=MEMORY;"
+        "CREATE TEMP TABLE live_entries (path TEXT PRIMARY KEY) WITHOUT ROWID;"
         "CREATE TABLE IF NOT EXISTS state (singleton INTEGER PRIMARY KEY CHECK(singleton=1), generation INTEGER NOT NULL);"
         "INSERT OR IGNORE INTO state VALUES(1,0);"
         "CREATE TABLE IF NOT EXISTS entries (path TEXT PRIMARY KEY, kind INTEGER NOT NULL,"
@@ -246,17 +247,26 @@ bool ProbeLinux::syncData() {
             sqlite3_column_int64(check.get(), 0) != dataGeneration || dataGeneration == INT64_MAX - 1)
             return false;
         check.reset();
-        if (!execute(database, "DELETE FROM entries; DELETE FROM restorecon_progress; DELETE FROM inode_times;"
+        if (!execute(database, "DELETE FROM live_entries; DELETE FROM restorecon_progress; DELETE FROM inode_times;"
                                "DELETE FROM directory_user_attributes; DELETE FROM file_user_attributes;"
                                "DELETE FROM inode_acls;"))
             return false;
-        auto insert = prepare(database, "INSERT INTO entries VALUES(?,?,?,?,?,?,?,?)");
+        // Avoid rewriting unchanged file payloads on every guest fsync. Compare
+        // the bytes as well as metadata because a shared mapping can write them.
+        auto insert = prepare(database,
+            "INSERT INTO entries VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET "
+            "kind=excluded.kind, mode=excluded.mode, uid=excluded.uid, gid=excluded.gid, "
+            "inode=excluded.inode, bytes=excluded.bytes, label=excluded.label "
+            "WHERE (entries.kind, entries.mode, entries.uid, entries.gid, entries.inode, entries.bytes, entries.label) "
+            "IS NOT (excluded.kind, excluded.mode, excluded.uid, excluded.gid, excluded.inode, excluded.bytes, excluded.label)");
+        auto seen = prepare(database, "INSERT INTO live_entries VALUES(?)");
         auto marker = prepare(database, "INSERT INTO restorecon_progress VALUES(?,?)");
         auto inodeTimes = prepare(database, "INSERT INTO inode_times VALUES(?,?,?,?,?,?,?)");
         auto directoryAttributes = prepare(database, "INSERT INTO directory_user_attributes VALUES(?,?,?)");
         auto fileAttributes = prepare(database, "INSERT INTO file_user_attributes VALUES(?,?,?)");
         auto acls = prepare(database, "INSERT INTO inode_acls VALUES(?,?,?)");
-        if (!insert || !marker || !inodeTimes || !directoryAttributes || !fileAttributes || !acls) return false;
+        if (!insert || !seen || !marker || !inodeTimes || !directoryAttributes || !fileAttributes || !acls)
+            return false;
         const auto writeAttributes = [&](sqlite3_stmt* cursor, const std::string& path, const auto& attributes) {
             for (const auto& [name, value] : attributes) {
                 if (sqlite3_reset(cursor) != SQLITE_OK ||
@@ -296,7 +306,10 @@ bool ProbeLinux::syncData() {
                 sqlite3_bind_int64(cursor, 5, gid) == SQLITE_OK &&
                 sqlite3_bind_int64(cursor, 6, inode) == SQLITE_OK &&
                 bindBytes(cursor, 7, bytes) && bindBytes(cursor, 8, label) &&
-                sqlite3_step(cursor) == SQLITE_DONE;
+                sqlite3_step(cursor) == SQLITE_DONE &&
+                sqlite3_reset(seen.get()) == SQLITE_OK &&
+                sqlite3_bind_text(seen.get(), 1, path.data(), int(path.size()), SQLITE_TRANSIENT) == SQLITE_OK &&
+                sqlite3_step(seen.get()) == SQLITE_DONE;
         };
         for (const auto& [path, directory] : directories) {
             if (!dataPath(path)) continue;
@@ -328,7 +341,8 @@ bool ProbeLinux::syncData() {
                                      {reinterpret_cast<const uint8_t*>(link.securityContext.data()),
                                       link.securityContext.size()})) return false;
         }
-        return execute(database, "UPDATE state SET generation=generation+1 WHERE singleton=1");
+        return execute(database, "DELETE FROM entries WHERE path NOT IN (SELECT path FROM live_entries);"
+                                 "UPDATE state SET generation=generation+1 WHERE singleton=1");
     };
     if (!write() || !execute(database, "COMMIT")) {
         execute(database, "ROLLBACK");

@@ -13,6 +13,7 @@
 #include <iostream>
 #include <limits>
 #include <sstream>
+#include <sqlite3.h>
 #include <unistd.h>
 
 #if defined(__APPLE__) && defined(__aarch64__)
@@ -7331,6 +7332,52 @@ int main() {
         }
         constexpr auto atCwd = uint32_t(-100);
         constexpr auto firstPath = base + 0x280, secondPath = base + 0x300, payload = base + 0x380;
+
+        {
+            const auto databasePath = (cleanup.directory / "incremental-data.sqlite3").string();
+            ProbeLinux writer(1, 0);
+            writer.mountData(databasePath);
+            put(firstPath, "/data/unchanged");
+            put(secondPath, "/data/mapped");
+            assert(machine.store64(payload, 42));
+            const auto unchanged = invoke(writer, 56, {atCwd, firstPath, 0xc2, 0600});
+            const auto changed = invoke(writer, 56, {atCwd, secondPath, 0xc2, 0600});
+            assert(unchanged < 256 && changed < 256);
+            assert(invoke(writer, 64, {unchanged, payload, 8}) == 8);
+            assert(invoke(writer, 64, {changed, payload, 8}) == 8);
+            assert(writer.syncData());
+
+            sqlite3* raw = nullptr;
+            assert(sqlite3_open(databasePath.c_str(), &raw) == SQLITE_OK);
+            std::unique_ptr<sqlite3, decltype(&sqlite3_close)> database(raw, sqlite3_close);
+            assert(sqlite3_exec(raw, "CREATE TABLE file_writes (path TEXT);"
+                "CREATE TRIGGER data_update AFTER UPDATE ON entries BEGIN INSERT INTO file_writes VALUES(new.path); END;"
+                "CREATE TRIGGER data_delete AFTER DELETE ON entries BEGIN INSERT INTO file_writes VALUES(old.path); END;"
+                "CREATE TRIGGER data_insert AFTER INSERT ON entries BEGIN INSERT INTO file_writes VALUES(new.path); END;",
+                nullptr, nullptr, nullptr) == SQLITE_OK);
+
+            const auto writes = [&] {
+                sqlite3_stmt* query = nullptr;
+                assert(sqlite3_prepare_v2(raw, "SELECT path FROM file_writes ORDER BY path",
+                                          -1, &query, nullptr) == SQLITE_OK);
+                std::vector<std::string> paths;
+                int status;
+                while ((status = sqlite3_step(query)) == SQLITE_ROW)
+                    paths.emplace_back(reinterpret_cast<const char*>(sqlite3_column_text(query, 0)));
+                assert(status == SQLITE_DONE && sqlite3_finalize(query) == SQLITE_OK);
+                return paths;
+            };
+            assert(writer.syncData() && writes().empty());
+            const auto shared = invoke(writer, 222, {0, pageSize, 3, 1, changed, 0});
+            assert(machine.store64(shared, 99) && writer.syncData());
+            assert(writes() == std::vector<std::string>{"/data/mapped"});
+
+            ProbeLinux reopened(1, 0);
+            reopened.mountData(databasePath);
+            const auto file = invoke(reopened, 56, {atCwd, secondPath, 0});
+            assert(file < 256 && invoke(reopened, 63, {file, payload, 8}) == 8 && load(payload) == 99);
+            assert(invoke(writer, 215, {shared, pageSize}) == 0);
+        }
 
         {
             const auto attrDatabase = (cleanup.directory / "file-xattrs.sqlite3").string();
