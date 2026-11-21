@@ -218,12 +218,144 @@ static long install_fd(struct Process* process, int descriptor, int minimum, int
     return -24;
 }
 
+// Descriptors that the host has no equivalent for, keyed by the host descriptor that stands for
+// them: an eventfd is the read end of a pipe that holds one byte while the counter is not zero, so
+// that poll sees it, and an epoll instance is its interest list.
+struct Special {
+    int kind, references;  // 1 eventfd, 2 epoll
+    pthread_mutex_t lock;
+    int write_end, semaphore;
+    uint64_t counter;
+    struct Interest { int fd; uint32_t events; uint64_t data; } *interests;
+    int count, capacity;
+};
+#define MAX_HOST_FDS 16384
+static struct Special* specials[MAX_HOST_FDS];
+static pthread_mutex_t specials_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static struct Special* special_of(int descriptor) { return descriptor >= 0 && descriptor < MAX_HOST_FDS ? specials[descriptor] : NULL; }
+
+static int new_special(int descriptor, int kind) {
+    if (descriptor < 0 || descriptor >= MAX_HOST_FDS) return descriptor;
+    struct Special* special = calloc(1, sizeof *special);
+    special->kind = kind;
+    special->references = 1;
+    special->write_end = -1;
+    pthread_mutex_init(&special->lock, NULL);
+    pthread_mutex_lock(&specials_lock);
+    specials[descriptor] = special;
+    pthread_mutex_unlock(&specials_lock);
+    return descriptor;
+}
+
+// dup that keeps what a descriptor stands for.
+static int duplicate(int descriptor) {
+    const int copy = dup(descriptor);
+    pthread_mutex_lock(&specials_lock);
+    if (copy >= 0 && copy < MAX_HOST_FDS && special_of(descriptor)) {
+        specials[copy] = specials[descriptor];
+        ++specials[copy]->references;
+    }
+    pthread_mutex_unlock(&specials_lock);
+    return copy;
+}
+
+static void close_host(int descriptor) {
+    pthread_mutex_lock(&specials_lock);
+    struct Special* special = special_of(descriptor);
+    if (special) {
+        specials[descriptor] = NULL;
+        if (--special->references == 0) {
+            if (special->write_end >= 0) close(special->write_end);
+            free(special->interests);
+            free(special);
+        }
+    }
+    pthread_mutex_unlock(&specials_lock);
+    close(descriptor);
+}
+
 static void close_fd(struct Process* process, int fd) {
     if (process->fds[fd] < 0) return;
     if (process->directories[fd]) closedir(process->directories[fd]);
     process->directories[fd] = NULL;
-    close(process->fds[fd]);
+    close_host(process->fds[fd]);
     process->fds[fd] = -1;
+}
+
+// read and write on an eventfd: an 8-byte counter.
+static long eventfd_io(int descriptor, struct Special* special, uint64_t* value, int writing) {
+    for (;;) {
+        pthread_mutex_lock(&special->lock);
+        if (writing) {
+            if (special->counter == 0 && *value) write(special->write_end, "", 1);
+            special->counter += *value;
+            pthread_mutex_unlock(&special->lock);
+            return 8;
+        }
+        if (special->counter) {
+            *value = special->semaphore ? 1 : special->counter;
+            special->counter -= *value;
+            char byte;
+            if (special->counter == 0) read(descriptor, &byte, 1);
+            pthread_mutex_unlock(&special->lock);
+            return 8;
+        }
+        pthread_mutex_unlock(&special->lock);
+        if (fcntl(descriptor, F_GETFL) & O_NONBLOCK) return -11;
+        struct pollfd wait = {descriptor, POLLIN, 0};
+        poll(&wait, 1, -1);
+    }
+}
+
+static long epoll_control(struct Special* special, long operation, int fd, const uint8_t* event) {
+    pthread_mutex_lock(&special->lock);
+    int found = -1;
+    for (int index = 0; index < special->count; ++index)
+        if (special->interests[index].fd == fd) found = index;
+    long result = 0;
+    if (operation == 1 && found < 0) {  // EPOLL_CTL_ADD
+        if (special->count == special->capacity) {
+            special->capacity = special->capacity ? special->capacity * 2 : 16;
+            special->interests = realloc(special->interests, (size_t)special->capacity * sizeof *special->interests);
+        }
+        special->interests[special->count++] = (struct Interest){fd, *(const uint32_t*)event, *(const uint64_t*)(event + 8)};
+    } else if (operation == 3 && found >= 0) {  // EPOLL_CTL_MOD
+        special->interests[found] = (struct Interest){fd, *(const uint32_t*)event, *(const uint64_t*)(event + 8)};
+    } else if (operation == 2 && found >= 0) {  // EPOLL_CTL_DEL
+        special->interests[found] = special->interests[--special->count];
+    } else {
+        result = operation == 1 ? -17 : -2;
+    }
+    pthread_mutex_unlock(&special->lock);
+    return result;
+}
+
+// epoll_pwait as a poll over the interest list. Level-triggered whatever the guest asked for.
+static long epoll_wait_for(struct Process* process, struct Special* special, uint8_t* events, int room, int timeout) {
+    pthread_mutex_lock(&special->lock);
+    const int count = special->count;
+    struct pollfd* fds = calloc((size_t)count + 1, sizeof *fds);
+    struct Interest* interests = calloc((size_t)count + 1, sizeof *interests);
+    memcpy(interests, special->interests, (size_t)count * sizeof *interests);
+    pthread_mutex_unlock(&special->lock);
+    for (int index = 0; index < count; ++index)
+        fds[index] = (struct pollfd){host_fd(process, interests[index].fd), (short)(interests[index].events & (POLLIN | POLLOUT | POLLPRI)), 0};
+    long result = poll(fds, (nfds_t)count, timeout);
+    if (result < 0) {
+        result = linux_errno(errno);
+    } else {
+        result = 0;
+        for (int index = 0; index < count && result < room; ++index)
+            if (fds[index].revents) {
+                *(uint32_t*)(events + result * 16) = (uint32_t)fds[index].revents & (POLLIN | POLLOUT | POLLPRI | POLLERR | POLLHUP);
+                *(uint64_t*)(events + result * 16 + 8) = interests[index].data;
+                ++result;
+            }
+    }
+    free(fds);
+    free(interests);
+    return result;
 }
 
 // ---------------------------------------------------------------- modules
@@ -1025,7 +1157,7 @@ static long guest_fork(struct Thread* caller, uint64_t flags, uint64_t child_sta
     child->command_length = parent->command_length;
     for (int fd = 0; fd < MAX_FDS; ++fd)
         if (parent->fds[fd] >= 0) {
-            child->fds[fd] = dup(parent->fds[fd]);
+            child->fds[fd] = duplicate(parent->fds[fd]);
             child->cloexec[fd] = parent->cloexec[fd];
         }
     // Registers hold guest addresses, so only the base and the stack pointer change.
@@ -1277,7 +1409,14 @@ static long vector_io(struct Process* process, long fd, uint64_t vector, long co
 // read, write, pread and pwrite on a guest buffer, which may be in several pieces of host memory.
 static long buffer_io(struct Process* process, long fd, uint64_t address, uint64_t length, int writing, int positioned, off_t offset) {
     struct iovec parts[8];
-    const int descriptor = host_fd(process, fd), count = buffer_parts(process, address, length, parts, 8);
+    const int descriptor = host_fd(process, fd);
+    struct Special* special = special_of(descriptor);
+    if (special && special->kind == 1) {
+        const long done = length < 8 ? -22 : eventfd_io(descriptor, special, host(process, address), writing);
+        if (done < 0) errno = done == -11 ? EAGAIN : EINVAL;
+        return done < 0 ? -1 : done;
+    }
+    const int count = buffer_parts(process, address, length, parts, 8);
     if (count <= 1) {
         void* buffer = count ? parts[0].iov_base : NULL;
         if (positioned) return writing ? pwrite(descriptor, buffer, length, offset) : pread(descriptor, buffer, length, offset);
@@ -1757,11 +1896,38 @@ void guest_syscall(struct Context* context) {
         r = (long)strlen(visible) + 1;
         break;
     }
-    case 23: r = install_fd(p, dup(host_fd(p, (long)a[0])), 0, 0); break;
+    case 19: {  // eventfd2
+        int pair[2];
+        if (pipe(pair) != 0) { r = linux_errno(errno); break; }
+        fcntl(pair[1], F_SETFL, O_NONBLOCK);
+        if (a[1] & 04000) fcntl(pair[0], F_SETFL, O_NONBLOCK);
+        fcntl(pair[0], F_SETFD, FD_CLOEXEC);
+        fcntl(pair[1], F_SETFD, FD_CLOEXEC);
+        struct Special* special = special_of(new_special(pair[0], 1));
+        if (!special) { close(pair[0]); close(pair[1]); r = -24; break; }
+        special->write_end = pair[1];
+        special->semaphore = a[1] & 1;
+        uint64_t initial = (uint32_t)a[0];
+        if (initial) eventfd_io(pair[0], special, &initial, 1);
+        r = install_fd(p, pair[0], 0, (a[1] & 02000000) != 0);
+        break;
+    }
+    case 20: r = install_fd(p, new_special(open("/dev/null", O_RDONLY | O_CLOEXEC), 2), 0, (a[0] & 02000000) != 0); break;  // epoll_create1
+    case 21: {
+        struct Special* special = special_of(host_fd(p, (long)a[0]));
+        r = special && special->kind == 2 ? epoll_control(special, (long)a[1], (int)a[2], host(p, a[3])) : -22;
+        break;
+    }
+    case 22: {  // epoll_pwait
+        struct Special* special = special_of(host_fd(p, (long)a[0]));
+        r = special && special->kind == 2 ? epoll_wait_for(p, special, host(p, a[1]), (int)a[2], (int)a[3]) : -22;
+        break;
+    }
+    case 23: r = install_fd(p, duplicate(host_fd(p, (long)a[0])), 0, 0); break;
     case 24:
         if (host_fd(p, (long)a[0]) < 0 || a[1] >= MAX_FDS) { r = -9; break; }
         close_fd(p, (int)a[1]);
-        p->fds[a[1]] = dup(host_fd(p, (long)a[0]));
+        p->fds[a[1]] = duplicate(host_fd(p, (long)a[0]));
         p->cloexec[a[1]] = (a[2] & 02000000) != 0;
         r = (long)a[1];
         break;
@@ -1769,7 +1935,7 @@ void guest_syscall(struct Context* context) {
         const int descriptor = host_fd(p, (long)a[0]);
         if (descriptor < 0) { r = -9; break; }
         switch (a[1]) {
-        case 0: case 1030: r = install_fd(p, dup(descriptor), (int)a[2], a[1] == 1030); break;
+        case 0: case 1030: r = install_fd(p, duplicate(descriptor), (int)a[2], a[1] == 1030); break;
         case 1: r = p->cloexec[a[0]]; break;
         case 2: p->cloexec[a[0]] = a[2] & 1; r = 0; break;
         case 3: {
