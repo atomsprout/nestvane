@@ -24,3 +24,28 @@ last lines of boot-progress.txt:
 The process was then killed by iOS for memory: JetsamEvent-2026-11-21-104022, reason per-process-limit,
 2348 MiB resident. It did not reach the launcher. No final report was written, so the counts of native
 runs and interpreted instructions of this run are not known.
+
+---- later the same day, at the commit that adds this section ----
+Two changes: read-only file contents are mapped copy-on-write instead of copied per process, and mapped
+memory without host pages gets them on the first native access (before that, system_server stalled at
+StartNetworkStatsService with 10.7 million faults on one read of an untouched 1 GiB mapping).
+Same phone, same data volume (not the first boot), app relaunched with --terminate-existing:
+
+[6 ms] Initializing local Android renderer
+[70 ms] Local Android renderer initialized
+[98 ms] Starting Android 17 init
+[4934 ms] Zygote: Preloading classes...
+[6678 ms] Zygote: end preload
+[8800 ms] SystemServerTiming: StartPackageManagerService
+[26452 ms] SystemServerTiming: StartSystemUI
+[34793 ms] ActivityManager: Start proc 582:com.android.launcher3/u0a7 ...
+[49282 ms] SystemServerTiming: broadcastIntent-0-android.intent.action.USER_UNLOCKED took to complete: 1ms
+
+Counters from the live snapshot at 40 s of that run:
+  native execution: modules 853/1830, runs 1092537, syscalls 1084836, memory given on first touch 743,
+  interpreted after a fault 6891, preemptions 0 of 31723 signals, traps 67, lost 0
+  native execution time: 12116 ms in guest code, 5 ms mapping 897 MiB of code tables
+A run after it, snapshot at 40 s: iOS physical footprint 2,203,934,048 bytes, 258,122,400 bytes left of
+the process limit. devicectl then reported "App terminated due to signal 9". The launcher was not displayed
+in any run. "preemptions 0 of 31723 signals" means the time slice signal never took effect on the phone
+(on the Mac it does); why has not been looked at.

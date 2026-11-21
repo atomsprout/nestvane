@@ -5116,6 +5116,9 @@ uint64_t ProbeLinux::map(Machine& machine) {
         } else {
             // Code that can only be interpreted. Native code that calls it would look for it in the
             // table of translated code, where it is not, so the whole process is interpreted from here on.
+            if (!machine.space->interpreted() && androidLogObserver)
+                androidLogObserver("native execution: " + current->process->executable + " (pid " + std::to_string(processId()) +
+                                   ") is interpreted from here on, it maps code without a translation in place: " + fd.path);
             machine.space->dropCode();
             if (static const bool report = std::getenv("NESTVANE_NATIVE_TRACE"); report) {
                 const auto* known = fd.temporary ? nullptr : native::moduleFor(fd.contents());

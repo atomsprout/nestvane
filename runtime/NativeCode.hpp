@@ -42,12 +42,15 @@ enum class Exit {
     fault,      // at an instruction that cannot run natively as things are: the caller interprets it
     preempted,  // the time slice ended, between two instructions
     interpret,  // the instruction at pc is not entered natively
+    retry,      // memory that had no host pages yet has them now: the instruction at pc runs natively again
     lost,       // control left translated code: machine.fault has the details
 };
 // Runs the machine's current thread natively from cpu.pc, which is in translated code that is mapped
 // in machine.space. Returns with the registers in machine.cpu and pc at a guest instruction.
 Exit run(Machine& machine);
 std::string statistics();
+// The host address of the access that made the last run end with Exit::fault.
+uint64_t lastFaultAddress();
 
 } // namespace native
 } // namespace nestvane

@@ -78,6 +78,7 @@ public:
     void addCode(uint64_t start, uint64_t end) { if (!interpreted_) code_.push_back({start, end}); }
     // For a process that has code without a translation: none of its code runs natively any more.
     void dropCode() { interpreted_ = true; code_.clear(); lastCode_ = {}; }
+    bool interpreted() const { return interpreted_; }
     bool hasCode(uint64_t pc) const {
         if (pc - lastCode_.start < lastCode_.length) return true;
         for (const auto& range : code_)

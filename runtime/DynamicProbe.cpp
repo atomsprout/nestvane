@@ -89,6 +89,8 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
     bool reachedExecutable = false;
     const bool nativeExecution = native::enabled();
     bool interpretNext = false;
+    uint64_t nativeFaults = 0;
+    std::string faultSamples;
     auto machine = linux.createMachine(image);
     auto& cpu = machine.cpu;
     const auto& startup = image.startup.value();
@@ -272,6 +274,7 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
         intervalUnattributed = 0;
         intervalSyscalls.fill({});
         intervalSyscallSamples = 0;
+        if (nativeExecution) snapshot << native::statistics() << faultSamples;
         snapshot << linux.workerReport(machine, linux.processId());
         constexpr size_t androidTailLimit = 16 * 1024;
         const std::string_view android = linux.recentAndroidOutput.empty()
@@ -346,12 +349,35 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
         if (interpretNext) {
             interpretNext = false;
         } else if (nativeExecution && linux.nativeAt(machine) && !(init && linux.hasChildEntryAt(cpu.pc))) {
-            switch (native::run(machine)) {
+            const auto left = native::run(machine);
+            if (left == native::Exit::fault && !(++nativeFaults & 0xffff)) {
+                // A sample of what native code could not do itself, for finding memory it cannot reach.
+                std::ostringstream sample;
+                uint64_t address = 0;
+                bool inRun = false;
+                const bool known = machine.space->guestAddress(native::lastFaultAddress(), address, &inRun);
+                sample << "native execution: fault sample PID=" << linux.processId() << " PC=0x" << std::hex << cpu.pc
+                       << " address=0x" << (known ? address : 0) << (known ? inRun ? " (in a run)" : " (void or guard)" : " (unknown)");
+                for (const auto& segment : machine.segments) {
+                    if (address < segment.address || address - segment.address >= segment.mappedSize()) continue;
+                    sample << " segment 0x" << segment.address << "+0x" << segment.mappedSize() << " flags=" << segment.flags
+                           << (segment.shared ? " shared" : "") << (segment.placed ? " placed" : "")
+                           << (segment.anonymousPages ? segment.anonymousPages->guestSpace() ? " native-pages" : " pages" : "")
+                           << (segment.imageView ? " view" : "") << (segment.beyondFileEnd ? " beyond-file-end" : "")
+                           << (segment.anonymous ? " anonymous" : "") << " backed=" << machine.space->backed(address)
+                           << " mapped=" << machine.space->mapped(address);
+                    break;
+                }
+                if (faultSamples.size() > 4096) faultSamples.erase(0, faultSamples.find('\n', 2048) + 1);
+                faultSamples += "  " + sample.str() + '\n';
+            }
+            switch (left) {
                 case native::Exit::preempted:
                     // The scheduler counts instructions: a slice of native code counts as one of its own.
                     cpu.retired += 4096;
                     break;
                 case native::Exit::lost:
+                case native::Exit::retry:
                     break;
                 default:
                     // An svc, or something else that the interpreter does in native code's place.
@@ -577,7 +603,7 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
     }
     if (!linux.watchdogReport.empty())
         report << "  guest threads at Android Watchdog termination:\n" << linux.watchdogReport;
-    if (nativeExecution) report << native::statistics();
+    if (nativeExecution) report << native::statistics() << faultSamples;
     else if (native::failure()) report << "  native execution is off: " << native::failure() << '\n';
     report << linux.workerReport(machine,
         init && (unhandled || cpu.stop == Stop::fault || cpu.stop == Stop::unsupported) ? linux.processId() : 0);

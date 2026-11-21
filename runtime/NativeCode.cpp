@@ -171,7 +171,7 @@ struct Counters {
     uint64_t runs = 0, syscalls = 0, faults = 0, preemptions = 0, traps = 0, lost = 0, ticks = 0;
     uint64_t faultsBySignal[32] = {};
     uint64_t nativeTime = 0, activationTime = 0, tableBytes = 0;  // mach time units
-    uint64_t unmapped = 0;
+    uint64_t unmapped = 0, backed = 0;
 } counters;
 
 void onSignal(int number, siginfo_t* info, void* raw) {
@@ -406,9 +406,17 @@ Exit run(Machine& machine) {
         return Exit::preempted;
     }
     if (context.faultPc >= all.codeStart && context.faultPc < all.codeEnd && guestCode(context.faultPc, guestPc, atStart)) {
+        cpu.pc = guestPc;
+        // Mapped memory that nothing has written yet has no host pages. The interpreter reads it as
+        // zeros without giving it any, so native code would fault there again and again.
+        uint64_t address = 0;
+        if ((running.signal == SIGSEGV || running.signal == SIGBUS) && space.guestAddress(context.faultAddress, address) &&
+            address < GuestSpace::size && space.mapped(address) && !space.backed(address) && space.touch(address)) {
+            ++counters.backed;
+            return Exit::retry;
+        }
         ++counters.faults;
         ++counters.faultsBySignal[running.signal & 31];
-        cpu.pc = guestPc;
         return Exit::fault;
     }
     // A jump to something that is no translated code. (On iOS the system kills the process for it
@@ -418,12 +426,15 @@ Exit run(Machine& machine) {
     return Exit::lost;
 }
 
+uint64_t lastFaultAddress() { return running.context.faultAddress; }
+
 std::string statistics() {
     std::ostringstream out;
     size_t active = 0;
     for (const auto& loaded : registry().modules) active += loaded.active;
     out << "  native execution: modules " << active << "/" << registry().modules.size() << ", runs " << counters.runs
-        << ", syscalls " << counters.syscalls << ", interpreted after a fault " << counters.faults
+        << ", syscalls " << counters.syscalls << ", memory given on first touch " << counters.backed
+        << ", interpreted after a fault " << counters.faults
         << " (SIGSEGV " << counters.faultsBySignal[SIGSEGV] << ", SIGBUS " << counters.faultsBySignal[SIGBUS]
         << ", SIGILL " << counters.faultsBySignal[SIGILL] << ", SIGTRAP " << counters.faultsBySignal[SIGTRAP]
         << "), preemptions " << counters.preemptions << " of " << counters.ticks << " signals, traps " << counters.traps
