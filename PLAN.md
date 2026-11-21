@@ -14,12 +14,12 @@
 
 ## Apache-2.0 发布路线
 
-首版以 **Nestvane 自有代码采用 Apache-2.0，随包分发的第三方组件保留各自许可** 为目标。当前仓库尚未声明项目许可证。确认首方代码、文档和素材的授权来源后，再正式添加根目录 `LICENSE`。按发布构建的实际内容列出第三方版本、来源、许可和适用的通知。保留上游版权和 SPDX 标识，包括补丁携带的上游代码。Apache-2.0 标签只用于有权按该许可发布的文件。[Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0)
+首版选择 **Nestvane 自有代码采用 Apache-2.0，随包分发的第三方组件保留各自许可**。MIT 和 Apache-2.0 都可用于自有代码。选择 Apache-2.0 是因为它明确授予贡献者可授予的相关专利权，并便于沿用 AOSP 中采用同一许可的代码。当前仓库尚未声明项目许可证。确认首方代码、文档和素材的授权来源后，再正式添加根目录 `LICENSE`。按发布构建的实际内容列出第三方版本、来源、许可和适用的通知。保留上游版权和 SPDX 标识，包括补丁携带的上游代码。Apache-2.0 标签只用于有权按该许可发布的文件。[Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0)
 
 - **宿主运行时**沿用自有 ARM64 执行器、Linux ABI 和 iOS 桥接。参考 Kernarium 的架构及对照数据，避免把 GPL 运行时或原生 Linux 内核链接进首版 App。Kernarium 的 Linux 内核为 GPL-2.0-only，并与宿主代码组成同一二进制文件。更换链接方式本身无法解决由此产生的许可问题。[Kernarium 许可说明](https://github.com/imxieyi/Kernarium/blob/main/LICENSES/README.md) · [ASF 兼容性说明](https://www.apache.org/licenses/GPL-compatibility.html)
 - **Android 17 发布镜像**由固定的 AOSP 源码版本自建，记录 Repo manifest 和产物校验值。保留实际打包模块的许可与适用通知，包含 APEX、原生库和生成的预编译产物。现有 SDK `default` 镜像用于内部验证。不能仅凭 `default` 名称推定整包的再分发权限。第三方验收 APK 单独导入。图形框架及其传递依赖按实际发布二进制核对许可和通知。[AOSP 许可说明](https://source.android.com/docs/setup/contribute/licenses) · [Android SDK 条款](https://developer.android.com/studio/terms)
 - **性能先验证执行器，再决定投入。** 用同一镜像和数据卷在 iPhone CX 上采样，区分用户态指令、ABI 调度和等待开销。先做可开关的镜像绑定宿主 AOT，覆盖启动采样命中的系统 ELF 和 `boot*.oat`，保留对后装 APK、未知映射和异常的解释路径。范围从真实启动关键路径扩大，净收益用端到端时间和峰值内存判断。
-- **并行按正确性和实测收益推进。** 若采样显示不同地址空间有足够的并行工作，先验证两个宿主执行线程，并回归共享页可见性、原子操作、futex、Binder 唤醒和退出。继续条件为真机启动阶段确有收益。最终仍按 P3 完成 APK、持久化和实体相机验收，并在无宿主 JIT 的 iPhone CX 上连续三次 30 秒内进入可触控桌面。若性能差距仍大，再评估是否接受独立分发、保有自身 GPL 义务的内核组件及真实设备边界。
+- **并行按正确性和实测收益推进。** 若采样显示不同地址空间有足够的并行工作，先验证两个宿主执行线程，并回归共享页可见性、原子操作、futex、Binder 唤醒和退出。继续条件为真机启动阶段确有收益。最终仍按 P3 完成 APK、持久化和实体相机验收，并在无宿主 JIT 的 iPhone CX 上连续三次低于 10 秒进入可触控桌面。若性能差距仍大，再评估是否接受独立分发、保有自身 GPL 义务的内核组件及真实设备边界。
 
 ## P0 固定基线和测试条件
 
@@ -63,15 +63,15 @@
 iOS「文件」导入与客体安装助手已经实现。用户选择的 APK 以只读描述符交给客体 `cmd package install`，由包管理器检查签名和安装资格。当前存储上限为单个 APK 64 MiB。Android 17 参考系统以同一助手验证两款 APK 安装及损坏包拒绝。Mac 上用诊断接收器验证了整文件读取、EOF、结果回传与停止时保存。iPhone 14 已通过 iOS「文件」安装 Smoke、OpenCalc 和 Editor，正式安装 APK 的 SHA-256 与输入一致。Smoke 已从 Launcher 打开并通过触控把计数从 0 改为 1。第三方应用操作、重启后的应用和数据恢复仍待端到端验收。
 
 
-## 30 秒冷启动性能目标
+## 10 秒冷启动性能目标
 
-从打开已安装的 Release App 到 Android 17 桌面接受第一次触摸，目标为 **30 秒内**。保留 P3 的连续三次冷启动验收，使用已装验收 APK 的同一数据卷，另测全新数据卷首次初始化。记录 iOS 启动、客体 init、Zygote、`sys.boot_completed`、Launcher 绘制、宿主呈现和实际触摸响应，同时记录热状态及峰值内存。进程内恢复单独计时。iPhone 17 Pro 上，原构建的全新数据卷在 1210.626 秒报告 Launcher 完成绘制，录屏确认触摸打开应用抽屉。预编译版的全新数据卷在 700.458 秒报告 Launcher 完成绘制。含触摸修复的版本从已有 APK 的数据卷启动，在 534.791 秒报告 Launcher，随后确认可用触摸打开应用抽屉。同一进程已从 Launcher 打开 OpenCalc，并通过触摸输入数字 7。进入 Android Settings 的对照仍待完成。随后套接字唤醒改动版在 iPhone 17 Pro 的已有数据卷上于 497.027 秒绘制 Launcher，热状态和数据卷与此前不同。iPhone CX 的全新数据卷首轮在 723.697 秒报告 Launcher 绘制。XCUITest 在启用 iOS 自动化时超时，同轮尚无触摸验收结果。
+从 iPhone CX（iOS 26.2）点击已安装的 Release App，到真实 Android 17 Launcher 接受触摸并打开应用抽屉，连续三次均须 **低于 10 秒**。使用完成首次初始化且已安装验收 APK 的数据卷。每轮开始前退出宿主 App，Android 从 init 重新启动。首次初始化、进程重建后从内存快照恢复、同进程回前台分别计时。记录启动阶段、触摸结果、热状态和峰值物理内存。30 秒可用于评估原型进展。
 
-1. 保留现有无 JIT 路径，收集各启动阶段的客体 ELF、文件偏移、解释和 AOT 指令数，以及宿主执行、文件 I/O、Binder、等待和绘制成本。
-2. 做可开关的镜像绑定 AOT 批次。先覆盖采样确认的 Bionic、ART 和系统库基本块，再扩大到同一镜像的 `boot*.oat`。生成代码随 Release App 签名，只接受匹配的不可变客体指令。差分比较跨页读写、异常、寄存器和可变映射回退。用真实启动对照评估耗时、包体积和内存，再扩大覆盖。
-3. 按实测启动关键路径评估 ART 预编译产物复用和非关键工作的后移。保留 Binder、原版包管理、输入、图形和相机验收。若扩大 AOT 覆盖后仍有数量级差距，按 Apache-2.0 发布路线评估预编译指令分派和并行客体调度。原生 User-mode Linux 可作为独立架构基准。
+已有比较中，CX 基线在 App 内部计时开始后 605.820 秒呈现 Launcher 帧，触摸未验收。同一台 iPhone 17 Pro 上，Nestvane 曾在 497.027 秒报告 Launcher 绘制，Andarium 两次约 25 秒到桌面、28–29 秒点进 Settings，构建与数据卷不同。两仪公开的约 3 秒是首次准备后的 iOS Android 13 桌面时间，尚无同口径测量。用 CX 基线估算，10 秒需要约 60 倍端到端改善。[真机记录](results/P2-network.md) · [两仪口径](https://twoyi.app/)
 
-参考 Kernarium 的 Android 17 版 Andarium。其 AOT 构建流程覆盖指定 ARM64 ELF 和 `boot*.oat`，以 Android 发布版本和不可变代码页校验控制绑定。其 Android 数据快照保存磁盘状态，运行内存休眠用于同一宿主进程内恢复。Kernarium 的宿主 CPU、内核和图形路径与 Nestvane 不同，此前在同一台 iPhone 17 Pro 测得 Andarium 两次冷启动到 Settings 分别为 27.602 和 28.941 秒，当前 iPhone CX 的目标以 Nestvane 真机实测为准。[AOT 实现](https://github.com/imxieyi/Kernarium/blob/main/tools/aot/README.md) · [架构](https://github.com/imxieyi/Kernarium/blob/main/docs/architecture.md) · [优化记录](https://github.com/imxieyi/Kernarium/blob/main/docs/optimization-history.md)
+1. **固定可重现的首版客体。** 从固定版本 AOSP 源码构建 ARM64、单用户产品。保留 ART、Binder、应用权限、包管理、桌面、设置、输入法、GPU 合成、持久化和后置 Camera2。把账号同步、引导动画及经启动依赖核对可后置的任务移出首屏路径。首版延后电话、多用户、额外镜头及大型游戏兼容。保留安装验收所需的文件选择器和运行依赖。每次改变系统组件，复测启动、APK 使用和相机，防止把工作转移到点按时。[AOSP 产品配置](https://source.android.com/docs/setup/create/new-device)
+2. **重做启动执行路径。** 发布入口直接启动客体，诊断探针独立运行。先测宿主诊断、根目录枚举和渲染器初始化的成本，并验证渲染准备和客体早期启动能否重叠。用同版本镜像开启和关闭宿主 AOT 对照，先覆盖从 linker/Bionic 到 Zygote 和 system_server 的实际热点，并纳入相应的 `boot*.oat`。跨已验证代码块保留宿主寄存器状态，在内存映射、系统调用及异常边界准确恢复客体状态。由 Clang/LLVM 在构建机生成签名链接所需的目标文件，后装 APK 仍由解释器兜底。Apache-2.0 的 Remill 可做 AArch64 指令提升的离线对照，原型先比较同一段 Bionic 热路径的吞吐、回退和产物大小。[Android ART](https://source.android.com/docs/core/runtime/configure) · [Remill](https://github.com/lifting-bits/remill) · [LLVM 许可](https://llvm.org/docs/DeveloperPolicy.html)
+3. **用整机收益决定是否扩大。** 每种镜像先内部配对 AOT 开关，再比较精简镜像与原参考镜像。记录真实启动关键路径上的宿主 CPU、ABI 服务、等待和 I/O 时间。按地址空间可运行情况决定是否投入双执行线程。Kernarium 用作独立性能基准，gVisor 的 KVM 与 Linux syscall 拦截路径需要额外移植，Apple 公开的 Hypervisor 文档面向 macOS。若精简镜像加整模块 AOT 仍无法接近 10 秒，单独评估从设备本地检查点恢复，要求 GPU、输入和相机重新连接后通过同一触摸动作，镜像与数据版本不匹配时正常冷启动。[Kernarium 优化记录](https://github.com/imxieyi/Kernarium/blob/main/docs/optimization-history.md) · [gVisor 平台](https://gvisor.dev/docs/architecture_guide/platforms/) · [Apple Hypervisor](https://developer.apple.com/documentation/hypervisor)
 
 ## 首个开发批次
 
