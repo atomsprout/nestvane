@@ -76,7 +76,7 @@ std::jthread StartDisplayReader(const nestvane::GfxstreamSession& renderer, Disp
                                 void (^present)(UIImage*, bool, bool)) {
     if (!renderer.hasDisplayReadback()) return {};
     return std::jthread([&renderer, &launcherDrawn, size, captureContent, present](std::stop_token stop) mutable {
-        bool captureLauncher = captureContent;
+        bool reportLauncher = true;
         const auto capacity = std::max(displayPixelBudget, size_t(size.width) * size.height) * 4;
         std::unique_ptr<uint8_t[]> pixels;
         const auto slot = dispatch_semaphore_create(1);
@@ -84,7 +84,7 @@ std::jthread StartDisplayReader(const nestvane::GfxstreamSession& renderer, Disp
         while (!stop.stop_requested()) {
             @autoreleasepool {
                 if (dispatch_semaphore_wait(slot, DISPATCH_TIME_NOW) == 0) {
-                    const bool wantLauncher = captureLauncher && launcherDrawn.load(std::memory_order_relaxed);
+                    const bool wantLauncher = reportLauncher && launcherDrawn.load(std::memory_order_relaxed);
                     if (!pixels) pixels.reset(new (std::nothrow) uint8_t[capacity]);
                     const auto* readback = pixels.get();
                     uint32_t dimensions[2]{};
@@ -102,7 +102,7 @@ std::jthread StartDisplayReader(const nestvane::GfxstreamSession& renderer, Disp
                         const bool content = captureContent && nonuniform;
                         const bool launcher = wantLauncher && nonuniform;
                         if (content) captureContent = false;
-                        if (launcher) captureLauncher = false;
+                        if (launcher) reportLauncher = false;
                         dispatch_async(dispatch_get_main_queue(), ^{
                             present(image, content, launcher);
                             dispatch_semaphore_signal(slot);
@@ -504,23 +504,42 @@ static NSString* ThermalState() {
             NSURL* database = [guest URLByAppendingPathComponent:@"guest-data.sqlite3"];
             NSURL* progressURL = [documents URLByAppendingPathComponent:@"boot-progress.txt"];
             const auto bootStarted = NSProcessInfo.processInfo.systemUptime;
-            std::string milestones;
+            std::string milestones, timeline;
+            NSURL* timelineURL = [documents URLByAppendingPathComponent:@"boot-milestones.txt"];
+            static constexpr std::string_view phasePrefixes[] = {
+                "Initializing local Android renderer", "Local Android renderer initialized",
+                "Starting Android 17 init", "Zygote: Preloading classes", "Zygote: end preload",
+                "SystemServerTiming: StartPackageManagerService", "SystemServerTiming: StartSystemUI",
+                "SystemServerTiming: broadcastIntent-0-android.intent.action.USER_UNLOCKED took to complete:",
+                "SystemServerTiming: broadcastIntent-0-android.intent.action.BOOT_COMPLETED took to complete:",
+                "ActivityTaskManager: Displayed com.android.launcher3/",
+            };
+            bool reportedPhase[std::size(phasePrefixes)]{};
             std::atomic_bool launcherDisplayed{false};
             NSURL* launcherURL = [documents URLByAppendingPathComponent:@"launcher-displayed.txt"];
             const auto progress = [&](std::string_view event) {
-                const auto elapsedSeconds = NSProcessInfo.processInfo.systemUptime - bootStarted;
-                milestones += "[" + std::to_string(static_cast<long long>(elapsedSeconds * 1000)) + " ms] ";
+                const auto now = NSProcessInfo.processInfo.systemUptime;
+                const auto elapsed = static_cast<long long>((now - validationStarted) * 1000);
+                milestones += "[" + std::to_string(static_cast<long long>((now - bootStarted) * 1000)) + " ms] ";
                 milestones.append(event);
                 milestones += '\n';
                 constexpr size_t maxMilestoneBytes = 16 * 1024;
                 if (milestones.size() > maxMilestoneBytes)
                     milestones.erase(0, milestones.find('\n', milestones.size() - maxMilestoneBytes) + 1);
                 exportReport(progressURL, milestones);
+                for (size_t i = 0; i < std::size(phasePrefixes); ++i) {
+                    if (reportedPhase[i] || !event.starts_with(phasePrefixes[i])) continue;
+                    reportedPhase[i] = true;
+                    timeline += "[" + std::to_string(elapsed) + " ms] ";
+                    timeline.append(event.substr(0, event.find('\n')));
+                    timeline += '\n';
+                    exportReport(timelineURL, timeline);
+                    break;
+                }
                 if (event.starts_with("ActivityTaskManager: Displayed com.android.launcher3/") &&
                     !launcherDisplayed.exchange(true, std::memory_order_relaxed)) {
-                    const auto elapsed = (NSProcessInfo.processInfo.systemUptime - validationStarted) * 1000;
                     std::string report = "Android Launcher displayed after " +
-                        std::to_string(static_cast<long long>(elapsed)) + " ms\n";
+                        std::to_string(elapsed) + " ms\n";
                     report += event;
                     report += '\n';
                     AppendMemoryUsage(report);
@@ -573,7 +592,7 @@ static NSString* ThermalState() {
                     const BOOL firstFrame = self.display.hidden;
                     self.display.image = frame;
                     const auto writePresentationTime = [&](NSURL* url) {
-                        const auto milliseconds = (NSProcessInfo.processInfo.systemUptime - bootStarted) * 1000;
+                        const auto milliseconds = (NSProcessInfo.processInfo.systemUptime - validationStarted) * 1000;
                         NSString* message = [NSString stringWithFormat:
                             @"process %d | %.0f ms | presented %.0f × %.0f Android pixels\n",
                             NSProcessInfo.processInfo.processIdentifier, milliseconds,
@@ -589,6 +608,14 @@ static NSString* ThermalState() {
                         self.back.enabled = self.home.enabled = YES;
                         writePresentationTime(displayProgress);
                     }
+                    NSString* launcherPrefix = launcher
+                        ? [NSString stringWithFormat:@"display-after-launcher-%d",
+                           NSProcessInfo.processInfo.processIdentifier]
+                        : nil;
+                    if (launcherPrefix) {
+                        writePresentationTime([documents URLByAppendingPathComponent:
+                            [launcherPrefix stringByAppendingPathExtension:@"txt"]]);
+                    }
                     if (captureFirstFrame && (firstFrame || content || launcher)) {
                         NSData* png = UIImagePNGRepresentation(frame);
                         const auto save = [&](NSString* filename) {
@@ -596,13 +623,7 @@ static NSString* ThermalState() {
                             WriteGuestDisplayPNG(png, capture);
                         };
                         if (firstFrame) save(@"display-first-frame.png");
-                        if (launcher) {
-                            NSString* name = [NSString stringWithFormat:@"display-after-launcher-%d",
-                                NSProcessInfo.processInfo.processIdentifier];
-                            writePresentationTime([documents URLByAppendingPathComponent:
-                                [name stringByAppendingPathExtension:@"txt"]]);
-                            save([name stringByAppendingPathExtension:@"png"]);
-                        }
+                        if (launcherPrefix) save([launcherPrefix stringByAppendingPathExtension:@"png"]);
                         if (content) {
                             NSString* name = [NSString stringWithFormat:@"display-first-content-%d",
                                 NSProcessInfo.processInfo.processIdentifier];
