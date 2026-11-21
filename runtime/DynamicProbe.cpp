@@ -115,7 +115,9 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
     };
     std::array<DecodedWord, 2048> decodedWords{};
     uint64_t syscallCount = 0;
-    const unsigned traceLimit = init ? 100000 : kind == ProbeKind::art ? 16000 : 20000;
+    const unsigned traceLimit = init
+        ? initLimit("NESTVANE_INIT_TRACE_SYSCALLS", interactive ? 0 : 100000, 1000000, 0)
+        : kind == ProbeKind::art ? 16000 : 20000;
     unsigned protectionLogs = 0, syncLogs = 0, suppressedLogs = 0, zygoteSyscalls = 0, zygoteSamples = 0;
     unsigned zygoteMappings = 0, zygoteMemoryFiles = 0, zygoteChildSyscalls = 0, zygoteChildPolicyCalls = 0;
     uint64_t zygotePid = 0;
@@ -399,32 +401,35 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
             }
             const uint64_t syscall = cpu.x[8];
             ++syscallCount;
-            const bool repetitive = (syscall == 226 && protectionLogs++ >= (kind == ProbeKind::art ? 512U : 8U)) ||
-                (kind == ProbeKind::art && syscall == 227 && syncLogs++ >= 32);
-            const bool stackMemory = kind == ProbeKind::art && (syscall == 226 || syscall == 233) &&
-                cpu.x[0] >= 0x7f000000 && cpu.x[0] < 0x80000000;
-            bool zygoteTrace = false;
-            if (zygotePid && syscallCount > traceLimit && linux.processId() == zygotePid) {
-                const auto count = zygoteSyscalls++;
-                const bool memoryFile = syscall == 279 || (syscall == 25 && (cpu.x[1] == 1033 || cpu.x[1] == 1034));
-                zygoteTrace = count < 2048 || (syscall == 222 && zygoteMappings++ < 256) ||
-                              (memoryFile && zygoteMemoryFiles++ < 40) ||
-                              (count % 1'000'000 == 0 && zygoteSamples++ < 128);
-            } else if (zygotePid && syscallCount > traceLimit && linux.parentProcessId() == zygotePid) {
-                zygoteTrace = zygoteChildSyscalls++ < 2048;
-                if (!zygoteTrace && zygoteChildPolicyCalls < 64) {
-                    const bool securityControl = syscall == 167 && (cpu.x[0] == 22 || cpu.x[0] == 38);
-                    const auto path = syscall == 56 || syscall == 79 ? pathArgument(machine, cpu.x[1]) : std::string{};
-                    zygoteTrace = securityControl || (syscall == 280 && cpu.x[0] == 7) || path.ends_with("_seapp_contexts") ||
-                        path.ends_with("/attr/current") || path == "/sys/fs/selinux/context" || path.starts_with("/dev/ashmem");
-                    zygoteChildPolicyCalls += zygoteTrace;
+            bool trace = false;
+            if (traceLimit) {
+                const bool repetitive = (syscall == 226 && protectionLogs++ >= (kind == ProbeKind::art ? 512U : 8U)) ||
+                    (kind == ProbeKind::art && syscall == 227 && syncLogs++ >= 32);
+                const bool stackMemory = kind == ProbeKind::art && (syscall == 226 || syscall == 233) &&
+                    cpu.x[0] >= 0x7f000000 && cpu.x[0] < 0x80000000;
+                bool zygoteTrace = false;
+                if (zygotePid && syscallCount > traceLimit && linux.processId() == zygotePid) {
+                    const auto count = zygoteSyscalls++;
+                    const bool memoryFile = syscall == 279 || (syscall == 25 && (cpu.x[1] == 1033 || cpu.x[1] == 1034));
+                    zygoteTrace = count < 2048 || (syscall == 222 && zygoteMappings++ < 256) ||
+                                  (memoryFile && zygoteMemoryFiles++ < 40) ||
+                                  (count % 1'000'000 == 0 && zygoteSamples++ < 128);
+                } else if (zygotePid && syscallCount > traceLimit && linux.parentProcessId() == zygotePid) {
+                    zygoteTrace = zygoteChildSyscalls++ < 2048;
+                    if (!zygoteTrace && zygoteChildPolicyCalls < 64) {
+                        const bool securityControl = syscall == 167 && (cpu.x[0] == 22 || cpu.x[0] == 38);
+                        const auto path = syscall == 56 || syscall == 79 ? pathArgument(machine, cpu.x[1]) : std::string{};
+                        zygoteTrace = securityControl || (syscall == 280 && cpu.x[0] == 7) || path.ends_with("_seapp_contexts") ||
+                            path.ends_with("/attr/current") || path == "/sys/fs/selinux/context" || path.starts_with("/dev/ashmem");
+                        zygoteChildPolicyCalls += zygoteTrace;
+                    }
                 }
+                const bool graphicsTrace = graphicsCalls < 512 && syscallCount > traceLimit &&
+                    (syscall == 56 || syscall == 29) &&
+                    std::ranges::find(graphicsPids, linux.processId()) != graphicsPids.end();
+                graphicsCalls += graphicsTrace;
+                trace = stackMemory || zygoteTrace || graphicsTrace || (!repetitive && syscallCount <= traceLimit);
             }
-            const bool graphicsTrace = graphicsCalls < 512 && syscallCount > traceLimit &&
-                (syscall == 56 || syscall == 29) &&
-                std::ranges::find(graphicsPids, linux.processId()) != graphicsPids.end();
-            graphicsCalls += graphicsTrace;
-            const bool trace = stackMemory || zygoteTrace || graphicsTrace || (!repetitive && syscallCount <= traceLimit);
             if (!trace) ++suppressedLogs;
             if (trace) {
                 describeCall(report, cpu, syscall);
