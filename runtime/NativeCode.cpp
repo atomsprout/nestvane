@@ -292,7 +292,13 @@ uint64_t contentKey(std::span<const uint8_t> file) {
 const Module* moduleFor(std::span<const uint8_t> file, unsigned copy) {
     auto& all = registry();
     if (all.modules.empty() || file.size() < 64 || std::memcmp(file.data(), "\x7f" "ELF", 4) != 0) return nullptr;
-    const auto found = all.byKey.find(contentKey(file));
+    // The dynamic linker looks at each library many times, and hashing 16 KiB each time adds up. The
+    // loader and the mounted images keep a file's bytes in place, so the key is remembered by where
+    // they are.
+    static std::unordered_map<const uint8_t*, std::pair<size_t, uint64_t>> keys;
+    auto& known = keys[file.data()];
+    if (known.first != file.size()) known = {file.size(), contentKey(file)};
+    const auto found = all.byKey.find(known.second);
     if (found == all.byKey.end() || copy >= found->second.size()) return nullptr;
     const auto* module = all.modules[found->second[copy]].module;
     return module->size == file.size() ? module : nullptr;

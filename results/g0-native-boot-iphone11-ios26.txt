@@ -135,3 +135,12 @@ Snapshot at 30 s of that run:
   366577 thread switches; costliest calls: mmap 1985 ms/42167, mprotect 1570 ms/34341, fstat 1013 ms/19106,
   munmap 659 ms/16346
 One run. Touch was not tried.
+
+---- 30.7 s ----
+With the content key of a mapped file remembered instead of hashed at every fstat (process 1835, same
+phone and data volume): zygote preload 7.3 s, end of preload 9.3 s, StartPackageManagerService 10.6 s,
+StartSystemUI 15.3 s, BOOT_COMPLETED 24.7 s, launcher displayed 30.7 s. One run.
+At 8 s of that run: 3.7 s in guest code, 4.2 s in system calls (mmap 1164 ms/34273, mprotect 765 ms/25685,
+fstat 423 ms/10976, munmap 407 ms/13269, statfs 388 ms/2631, execve 283 ms/60, clone 202 ms/256).
+Guest CPU by process at 33 s of a later run, the eight largest: system_server 6.5 s, two app processes
+3.0 s and 2.9 s, the zygote 2.0 s, the launcher 1.3 s, surfaceflinger 1.0 s, init 0.6 s, one more app 0.5 s.
