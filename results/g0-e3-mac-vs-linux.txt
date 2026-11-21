@@ -1,35 +1,35 @@
-setup linux_toybox exit=0 ms=147
-setup linux_toybox-plain exit=0 ms=170
-setup mac_hostlr exit=0 ms=355
-functional arithmetic    exit=0 bytes=16     sha=4f2cdeed5a48 linux_toybox-plain=same mac_hostlr=same mac_guestlr=same
-functional pipeline      exit=0 bytes=2      sha=53c234e5e847 linux_toybox-plain=same mac_hostlr=same mac_guestlr=same
-functional three_stage   exit=0 bytes=6      sha=43f0a1612c71 linux_toybox-plain=same mac_hostlr=same mac_guestlr=same
-functional substitution  exit=0 bytes=12     sha=052e754a689d linux_toybox-plain=same mac_hostlr=same mac_guestlr=same
-functional files         exit=0 bytes=14     sha=326332560d20 linux_toybox-plain=same mac_hostlr=same mac_guestlr=same
-functional exec_self     exit=0 bytes=16     sha=7c6afba65628 linux_toybox-plain=same mac_hostlr=same mac_guestlr=same
-functional hashes        exit=0 bytes=184    sha=dcebc78444cf linux_toybox-plain=same mac_hostlr=same mac_guestlr=same
-functional sed           exit=0 bytes=44     sha=19cb730e26f2 linux_toybox-plain=same mac_hostlr=same mac_guestlr=same
-functional xargs         exit=0 bytes=24     sha=89bd8d45fb62 linux_toybox-plain=same mac_hostlr=same mac_guestlr=same
-functional base64        exit=0 bytes=49     sha=2914732b0cb2 linux_toybox-plain=same mac_hostlr=same mac_guestlr=same
-functional gzip          exit=0 bytes=75     sha=cca29559bd41 linux_toybox-plain=same mac_hostlr=same mac_guestlr=same
-functional printf        exit=0 bytes=25     sha=97146a571cfa linux_toybox-plain=same mac_hostlr=same mac_guestlr=same
-functional bc            exit=0 bytes=105    sha=a7562d7a8f72 linux_toybox-plain=same mac_hostlr=same mac_guestlr=same
-functional sort_unique   exit=0 bytes=42     sha=839160fcc53b linux_toybox-plain=same mac_hostlr=same mac_guestlr=same
-functional loop_forks    exit=0 bytes=4      sha=eea8254c7500 linux_toybox-plain=same mac_hostlr=same mac_guestlr=same
-functional exit_status   exit=0 bytes=15     sha=ae39b65b56f2 linux_toybox-plain=same mac_hostlr=same mac_guestlr=same
-functional factor        exit=0 bytes=89     sha=fba14f70674c linux_toybox-plain=same mac_hostlr=same mac_guestlr=same
-functional find          exit=0 bytes=24     sha=a9a1483caeca linux_toybox-plain=same mac_hostlr=same mac_guestlr=same
-functional date          exit=0 bytes=11     sha=8da7e0b07569 linux_toybox-plain=same mac_hostlr=same mac_guestlr=same
-functional od_cut        exit=0 bytes=102    sha=45d9d79ae2e1 linux_toybox-plain=same mac_hostlr=same mac_guestlr=same
-functional_total tests=20 comparisons=60 different=0
+setup linux_toybox exit=0 ms=150
+setup linux_toybox-plain exit=0 ms=181
+setup mac_hostlr exit=0 ms=517
+functional arithmetic    exit=0 bytes=16     sha=4f2cdeed5a48 linux_toybox-plain=same mac_hostlr=same mac_guestlr=same mac_table=same
+functional pipeline      exit=0 bytes=2      sha=53c234e5e847 linux_toybox-plain=same mac_hostlr=same mac_guestlr=same mac_table=same
+functional three_stage   exit=0 bytes=6      sha=43f0a1612c71 linux_toybox-plain=same mac_hostlr=same mac_guestlr=same mac_table=same
+functional substitution  exit=0 bytes=12     sha=052e754a689d linux_toybox-plain=same mac_hostlr=same mac_guestlr=same mac_table=same
+functional files         exit=0 bytes=14     sha=326332560d20 linux_toybox-plain=same mac_hostlr=same mac_guestlr=same mac_table=same
+functional exec_self     exit=0 bytes=16     sha=7c6afba65628 linux_toybox-plain=same mac_hostlr=same mac_guestlr=same mac_table=same
+functional hashes        exit=0 bytes=184    sha=dcebc78444cf linux_toybox-plain=same mac_hostlr=same mac_guestlr=same mac_table=same
+functional sed           exit=0 bytes=44     sha=19cb730e26f2 linux_toybox-plain=same mac_hostlr=same mac_guestlr=same mac_table=same
+functional xargs         exit=0 bytes=24     sha=89bd8d45fb62 linux_toybox-plain=same mac_hostlr=same mac_guestlr=same mac_table=same
+functional base64        exit=0 bytes=49     sha=2914732b0cb2 linux_toybox-plain=same mac_hostlr=same mac_guestlr=same mac_table=same
+functional gzip          exit=0 bytes=75     sha=cca29559bd41 linux_toybox-plain=same mac_hostlr=same mac_guestlr=same mac_table=same
+functional printf        exit=0 bytes=25     sha=97146a571cfa linux_toybox-plain=same mac_hostlr=same mac_guestlr=same mac_table=same
+functional bc            exit=0 bytes=105    sha=a7562d7a8f72 linux_toybox-plain=same mac_hostlr=same mac_guestlr=same mac_table=same
+functional sort_unique   exit=0 bytes=42     sha=839160fcc53b linux_toybox-plain=same mac_hostlr=same mac_guestlr=same mac_table=same
+functional loop_forks    exit=0 bytes=4      sha=eea8254c7500 linux_toybox-plain=same mac_hostlr=same mac_guestlr=same mac_table=same
+functional exit_status   exit=0 bytes=15     sha=ae39b65b56f2 linux_toybox-plain=same mac_hostlr=same mac_guestlr=same mac_table=same
+functional factor        exit=0 bytes=89     sha=fba14f70674c linux_toybox-plain=same mac_hostlr=same mac_guestlr=same mac_table=same
+functional find          exit=0 bytes=24     sha=a9a1483caeca linux_toybox-plain=same mac_hostlr=same mac_guestlr=same mac_table=same
+functional date          exit=0 bytes=11     sha=8da7e0b07569 linux_toybox-plain=same mac_hostlr=same mac_guestlr=same mac_table=same
+functional od_cut        exit=0 bytes=102    sha=45d9d79ae2e1 linux_toybox-plain=same mac_hostlr=same mac_guestlr=same mac_table=same
+functional_total tests=20 comparisons=80 different=0
 benchmark runs=5, best time in ms
-benchmark sha256sum 251 MiB  outputs_agree=1 linux_plain=956 linux_reserved=956 mac_hostlr=993 mac_guestlr=992 reserved_over_plain=1.001 hostlr_over_native=1.038 guestlr_over_native=1.038
-benchmark wc 251 MiB         outputs_agree=1 linux_plain=177 linux_reserved=177 mac_hostlr=199 mac_guestlr=197 reserved_over_plain=0.996 hostlr_over_native=1.125 guestlr_over_native=1.114
-benchmark gzip 14 MiB        outputs_agree=1 linux_plain=57 linux_reserved=58 mac_hostlr=56 mac_guestlr=59 reserved_over_plain=1.005 hostlr_over_native=0.971 guestlr_over_native=1.018
-benchmark sort 2M lines      outputs_agree=1 linux_plain=1281 linux_reserved=1256 mac_hostlr=1773 mac_guestlr=1837 reserved_over_plain=0.980 hostlr_over_native=1.412 guestlr_over_native=1.463
-benchmark sed 2M lines       outputs_agree=1 linux_plain=822 linux_reserved=807 mac_hostlr=1122 mac_guestlr=1090 reserved_over_plain=0.982 hostlr_over_native=1.389 guestlr_over_native=1.350
-benchmark grep 2M lines      outputs_agree=1 linux_plain=225 linux_reserved=222 mac_hostlr=259 mac_guestlr=270 reserved_over_plain=0.986 hostlr_over_native=1.166 guestlr_over_native=1.216
-benchmark factor             outputs_agree=1 linux_plain=36 linux_reserved=36 mac_hostlr=37 mac_guestlr=36 reserved_over_plain=0.992 hostlr_over_native=1.015 guestlr_over_native=1.000
-benchmark shell loop 300k    outputs_agree=1 linux_plain=655 linux_reserved=659 mac_hostlr=836 mac_guestlr=863 reserved_over_plain=1.007 hostlr_over_native=1.268 guestlr_over_native=1.310
-benchmark 300 forks          outputs_agree=1 linux_plain=40 linux_reserved=41 mac_hostlr=47 mac_guestlr=47 reserved_over_plain=1.020 hostlr_over_native=1.149 guestlr_over_native=1.145
-benchmark bc pi 2000 digits  outputs_agree=1 linux_plain=1373 linux_reserved=1423 mac_hostlr=1582 mac_guestlr=1578 reserved_over_plain=1.036 hostlr_over_native=1.112 guestlr_over_native=1.109
+benchmark sha256sum 251 MiB  outputs_agree=1 linux_plain=993 linux_reserved=978 mac_hostlr=1030 mac_guestlr=1010 reserved_over_plain=0.985 hostlr_over_native=1.053 guestlr_over_native=1.033 mac_table=1052 table_over_native=1.076
+benchmark wc 251 MiB         outputs_agree=1 linux_plain=176 linux_reserved=180 mac_hostlr=243 mac_guestlr=196 reserved_over_plain=1.019 hostlr_over_native=1.356 guestlr_over_native=1.089 mac_table=254 table_over_native=1.412
+benchmark gzip 14 MiB        outputs_agree=1 linux_plain=57 linux_reserved=57 mac_hostlr=55 mac_guestlr=59 reserved_over_plain=0.999 hostlr_over_native=0.971 guestlr_over_native=1.034 mac_table=67 table_over_native=1.176
+benchmark sort 2M lines      outputs_agree=1 linux_plain=1306 linux_reserved=1253 mac_hostlr=1634 mac_guestlr=1716 reserved_over_plain=0.959 hostlr_over_native=1.305 guestlr_over_native=1.370 mac_table=1987 table_over_native=1.586
+benchmark sed 2M lines       outputs_agree=1 linux_plain=799 linux_reserved=829 mac_hostlr=1126 mac_guestlr=1090 reserved_over_plain=1.038 hostlr_over_native=1.358 guestlr_over_native=1.315 mac_table=1171 table_over_native=1.412
+benchmark grep 2M lines      outputs_agree=1 linux_plain=235 linux_reserved=231 mac_hostlr=288 mac_guestlr=290 reserved_over_plain=0.986 hostlr_over_native=1.247 guestlr_over_native=1.254 mac_table=375 table_over_native=1.620
+benchmark factor             outputs_agree=1 linux_plain=36 linux_reserved=36 mac_hostlr=37 mac_guestlr=37 reserved_over_plain=0.991 hostlr_over_native=1.020 guestlr_over_native=1.015 mac_table=36 table_over_native=1.005
+benchmark shell loop 300k    outputs_agree=1 linux_plain=649 linux_reserved=702 mac_hostlr=813 mac_guestlr=895 reserved_over_plain=1.081 hostlr_over_native=1.158 guestlr_over_native=1.276 mac_table=1035 table_over_native=1.475
+benchmark 300 forks          outputs_agree=1 linux_plain=33 linux_reserved=33 mac_hostlr=34 mac_guestlr=34 reserved_over_plain=0.996 hostlr_over_native=1.045 guestlr_over_native=1.026 mac_table=34 table_over_native=1.046
+benchmark bc pi 2000 digits  outputs_agree=1 linux_plain=1375 linux_reserved=1378 mac_hostlr=1554 mac_guestlr=1560 reserved_over_plain=1.002 hostlr_over_native=1.127 guestlr_over_native=1.132 mac_table=2028 table_over_native=1.471

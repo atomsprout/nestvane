@@ -713,6 +713,60 @@ void e4() {
     say("e4 traced_at_end=%d", traced());
 }
 
+// ---------------------------------------------------------------- x18
+// Prebuilt Android code leaves x18 unused, so it is the one register a rewriter could take without
+// rebuilding the image. Apple reserves x18 on iOS. This checks whether a value survives there.
+
+__attribute__((noinline)) uint64_t readX18() {
+    uint64_t value;
+    __asm__ volatile("mov %0, x18" : "=r"(value));
+    return value;
+}
+__attribute__((noinline)) void writeX18(uint64_t value) { __asm__ volatile("mov x18, %0" : : "r"(value)); }
+
+void onUser(int) {}
+
+void x18Round(const char* label, int kind) {
+    const uint64_t magic = 0x1234567890abcdefull;
+    uint64_t checks = 0, lost = 0, zero = 0;
+    auto* memory = static_cast<uint8_t*>(mmap(nullptr, 256 * MiB, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0));
+    uint64_t offset = 0;
+    volatile uint64_t sink = 0;
+    writeX18(magic);
+    const uint64_t end = nowNs() + 1500000000ull;
+    while (nowNs() < end) {
+        switch (kind) {
+        case 0: for (int spin = 0; spin < 20000; ++spin) sink = sink + spin; break;
+        case 1: getppid(); break;
+        case 2: usleep(200); break;
+        case 3: memory[offset] = 1; offset = (offset + vm_page_size) % (256 * MiB); break;
+        case 4: raise(SIGUSR1); break;
+        case 5: sched_yield(); break;
+        }
+        const uint64_t value = readX18();
+        ++checks;
+        if (value != magic) {
+            ++lost;
+            if (value == 0) ++zero;
+            writeX18(magic);
+        }
+    }
+    munmap(memory, 256 * MiB);
+    say("x18 %s checks=%llu lost=%llu of_which_zero=%llu", label, static_cast<unsigned long long>(checks),
+        static_cast<unsigned long long>(lost), static_cast<unsigned long long>(zero));
+}
+
+void x18() {
+    say("x18 initial=0x%llx", static_cast<unsigned long long>(readX18()));
+    signal(SIGUSR1, onUser);
+    x18Round("busy_loop", 0);
+    x18Round("system_call", 1);
+    x18Round("sleep", 2);
+    x18Round("page_fault", 3);
+    x18Round("signal", 4);
+    x18Round("yield", 5);
+}
+
 // ---------------------------------------------------------------- E5
 
 void e5() {
@@ -841,6 +895,7 @@ void* run(void* raw) {
     else if ([probe isEqualToString:@"e2zygote"]) e2Zygotes();
     else if ([probe isEqualToString:@"e4"]) e4();
     else if ([probe isEqualToString:@"e5"]) e5();
+    else if ([probe isEqualToString:@"x18"]) x18();
 #ifdef G0_GUEST
     else if ([probe isEqualToString:@"e3"]) e3();
 #endif

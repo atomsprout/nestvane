@@ -89,9 +89,11 @@ done
 printf '#include <stdio.h>\n#include <time.h>\nint main(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);printf("%%lld\\n",t.tv_sec*1000000000LL+t.tv_nsec);return 0;}\n' > mono.c
 bin/guest-cc -O2 mono.c -o mono
 
-for mode in hostlr guestlr; do
-    flag=$([ $mode = hostlr ] && echo --host-lr || true)
+# hostlr and guestlr use one base register. table translates through a per-chunk table, with guest return addresses.
+for mode in hostlr guestlr table; do
+    flag=$(case $mode in hostlr) echo --host-lr;; table) echo --table;; esac)
+    define=$([ $mode = table ] && echo -DTABLE_MODE || true)
     python3 "$here/rewrite.py" $flag toybox.elf toybox-$mode.s
     clang -arch arm64 -c toybox-$mode.s -o toybox-$mode.o
-    clang -O2 -arch arm64 -DSEGMENT='(4ull << 30)' "$here/runtime.c" "$here/entry.S" toybox-$mode.o -o toybox-$mode
+    clang -O2 -arch arm64 -DSEGMENT='(4ull << 30)' $define "$here/runtime.c" "$here/entry.S" toybox-$mode.o -o toybox-$mode
 done

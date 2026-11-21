@@ -6,6 +6,7 @@
 #define CTX_BASE 800
 #define CTX_TABLE 808
 #define CTX_HOST_SP 816
+#define CTX_MEMORY_TABLE 824
 
 .text
 .p2align 2
@@ -69,7 +70,11 @@ _guest_enter:
 _guest_resume:
 	mov x25, x0
 	ldr x26, [x25, #CTX_TABLE]
+#ifdef TABLE_MODE
+	ldr x27, [x25, #CTX_MEMORY_TABLE]
+#else
 	ldr x27, [x25, #CTX_BASE]
+#endif
 	ldr x0, [x25, #CTX_SP]
 	mov sp, x0
 	add x0, x25, #CTX_Q

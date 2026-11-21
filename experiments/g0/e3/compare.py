@@ -124,9 +124,11 @@ def main():
     subprocess.run(adb + ["shell", f"chmod 755 {DEVICE_DIR}/*/toybox {DEVICE_DIR}/mono"], check=True)
 
     targets = [Linux(serial, "toybox"), Linux(serial, "toybox-plain"), Mac(build, "hostlr"), Mac(build, "guestlr")]
+    if os.path.exists(os.path.join(build, "toybox-table")):
+        targets.append(Mac(build, "table"))
     reference = targets[0]
     for target in targets:
-        if isinstance(target, Linux) or target is targets[2]:  # both Mac variants share one work directory
+        if isinstance(target, Linux) or target is targets[2]:  # the Mac variants share one work directory
             print("setup %s exit=%d ms=%.0f" % ((target.name,) + target.run("scripts/setup")[1:]))
 
     failures = 0
@@ -139,7 +141,7 @@ def main():
             failures += not same
             verdicts.append("%s=%s" % (target.name, "same" if same else "DIFFERENT(exit %d, %s)" % (actual[1], digest(actual[0]))))
         print("functional %-13s exit=%d bytes=%-6d sha=%s %s" % (name, expected[1], len(expected[0]), digest(expected[0]), " ".join(verdicts)))
-    print("functional_total tests=%d comparisons=%d different=%d" % (len(FUNCTIONAL), len(FUNCTIONAL) * 3, failures))
+    print("functional_total tests=%d comparisons=%d different=%d" % (len(FUNCTIONAL), len(FUNCTIONAL) * (len(targets) - 1), failures))
 
     print("benchmark runs=%d, best time in ms" % runs)
     for index, name in enumerate(BENCHMARKS):
@@ -151,9 +153,10 @@ def main():
                 best[target.name] = min(best.get(target.name, 1e18), elapsed)
         native = best["linux_toybox"]
         print("benchmark %-18s outputs_agree=%d linux_plain=%.0f linux_reserved=%.0f mac_hostlr=%.0f mac_guestlr=%.0f "
-              "reserved_over_plain=%.3f hostlr_over_native=%.3f guestlr_over_native=%.3f" % (
+              "reserved_over_plain=%.3f hostlr_over_native=%.3f guestlr_over_native=%.3f%s" % (
                   name, len(outputs) == 1, best["linux_toybox-plain"], native, best["mac_hostlr"], best["mac_guestlr"],
-                  native / best["linux_toybox-plain"], best["mac_hostlr"] / native, best["mac_guestlr"] / native))
+                  native / best["linux_toybox-plain"], best["mac_hostlr"] / native, best["mac_guestlr"] / native,
+                  " mac_table=%.0f table_over_native=%.3f" % (best["mac_table"], best["mac_table"] / native) if "mac_table" in best else ""))
 
 
 if __name__ == "__main__":

@@ -1,0 +1,12 @@
+probe=x18 bundle=com.everettjf.nestvane.g0
+machine=iPhone12,1 os=Version 26.0.1 (Build 23A355) build_config=optimized
+traced=0 host_page=16384 kernel_page=16384 physical_memory_mib=3853 available_mib=2093 footprint_mib=5.1
+vm_map min=0x104cbc000 max=0x458000000 span_gib=13.30 virtual_size_gib=391.08
+x18 initial=0x0
+x18 busy_loop checks=32813 lost=790 of_which_zero=790
+x18 system_call checks=7950895 lost=7950895 of_which_zero=7950895
+x18 sleep checks=5454 lost=5454 of_which_zero=5454
+x18 page_fault checks=56263442 lost=22083 of_which_zero=22083
+x18 signal checks=822881 lost=822881 of_which_zero=822881
+x18 yield checks=7837575 lost=7837575 of_which_zero=7837575
+done probe=x18 elapsed_ms=9005

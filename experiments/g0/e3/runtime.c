@@ -42,6 +42,7 @@ struct Context {
     uint64_t nzcv, fpcr, tpidr;
     uint64_t pc;  // host address
     uint64_t base, table, host_sp;
+    uint64_t memory_table;  // table mode: per-chunk offsets from guest to host addresses
     struct Process* process;
 };
 _Static_assert(__builtin_offsetof(struct Context, sp) == 248, "entry.S");
@@ -50,6 +51,8 @@ _Static_assert(__builtin_offsetof(struct Context, nzcv) == 768, "entry.S");
 _Static_assert(__builtin_offsetof(struct Context, tpidr) == 784, "rewrite.py");
 _Static_assert(__builtin_offsetof(struct Context, pc) == 792, "entry.S");
 _Static_assert(__builtin_offsetof(struct Context, host_sp) == 816, "entry.S");
+_Static_assert(__builtin_offsetof(struct Context, memory_table) == 824, "entry.S, rewrite.py");
+#define CHUNK_SHIFT 24
 
 struct Process {
     int pid, parent;
@@ -61,6 +64,7 @@ struct Process {
     uint8_t cloexec[MAX_FDS];
     DIR* directories[MAX_FDS];
     uint64_t pipe_handler;  // 0 default, 1 ignore, otherwise a guest handler
+    uint64_t chunks[SEGMENT >> CHUNK_SHIFT];  // every chunk is in the one segment here, so all hold the base
     struct Context context;
 };
 
@@ -252,6 +256,8 @@ static void load_image(struct Process* process, char** argv, char** envp) {
     context->host_sp = host_sp;
     context->process = process;
     context->base = (uint64_t)base;
+    for (uint64_t index = 0; index < SEGMENT >> CHUNK_SHIFT; ++index) process->chunks[index] = (uint64_t)base;
+    context->memory_table = (uint64_t)process->chunks;
     context->table = (uint64_t)guest_table - 2 * guest_text_start;
     context->sp = (uint64_t)base + cursor;
     context->pc = guest_table[(guest_entry - guest_text_start) / 4];
@@ -320,6 +326,8 @@ static long guest_fork(struct Process* parent, uint64_t flags, uint64_t child_st
     child->context = parent->context;
     child->context.process = child;
     child->context.base = (uint64_t)child->base;
+    for (uint64_t index = 0; index < SEGMENT >> CHUNK_SHIFT; ++index) child->chunks[index] = (uint64_t)child->base;
+    child->context.memory_table = (uint64_t)child->chunks;
     child->context.sp = child_stack ? (uint64_t)child->base + child_stack : parent->context.sp - (uint64_t)parent->base + (uint64_t)child->base;
     child->context.x[0] = 0;
     __atomic_add_fetch(&fork_count, 1, __ATOMIC_RELAXED);

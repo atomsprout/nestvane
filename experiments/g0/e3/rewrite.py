@@ -15,16 +15,22 @@ need no rewriting. Only these instructions change:
   mrs/msr tpidr_el0                                   use the context
   br, blr, ret                                        translate the guest pc through the table
 
+With --table, x27 points at a per-process table instead of holding the base: the host address of
+guest address A is A + table[A >> 24]. This is the scheme a guest needs when its address space is too
+sparse to reserve as one block, and it costs two more instructions and a load per access.
+
 With --host-lr, bl and ret stay native calls and returns and x30 holds a host address. Without it,
 x30 holds the guest return address and every return goes through the table.
 
-usage: rewrite.py [--host-lr] [--symbols] <elf> <output.s>
+usage: rewrite.py [--host-lr] [--table] [--symbols] <elf> <output.s>
 """
 import struct
 import sys
 
 BASE, SCRATCH, TABLE, CONTEXT = 27, 28, 26, 25
 TPIDR_OFFSET = 784
+BASE_OFFSET, MEMORY_TABLE_OFFSET = 800, 824
+CHUNK_SHIFT = 24
 CONDITIONS = "eq ne hs lo mi pl vs vc hi ls ge lt gt le al nv".split()
 
 
@@ -33,8 +39,9 @@ def signed(value, bits):
 
 
 class Rewriter:
-    def __init__(self, path, host_lr, symbols=False):
+    def __init__(self, path, host_lr, symbols=False, table=False):
         self.host_lr = host_lr
+        self.table = table
         self.symbols = symbols  # keep a symbol per guest instruction, for debugging
         self.data = open(path, "rb").read()
         assert self.data[:4] == b"\x7fELF" and self.data[4] == 2, "need a 64-bit ELF"
@@ -81,7 +88,19 @@ class Rewriter:
         return count
 
     def add_base(self, register):
-        self.word(0x8B000000 | register << 16 | BASE << 5 | SCRATCH)  # add x28, x27, xN
+        """Leaves the host address of the guest address in a register in x28. Returns the instructions added."""
+        if not self.table:
+            self.word(0x8B000000 | register << 16 | BASE << 5 | SCRATCH)  # add x28, x27, xN
+            return 1
+        if register == SCRATCH:  # a constant address: borrow x27 for the base, then restore the table pointer
+            self.emit("ldr x27, [x25, #%d]" % BASE_OFFSET)
+            self.emit("add x28, x27, x28")
+            self.emit("ldr x27, [x25, #%d]" % MEMORY_TABLE_OFFSET)
+            return 3
+        self.emit("lsr x28, x%d, #%d" % (register, CHUNK_SHIFT))
+        self.emit("ldr x28, [x27, x28, lsl #3]")
+        self.emit("add x28, x28, x%d" % register)
+        return 3
 
     def adjust(self, register, amount):
         if amount > 0:
@@ -99,7 +118,7 @@ class Rewriter:
             target = pc + signed(w >> 5 & 0x7FFFF, 19) * 4
             opc, vector, rt = w >> 30, w >> 26 & 1, w & 31
             extra = self.constant(SCRATCH, target)
-            self.add_base(SCRATCH)
+            extra += self.add_base(SCRATCH) - 1
             if vector:
                 self.emit("ldr %s%d, [x28]" % ("sdq"[opc], rt))
             else:
@@ -137,13 +156,23 @@ class Rewriter:
                 before, after = (amount, 0) if mode == 3 else (0, amount)
                 plain = w & ~(0x1FF << 12 | 3 << 10)
         self.adjust(rn, before)
-        self.add_base(rn)
+        added = self.add_base(rn)
         self.word(plain & ~(31 << 5) | SCRATCH << 5)
         if isinstance(after, tuple):
             self.emit("add x%d, x%d, x%d" % (rn, rn, after[1]))
         else:
             self.adjust(rn, after)
-        self.count("memory", 1 + (before != 0) + (after != 0))
+        self.count("memory", added + (before != 0) + (after != 0))
+
+    def set_sp(self):
+        """sp = host address of the guest address in x28."""
+        if self.table:
+            self.emit("ldr x27, [x25, #%d]" % BASE_OFFSET)
+            self.emit("add sp, x27, x28")
+            self.emit("ldr x27, [x25, #%d]" % MEMORY_TABLE_OFFSET)
+        else:
+            self.emit("add sp, x27, x28")
+        self.count("sp_write", 3 if self.table else 1)
 
     def stack_pointer(self, w):
         """Add/sub with sp as a source or destination. Returns True when handled."""
@@ -156,18 +185,20 @@ class Rewriter:
             if reads and writes or not reads and not writes:
                 return False
             if reads:
-                self.emit("sub x28, sp, x27")
+                if self.table:
+                    self.emit("ldr x28, [x25, #%d]" % BASE_OFFSET)
+                    self.emit("sub x28, sp, x28")
+                else:
+                    self.emit("sub x28, sp, x27")
                 self.word(w & ~(31 << 5) | SCRATCH << 5)
-                self.count("sp_read", 1)
+                self.count("sp_read", 1 + self.table)
             else:
                 self.word(w & ~31 | SCRATCH)
-                self.emit("add sp, x27, x28")
-                self.count("sp_write", 1)
+                self.set_sp()
             return True
         if logical and rd == 31 and w >> 29 & 3 != 3:
             self.word(w & ~31 | SCRATCH)
-            self.emit("add sp, x27, x28")
-            self.count("sp_write", 1)
+            self.set_sp()
             return True
         return False
 
@@ -256,9 +287,9 @@ class Rewriter:
             self.emit("str x%d, [x25, #%d]" % (w & 31, TPIDR_OFFSET))
             return self.count("tls", 0)
         if w & 0xFFFFFFE0 == 0xD50B7420:  # dc zva
-            self.add_base(w & 31)
+            added = self.add_base(w & 31)
             self.word(w & ~31 | SCRATCH)
-            return self.count("memory", 1)
+            return self.count("memory", added)
         if w & 0x1F000000 == 0x10000000:  # adr, adrp
             offset = signed((w >> 5 & 0x7FFFF) << 2 | w >> 29 & 3, 21)
             target = (pc & ~0xFFF) + (offset << 12) if w >> 31 else pc + offset
@@ -294,11 +325,11 @@ class Rewriter:
 
 def main():
     arguments = [argument for argument in sys.argv[1:] if not argument.startswith("--")]
-    rewriter = Rewriter(arguments[0], "--host-lr" in sys.argv, "--symbols" in sys.argv)
+    rewriter = Rewriter(arguments[0], "--host-lr" in sys.argv, "--symbols" in sys.argv, "--table" in sys.argv)
     open(arguments[1], "w").write(rewriter.run())
     guest = (rewriter.end - rewriter.start) // 4
     added = sum(extra for _, extra in rewriter.counts.values())
-    print("guest_instructions=%d added_instructions=%d expansion=%.3f host_lr=%d" % (guest, added, (guest + added) / guest, rewriter.host_lr))
+    print("guest_instructions=%d added_instructions=%d expansion=%.3f host_lr=%d table=%d" % (guest, added, (guest + added) / guest, rewriter.host_lr, rewriter.table))
     for kind, (count, extra) in sorted(rewriter.counts.items(), key=lambda item: -item[1][0]):
         print("  %-16s count=%-7d share=%5.2f%% added=%d" % (kind, count, 100 * count / guest, extra))
 
