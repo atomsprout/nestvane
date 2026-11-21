@@ -713,3 +713,5 @@
 - 同一 iPhone 17 Pro 进程的后续测试通过 iOS 工具栏的 Android Back 返回 Launcher，再从抽屉打开 Smoke，点 Increment 后客体画面从 0 变为 1。此前点击工具栏 Home 后仍留在 OpenCalc。客体 RecentTasks 日志显示 OpenCalc 和 Settings 的任务在用户设置未完成时启动。独立宿主启动正在核对访客设置值和对应初始化路径。OpenCalc 依据截图坐标重试五个按键后画面仍显示 7，未复现 56。
 - Smoke 相机活动已在同一进程打开。相机测试在 180 秒预览窗口内未确认预览，途中真机客体截图显示 Waiting for Android camera permission。后续测试保持客体进程并继续等待授权和 Camera2 预览。
 - Mac 同一运行时和数据副本上的实验仅给 Zygote 增加 `--enable-lazy-preload`。客体进入 SystemServer，随后 `PerfettoTrace.native_register` 抛出 UnsatisfiedLinkError。该分支未进入 Launcher，已停止，生产镜像未变更。
+- iPhone 17 Pro 进程 78380 的 Android 相机授权对话框最终出现。触摸 Android 的「使用应用时允许」，随后同意 iOS 摄像头授权。Smoke 的标准 Camera2 API 收到后置相机实时预览，拍照后由 Android BitmapFactory 重新解码 JPEG，真机测试通过。导出的客体 SQLite 通过 quick_check，应用私有文件 `camera-check.jpg` 的 JPEG 帧头确认分辨率 640 × 480，共 6,020 字节。后续两个真机测试分别确认 Android Back 后能再次取得预览，以及 Nestvane 切到 iOS 后台后系统相机快门可用。
+- 客体 `epoll_pwait` 在扫描就绪项时辨认对监听套接字的读事件。无限等待且未关注监听套接字时，省去只供诊断的全局 UNIX 套接字路径扫描。宿主 ABI 回归和 iPhoneOS Release 编译通过。启动耗时对照仍在运行。

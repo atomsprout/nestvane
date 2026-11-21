@@ -2130,10 +2130,11 @@ bool ProbeLinux::eventCall(Machine& machine) {
             std::vector<std::array<uint64_t, 2>> ready;
             std::vector<std::shared_ptr<EventState>> readNotifications;
             std::vector<std::pair<Watch*, PollNotifications>> readyEdges;
-            bool watchesHostEvents = false;
+            bool watchesHostEvents = false, watchesListener = false;
             for (auto& [fd, watch] : descriptor->second.event->watches) {
                 const auto state = watch.source.lock();
                 const auto endpoint = watch.socket.lock();
+                watchesListener |= endpoint && endpoint->listening && (watch.mask & epollIn);
                 const bool edge = watch.mask & epollEdge;
                 const PollNotifications* notifications = nullptr;
                 if (edge) {
@@ -2197,7 +2198,8 @@ bool ProbeLinux::eventCall(Machine& machine) {
                     return waiting;
                 };
                 if (uint32_t(x[3]) == UINT32_MAX) {
-                    if (currentTid != pid) {
+                    // Only listener waits can contribute a socket path to the worker report.
+                    if (watchesListener && currentTid != pid) {
                         for (const auto& [path, bound] : socketPaths) {
                             const auto endpoint = bound.endpoint.lock();
                             if (!endpoint || !endpoint->listening) continue;
