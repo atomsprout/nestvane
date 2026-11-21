@@ -53,6 +53,17 @@ Android 镜像使用 SDK 的 AOSP `default` 变体，保留桌面、设置、文
 
 iOS「文件」导入与客体安装助手已经实现。用户选择的 APK 以只读描述符交给客体 `cmd package install`，由包管理器检查签名和安装资格。当前存储上限为单个 APK 64 MiB。Android 17 参考系统以同一助手验证两款 APK 安装及损坏包拒绝。Mac 上用诊断接收器验证了整文件读取、EOF、结果回传与停止时保存。iPhone 14 已通过 iOS「文件」安装 Smoke、OpenCalc 和 Editor，正式安装 APK 的 SHA-256 与输入一致。Smoke 已从 Launcher 打开并通过触控把计数从 0 改为 1。第三方应用操作、重启后的应用和数据恢复仍待端到端验收。
 
+
+## iPhone 14 冷启动性能目标
+
+从打开已安装的 Release App 到 Android 17 桌面接受第一次触摸，目标为 **30 秒内**。保留 P3 的连续三次冷启动验收，使用已装验收 APK 的同一数据卷，另测全新数据卷首次初始化。记录 iOS 启动、客体 init、Zygote、`sys.boot_completed`、Launcher 绘制、宿主呈现和实际触摸响应，同时记录热状态及峰值内存。进程内恢复单独计时。iPhone 14 现有构建到桌面绘制约 958–1024 秒，距离目标约 32–34 倍。
+
+1. 保留现有无 JIT 路径，收集各启动阶段的客体 ELF、文件偏移、解释和 AOT 指令数，以及宿主执行、文件 I/O、Binder、等待和绘制成本。
+2. 做可开关的镜像绑定 AOT 批次。先覆盖采样确认的 Bionic、ART 和系统库基本块，再扩大到同一镜像的 `boot*.oat`。生成代码随 Release App 签名，只接受匹配的不可变客体指令。差分比较跨页读写、异常、寄存器和可变映射回退。用真实启动对照评估耗时、包体积和内存，再扩大覆盖。
+3. 按实测启动关键路径评估 ART 预编译产物复用和非关键工作的后移。保留 Binder、原版包管理、输入、图形和相机验收。若 AOT 扩覆盖后仍有数量级差距，在独立原型里用同一台 iPhone 14 对照原生 User-mode Linux、线程解释器和并行客体调度的收益，建立后续架构决策的测量依据。
+
+参考 Kernarium 的 Android 17 版 Andarium。其 AOT 构建流程覆盖指定 ARM64 ELF 和 `boot*.oat`，以 Android 发布版本和不可变代码页校验控制绑定。其 Android 数据快照保存磁盘状态，运行内存休眠用于同一宿主进程内恢复。Kernarium 的宿主 CPU、内核和图形路径与 Nestvane 不同，性能记录用于选择实验，iPhone 14 的验收以 Nestvane 实测为准。[AOT 实现](https://github.com/imxieyi/Kernarium/blob/main/tools/aot/README.md) · [架构](https://github.com/imxieyi/Kernarium/blob/main/docs/architecture.md) · [优化记录](https://github.com/imxieyi/Kernarium/blob/main/docs/optimization-history.md)
+
 ## 首个开发批次
 
 按依赖切成三个可独立验收的改动。
