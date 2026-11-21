@@ -840,6 +840,17 @@ void SharedFileBytes::replace() {
 }
 
 void Machine::place(Segment& segment) {
+    placeInSpace(segment);
+    // A view of file contents that stayed a view must not be written through.
+    if (segment.imageView && (segment.flags & writable)) {
+        const auto length = segment.mappedSize();
+        std::vector<uint8_t> copy(segment.imageView, segment.imageView + length);
+        segment.imageView = nullptr;
+        segment.bytes = DenseBytes(std::move(copy));
+    }
+}
+
+void Machine::placeInSpace(Segment& segment) {
     if (space && segment.shared && !segment.beyondFileEnd && segment.address % GuestSpace::page == 0 &&
         segment.fileOffset % GuestSpace::page == 0 && segment.mappedSize() % GuestSpace::page == 0) {
         if (!segment.placed) segment.placed = segment.shared->place(space, segment.address, segment.fileOffset, segment.mappedSize());

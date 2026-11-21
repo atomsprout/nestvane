@@ -318,6 +318,9 @@ def make_framework_root(base, image, guest, defer_zygote_preload, hardware_timeo
         set_property(system_properties, "ro.dalvik.vm.force_cmc_stw_compaction", "true")
         # The boot image's code is translated for the address it was compiled for.
         set_property(system_properties, "dalvik.vm.extra-opts", "-Xnorelocate")
+        # A phone gives one app far less memory than this image expects of a device: Android's own
+        # low-memory profile keeps fewer processes and caches.
+        set_property(system_properties, "ro.config.low_ram", "true")
     set_property(system_properties, "dalvik.vm.usejit", "false")
     # ART creates a code-cache memory file for every app even with JIT disabled.
     values = system_properties.read_text().rstrip("\n")

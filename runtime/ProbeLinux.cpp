@@ -5055,7 +5055,9 @@ uint64_t ProbeLinux::map(Machine& machine) {
         if (sharing == 2 && bytes.size() >= 256 * 1024) snapshotFile = fd.temporary.get();
         backedLength = pageAlignedLength(bytes.size());
         // The root loader and retained read-only APEX mounts own these bytes throughout the boot.
-        if (!(x[2] & 2) && !fd.temporary && !fd.apkRequest && files.contains(fd.path))
+        // In a guest address space a private writable mapping can start as a view too: it is mapped
+        // copy-on-write there, so only the pages the guest writes take memory of their own.
+        if ((!(x[2] & 2) || (machine.space && sharing == 2)) && !fd.temporary && !fd.apkRequest && files.contains(fd.path))
             imageLength = bytes.size() & ~(pageSize - 1);
         if (machine.space && imageLength && reinterpret_cast<uintptr_t>(bytes.data()) % GuestSpace::page) {
             // A file inside a mounted image starts wherever its blocks are. Guest address spaces map

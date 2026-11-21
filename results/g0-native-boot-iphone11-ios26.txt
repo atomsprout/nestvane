@@ -71,3 +71,35 @@ that processes share after fork are counted in each of them, so the rows add up 
     pid 201 /system/bin/surfaceflinger: resident 18, dirty 12, swapped 29 MiB in 134 runs
 The zygote and the processes forked from it hold most of it. How much of a forked process's share is
 really its own, and how iOS charges pages shared after fork, has not been separated yet.
+
+---- the launcher is displayed ----
+Further changes: large writable files keep only written pages (property areas are 128 KiB each and
+nearly empty; 250 MB less on the Mac at 5 s), writable private file mappings are copy-on-write views of
+the file, the signal return trampoline has an address inside the table of translated code (a handler's
+return to it was a jump to address 0, which iOS answers with SIGKILL "CODESIGNING Invalid Page"), and the
+guest's build.prop has ro.config.low_ram=true.
+Same phone, same data volume, relaunched with --terminate-existing, snapshots every 15 s:
+
+run 1 (process 1778), from launcher-displayed.txt:
+  Android Launcher displayed after 115612 ms
+  ActivityTaskManager: Displayed com.android.launcher3/.uioverrides.QuickstepLauncher for user 0: +54s661ms
+  peak iOS process RSS bytes: 2459893760
+
+run 2 (process 1785), with ro.hw_timeout_multiplier=10 added to build.prop by hand
+(tools/prepare-boot-image.py --hardware-timeout-multiplier 10 does the same):
+  [29 ms] Initializing local Android renderer
+  [180 ms] Local Android renderer initialized
+  [261 ms] Starting Android 17 init
+  [9112 ms] Zygote: Preloading classes...
+  [10598 ms] Zygote: end preload
+  [12271 ms] SystemServerTiming: StartPackageManagerService
+  [32108 ms] SystemServerTiming: StartSystemUI
+  [43385 ms] ActivityTaskManager: Displayed com.android.settings/.FallbackHome for user 0: +11s423ms
+  [58212 ms] SystemServerTiming: broadcastIntent-0-android.intent.action.USER_UNLOCKED took to complete: 1ms
+  [59353 ms] SystemServerTiming: broadcastIntent-0-android.intent.action.BOOT_COMPLETED took to complete: 611ms
+  [110798 ms] ActivityTaskManager: Displayed com.android.launcher3/.uioverrides.QuickstepLauncher for user 0: +51s230ms
+  Android Launcher displayed after 110798 ms
+  iOS physical footprint bytes: 2047293544 (414762904 left of the limit; internal 989937664, compressed 997212160)
+The frame the app captured in run 2 is results/g0-native-launcher-iphone11.png (Android's wallpaper).
+Touch was not tried. In the runs without low_ram the process was killed at the memory limit before the
+launcher; with it, about half of the anonymous memory is still in the compressor when the launcher appears.
