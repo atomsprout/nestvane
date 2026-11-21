@@ -181,8 +181,13 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
         return sha256AotInstructions + dexAot.instructions + dexVerifierAot.instructions + artReturnAot.instructions +
                artBitmapAot.instructions + artAsciiAot.instructions + bionicFillAot.instructions + bionicCopyAot.instructions + fontScanAot.instructions;
     };
-    const auto appendRanking = [](std::ostream& out, const CodeSamples& histogram, size_t limit) {
-        std::vector<std::pair<CodeLocation, uint64_t>> ranked(histogram.begin(), histogram.end());
+    const auto appendRanking = [](std::ostream& out, const CodeSamples& histogram, size_t limit, bool byModule = false) {
+        CodeSamples modules;
+        if (byModule) {
+            for (const auto& [location, count] : histogram) modules[{location.first, 0}] += count;
+        }
+        const auto& counts = byModule ? modules : histogram;
+        std::vector<std::pair<CodeLocation, uint64_t>> ranked(counts.begin(), counts.end());
         const auto top = ranked.begin() + std::min(ranked.size(), limit);
         std::partial_sort(ranked.begin(), top, ranked.end(), [](const auto& a, const auto& b) {
             if (a.second != b.second) return a.second > b.second;
@@ -190,7 +195,9 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
         });
         for (auto entry = ranked.begin(); entry != top; ++entry) {
             const auto& [location, count] = *entry;
-            out << "    " << count << ' ' << location.first << "+0x" << std::hex << location.second << std::dec << '\n';
+            out << "    " << count << ' ' << location.first;
+            if (!byModule) out << "+0x" << std::hex << location.second << std::dec;
+            out << '\n';
         }
     };
     const auto appendBootProfile = [&](std::ostream& out, uint64_t elapsedMs) {
@@ -224,6 +231,8 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
         out << "  guest instruction samples in " << intervalStart << '-' << elapsedMs
             << " ms (64-byte file ranges): " << intervalSamples << ", unattributed: " << intervalUnattributed << '\n';
         appendRanking(out, intervalCodeSamples, 12);
+        out << "  guest file totals in " << intervalStart << '-' << elapsedMs << " ms:\n";
+        appendRanking(out, intervalCodeSamples, 12, true);
         out << "  guest syscall handler samples in " << intervalStart << '-' << elapsedMs
             << " ms: " << intervalSyscallSamples << '\n';
         std::vector<size_t> ranked;
