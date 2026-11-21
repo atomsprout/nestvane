@@ -9,6 +9,7 @@
 
 #if defined(__APPLE__) && defined(__aarch64__)
 #include <arm_acle.h>
+#include <arm_neon.h>
 #include <sys/sysctl.h>
 #endif
 
@@ -1237,9 +1238,34 @@ bool floatInstruction(CPU& cpu, uint32_t word) {
     return true;
 }
 
+#if defined(__APPLE__) && defined(__aarch64__)
+__attribute__((target("sha2")))
+bool sha256(CPU& cpu, uint32_t word, unsigned rd, unsigned rn, unsigned rm) {
+    const auto load = [&cpu](unsigned reg) {
+        uint32x4_t value;
+        std::memcpy(&value, cpu.v[reg].data(), sizeof(value));
+        return value;
+    };
+    uint32x4_t value;
+    switch (word & 0xffe0fc00) {
+        case 0x5e004000: value = vsha256hq_u32(load(rd), load(rn), load(rm)); break;
+        case 0x5e005000: value = vsha256h2q_u32(load(rd), load(rn), load(rm)); break;
+        case 0x5e006000: value = vsha256su1q_u32(load(rd), load(rn), load(rm)); break;
+        default:
+            if ((word & 0xfffffc00) != 0x5e282800) return false;
+            value = vsha256su0q_u32(load(rd), load(rn));
+    }
+    std::memcpy(cpu.v[rd].data(), &value, sizeof(value));
+    return true;
+}
+#endif
+
 bool vectors(Machine& m, uint32_t word) {
     auto& cpu = m.cpu;
     unsigned rd = word & 31, rn = (word >> 5) & 31, rm = (word >> 16) & 31;
+#if defined(__APPLE__) && defined(__aarch64__)
+    if ((word & 0xff000000) == 0x5e000000 && hasNativeSha256() && sha256(cpu, word, rd, rn, rm)) return true;
+#endif
     if ((word & 0x3f000000) == 0x1c000000) { // LDR (literal, SIMD/FP)
         const unsigned scale = word >> 30;
         if (scale == 3) return false;

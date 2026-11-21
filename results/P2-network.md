@@ -672,3 +672,5 @@
 - iPhone 14 进程 1532 的后续 XCUITest 截图在 Editor 的 Untitled.txt 和插入点下方明确显示 Android LatinIME。此前 70 秒编辑测试结束时画面没有键盘，后续回到前台的截图才确认出现。实际打字、保存和冷启动后重新打开文件仍待验证。
 - Mac 在真实镜像和真机数据副本上以 90 亿条指令为止点采样。后段出现 com.android.conscrypt.apex 的 libcrypto.so，和 configinfrastructure APEX 内同路径的库 SHA-256 相同，均为 3794499e11d1dd8308fbd7a997318d936eae7c827a5970fde76b3237b3cba251。另在独立原型中为后者生成 32 个块，16,384 组 CPU 状态与解释一致，改字节后拒绝绑定。此前段 30 亿条指令对照中，每轮约 2,757 万条指令进入新增原生块。基线为 53.424、53.689 秒，候选为 53.511、53.609 秒，未测出提速，未将原型并入主线。
 - 同一批采样现按 64 字节范围及完整 ELF 分别排序，按文件汇总在生成快照时完成。Mac 从同一 Android 17 镜像和真机数据副本出发运行前 10 亿条指令，按文件累计前三项为系统 BoringSSL 156、bootstrap libc 122、系统 PCRE2 116。原版 vendor Gatekeeper APEX 内的 libcrypto.so 仍单独列出。Mac Release 探针和 iPhoneOS Release 构建通过。
+- ARM64 SHA256H、SHA256H2、SHA256SU0 和 SHA256SU1 已接入 Apple Silicon 宿主指令。宿主支持 SHA-256 且以 NESTVANE_GUEST_SHA2=1 启动时才向客体报告 ASIMD 与 SHA2。8,192 组寄存器状态含别名对照原生汇编通过。Mac 原型在同一 Android 17 镜像和真机数据副本上完成 BOOT_COMPLETED，Launcher Displayed 落在启动后 510.134 至 540.135 秒之间。iPhoneOS Release 构建和试验包签名验证通过。旧路径的 Mac 完整启动对照仍在跑，真机整轮收益待测。
+- PCRE2 和 ART 热区的独立生成器原型补齐无标志算术和标量内存读写，生成 141 个块共 718 条客体指令。6,768 组对照核对完整 CPU 状态和两页内存，其中 1,928 组覆盖访问失败。原型尚未接入真实启动，执行覆盖和耗时未测。

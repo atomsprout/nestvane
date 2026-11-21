@@ -15,10 +15,65 @@
 #include <sstream>
 #include <unistd.h>
 
+#if defined(__APPLE__) && defined(__aarch64__)
+#include <arm_neon.h>
+#include <random>
+#endif
+
 
 using namespace nestvane;
 
+#if defined(__APPLE__) && defined(__aarch64__)
+__attribute__((target("sha2")))
+static uint32x4_t nativeSha256Instruction(unsigned instruction, uint32x4_t dest, uint32x4_t first, uint32x4_t second) {
+    switch (instruction) {
+        case 0: asm("sha256h %q0, %q1, %2.4s" : "+w"(dest) : "w"(first), "w"(second)); break;
+        case 1: asm("sha256h2 %q0, %q1, %2.4s" : "+w"(dest) : "w"(first), "w"(second)); break;
+        case 2: asm("sha256su0 %0.4s, %1.4s" : "+w"(dest) : "w"(first)); break;
+        case 3: asm("sha256su1 %0.4s, %1.4s, %2.4s" : "+w"(dest) : "w"(first), "w"(second)); break;
+    }
+    return dest;
+}
+
+#endif
+
 int main() {
+#if defined(__APPLE__) && defined(__aarch64__)
+    if (hasNativeSha256()) {
+        constexpr std::array<uint32_t, 4> opcodes{0x5e004000, 0x5e005000, 0x5e282800, 0x5e006000};
+        std::mt19937_64 random(92485);
+        Machine machine(Image{0x4000, {}, {}});
+        for (unsigned i = 0; i < 2048; ++i) {
+            for (unsigned op = 0; op < opcodes.size(); ++op) {
+                CPU initial;
+                initial.pc = 0x4000;
+                initial.retired = i;
+                initial.nzcv = i & 15;
+                initial.fpsr = random();
+                initial.exclusiveAddress = 0x6000;
+                initial.exclusiveSize = 8;
+                for (auto& vector : initial.v)
+                    for (auto& value : vector) value = random();
+                const auto rd = unsigned(i & 31);
+                const auto rn = (i & 64) ? rd : unsigned(random() & 31);
+                const auto rm = (i & 128) ? rd : unsigned(random() & 31);
+                const auto lane = [&](unsigned reg) {
+                    uint32x4_t value;
+                    std::memcpy(&value, initial.v[reg].data(), sizeof(value));
+                    return value;
+                };
+                const auto value = nativeSha256Instruction(op, lane(rd), lane(rn), lane(rm));
+                const auto word = opcodes[op] | (rn << 5) | rd | (op == 2 ? 0 : rm << 16);
+                machine.cpu = initial;
+                assert(executeStartupInstruction(machine, word));
+                std::memcpy(initial.v[rd].data(), &value, sizeof(value));
+                initial.pc += 4;
+                ++initial.retired;
+                assert(machine.cpu == initial);
+            }
+        }
+    }
+#endif
     {
         // The guest may split its mapping at either a host page or a smaller guest page.
         const size_t hostPage = getpagesize();
@@ -54,7 +109,9 @@ int main() {
                 break;
             }
         }
-        assert(hwcap == (uint64_t{1} << 7));
+        const auto* sha2 = std::getenv("NESTVANE_GUEST_SHA2");
+        const bool accelerated = sha2 && std::string_view(sha2) == "1" && hasNativeSha256();
+        assert(hwcap == (accelerated ? 0xc2 : 0x80));
         for (const bool castagnoli : {false, true}) {
             const uint32_t polynomial = castagnoli ? 0x82f63b78 : 0xedb88320;
             for (unsigned width = 0; width < 4; ++width) {

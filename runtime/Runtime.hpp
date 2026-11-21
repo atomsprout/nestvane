@@ -31,6 +31,7 @@ struct Instruction {
     uint64_t immediate = 0;
 };
 
+bool hasNativeSha256();
 Instruction decode(uint32_t word);
 bool endsBlock(Op op);
 

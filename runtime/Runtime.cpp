@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <cstring>
+#include <cstdlib>
 #include <fstream>
 #include <iterator>
 #include <random>
@@ -13,9 +14,24 @@
 
 #ifdef __APPLE__
 #include <mach/mach.h>
+#include <sys/sysctl.h>
 #endif
 
 namespace nestvane {
+
+bool hasNativeSha256() {
+#if defined(__APPLE__) && defined(__aarch64__)
+    static const bool available = [] {
+        int supported = 0;
+        size_t size = sizeof(supported);
+        return sysctlbyname("hw.optional.arm.FEAT_SHA256", &supported, &size, nullptr, 0) == 0 &&
+               size == sizeof(supported) && supported == 1;
+    }();
+    return available;
+#else
+    return false;
+#endif
+}
 
 namespace {
 
@@ -289,13 +305,19 @@ void setupStack(Machine& machine, const Startup& startup) {
 
     // Linux/AArch64 auxiliary vector key-value pairs.
     constexpr uint64_t hwcapCrc32 = uint64_t{1} << 7; // CRC32 and CRC32C at all operand widths.
+    constexpr uint64_t hwcapAsimd = uint64_t{1} << 1;
+    constexpr uint64_t hwcapSha2 = uint64_t{1} << 6;
+    const auto* enableSha2 = std::getenv("NESTVANE_GUEST_SHA2");
+    // BoringSSL checks ASIMD before selecting its SHA-256 implementation.
+    const uint64_t hwcap = hwcapCrc32 | (enableSha2 && std::string_view(enableSha2) == "1" && hasNativeSha256()
+                                       ? hwcapAsimd | hwcapSha2 : 0);
     const auto ids = startup.credentials.value_or(std::array<uint64_t, 4>{
         startup.uid, startup.uid, startup.uid, startup.uid});
     initial.insert(initial.end(), {
         3, startup.programHeaders, 4, startup.programHeaderSize, 5, startup.programHeaderCount,
         6, pageSize, 7, startup.interpreterBase, 9, startup.executableEntry,
         11, ids[0], 12, ids[1], 13, ids[2], 14, ids[3],
-        15, platformPointer, 16, hwcapCrc32, 17, 100, // AT_CLKTCK, the Linux guest USER_HZ.
+        15, platformPointer, 16, hwcap, 17, 100, // AT_CLKTCK, the Linux guest USER_HZ.
         23, 0, 25, randomPointer, 31, name,
         0, 0,
     });
