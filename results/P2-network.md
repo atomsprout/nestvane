@@ -669,3 +669,5 @@
 - Mac 使用同一 Android 17 镜像、同一真机数据副本，交替完成 4 次各 15 亿条指令的启动对照。32 位后索引 LDR 加入解码缓存后，基线为 26.153 和 26.121 秒，候选为 26.380 和 26.178 秒。两版使用相同的内置 AOT 路径，未装载构建时生成的 SHA-256 批次。跨页和缺页的 CPU 状态对照通过，未测出加速，候选未合入。
 - iPhone 14 进程 1532 再次从 Launcher 打开 Editor 1.98 并显示初始文档。后续测试进入编辑模式，在等待窗口内仍未识别到 LatinIME。OpenCalc 历史测试在 Launcher 抽屉未识别到 Calculator 图标，尚未进入计算器验证界面读回。
 - 启动指令采样现在保留 APEX 来源镜像和内部 ELF 路径，同名库不再被合并。Mac 在同镜像及真机数据副本的 15 亿条指令窗口中采集 1387 个样本。旧记录的 /lib64/libcrypto.so+0x12c000 与 +0x12d000 可明确归到 com.android.configinfrastructure.apex 内的 libcrypto.so。Bionic 样本可归到 com.android.runtime.apex。宿主回归和 iPhoneOS Release 构建通过。
+- iPhone 14 进程 1532 的后续 XCUITest 截图在 Editor 的 Untitled.txt 和插入点下方明确显示 Android LatinIME。此前 70 秒编辑测试结束时画面没有键盘，后续回到前台的截图才确认出现。实际打字、保存和冷启动后重新打开文件仍待验证。
+- Mac 在真实镜像和真机数据副本上以 90 亿条指令为止点采样。后段出现 com.android.conscrypt.apex 的 libcrypto.so，和 configinfrastructure APEX 内同路径的库 SHA-256 相同，均为 3794499e11d1dd8308fbd7a997318d936eae7c827a5970fde76b3237b3cba251。另在独立原型中为后者生成 32 个块，16,384 组 CPU 状态与解释一致，改字节后拒绝绑定。此前段 30 亿条指令对照中，每轮约 2,757 万条指令进入新增原生块。基线为 53.424、53.689 秒，候选为 53.511、53.609 秒，未测出提速，未将原型并入主线。
