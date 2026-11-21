@@ -130,6 +130,30 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.everettjf.nestvane.g0sparse
         CODE_SIGN_ENTITLEMENTS: Extended.entitlements
         GCC_PREPROCESSOR_DEFINITIONS: "G0_GUEST=1 G0_ANDROID=1 GUEST_MAIN=guest_main SPARSE=1 CHUNK_SHIFT=20"
+  # The zygote from a full image build (build_guest.py on a tree fetched with experiments/aosp/fetch.sh).
+  G0Zygote:
+    type: application
+    platform: iOS
+    sources:
+      - G0.mm
+      - e3/runtime.c
+      - e3/entry.S
+      - path: ../../generated/g0/e3/zygote/obj
+        optional: true
+        excludes: ["*.o"]
+      - path: ../../generated/g0/e3/zygote/root
+        optional: true
+        type: folder
+        buildPhase: resources
+      - path: ../../generated/g0/e3/zygote/scripts-android.bin
+        optional: true
+        buildPhase: resources
+    settings:
+      groups: [app]
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.everettjf.nestvane.g0zygote
+        CODE_SIGN_ENTITLEMENTS: Extended.entitlements
+        GCC_PREPROCESSOR_DEFINITIONS: "G0_GUEST=1 G0_ANDROID=1 GUEST_MAIN=guest_main SPARSE=1 CHUNK_SHIFT=20"
   # Embeds the generated code frameworks for E5.
   G0Code:
     type: application

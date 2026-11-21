@@ -32,6 +32,7 @@
 #include <sys/sysctl.h>
 #include <sys/time.h>
 #include <sys/uio.h>
+#include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -164,6 +165,7 @@ static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t changed = PTHREAD_COND_INITIALIZER;
 static struct Process* processes[MAX_PROCESSES];
 static int next_pid = 100;
+static char* temporary_directories[16384];  // by host descriptor: a directory to remove when it is closed
 static int trace, log_times;  // G0E3_TIMES: put the time since the start before each log line
 static uint64_t start_ns;
 static uint64_t syscall_count, fork_count, fork_ns, lazy_count, emulated_count;
@@ -271,6 +273,19 @@ static void close_host(int descriptor) {
             free(special->interests);
             free(special);
         }
+    }
+    char* directory = descriptor >= 0 && descriptor < MAX_HOST_FDS ? temporary_directories[descriptor] : NULL;
+    if (directory) {
+        temporary_directories[descriptor] = NULL;
+        DIR* listing = opendir(directory);
+        char entry[1100];
+        for (struct dirent* item = listing ? readdir(listing) : NULL; item; item = readdir(listing)) {
+            snprintf(entry, sizeof entry, "%s/%s", directory, item->d_name);
+            unlink(entry);
+        }
+        if (listing) closedir(listing);
+        rmdir(directory);
+        free(directory);
     }
     pthread_mutex_unlock(&specials_lock);
     close(descriptor);
@@ -1337,6 +1352,72 @@ static int open_proc_file(struct Process* p, const char* path) {
 
 static int host_directory(struct Process* process, long fd) { return (int)fd == -100 ? AT_FDCWD : host_fd(process, fd); }
 
+// /proc/self/fd as a directory: a temporary one with an entry per open descriptor, removed when it is
+// closed. The zygote lists it before every fork.
+static int open_descriptor_directory(struct Process* p) {
+    char directory[1024], entry[1100];
+    snprintf(directory, sizeof directory, "%s/nestvane-fd-XXXXXX", getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp");
+    if (!mkdtemp(directory)) return -1;
+    for (int fd = 0; fd < MAX_FDS; ++fd)
+        if (p->fds[fd] >= 0) {
+            snprintf(entry, sizeof entry, "%s/%d", directory, fd);
+            close(open(entry, O_CREAT | O_WRONLY, 0600));
+        }
+    const int descriptor = open(directory, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (descriptor >= 0 && descriptor < MAX_HOST_FDS) temporary_directories[descriptor] = strdup(directory);
+    return descriptor;
+}
+
+// ---------------------------------------------------------------- sockets
+
+// Linux and the host lay a Unix socket address out differently, and the guest's paths are below the
+// root. Abstract names, which start with a zero byte, become files in the temporary directory.
+static socklen_t host_address(struct Process* p, const uint8_t* guest, uint64_t length, struct sockaddr_un* out) {
+    memset(out, 0, sizeof *out);
+    out->sun_family = AF_UNIX;
+    if (length <= 2) return (socklen_t)__builtin_offsetof(struct sockaddr_un, sun_path);
+    char name[256] = {0};
+    const uint64_t size = length - 2 < sizeof name - 1 ? length - 2 : sizeof name - 1;
+    memcpy(name, guest + 2, size);
+    if (name[0]) snprintf(out->sun_path, sizeof out->sun_path, "%s", host_path_in(p, name, 0));
+    else snprintf(out->sun_path, sizeof out->sun_path, "%s/nestvane-abstract-%s", getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp", name + 1);
+    out->sun_len = (uint8_t)SUN_LEN(out);
+    return (socklen_t)(__builtin_offsetof(struct sockaddr_un, sun_path) + strlen(out->sun_path) + 1);
+}
+
+// The other way, for getsockname, getpeername and accept.
+static void guest_address_out(struct Process* p, const struct sockaddr_un* from, uint64_t address, uint64_t length_address) {
+    if (!address || !length_address) return;
+    uint8_t out[112] = {1, 0};
+    const char* path = from->sun_path[0] ? guest_path(from->sun_path) : "";
+    const size_t size = strlen(path) < 107 ? strlen(path) : 107;
+    memcpy(out + 2, path, size);
+    uint32_t* length = host(p, length_address);
+    const uint32_t full = (uint32_t)(size ? 2 + size + 1 : 2);
+    memcpy(host(p, address), out, *length < full ? *length : full);
+    *length = full;
+}
+
+static long guest_socket_message(struct Process* p, long fd, uint64_t message, int flags, int sending) {
+    // msghdr: name, name length, iovec, iovec count, control, control length, flags. Control data
+    // (descriptor passing) is not carried.
+    const uint64_t* guest = host(p, message);
+    struct iovec parts[64];
+    int count = 0;
+    const uint64_t* vectors = host(p, guest[2]);
+    for (uint64_t index = 0; index < guest[3] && index < 32; ++index)
+        count += buffer_parts(p, vectors[index * 2], vectors[index * 2 + 1], parts + count, 64 - count);
+    struct msghdr host_message = {.msg_iov = parts, .msg_iovlen = count};
+    const long result = sending ? sendmsg(host_fd(p, fd), &host_message, flags & MSG_DONTWAIT) : recvmsg(host_fd(p, fd), &host_message, flags & MSG_DONTWAIT);
+    if (!sending && result >= 0) {
+        uint64_t* out = host(p, message);
+        *(uint32_t*)(out + 1) = 0;
+        out[5] = 0;
+        *(uint32_t*)(out + 6) = 0;
+    }
+    return result < 0 ? linux_errno(errno) : result;
+}
+
 static int open_flags(long flags) {
     int result = (int)(flags & 3);
     if (flags & 0100) result |= O_CREAT;
@@ -1993,7 +2074,8 @@ void guest_syscall(struct Context* context) {
     case 52: r = RESULT(fchmod(host_fd(p, (long)a[0]), (mode_t)a[1])); break;
     case 53: r = RESULT(fchmodat(host_directory(p, (long)a[0]), HP(a[1]), (mode_t)a[2], 0)); break;
     case 56: {
-        int descriptor = open_proc_file(p, host(p, a[1]));
+        const char* path = host(p, a[1]);
+        int descriptor = !strcmp(path, "/proc/self/fd") || !strcmp(path, "/proc/self/fd/") ? open_descriptor_directory(p) : open_proc_file(p, path);
         if (descriptor < 0) descriptor = openat(host_directory(p, (long)a[0]), HP(a[1]), open_flags((long)a[2]), (mode_t)a[3]);
         r = install_fd(p, descriptor, 0, (a[2] & 02000000) != 0);
         break;
@@ -2035,6 +2117,7 @@ void guest_syscall(struct Context* context) {
         struct stat info;
         const char* path = host(p, a[1]);
         if (a[3] & 0x1000 && !*path) r = put_stat(fstat(host_fd(p, (long)a[0]), &info), &info, host(p, a[2]));
+        else if (!strcmp(path, "/proc/self/fd")) r = put_stat(stat("/", &info), &info, host(p, a[2]));  // a directory, see open
         else r = put_stat(fstatat(host_directory(p, (long)a[0]), host_path_in(p, path, 0), &info, a[3] & 0x100 ? AT_SYMLINK_NOFOLLOW : 0), &info, host(p, a[2]));
         break;
     }
@@ -2099,11 +2182,81 @@ void guest_syscall(struct Context* context) {
         r = 0;
         break;
     }
-    case 198:  // socket: only the datagram socket that Android logging uses
-        if (a[0] == 1 && (a[1] & 0xf) == 2) r = install_fd(p, open_log_socket(), 0, (a[1] & 02000000) != 0);
-        else r = -13;
+    case 198: {  // socket: Unix sockets only. There is no network.
+        if (a[0] != 1) { r = -97; break; }
+        const int descriptor = socket(AF_UNIX, (int)(a[1] & 0xf), 0);
+        if (descriptor >= 0) fcntl(descriptor, F_SETFD, FD_CLOEXEC);
+        if (descriptor >= 0 && a[1] & 04000) fcntl(descriptor, F_SETFL, O_NONBLOCK);
+        r = install_fd(p, descriptor, 0, (a[1] & 02000000) != 0);
         break;
-    case 203: r = host_fd(p, (long)a[0]) < 0 ? -9 : 0; break;  // connect on the log socket
+    }
+    case 199: {  // socketpair
+        int pair[2];
+        if (a[0] != 1) { r = -97; break; }
+        if (socketpair(AF_UNIX, (int)(a[1] & 0xf), 0, pair) != 0) { r = linux_errno(errno); break; }
+        int* out = host(p, a[3]);
+        for (int index = 0; index < 2; ++index) {
+            fcntl(pair[index], F_SETFD, FD_CLOEXEC);
+            if (a[1] & 04000) fcntl(pair[index], F_SETFL, O_NONBLOCK);
+            out[index] = (int)install_fd(p, pair[index], 0, (a[1] & 02000000) != 0);
+        }
+        r = 0;
+        break;
+    }
+    case 200: case 203: {  // bind, connect
+        struct sockaddr_un address;
+        const uint8_t* guest = host(p, a[1]);
+        const int descriptor = host_fd(p, (long)a[0]);
+        if (descriptor < 0) { r = -9; break; }
+        if (number == 203 && a[2] > 2 && !strcmp((const char*)guest + 2, "/dev/socket/logdw")) {
+            // Android's log daemon: this runtime prints what is written to it.
+            const int log = open_log_socket();
+            r = log < 0 ? -111 : RESULT(dup2(log, descriptor));
+            if (log >= 0) close(log);
+            if (r > 0) r = 0;
+            break;
+        }
+        const socklen_t length = host_address(p, guest, a[2], &address);
+        if (number == 200) unlink(address.sun_path);
+        r = RESULT(number == 200 ? bind(descriptor, (struct sockaddr*)&address, length) : connect(descriptor, (struct sockaddr*)&address, length));
+        break;
+    }
+    case 201: r = RESULT(listen(host_fd(p, (long)a[0]), (int)a[1])); break;
+    case 202: case 242: {  // accept, accept4
+        struct sockaddr_un address = {0};
+        socklen_t length = sizeof address;
+        const int descriptor = accept(host_fd(p, (long)a[0]), (struct sockaddr*)&address, &length);
+        if (descriptor < 0) { r = linux_errno(errno); break; }
+        fcntl(descriptor, F_SETFD, FD_CLOEXEC);
+        if (number == 242 && a[3] & 04000) fcntl(descriptor, F_SETFL, O_NONBLOCK);
+        guest_address_out(p, &address, a[1], a[2]);
+        r = install_fd(p, descriptor, 0, number == 242 && (a[3] & 02000000) != 0);
+        break;
+    }
+    case 204: case 205: {  // getsockname, getpeername
+        struct sockaddr_un address = {0};
+        socklen_t length = sizeof address;
+        const int descriptor = host_fd(p, (long)a[0]);
+        r = RESULT(number == 204 ? getsockname(descriptor, (struct sockaddr*)&address, &length) : getpeername(descriptor, (struct sockaddr*)&address, &length));
+        if (r == 0) guest_address_out(p, &address, a[1], a[2]);
+        break;
+    }
+    case 206: r = written(t, send(host_fd(p, (long)a[0]), host(p, a[1]), a[2], (int)a[3] & MSG_DONTWAIT)); break;  // sendto a connected socket
+    case 207: r = RESULT(recv(host_fd(p, (long)a[0]), host(p, a[1]), a[2], (int)a[3] & (MSG_DONTWAIT | MSG_PEEK))); break;
+    case 208: r = host_fd(p, (long)a[0]) < 0 ? -9 : 0; break;  // setsockopt: nothing to tune
+    case 209: {  // getsockopt: the peer is always root, as every guest process is
+        if (host_fd(p, (long)a[0]) < 0) { r = -9; break; }
+        uint32_t* length = host(p, a[4]);
+        const uint32_t size = *length < 12 ? *length : 12;
+        const uint32_t value[3] = {a[2] == 17 ? (uint32_t)p->pid : 0, 0, 0};  // SO_PEERCRED: pid, uid, gid
+        memcpy(host(p, a[3]), value, a[2] == 17 ? size : (size < 4 ? size : 4));
+        *length = a[2] == 17 ? size : (size < 4 ? size : 4);
+        r = 0;
+        break;
+    }
+    case 210: r = RESULT(shutdown(host_fd(p, (long)a[0]), (int)a[1])); break;
+    case 211: r = guest_socket_message(p, (long)a[0], a[1], (int)a[2], 1); break;
+    case 212: r = guest_socket_message(p, (long)a[0], a[1], (int)a[2], 0); break;
     case 240: {  // rt_tgsigqueueinfo: a signal with caller-supplied siginfo, as the unwinder sends to threads
         if (a[2] == 6 && trace > 2) dump_stack(p, context);
         if (a[2] < 1 || a[2] > 64 || (long)a[0] != p->pid) { r = -22; break; }

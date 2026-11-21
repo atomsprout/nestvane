@@ -1,0 +1,25 @@
+probe=e3 bundle=com.everettjf.nestvane.g0zygote
+machine=iPhone16,1 os=Version 26.2 (Build 23C55) build_config=optimized
+traced=0 host_page=16384 kernel_page=16384 physical_memory_mib=7680 available_mib=6138 footprint_mib=5.9
+vm_map min=0x104604000 max=0xfc0000000 span_gib=58.93 virtual_size_gib=392.36
+e3 zygote exit=0 bytes=0 sha=e3b0c44298fc ms=3200
+e3 output 
+e3 b_zygote exit=0 bytes=0 sha=e3b0c44298fc ms=300
+e3 footprint_mib=580.3
+done probe=e3 elapsed_ms=7577
+
+# zygote log of the last run (G0E3_TIMES=1)
+[  150.7 ms] [logcat] I Zygote: Preloading classes...
+[  161.3 ms] [logcat] I Typeface: Preloading /system/fonts/Roboto-Regular.ttf
+[  161.3 ms] [logcat] I Typeface: Preloading /system/fonts/RobotoStatic-Regular.ttf
+[  261.3 ms] [logcat] I Zygote: ...preloaded 18596 classes in 111ms.
+[  261.3 ms] [logcat] V Zygote64Timing: PreloadClasses took to complete: 111ms
+[  273.7 ms] [logcat] V Zygote64Timing: CacheNonBootClasspathClassLoaders took to complete: 12ms
+[  273.7 ms] [logcat] I Resources: Preloading resources...
+[  277.2 ms] [logcat] I Resources: ...preloaded 63 resources in 4ms.
+[  277.8 ms] [logcat] I Resources: ...preloaded 41 resources in 0ms.
+[  277.8 ms] [logcat] V Zygote64Timing: PreloadResources took to complete: 5ms
+[  277.9 ms] [logcat] I Zygote: Preloading shared libraries...
+[  285.0 ms] [logcat] I Zygote: Preloading compat config...
+[  287.0 ms] [logcat] E Zygote: System zygote died with fatal exception
+[runtime] pid=118 status=0x0 elapsed_ms=299.4 system_calls=118048 forks=4 fork_mean_us=214.2 chunks_backed_on_touch=152 accesses_emulated=997 reserved_peak_mib=928 reserved_now_mib=0 processes_left=0
