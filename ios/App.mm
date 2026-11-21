@@ -531,6 +531,7 @@ static NSString* ThermalState() {
                 "ActivityTaskManager: Displayed com.android.launcher3/",
             };
             bool reportedPhase[std::size(phasePrefixes)]{};
+            NSTimeInterval lastProgressExport = 0;
             std::atomic_bool launcherDisplayed{false};
             NSURL* launcherURL = [documents URLByAppendingPathComponent:@"launcher-displayed.txt"];
             const auto progress = [&](std::string_view event) {
@@ -542,7 +543,14 @@ static NSString* ThermalState() {
                 constexpr size_t maxMilestoneBytes = 16 * 1024;
                 if (milestones.size() > maxMilestoneBytes)
                     milestones.erase(0, milestones.find('\n', milestones.size() - maxMilestoneBytes) + 1);
-                exportReport(progressURL, milestones);
+                // The guest logs thousands of lines while it boots, and each call here is on its time:
+                // the file is rewritten a few times a second, and whenever a boot phase is reached.
+                const bool phase = std::any_of(std::begin(phasePrefixes), std::end(phasePrefixes),
+                                               [&](std::string_view prefix) { return event.starts_with(prefix); });
+                if (phase || now - lastProgressExport >= 0.25) {
+                    lastProgressExport = now;
+                    exportReport(progressURL, milestones);
+                }
                 for (size_t i = 0; i < std::size(phasePrefixes); ++i) {
                     if (reportedPhase[i] || !event.starts_with(phasePrefixes[i])) continue;
                     reportedPhase[i] = true;

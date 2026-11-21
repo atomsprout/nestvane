@@ -90,6 +90,28 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
     const bool nativeExecution = native::enabled();
     bool interpretNext = false;
     uint64_t nativeFaults = 0;
+    using namespace std::chrono;
+    // Where the host thread's time goes besides guest code: in system calls, and in the scheduler,
+    // which is also where it waits when no guest thread can run.
+    steady_clock::duration scheduleTime{}, syscallTime{};
+    std::array<std::pair<steady_clock::duration, uint64_t>, 512> syscallCost{};
+    const auto timeReport = [&] {
+        std::ostringstream out;
+        out << "  host thread time: " << duration_cast<milliseconds>(syscallTime).count() << " ms in system calls, "
+            << duration_cast<milliseconds>(scheduleTime).count() << " ms in the scheduler, of which "
+            << duration_cast<milliseconds>(linux.idleTime).count() << " ms asleep in " << linux.idleWaits << " waits; "
+            << linux.threadSwitches << " thread switches; costliest calls:";
+        std::array<size_t, 8> top{};
+        std::vector<size_t> order(syscallCost.size());
+        for (size_t index = 0; index < order.size(); ++index) order[index] = index;
+        std::partial_sort(order.begin(), order.begin() + top.size(), order.end(),
+                          [&](size_t a, size_t b) { return syscallCost[a].first > syscallCost[b].first; });
+        for (size_t index = 0; index < top.size(); ++index)
+            out << " " << order[index] << ":" << duration_cast<milliseconds>(syscallCost[order[index]].first).count() << "ms/"
+                << syscallCost[order[index]].second;
+        out << '\n';
+        return out.str();
+    };
     std::string faultSamples;
     auto machine = linux.createMachine(image);
     auto& cpu = machine.cpu;
@@ -274,7 +296,7 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
         intervalUnattributed = 0;
         intervalSyscalls.fill({});
         intervalSyscallSamples = 0;
-        if (nativeExecution) snapshot << native::statistics() << faultSamples << linux.memoryReport(machine);
+        if (nativeExecution) snapshot << native::statistics() << timeReport() << faultSamples << linux.memoryReport(machine);
         snapshot << linux.workerReport(machine, linux.processId());
         constexpr size_t androidTailLimit = 16 * 1024;
         const std::string_view android = linux.recentAndroidOutput.empty()
@@ -319,7 +341,10 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
             }
             if (now >= nextSnapshot) captureSnapshot(now);
         }
-        if (!linux.schedule(machine, scheduleDeadline, stop)) {
+        const auto scheduleBegan = nativeExecution ? steady_clock::now() : steady_clock::time_point{};
+        const bool scheduled = linux.schedule(machine, scheduleDeadline, stop);
+        if (nativeExecution) scheduleTime += steady_clock::now() - scheduleBegan;
+        if (!scheduled) {
             const auto now = steady_clock::now();
             if (now >= nextSnapshot && now < deadline && !stop.stop_requested()) {
                 // A timed guest wait can become runnable while the snapshot deadline expires.
@@ -515,7 +540,15 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
             if (sampleBoot) ++timing.calls;
             const bool timeSyscall = syscallCount >= nextSyscallSample;
             const auto syscallStart = timeSyscall ? steady_clock::now() : steady_clock::time_point{};
+            const auto callBegan = nativeExecution ? steady_clock::now() : steady_clock::time_point{};
             const bool handled = linux.syscall(machine);
+            if (nativeExecution) {
+                const auto spent = steady_clock::now() - callBegan;
+                syscallTime += spent;
+                auto& slot = syscallCost[std::min<uint64_t>(syscall, syscallCost.size() - 1)];
+                slot.first += spent;
+                ++slot.second;
+            }
             if (timeSyscall) {
                 timing.nanoseconds += duration_cast<nanoseconds>(steady_clock::now() - syscallStart).count();
                 ++timing.samples;
@@ -603,7 +636,7 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
     }
     if (!linux.watchdogReport.empty())
         report << "  guest threads at Android Watchdog termination:\n" << linux.watchdogReport;
-    if (nativeExecution) report << native::statistics() << faultSamples;
+    if (nativeExecution) report << native::statistics() << timeReport() << faultSamples;
     else if (native::failure()) report << "  native execution is off: " << native::failure() << '\n';
     report << linux.workerReport(machine,
         init && (unhandled || cpu.stop == Stop::fault || cpu.stop == Stop::unsupported) ? linux.processId() : 0);

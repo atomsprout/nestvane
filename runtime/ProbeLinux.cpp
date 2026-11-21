@@ -427,6 +427,7 @@ ProbeLinux::ProbeLinux(uint64_t pid, uint64_t uid, uint64_t memoryLimit)
     addDirectory("/proc/self/task", 0555);
     addDirectory("/proc/self/fd", 0555);
     addDirectory("/proc/sys/vm", 0555);
+    addDirectory("/proc/pressure", 0555);
     addDirectory("/proc/sys/kernel", 0555);
     addDirectory("/proc/sys/kernel/random", 0555);
     std::array<uint8_t, 16> id{};
@@ -1190,7 +1191,7 @@ uint64_t ProbeLinux::stat(Machine& machine, uint64_t address, const Descriptor& 
         return subject ? result(0, std::hash<std::string>{}(fd.path) | 1, 0100644,
                                 subject->userIds[1], subject->groupIds[1]) : uint64_t(-3);
     }
-    if (fd.node == Node::kernelSetting || fd.node == Node::ueventTrigger)
+    if (fd.node == Node::kernelSetting || fd.node == Node::ueventTrigger || fd.node == Node::pressure)
         return result(0, std::hash<std::string>{}(fd.path) | 1, 0100644);
     if (fd.cgroupFile)
         return result(0, std::hash<std::string>{}(fd.path) | 1,
@@ -1439,6 +1440,14 @@ std::optional<ProbeLinux::Descriptor> ProbeLinux::find(std::string_view path, ui
     }
     if (socketPaths.contains(path)) return Descriptor{std::string(path), {}, flags, Node::socket};
     if (kernelSettings.contains(path)) return Descriptor{std::string(path), {}, flags, Node::kernelSetting};
+    if (path == "/proc/pressure/memory" || path == "/proc/pressure/io" || path == "/proc/pressure/cpu") {
+        // Pressure stall information. lmkd will not run without it. The guest's memory is the host's
+        // to manage, so the figures are zero and a registered trigger never fires.
+        Descriptor entry{std::string(path), {}, flags, Node::pressure};
+        entry.securityReply = std::make_shared<std::string>(
+            "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n");
+        return entry;
+    }
     if (ueventTriggers.contains(path)) return Descriptor{std::string(path), {}, flags, Node::ueventTrigger};
     if (path == "/dev/ptmx") return Descriptor{std::string(path), {}, flags, Node::ptyMaster};
     if (path == "/dev/ashmem" || path == ashmemBootPath) return Descriptor{std::string(path), {}, flags, Node::ashmem};
@@ -2132,7 +2141,8 @@ bool ProbeLinux::eventCall(Machine& machine) {
             const auto& targetMap = target->second.bpfMap;
             const auto ring = targetMap && targetMap->type == BpfMap::ringBuffer ? targetMap : nullptr;
             if (!ring && !target->second.socket && !target->second.binder && !target->second.graphics &&
-                !target->second.pipe && !target->second.touch && (!target->second.event || target->second.node == Node::poller)) {
+                !target->second.pipe && !target->second.touch && target->second.node != Node::pressure &&
+                (!target->second.event || target->second.node == Node::poller)) {
                 x[0] = uint64_t(-1);
                 break;
             }
@@ -4121,7 +4131,7 @@ bool ProbeLinux::fileCall(Machine& machine) {
                 break;
             }
             const bool persistent = (fd.temporary && fd.temporary->persistent) || dataPath(fd.path);
-            x[0] = !persistent || syncData() ? 0 : uint64_t(-5);
+            x[0] = !persistent || syncDataSoon() ? 0 : uint64_t(-5);
             break;
         }
         case 39: // umount2
@@ -5347,6 +5357,7 @@ uint64_t ProbeLinux::writeDescriptor(Machine& machine, const Descriptor& fd, uin
         subject->oomScoreAdjustment = int(value);
         return size;
     }
+    if (fd.node == Node::pressure) return size <= 256 ? size : invalid;  // a trigger: accepted, never fires
     if (fd.node == Node::kernelSetting) {
         if (userId() != 0) return uint64_t(-1);
         if (*fd.offset || !size || size > 16) return invalid;
@@ -5604,15 +5615,23 @@ bool ProbeLinux::switchThread(Machine& machine, std::chrono::steady_clock::time_
     if (!binderReferenceChanges->empty()) refreshBinderReferences();
     updateTimers();
     while (!runnable && nextDeadline && now < deadline && !stop.stop_requested()) {
+        if (dataSyncPending && now - lastDataSync >= seconds(2)) syncDataSoon();
         auto wake = std::min(*nextDeadline, deadline);
         if (stop.stop_possible()) wake = std::min(wake, now + milliseconds(100));
-        if (graphicsDma) {
+        if (wake - now < microseconds(150)) {
+            // Too short for the system's timers to be worth it: the wait is for another host thread.
+            while (steady_clock::now() < wake) std::this_thread::yield();
+            serviceGraphicsDma();
+        } else if (graphicsDma) {
             graphicsDma->waitUntil(wake);
             serviceGraphicsDma();
         } else {
             std::this_thread::sleep_until(wake);
         }
-        now = steady_clock::now();
+        const auto woke = steady_clock::now();
+        idleTime += woke - now;
+        ++idleWaits;
+        now = woke;
         updateTimers();
     }
     if (now >= deadline || stop.stop_requested()) return false;
@@ -5621,6 +5640,7 @@ bool ProbeLinux::switchThread(Machine& machine, std::chrono::steady_clock::time_
         if (next == threads.end()) next = threads.begin();
         if (next->second.wait != Wait::none || next->second.nextSliceAfter) { ++next; continue; }
         if (next->first != currentTid) {
+            ++threadSwitches;
             accountGuestCpu();
             const auto retired = machine.cpu.retired;
             auto output = std::move(machine.cpu.output);
@@ -6909,6 +6929,22 @@ bool ProbeLinux::waitChild(Machine& machine) {
     return true;
 }
 
+// A guest fsync commits the whole data volume to the host's store, about 10 ms each, and a boot
+// asks for hundreds. Commits are at least two seconds apart: one that comes sooner is left to the next
+// request or to the scheduler's next idle moment. The store always holds one whole earlier state of
+// the volume, so what a stop in between loses is the last two seconds, as after a power cut.
+bool ProbeLinux::syncDataSoon() {
+    const auto now = std::chrono::steady_clock::now();
+    if (now - lastDataSync < std::chrono::seconds(2)) {
+        dataSyncPending = true;
+        return true;
+    }
+    dataSyncPending = false;
+    const bool done = syncData();
+    lastDataSync = std::chrono::steady_clock::now();
+    return done;
+}
+
 bool ProbeLinux::waitForEvents() {
     current->waitingEpoll.reset();
     current->wait = Wait::poll;
@@ -6917,7 +6953,15 @@ bool ProbeLinux::waitForEvents() {
 }
 
 bool ProbeLinux::waitForHostEvents() {
-    current->hostEventRetry = std::chrono::steady_clock::now() + std::chrono::milliseconds(2);
+    // The renderer answers from a thread of its own, usually within tens of microseconds, and there is
+    // no notification for it: look again soon, and less often the longer the answer takes. A fixed
+    // 2 ms here made every round trip to the renderer cost that much.
+    using namespace std::chrono;
+    const auto now = steady_clock::now();
+    if (!current->hostWaitBegan || now - current->hostWaitLast > milliseconds(4)) current->hostWaitBegan = now;
+    current->hostWaitLast = now;
+    const auto waited = duration_cast<microseconds>(now - *current->hostWaitBegan);
+    current->hostEventRetry = now + std::clamp(waited / 4, microseconds(20), microseconds(2000));
     return waitForEvents();
 }
 

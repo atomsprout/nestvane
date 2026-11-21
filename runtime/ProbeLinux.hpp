@@ -50,6 +50,9 @@ struct ProbeLinux {
     void setGuestTouch(std::shared_ptr<GuestTouch> touch);
     void setGraphicsDma(std::shared_ptr<GuestColorDma> dma) { graphicsDma = std::move(dma); }
     bool syncData();
+    bool syncDataSoon();
+    std::chrono::steady_clock::time_point lastDataSync{};
+    bool dataSyncPending = false;
     // With native memory, every process gets a guest address space and its private lazy memory lives
     // there (NESTVANE_NATIVE_MEMORY in the environment turns it on; it needs 16 KiB guest pages).
     void setNativeMemory(bool enabled) { nativeMemory = enabled; }
@@ -79,6 +82,9 @@ struct ProbeLinux {
     }
     std::string workerReport(const Machine& machine, uint64_t observedProcess = 0) const;
     std::string memoryReport(const Machine& machine) const;
+    // How long the scheduler slept because no guest thread could run, how often, and thread switches.
+    std::chrono::steady_clock::duration idleTime{};
+    uint64_t idleWaits = 0, threadSwitches = 0;
     std::optional<std::pair<std::string_view, uint64_t>> guestCodeFile(const uint8_t* instruction) const;
     std::string guestCodeFileName(std::string_view backingPath) const;
     void setBootContext(std::string context);
@@ -169,6 +175,9 @@ private:
         std::optional<std::chrono::steady_clock::time_point> deadline;
         std::optional<std::chrono::nanoseconds> realtimeWaitDeadline;
         std::optional<std::chrono::steady_clock::time_point> hostEventRetry;
+        // When this wait for a host event began, and when it was last looked at.
+        std::optional<std::chrono::steady_clock::time_point> hostWaitBegan;
+        std::chrono::steady_clock::time_point hostWaitLast{};
         std::optional<std::chrono::steady_clock::time_point> nextSliceAfter;
         uint64_t signalMask = 0;
         uint64_t signalWaitMask = 0;
@@ -211,7 +220,7 @@ private:
     uint64_t installSeccomp(Machine& machine, uint64_t address);
     bool enforceSeccomp(Machine& machine);
 
-    enum class Node { regular, temporary, directory, symbolicLink, input, output, error, null, entropy, kernelLog, poller, event, inotify, signal, socket, keySocket, mountNamespace, pipeRead, pipeWrite, execLabel, fsCreateLabel, socketCreateLabel, securityInfo, securityCreate, securityAccess, securityValidate, loopControl, loopDevice, timer, ptyMaster, ptySlave, ueventTrigger, kernelSetting, oomScoreAdjustment, binder, processHandle, cgroupProcs, ashmem, graphicsPipe, graphicsAddressSpace, touchDevice, bpfMap, bpfProgram, bpfBtf };
+    enum class Node { regular, temporary, directory, symbolicLink, input, output, error, null, entropy, kernelLog, poller, event, inotify, signal, socket, keySocket, mountNamespace, pipeRead, pipeWrite, execLabel, fsCreateLabel, socketCreateLabel, securityInfo, securityCreate, securityAccess, securityValidate, loopControl, loopDevice, timer, ptyMaster, ptySlave, ueventTrigger, kernelSetting, oomScoreAdjustment, binder, processHandle, cgroupProcs, ashmem, graphicsPipe, graphicsAddressSpace, touchDevice, bpfMap, bpfProgram, bpfBtf, pressure };
     struct RecordLock {
         uint64_t owner, start, end;
         int16_t type;

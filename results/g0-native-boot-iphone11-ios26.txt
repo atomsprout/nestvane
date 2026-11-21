@@ -103,3 +103,35 @@ run 2 (process 1785), with ro.hw_timeout_multiplier=10 added to build.prop by ha
 The frame the app captured in run 2 is results/g0-native-launcher-iphone11.png (Android's wallpaper).
 Touch was not tried. In the runs without low_ram the process was killed at the memory limit before the
 launcher; with it, about half of the anonymous memory is still in the compressor when the launcher appears.
+
+---- 34 s to the launcher ----
+What the host thread was doing in the 111 s boot: of the first 105 s, 20 s in guest code, 18 s in system
+calls, and 50 s asleep with no guest thread to run. Android's log for that time has "Long monitor
+contention with owner android.bg ... OomAdjusterImpl", binder calls to ActivityManager that take 3 s each,
+and "Failed to connect to lmkd" every second: the root had lmkd.rc but not the lmkd program, and
+ActivityManager waits 3 s for lmkd's socket, holding its lock, each time it adjusts a process.
+Changes: lmkd in the root with a process transition entry; /proc/pressure/{memory,io,cpu} in the kernel
+layer (zero figures, triggers accepted and never fired), which lmkd needs to stay up; hardware services
+that the image declares and the root lacks (wifi, fingerprint, media.c2) removed from the declarations;
+the app writes its progress file a few times a second instead of on every log line (writev was 3.5 s);
+commits of the guest data volume are at least 2 s apart (fsync was 3.7 s).
+Same phone, same data volume, relaunched with --terminate-existing (process 1833):
+
+  [10 ms] Initializing local Android renderer
+  [147 ms] Local Android renderer initialized
+  [224 ms] Starting Android 17 init
+  [9158 ms] Zygote: Preloading classes...
+  [10641 ms] Zygote: end preload
+  [12290 ms] SystemServerTiming: StartPackageManagerService
+  [18048 ms] SystemServerTiming: StartSystemUI
+  [27728 ms] SystemServerTiming: broadcastIntent-0-android.intent.action.USER_UNLOCKED took to complete: 0ms
+  [27823 ms] SystemServerTiming: broadcastIntent-0-android.intent.action.BOOT_COMPLETED took to complete: 2ms
+  [34320 ms] ActivityTaskManager: Displayed com.android.launcher3/.uioverrides.QuickstepLauncher for user 0: +6s299ms
+  Android Launcher displayed after 34320 ms
+  iOS physical footprint bytes: 2132723400
+Snapshot at 30 s of that run:
+  native execution time: 17483 ms in guest code, 8 ms mapping 908 MiB of code tables
+  host thread time: 9135 ms in system calls, 2464 ms in the scheduler, of which 1087 ms asleep in 5123 waits;
+  366577 thread switches; costliest calls: mmap 1985 ms/42167, mprotect 1570 ms/34341, fstat 1013 ms/19106,
+  munmap 659 ms/16346
+One run. Touch was not tried.

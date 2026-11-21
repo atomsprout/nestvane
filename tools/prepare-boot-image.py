@@ -250,6 +250,22 @@ def set_property(path, key, value):
     path.write_text("\n".join(lines + [f"{key}={value}"]) + "\n")
 
 
+def add_low_memory_killer(adb, guest):
+    """lmkd, which the init root has a service entry for but not the program.
+
+    Without it ActivityManager waits three seconds for its socket whenever it adjusts a process's
+    priority, with the lock held that every activity start needs.
+    """
+    program = guest / "system/bin/lmkd"
+    if not program.is_file():
+        subprocess.run(adb + ["pull", "/system/bin/lmkd", str(program)], check=True, stdout=subprocess.DEVNULL)
+        program.chmod(0o755)
+    transitions = guest / "nestvane-metadata/selinux-process-transition.txt"
+    if "/system/bin/lmkd " not in transitions.read_text():
+        with transitions.open("a") as file:
+            file.write("/system/bin/lmkd u:r:init:s0 u:object_r:lmkd_exec:s0 2 u:r:lmkd:s0\n")
+
+
 def copy_prebuilt_code(adb, remote, guest):
     """Takes the image's own compiled code for every JAR and APK that is in the guest root."""
     listing = remote("find", "/system", "/system_ext", "/product", "/vendor", "-path", "*/oat/arm64/*", "-type", "f")
@@ -267,6 +283,25 @@ def copy_prebuilt_code(adb, remote, guest):
         subprocess.run(adb + ["pull", path, str(local)], check=True, stdout=subprocess.DEVNULL)
         count += 1
     print(f"Added {count} files of compiled code from the image", flush=True)
+
+
+# Hardware services that the image declares and the guest root does not carry. A declared service that
+# never registers is waited for, five seconds at a time, with locks held that the launcher needs.
+ABSENT_HARDWARE = ("android.hardware.wifi-service.xml", "android.hardware.wifi.hostapd.xml",
+                   "android.hardware.wifi.supplicant.xml", "android.hardware.biometrics.fingerprint-service.ranchu.xml",
+                   "android.hardware.media.c2-service-goldfish.xml")
+ABSENT_FEATURES = ("android.hardware.wifi", "android.hardware.wifi.direct", "android.hardware.wifi.passpoint",
+                   "android.hardware.wifi.aware", "android.hardware.wifi.rtt", "android.hardware.uwb",
+                   "android.hardware.fingerprint")
+
+
+def remove_absent_hardware(guest):
+    for name in ABSENT_HARDWARE:
+        (guest / "vendor/etc/vintf/manifest" / name).unlink(missing_ok=True)
+    config = guest / "system/etc/sysconfig/nestvane-hardware.xml"
+    text = config.read_text()
+    extra = "".join(f'    <unavailable-feature name="{name}" />\n' for name in ABSENT_FEATURES if f'"{name}"' not in text)
+    config.write_text(text.replace("</config>", extra + "</config>"))
 
 
 def write_guest_hardware_profile(guest):
@@ -321,6 +356,7 @@ def make_framework_root(base, image, guest, defer_zygote_preload, hardware_timeo
         # A phone gives one app far less memory than this image expects of a device: Android's own
         # low-memory profile keeps fewer processes and caches.
         set_property(system_properties, "ro.config.low_ram", "true")
+        remove_absent_hardware(guest)
     set_property(system_properties, "dalvik.vm.usejit", "false")
     # ART creates a code-cache memory file for every app even with JIT disabled.
     values = system_properties.read_text().rstrip("\n")
@@ -540,6 +576,7 @@ def main():
                     capture_framework_app_policy(adb, remote, guest)
                 if args.prebuilt_code:
                     copy_prebuilt_code(adb, remote, guest)
+                    add_low_memory_killer(adb, guest)
                 if args.precompile_framework_code:
                     check_reference_files(
                         remote, guest, {active_modules[module] for module in FRAMEWORK_APP_APEXES}
