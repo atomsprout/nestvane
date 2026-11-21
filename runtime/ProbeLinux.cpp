@@ -2750,7 +2750,7 @@ uint64_t ProbeLinux::socketWrite(Machine& machine, const Descriptor& fd, std::sp
     }
     peer->queuedBytes += size;
     ++peer->pollNotifications.readable;
-    wakePollers();
+    wakePollers(nullptr, false, fd.socket->family == 1 ? peer.get() : nullptr);
     return size;
 }
 
@@ -6945,9 +6945,16 @@ bool ProbeLinux::readInotify(Machine& machine, const Descriptor& fd) {
     return true;
 }
 
-void ProbeLinux::wakePollers(const EventState* changedEvent, bool binderOnly) {
+void ProbeLinux::wakePollers(const EventState* changedEvent, bool binderOnly, const SocketState* readableSocket) {
     for (auto& [tid, thread] : threads) {
         if (thread.wait != Wait::poll) continue;
+        if (readableSocket) {
+            const auto poller = thread.waitingEpoll.lock();
+            // A Unix socket send makes only its peer readable.
+            if (poller && std::ranges::none_of(poller->watches, [readableSocket](const auto& entry) {
+                    return entry.second.socket.lock().get() == readableSocket;
+                })) continue;
+        }
         if (changedEvent) {
             const auto poller = thread.waitingEpoll.lock();
             // Epoll waiters only need to recheck their own watch list when an

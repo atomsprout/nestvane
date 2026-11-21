@@ -5338,6 +5338,12 @@ int main() {
         assert(invoke(21, {poller, 1, event, watch}) == 0);
         assert(task.store64(watch + 8, 0xa2));
         assert(invoke(21, {poller, 1, timer, watch}) == 0);
+        assert(invoke(199, {1, 1, 0, payload + 8}) == 0);
+        assert(invoke(199, {1, 1, 0, payload + 16}) == 0);
+        uint64_t watchedSockets = 0, otherSockets = 0;
+        assert(task.load64(payload + 8, watchedSockets) && task.load64(payload + 16, otherSockets));
+        assert(task.store64(watch + 8, 0xa4));
+        assert(invoke(21, {poller, 1, watchedSockets >> 32, watch}) == 0);
         assert(task.store64(payload, 1) && task.store64(timerSpec + 24, 1));
         const auto writer = invoke(220, {0x3d0f00, page + 0x900, page + 0x300, page + 0x800, page + 0x300});
         assert(writer > 1);
@@ -5367,6 +5373,11 @@ int main() {
         assert(invoke(86, {timer, 1, timerSpec}) == 0);
         wake(0xa2);
         assert(invoke(63, {timer, payload, 8}) == 8);
+        block();
+        assert(invoke(64, {uint32_t(otherSockets), payload, 1}) == 1 && waiting());
+        assert(invoke(64, {uint32_t(watchedSockets), payload, 1}) == 1);
+        wake(0xa4);
+        assert(invoke(63, {watchedSockets >> 32, payload, 1}) == 1);
         block();
         // A ready level-triggered source registered after epoll_wait must wake it.
         assert(task.store64(watch + 8, 0xa3));

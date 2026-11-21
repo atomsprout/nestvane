@@ -715,3 +715,6 @@
 - Mac 同一运行时和数据副本上的实验仅给 Zygote 增加 `--enable-lazy-preload`。客体进入 SystemServer，随后 `PerfettoTrace.native_register` 抛出 UnsatisfiedLinkError。该分支未进入 Launcher，已停止，生产镜像未变更。
 - iPhone 17 Pro 进程 78380 的 Android 相机授权对话框最终出现。触摸 Android 的「使用应用时允许」，随后同意 iOS 摄像头授权。Smoke 的标准 Camera2 API 收到后置相机实时预览，拍照后由 Android BitmapFactory 重新解码 JPEG，真机测试通过。导出的客体 SQLite 通过 quick_check，应用私有文件 `camera-check.jpg` 的 JPEG 帧头确认分辨率 640 × 480，共 6,020 字节。后续两个真机测试分别确认 Android Back 后能再次取得预览，以及 Nestvane 切到 iOS 后台后系统相机快门可用。
 - 客体 `epoll_pwait` 在扫描就绪项时辨认对监听套接字的读事件。无限等待且未关注监听套接字时，省去只供诊断的全局 UNIX 套接字路径扫描。宿主 ABI 回归和 iPhoneOS Release 编译通过。启动耗时对照仍在运行。
+- Mac 使用相同镜像与数据副本交替执行各 25 亿条客体指令。省去等候诊断路径扫描前，耗时 48.258、46.670 秒。加入改动后为 46.569、49.814 秒。区间重叠，本轮未测出稳定收益。
+- iPhone 17 Pro 在进程 78380 中从 Launcher 点按 ScriptWidget 图标。约 46 秒后 Nestvane 宿主进程结束，测试尚未看到 My Widgets，未取得匹配的 iOS 终止报告。停止后项目客体数据通过 SQLite quick_check，提交代数 1902，仍有 4 个已安装 APK 和 Smoke 相机照片。
+- 客体 Unix 套接字发送成功后仅重新检查关注收端的 epoll 等待。普通读、ppoll 等既有等待路径保留原行为。宿主 ABI 验证覆盖了无关套接字发送不唤醒 epoll、关注的套接字到包后唤醒及读回。iPhoneOS Release 与开发签名通过，iPhone 17 Pro 原数据卷覆盖安装后以进程 78475 开始下一轮冷启动。此轮冷启动、Smoke 计数读回、OpenCalc 和 Editor 的结果仍待验证。

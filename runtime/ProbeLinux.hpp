@@ -132,6 +132,7 @@ private:
     using PendingSignals = std::multimap<uint32_t, SignalWords>;
     struct BinderConnection;
     struct EventState;
+    struct SocketState;
     struct SeccompFilter {
         struct Instruction { uint16_t code; uint8_t yes, no; uint32_t value; };
         std::vector<Instruction> program;
@@ -181,7 +182,8 @@ private:
                  std::shared_ptr<SharedFileBytes> backing, uint32_t value);
     unsigned wakeFutex(uint64_t address, unsigned count, uint32_t mask,
                        const std::shared_ptr<SharedFileBytes>& backing = {});
-    void wakePollers(const EventState* changedEvent = nullptr, bool binderOnly = false);
+    void wakePollers(const EventState* changedEvent = nullptr, bool binderOnly = false,
+                     const SocketState* readableSocket = nullptr);
     void wakeBinderPollers() { wakePollers(nullptr, true); }
     bool waitForEvents();
     bool waitForHostEvents();
