@@ -77,7 +77,7 @@ _guest_enter:
 _guest_resume:
 	mov x25, x0
 	ldr x26, [x25, #CTX_TABLE]
-#ifdef TABLE_MODE
+#ifdef SPARSE
 	ldr x27, [x25, #CTX_MEMORY_TABLE]
 #else
 	ldr x27, [x25, #CTX_BASE]

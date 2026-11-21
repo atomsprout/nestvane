@@ -3,6 +3,7 @@
 same binaries on a reference Linux kernel (chroot on a rooted Android emulator), and compares them.
 
 usage: compare-android.py <generated/g0/e3/android> <adb serial> [--runs N]
+       compare-android.py <build> --against <other build> [--runs N]   two builds on this Mac
        compare-android.py --export <file>      scripts for the iPhone run
 """
 import functools
@@ -42,7 +43,8 @@ def digest(data):
 def mac(build, name):
     begin = time.perf_counter()
     try:
-        result = subprocess.run([os.path.join(build, "toybox-android"), os.path.join(build, "root"), "/system/bin/sh", "-c",
+        program = os.path.join(build, "toybox-android")
+        result = subprocess.run([program if os.path.exists(program) else os.path.join(build, "guest"), os.path.join(build, "root"), "/system/bin/sh", "-c",
                                  f"cd {WORK} && PATH=/system/bin sh scripts/{name}"], capture_output=True, timeout=TIMEOUT)
     except subprocess.TimeoutExpired:
         return b"", 124, TIMEOUT * 1000
@@ -58,10 +60,40 @@ def linux(serial, name):
     return output, int(status[0]), (int(status[2]) - int(status[1])) / 1e6  # the device shell's arithmetic is 32-bit
 
 
+def against(build, other):
+    """The same scripts through two builds on this Mac, such as the plain and the sparse runtime."""
+    runs = int(sys.argv[sys.argv.index("--runs") + 1]) if "--runs" in sys.argv else 3
+    for directory in (build, other):
+        work = os.path.join(directory, "root") + WORK
+        shutil.rmtree(work, ignore_errors=True)
+        os.makedirs(os.path.join(work, "scripts"))
+        for name, text in scripts().items():
+            open(os.path.join(work, "scripts", name), "w").write(text + "\n")
+        print("setup %s exit=%d ms=%.0f" % ((os.path.basename(directory),) + mac(directory, "setup")[1:]))
+    different = 0
+    for name in scripts():
+        if name == "setup":
+            continue
+        benchmark = name.startswith("b_")
+        best, outputs = [1e18, 1e18], [None, None]
+        for _ in range(runs if benchmark else 1):
+            for index, directory in enumerate((build, other)):
+                output, status, elapsed = mac(directory, name)
+                outputs[index] = (digest(output), status)
+                best[index] = min(best[index], elapsed)
+        different += outputs[0] != outputs[1]
+        print("%-22s exit=%d sha=%s other=%s ms=%.0f other_ms=%.0f ratio=%.3f" % (
+            name, outputs[0][1], outputs[0][0], "same" if outputs[0] == outputs[1] else "DIFFERENT exit=%d sha=%s" % outputs[1][::-1],
+            best[0], best[1], best[0] / best[1]))
+    print("total scripts=%d different=%d" % (len(scripts()) - 1, different))
+
+
 def main():
     if sys.argv[1] == "--export":
         open(sys.argv[2], "wb").write(b"".join(name.encode() + b"\0" + text.encode() + b"\0" for name, text in scripts().items()))
         return
+    if sys.argv[2] == "--against":
+        return against(os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[3]))
     build, serial = os.path.abspath(sys.argv[1]), sys.argv[2]
     runs = int(sys.argv[sys.argv.index("--runs") + 1]) if "--runs" in sys.argv else 3
     work = os.path.join(build, "root") + WORK

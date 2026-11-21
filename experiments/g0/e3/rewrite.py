@@ -16,7 +16,7 @@ need no rewriting. Only these instructions change:
   br, blr, ret                                        translate the guest pc through the table
 
 With --table, x27 points at a per-process table instead of holding the base: the host address of
-guest address A is A + table[A >> 24]. This is the scheme a guest needs when its address space is too
+guest address A is A + table[A >> 24], for a 39-bit guest address space in 16 MiB chunks. This is the scheme a guest needs when its address space is too
 sparse to reserve as one block, and it costs two more instructions and a load per access.
 
 With --host-lr, bl and ret stay native calls and returns and x30 holds a host address. Without it,
@@ -34,8 +34,8 @@ import sys
 
 BASE, SCRATCH, TABLE, CONTEXT = 27, 28, 26, 25
 TPIDR_OFFSET = 784
-BASE_OFFSET, MEMORY_TABLE_OFFSET = 800, 824
-CHUNK_SHIFT = 24
+BASE_OFFSET, MEMORY_TABLE_OFFSET, SPARE_OFFSET = 800, 824, 848
+CHUNK_SHIFT, CHUNK_BITS = 24, 15  # 16 MiB chunks of a 39-bit guest address space
 CONDITIONS = "eq ne hs lo mi pl vs vc hi ls ge lt gt le al nv".split()
 FAR_CONDITIONAL = 0x60000  # b.cond and cbz reach 1 MiB; translated code is up to about 1.8 times larger
 # xpaclri, pacia1716 ... autibsp: the hint-space pointer authentication instructions.
@@ -103,14 +103,20 @@ class Rewriter:
         if not self.table:
             self.word(0x8B000000 | register << 16 | BASE << 5 | SCRATCH)  # add x28, x27, xN
             return 1
-        if register == SCRATCH:  # a constant address: borrow x27 for the base, then restore the table pointer
-            self.emit("ldr x27, [x25, #%d]" % BASE_OFFSET)
-            self.emit("add x28, x27, x28")
-            self.emit("ldr x27, [x25, #%d]" % MEMORY_TABLE_OFFSET)
-            return 3
-        self.emit("lsr x28, x%d, #%d" % (register, CHUNK_SHIFT))
+        # Only the address bits pick the chunk: Bionic keeps a tag in the top byte of heap pointers.
+        self.emit("ubfx x28, x%d, #%d, #%d" % (register, CHUNK_SHIFT, CHUNK_BITS))
         self.emit("ldr x28, [x27, x28, lsl #3]")
         self.emit("add x28, x28, x%d" % register)
+        return 3
+
+    def add_base_constant(self, address):
+        """The same for a constant guest address, which is in x28. x27 is borrowed for the chunk's offset."""
+        if not self.table:
+            return self.add_base(SCRATCH)
+        assert address >> CHUNK_SHIFT < 4096
+        self.emit("ldr x27, [x27, #%d]" % ((address >> CHUNK_SHIFT) * 8))
+        self.emit("add x28, x27, x28")
+        self.emit("ldr x27, [x25, #%d]" % MEMORY_TABLE_OFFSET)
         return 3
 
     def adjust(self, register, amount):
@@ -129,7 +135,7 @@ class Rewriter:
             target = pc + signed(w >> 5 & 0x7FFFF, 19) * 4
             opc, vector, rt = w >> 30, w >> 26 & 1, w & 31
             extra = self.constant(SCRATCH, target)
-            extra += self.add_base(SCRATCH) - 1
+            extra += self.add_base_constant(target) - 1
             if vector:
                 self.emit("ldr %s%d, [x28]" % ("sdq"[opc], rt))
             else:
@@ -170,7 +176,21 @@ class Rewriter:
                 plain = w & ~(3 << 10)  # the unscaled-offset form
                 if mode == 1:
                     plain &= ~(0x1FF << 12)  # post-index: access at the base
-        added = self.add_base(rn)
+        if self.table and w & 0x3B200C00 == 0x38200800:
+            # A register offset can reach any chunk, so the chunk is that of the whole address. The
+            # access keeps its index, and x28 becomes the base plus the chunk's offset.
+            rm, option, vector = w >> 16 & 31, w >> 13 & 7, w >> 26 & 1
+            amount = (4 if vector and w >> 23 & 1 else w >> 30) if w >> 12 & 1 else 0
+            if option == 3:
+                self.emit("add x28, x%d, x%d, lsl #%d" % (rn, rm, amount))
+            else:
+                self.emit("add x28, x%d, %s%d, %s #%d" % (rn, "x" if option & 1 else "w", rm, {2: "uxtw", 6: "sxtw", 7: "sxtx"}[option], amount))
+            self.emit("ubfx x28, x28, #%d, #%d" % (CHUNK_SHIFT, CHUNK_BITS))
+            self.emit("ldr x28, [x27, x28, lsl #3]")
+            self.emit("add x28, x28, x%d" % rn)
+            added = 4
+        else:
+            added = self.add_base(rn)
         self.word(plain & ~(31 << 5) | SCRATCH << 5)
         if isinstance(after, tuple):
             self.emit("add x%d, x%d, x%d" % (rn, rn, after[1]))
@@ -181,12 +201,18 @@ class Rewriter:
     def set_sp(self):
         """sp = host address of the guest address in x28."""
         if self.table:
-            self.emit("ldr x27, [x25, #%d]" % BASE_OFFSET)
+            # The offset of the stack's chunk is kept in the context, for reading sp back as a guest
+            # address. A stack lies in chunks that share one offset, so sp arithmetic stays native.
+            self.emit("str x28, [x25, #%d]" % SPARE_OFFSET)
+            self.emit("ubfx x28, x28, #%d, #%d" % (CHUNK_SHIFT, CHUNK_BITS))
+            self.emit("ldr x28, [x27, x28, lsl #3]")
+            self.emit("str x28, [x25, #%d]" % BASE_OFFSET)
+            self.emit("ldr x27, [x25, #%d]" % SPARE_OFFSET)
             self.emit("add sp, x27, x28")
             self.emit("ldr x27, [x25, #%d]" % MEMORY_TABLE_OFFSET)
         else:
             self.emit("add sp, x27, x28")
-        self.count("sp_write", 3 if self.table else 1)
+        self.count("sp_write", 7 if self.table else 1)
 
     def stack_pointer(self, w):
         """Add/sub with sp as a source or destination. Returns True when handled."""

@@ -92,7 +92,7 @@ bin/guest-cc -O2 mono.c -o mono
 # hostlr and guestlr use one base register. table translates through a per-chunk table, with guest return addresses.
 for mode in hostlr guestlr table; do
     flag=$(case $mode in hostlr) echo --host-lr;; table) echo --table;; esac)
-    define=$([ $mode = table ] && echo -DTABLE_MODE || true)
+    define=$([ $mode = table ] && echo -DSPARSE || true)
     python3 "$here/rewrite.py" $flag toybox.elf toybox-$mode.s
     clang -arch arm64 -c toybox-$mode.s -o toybox-$mode.o
     clang -O2 -arch arm64 -DSEGMENT='(4ull << 30)' $define "$here/runtime.c" "$here/entry.S" toybox-$mode.o -o toybox-$mode

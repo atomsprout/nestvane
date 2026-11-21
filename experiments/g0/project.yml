@@ -106,6 +106,30 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.everettjf.nestvane.g0art
         CODE_SIGN_ENTITLEMENTS: Extended.entitlements
         GCC_PREPROCESSOR_DEFINITIONS: "G0_GUEST=1 G0_ANDROID=1 GUEST_MAIN=guest_main SEGMENT=(16ull<<30)"
+  # The same guest with the sparse address space (build_guest.py --sparse).
+  G0Sparse:
+    type: application
+    platform: iOS
+    sources:
+      - G0.mm
+      - e3/runtime.c
+      - e3/entry.S
+      - path: ../../generated/g0/e3/art-sparse/obj
+        optional: true
+        excludes: ["*.o"]
+      - path: ../../generated/g0/e3/art-sparse/root
+        optional: true
+        type: folder
+        buildPhase: resources
+      - path: ../../generated/g0/e3/art-sparse/scripts-android.bin
+        optional: true
+        buildPhase: resources
+    settings:
+      groups: [app]
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.everettjf.nestvane.g0sparse
+        CODE_SIGN_ENTITLEMENTS: Extended.entitlements
+        GCC_PREPROCESSOR_DEFINITIONS: "G0_GUEST=1 G0_ANDROID=1 GUEST_MAIN=guest_main SPARSE=1"
   # Embeds the generated code frameworks for E5.
   G0Code:
     type: application

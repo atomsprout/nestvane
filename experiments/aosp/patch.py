@@ -203,8 +203,9 @@ edit("external/tensorflow/tensorflow/lite/Android.bp", [(
 ''')], "Nestvane: no assembly that uses")
 
 # ruy's arm64 kernels are inline assembly whose operands and clobbers need more registers than are
-# left. Without them ruy uses its portable C++ kernels.
-edit("external/ruy/ruy/opt_set.h", [(
-    "// Default to all optimizations.\n#define RUY_OPT_SET (~0)\n",
-    "// Nestvane: no assembly, it does not fit in the registers left to the guest.\n#define RUY_OPT_SET (~RUY_OPT_BIT_ASM)\n")],
-    "Nestvane: no assembly")
+# left. Its NEON paths cannot be built without them, so ruy is built with its portable C++ paths.
+edit("external/ruy/ruy/platform.h", [(
+    "#if (defined(__ARM_NEON) || defined(__ARM_NEON__)) && !RUY_PLATFORM_X86\n#define RUY_PLATFORM_NEON 1\n",
+    "// Nestvane: the NEON kernels are assembly that does not fit in the registers left to the guest.\n"
+    "#if 0\n#define RUY_PLATFORM_NEON 1\n")],
+    "Nestvane: the NEON kernels")

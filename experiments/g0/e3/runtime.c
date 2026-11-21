@@ -1,6 +1,11 @@
-// Host runtime for guests rewritten by rewrite.py: one guest process is one segment of memory and
-// one host thread, fork is a copy-on-write vm_remap of the segment, and Linux system calls are
-// served by the host. It implements what toybox needs, static (musl) or dynamic (Bionic).
+// Host runtime for guests rewritten by rewrite.py: a guest thread is a host thread, guest memory is
+// host memory at an offset, fork is a copy-on-write vm_remap, and Linux system calls are served by
+// the host. It implements what toybox and ART's dalvikvm need, static (musl) or dynamic (Bionic).
+//
+// Guest memory comes in 16 MiB chunks, each with its own offset to host memory. Built plainly, one
+// process is one block of SEGMENT bytes and every chunk has the same offset, which rewritten code
+// keeps in a register. Built with -DSPARSE (for code rewritten with --table), the guest has a 39-bit
+// address space and a chunk gets host memory only when something in it is mapped: see "guest memory".
 //
 // usage: <program> <guest elf> <guest argv...>       one static module, files are the host's
 //        <program> <guest root> <guest argv...>      Android layout: argv[0] is a path under the root
@@ -29,8 +34,15 @@
 #include <time.h>
 #include <unistd.h>
 
+#ifdef SPARSE
+#undef SEGMENT
+#define SEGMENT (1ull << 39)
+#define LAZY_MINIMUM (32ull << 20)  // anonymous mappings from this size get host memory when first touched
+#else
 #ifndef SEGMENT
 #define SEGMENT (1ull << 30)  // guest address space per process; -DSEGMENT=... to change
+#endif
+#define LAZY_MINIMUM (~0ull)
 #endif
 #define PAGE 16384ull
 #define STACK_SIZE (8ull << 20)
@@ -49,10 +61,12 @@ struct Context {
     __uint128_t q[32];
     uint64_t nzcv, fpcr, tpidr;
     uint64_t pc;  // host address
-    uint64_t base, table, host_sp;
-    uint64_t memory_table;  // table mode: per-chunk offsets from guest to host addresses
+    uint64_t base;  // the offset from guest to host addresses of the chunks that hold this thread's stack
+    uint64_t table, host_sp;
+    uint64_t memory_table;  // sparse: the process's per-chunk offsets from guest to host addresses
     struct Process* process;
     struct Thread* thread;
+    uint64_t spare;  // sparse: scratch for rewritten code that sets sp
 };
 _Static_assert(__builtin_offsetof(struct Context, sp) == 248, "entry.S");
 _Static_assert(__builtin_offsetof(struct Context, q) == 256, "entry.S");
@@ -61,7 +75,18 @@ _Static_assert(__builtin_offsetof(struct Context, tpidr) == 784, "rewrite.py");
 _Static_assert(__builtin_offsetof(struct Context, pc) == 792, "entry.S");
 _Static_assert(__builtin_offsetof(struct Context, host_sp) == 816, "entry.S");
 _Static_assert(__builtin_offsetof(struct Context, memory_table) == 824, "entry.S, rewrite.py");
+_Static_assert(__builtin_offsetof(struct Context, spare) == 848, "rewrite.py");
 #define CHUNK_SHIFT 24
+#define CHUNK (1ull << CHUNK_SHIFT)
+#define CHUNKS (SEGMENT >> CHUNK_SHIFT)
+// The offset of a chunk without host memory. It leads above every address a process can map, on
+// macOS and on iOS, so an access faults and the fault address still tells the guest address.
+#define VOID_OFFSET (1ull << 47)
+// Unmapped host pages around each run of chunks. An access whose offset from its base register
+// leaves the run lands here: pairs reach 1 KiB below the base, scaled offsets 64 KiB above.
+#define GUARD_BEFORE PAGE
+#define GUARD_AFTER (5 * PAGE)
+#define ADDRESS_MASK 0x00ffffffffffffffull  // Bionic tags heap pointers in the top byte
 #define SIGBIT(number) (1ull << ((number) - 1))  // Linux signal masks: signal n is bit n - 1
 
 // One translated ELF. `info` is the block rewrite.py emits: text start, text end, entry, table.
@@ -79,14 +104,22 @@ struct Module {
 extern struct Module guest_modules[];
 extern const int guest_module_count;
 
+// Consecutive guest chunks that are consecutive in host memory.
+struct Run { uint64_t guest, length; uint8_t* host; };
+
 struct Process {
     int pid, parent;
     int exited, status, reaped, vfork_done;
-    uint8_t* base;
     const struct Module* executable;
     uint64_t brk_start, brk, map_low, map_high;
     uint64_t map_hint;  // where the next search for free pages starts
-    uint8_t used[SEGMENT / PAGE / 8];  // one bit per guest page that is mapped
+    // The address space. The three tables are one block, so that fork copies them lazily.
+    void* space;
+    uint64_t* chunks;     // per chunk: host address minus guest address, or VOID_OFFSET
+    uint8_t* used;        // one bit per guest page that is mapped
+    uint8_t* protection;  // two bits per guest page: PROT_READ, PROT_WRITE
+    struct Run* runs;
+    int run_count, run_capacity;
     int fds[MAX_FDS];
     uint8_t cloexec[MAX_FDS];
     DIR* directories[MAX_FDS];
@@ -94,12 +127,11 @@ struct Process {
     uint64_t pending;  // signals sent to the process and not yet taken by a thread
     uint8_t queued[65][128];  // siginfo for signals sent with rt_tgsigqueueinfo
     uint64_t has_queued;
-    uint64_t chunks[SEGMENT >> CHUNK_SHIFT];  // every chunk is in the one segment here, so all hold the base
     struct Thread* threads[MAX_THREADS];
     int live_threads, exiting;
     char command_line[2048];  // argv as /proc/self/cmdline shows it: strings, each ending in a zero byte
     int command_length;
-    pthread_mutex_t memory_lock;  // guards the address-space bookkeeping and the descriptor table
+    pthread_mutex_t memory_lock;  // guards the address space and the descriptor table; recursive
 };
 
 // One guest thread is one host thread. The first thread's tid is the process's pid.
@@ -111,7 +143,8 @@ struct Thread {
     uint64_t pending;  // signals sent to this thread in particular
     uint64_t clear_tid;  // CLONE_CHILD_CLEARTID: zeroed and woken when the thread exits
     uint64_t alternate_stack, alternate_size;  // sigaltstack, as guest addresses
-    struct { int code; uint64_t address; } fault;  // the host fault being turned into a guest SIGSEGV
+    // The host fault being handled: where it happened, and what the guest is told if it is the guest's.
+    struct { int code; uint64_t address, host_address, host_pc, repeat_pc, repeat_address; int repeats; } fault;
     struct Context context;
 };
 
@@ -128,7 +161,7 @@ static pthread_cond_t changed = PTHREAD_COND_INITIALIZER;
 static struct Process* processes[MAX_PROCESSES];
 static int next_pid = 100;
 static int trace;
-static uint64_t syscall_count, fork_count, fork_ns;
+static uint64_t syscall_count, fork_count, fork_ns, lazy_count, emulated_count;
 
 static uint64_t now_ns(void) { return clock_gettime_nsec_np(CLOCK_UPTIME_RAW); }
 static uint64_t page_up(uint64_t value) { return (value + PAGE - 1) & ~(PAGE - 1); }
@@ -144,10 +177,19 @@ static long linux_errno(int error) {
 }
 #define RESULT(value) ({ long result_ = (long)(value); result_ < 0 ? linux_errno(errno) : result_; })
 
-// Bionic tags heap pointers in the top byte. The CPU ignores it on access, but the host kernel does not.
+static uint64_t materialize(struct Process* process, uint64_t chunk);
+static int page_used(const struct Process* process, uint64_t page) { return process->used[page / 8] >> (page % 8) & 1; }
+
+// The host address of a guest address. The CPU ignores a pointer's tag on access, but the host kernel
+// does not. Memory that has not been touched yet gets its host memory here, since the host kernel
+// cannot fault it in on the guest's behalf.
 static void* host(struct Process* process, uint64_t address) {
-    address &= 0x00ffffffffffffffull;
-    return address ? process->base + address : NULL;
+    address &= ADDRESS_MASK;
+    if (!address) return NULL;
+    if (address >= SEGMENT) return (void*)(address + VOID_OFFSET);
+    uint64_t offset = process->chunks[address >> CHUNK_SHIFT];
+    if (offset == VOID_OFFSET && page_used(process, address / PAGE)) offset = materialize(process, address >> CHUNK_SHIFT);
+    return (void*)(address + offset);
 }
 
 // Descriptors are 32-bit arguments. The upper half of the register is not defined.
@@ -258,42 +300,311 @@ static uint64_t guest_code(uint64_t host_pc) {
 }
 
 // ---------------------------------------------------------------- guest memory
+//
+// A chunk has host memory ("is backed") or its offset is VOID_OFFSET. Backed chunks are grouped in
+// runs: one host reservation each, with guard pages on both sides. Within a run, guest memory is
+// contiguous in host memory. A guest page is mapped when its bit in `used` is set, and its
+// protection is in `protection`. A mapped page in a chunk that is not backed is anonymous memory
+// that nothing has touched: the first access faults and backs the chunk (materialize).
+//
+// What rewritten code relies on:
+//   - a thread's stack lies within one run, because sp is a host address and moves natively;
+//   - an access that leaves the run of its base register faults in a guard or in the void, and
+//     is then carried out by emulate_access.
 
-static void map_none(struct Process* process, uint64_t address, uint64_t length) {
-    mmap(process->base + address, length, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
+static uint64_t space_size(void) { return page_up(CHUNKS * 8 + SEGMENT / PAGE / 8 + SEGMENT / PAGE / 4); }
+
+static void attach_space(struct Process* process, void* block) {
+    process->space = block;
+    process->chunks = block;
+    process->used = (uint8_t*)block + CHUNKS * 8;
+    process->protection = process->used + SEGMENT / PAGE / 8;
 }
 
-static int page_used(const struct Process* process, uint64_t page) { return process->used[page / 8] >> (page % 8) & 1; }
+static int chunk_backed(const struct Process* process, uint64_t chunk) { return process->chunks[chunk] != VOID_OFFSET; }
+static int page_protection(const struct Process* process, uint64_t page) { return process->protection[page / 4] >> (page % 4 * 2) & 3; }
 
-static void mark(struct Process* process, uint64_t address, uint64_t length, int used) {
-    for (uint64_t page = address / PAGE; page < (address + length) / PAGE; ++page) {
+static int chunk_empty(const struct Process* process, uint64_t chunk) {
+    const uint8_t* bits = process->used + chunk * (CHUNK / PAGE / 8);
+    for (uint64_t index = 0; index < CHUNK / PAGE / 8; ++index)
+        if (bits[index]) return 0;
+    return 1;
+}
+
+// The run that holds a guest address, or NULL.
+static struct Run* run_at(struct Process* process, uint64_t guest) {
+    for (int index = 0; index < process->run_count; ++index)
+        if (guest - process->runs[index].guest < process->runs[index].length) return &process->runs[index];
+    return NULL;
+}
+
+// The run whose memory or guards hold a host address, or NULL.
+static struct Run* run_of_host(struct Process* process, uint64_t address) {
+    for (int index = 0; index < process->run_count; ++index) {
+        const struct Run* run = &process->runs[index];
+        if (address - ((uint64_t)run->host - GUARD_BEFORE) < GUARD_BEFORE + run->length + GUARD_AFTER) return &process->runs[index];
+    }
+    return NULL;
+}
+
+static struct Run* add_run(struct Process* process) {
+    if (process->run_count == process->run_capacity) {
+        process->run_capacity = process->run_capacity ? process->run_capacity * 2 : 16;
+        process->runs = realloc(process->runs, (size_t)process->run_capacity * sizeof *process->runs);
+    }
+    return &process->runs[process->run_count++];
+}
+
+static uint8_t* reserve(uint8_t* hint, uint64_t length) {
+    void* result = mmap(hint, length, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    return result == MAP_FAILED ? NULL : result;
+}
+
+// Gives host memory to chunks [first, last), none of which has any. It continues the run on either
+// side when the host addresses next to it are free, so that neighbours in the guest stay neighbours
+// in the host.
+static int back_range(struct Process* process, uint64_t first, uint64_t last) {
+    const uint64_t guest = first << CHUNK_SHIFT, length = (last - first) << CHUNK_SHIFT;
+    struct Run* before = first ? run_at(process, guest - 1) : NULL;
+    struct Run* after = last < CHUNKS ? run_at(process, guest + length) : NULL;
+    struct Run* run = NULL;
+    if (before) {  // the new chunks take over its trailing guard, and end with a new one
+        uint8_t* wanted = before->host + before->length + GUARD_AFTER;
+        uint8_t* got = reserve(wanted, length);
+        if (got == wanted) {
+            before->length += length;
+            run = before;
+        } else if (got) {
+            munmap(got, length);
+        }
+    }
+    if (!run && after) {
+        uint8_t* wanted = after->host - GUARD_BEFORE - length;
+        uint8_t* got = reserve(wanted, length);
+        if (got == wanted) {
+            after->host -= length;
+            after->guest -= length;
+            after->length += length;
+            run = after;
+        } else if (got) {
+            munmap(got, length);
+        }
+    }
+    if (!run) {
+        uint8_t* got = reserve(NULL, GUARD_BEFORE + length + GUARD_AFTER);
+        if (!got) return 0;
+        run = add_run(process);
+        *run = (struct Run){guest, length, got + GUARD_BEFORE};
+    }
+    for (uint64_t chunk = first; chunk < last; ++chunk) process->chunks[chunk] = (uint64_t)run->host - run->guest;
+    // Mapped pages in these chunks were untouched anonymous memory. Now they are host memory.
+    for (uint64_t page = guest / PAGE; page < (guest + length) / PAGE;) {
+        const int protection = page_used(process, page) ? page_protection(process, page) : 0;
+        uint64_t end = page + 1;
+        while (end < (guest + length) / PAGE && (page_used(process, end) ? page_protection(process, end) : 0) == protection) ++end;
+        if (protection) mprotect(run->host + (page * PAGE - run->guest), (end - page) * PAGE, protection);
+        page = end;
+    }
+    return 1;
+}
+
+// Backs every chunk that [address, address + length) touches.
+static int back(struct Process* process, uint64_t address, uint64_t length) {
+    const uint64_t end = (address + length + CHUNK - 1) >> CHUNK_SHIFT;
+    for (uint64_t chunk = address >> CHUNK_SHIFT; chunk < end;) {
+        if (chunk_backed(process, chunk)) { ++chunk; continue; }
+        uint64_t last = chunk + 1;
+        while (last < end && !chunk_backed(process, last)) ++last;
+        if (!back_range(process, chunk, last)) return 0;
+        chunk = last;
+    }
+    return 1;
+}
+
+// Backs one chunk on first use. Returns its offset.
+static uint64_t materialize(struct Process* process, uint64_t chunk) {
+    pthread_mutex_lock(&process->memory_lock);
+    if (!chunk_backed(process, chunk) && back_range(process, chunk, chunk + 1)) __atomic_add_fetch(&lazy_count, 1, __ATOMIC_RELAXED);
+    const uint64_t offset = process->chunks[chunk];
+    pthread_mutex_unlock(&process->memory_lock);
+    return offset;
+}
+
+#ifdef SPARSE
+// Returns a chunk's host memory. The guards of what remains of its run are kept.
+static void free_chunk(struct Process* process, uint64_t chunk) {
+    const uint64_t guest = chunk << CHUNK_SHIFT;
+    struct Run* run = run_at(process, guest);
+    uint8_t* memory = run->host + (guest - run->guest);
+    const int first = guest == run->guest, last = guest + CHUNK == run->guest + run->length;
+    if (first && last) {
+        munmap(memory - GUARD_BEFORE, GUARD_BEFORE + CHUNK + GUARD_AFTER);
+        *run = process->runs[--process->run_count];
+    } else if (first) {
+        mmap(memory + CHUNK - GUARD_BEFORE, GUARD_BEFORE, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
+        munmap(memory - GUARD_BEFORE, CHUNK);
+        run->host += CHUNK;
+        run->guest += CHUNK;
+        run->length -= CHUNK;
+    } else if (last) {
+        mmap(memory, GUARD_AFTER, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
+        munmap(memory + GUARD_AFTER, CHUNK);
+        run->length -= CHUNK;
+    } else {
+        const struct Run right = {guest + CHUNK, run->guest + run->length - guest - CHUNK, memory + CHUNK};
+        run->length = guest - run->guest;
+        mmap(memory, GUARD_AFTER, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
+        mmap(memory + CHUNK - GUARD_BEFORE, GUARD_BEFORE, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
+        munmap(memory + GUARD_AFTER, CHUNK - GUARD_AFTER - GUARD_BEFORE);
+        *add_run(process) = right;
+    }
+    process->chunks[chunk] = VOID_OFFSET;
+}
+#endif
+
+// Empties the address space. A sparse one starts with no host memory, a plain one with all of it.
+static int reset_space(struct Process* process) {
+    for (int index = 0; index < process->run_count; ++index)
+        munmap(process->runs[index].host - GUARD_BEFORE, GUARD_BEFORE + process->runs[index].length + GUARD_AFTER);
+    process->run_count = 0;
+    if (process->space) munmap(process->space, space_size());
+    void* block = mmap(NULL, space_size(), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (block == MAP_FAILED) return 0;
+    attach_space(process, block);
+    for (uint64_t chunk = 0; chunk < CHUNKS; ++chunk) process->chunks[chunk] = VOID_OFFSET;
+#ifndef SPARSE
+    if (!back_range(process, 0, CHUNKS)) return 0;
+#endif
+    return 1;
+}
+
+static void free_space(struct Process* process) {
+    for (int index = 0; index < process->run_count; ++index)
+        munmap(process->runs[index].host - GUARD_BEFORE, GUARD_BEFORE + process->runs[index].length + GUARD_AFTER);
+    process->run_count = 0;
+}
+
+// How much of [address, address + length) is contiguous in host memory from its start.
+static uint64_t piece(const struct Process* process, uint64_t address, uint64_t length) {
+    const uint64_t offset = process->chunks[address >> CHUNK_SHIFT];
+    uint64_t end = (address | (CHUNK - 1)) + 1;
+    while (end < address + length && process->chunks[end >> CHUNK_SHIFT] == offset) end += CHUNK;
+    return end - address < length ? end - address : length;
+}
+
+// Sets the mapped bit and the protection of whole pages.
+static void mark(struct Process* process, uint64_t address, uint64_t length, int used, int protection) {
+    uint64_t page = address / PAGE;
+    const uint64_t end = (address + length) / PAGE;
+    while (page < end) {
+        if (page % 8 == 0 && end - page >= 8) {  // whole bytes of both tables
+            const uint64_t pages = (end - page) & ~7ull;
+            memset(process->used + page / 8, used ? 0xff : 0, pages / 8);
+            memset(process->protection + page / 4, protection * 0x55, pages / 4);
+            page += pages;
+            continue;
+        }
         if (used) process->used[page / 8] |= (uint8_t)(1 << page % 8);
         else process->used[page / 8] &= (uint8_t)~(1 << page % 8);
+        process->protection[page / 4] = (uint8_t)((process->protection[page / 4] & ~(3 << page % 4 * 2)) | protection << page % 4 * 2);
+        ++page;
     }
 }
 
+// Changes only the protection that is recorded, for the pages that are mapped.
+static void record_protection(struct Process* process, uint64_t address, uint64_t length, int protection) {
+    for (uint64_t page = address / PAGE; page < (address + length) / PAGE; ++page)
+        process->protection[page / 4] = (uint8_t)((process->protection[page / 4] & ~(3 << page % 4 * 2)) | protection << page % 4 * 2);
+}
+
+// mmap with MAP_FIXED on the host memory of a guest range. Chunks without host memory are skipped:
+// they hold nothing, and get their protection when they are backed.
+static int map_pages(struct Process* process, uint64_t address, uint64_t length, int protection, int flags, int descriptor, uint64_t offset) {
+    for (uint64_t done = 0; done < length;) {
+        const uint64_t part = piece(process, address + done, length - done);
+        if (chunk_backed(process, (address + done) >> CHUNK_SHIFT) &&
+            mmap((void*)(address + done + process->chunks[(address + done) >> CHUNK_SHIFT]), part, protection, MAP_FIXED | flags, descriptor,
+                 descriptor < 0 ? 0 : (off_t)(offset + done)) == MAP_FAILED)
+            return 0;
+        done += part;
+    }
+    return 1;
+}
+
+static void protect_pages(struct Process* process, uint64_t address, uint64_t length, int protection) {
+    for (uint64_t done = 0; done < length;) {
+        const uint64_t part = piece(process, address + done, length - done);
+        if (chunk_backed(process, (address + done) >> CHUNK_SHIFT))
+            mprotect((void*)(address + done + process->chunks[(address + done) >> CHUNK_SHIFT]), part, protection);
+        done += part;
+    }
+}
+
+// Copies between host memory and a guest range that need not be contiguous in host memory.
+static void copy_in(struct Process* process, uint64_t address, const void* from, uint64_t length) {
+    for (uint64_t done = 0; done < length;) {
+        uint8_t* target = host(process, address + done);
+        const uint64_t part = piece(process, address + done, length - done);
+        memcpy(target, (const uint8_t*)from + done, part);
+        done += part;
+    }
+}
+
+static void copy_out(struct Process* process, void* to, uint64_t address, uint64_t length) {
+    for (uint64_t done = 0; done < length;) {
+        const uint8_t* source = host(process, address + done);
+        const uint64_t part = piece(process, address + done, length - done);
+        memcpy((uint8_t*)to + done, source, part);
+        done += part;
+    }
+}
+
+// The host parts of a guest buffer, for readv and writev. Returns how many there are, at most `room`.
+static int buffer_parts(struct Process* process, uint64_t address, uint64_t length, struct iovec* parts, int room) {
+    int count = 0;
+    address &= ADDRESS_MASK;
+    for (uint64_t done = 0; done < length && count < room; ++count) {
+        parts[count].iov_base = host(process, address + done);
+        parts[count].iov_len = piece(process, address + done, length - done);
+        done += parts[count].iov_len;
+    }
+    return count;
+}
+
+// Whether a mapping may be placed at an address: a mapping that gets host memory at once has all of
+// it in one run, which is what a stack needs. Its chunks are all backed alike or all not backed.
+static int placeable(const struct Process* process, uint64_t address, uint64_t length) {
+    const uint64_t offset = process->chunks[address >> CHUNK_SHIFT];
+    for (uint64_t chunk = address >> CHUNK_SHIFT; chunk <= (address + length - 1) >> CHUNK_SHIFT; ++chunk)
+        if (process->chunks[chunk] != offset) return 0;
+    return 1;
+}
+
 // First fit from the top of the mapping area, like Linux's top-down layout.
-static uint64_t allocate(struct Process* process, uint64_t length) {
+static uint64_t allocate(struct Process* process, uint64_t length, int in_one_run) {
     const uint64_t pages = length / PAGE, low = process->map_low / PAGE;
     // Continue below the previous allocation, then retry once from the top.
     for (int attempt = 0; attempt < 2; ++attempt) {
         uint64_t run = 0;
         for (uint64_t page = (attempt ? process->map_high : process->map_hint) / PAGE; page-- > low;) {
             run = page_used(process, page) ? 0 : run + 1;
-            if (run == pages) {
-                mark(process, page * PAGE, length, 1);
-                process->map_hint = page * PAGE;
-                return page * PAGE;
-            }
+            if (run < pages) continue;
+            if (in_one_run && !placeable(process, page * PAGE, length)) continue;  // slide down, out of the mixed chunks
+            process->map_hint = page * PAGE;
+            return page * PAGE;
         }
     }
     return 0;
 }
 
 static void release(struct Process* process, uint64_t address, uint64_t length) {
-    if (address & (PAGE - 1) || address + length > SEGMENT) return;
-    map_none(process, address, length);
-    mark(process, address, length, 0);
+    if (address & (PAGE - 1) || address + length > SEGMENT || !length) return;
+    map_pages(process, address, length, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    mark(process, address, length, 0, 0);
+#ifdef SPARSE
+    for (uint64_t chunk = address >> CHUNK_SHIFT; chunk <= (address + length - 1) >> CHUNK_SHIFT; ++chunk)
+        if (chunk_backed(process, chunk) && chunk_empty(process, chunk)) free_chunk(process, chunk);
+#endif
 }
 
 static int range_free(const struct Process* process, uint64_t address, uint64_t length) {
@@ -303,26 +614,39 @@ static int range_free(const struct Process* process, uint64_t address, uint64_t 
     return 1;
 }
 
+// Maps anonymous memory at a fixed place. Large mappings get host memory when they are touched.
+static int map_anonymous(struct Process* process, uint64_t address, uint64_t length, int protection) {
+    if (length < LAZY_MINIMUM && !back(process, address, length)) return 0;
+    mark(process, address, length, 1, protection);
+    return map_pages(process, address, length, protection, MAP_PRIVATE | MAP_ANON, -1, 0);
+}
+
 // Grows in place when the pages above are free, otherwise moves the mapping without copying it.
 static long guest_mremap(struct Process* process, uint64_t address, uint64_t old, uint64_t wanted, int may_move) {
     if (wanted <= old) {
         if (wanted < old) release(process, address + wanted, old - wanted);
         return (long)address;
     }
+    const int protection = page_protection(process, address / PAGE);
     int room = address + wanted <= process->map_high;
     for (uint64_t page = (address + old) / PAGE; room && page < (address + wanted) / PAGE; ++page) room = !page_used(process, page);
-    uint64_t target = address;
-    if (!room) {
-        if (!may_move || !(target = allocate(process, wanted))) return -12;
-        vm_address_t destination = (vm_address_t)(process->base + target);
-        vm_prot_t current, maximum;
-        if (vm_remap(mach_task_self(), &destination, old, 0, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE, mach_task_self(),
-                     (vm_address_t)(process->base + address), FALSE, &current, &maximum, VM_INHERIT_COPY) != KERN_SUCCESS)
-            return -12;
-        release(process, address, old);
+    if (room) return map_anonymous(process, address + old, wanted - old, protection) ? (long)address : -12;
+    uint64_t target;
+    if (!may_move || !(target = allocate(process, wanted, wanted < LAZY_MINIMUM)) || !map_anonymous(process, target, wanted, protection)) return -12;
+    for (uint64_t done = 0; done < old;) {
+        uint64_t part = piece(process, address + done, old - done);
+        if (chunk_backed(process, (address + done) >> CHUNK_SHIFT)) {
+            vm_address_t destination = (vm_address_t)host(process, target + done);  // backs the target if it was not
+            const uint64_t room_there = piece(process, target + done, old - done);
+            if (room_there < part) part = room_there;
+            vm_prot_t current, maximum;
+            if (vm_remap(mach_task_self(), &destination, part, 0, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE, mach_task_self(),
+                         (vm_address_t)host(process, address + done), FALSE, &current, &maximum, VM_INHERIT_COPY) != KERN_SUCCESS)
+                return -12;
+        }
+        done += part;
     }
-    mark(process, target, wanted, 1);
-    mmap(process->base + target + old, wanted - old, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
+    release(process, address, old);
     return (long)target;
 }
 
@@ -330,48 +654,85 @@ static long guest_mmap(struct Process* process, uint64_t address, uint64_t lengt
     length = page_up(length);
     if (!length) return -22;
     const int fixed = flags & 0x10, no_replace = flags & 0x100000, anonymous = flags & 0x20, shared = flags & 1;
+    const int lazy = anonymous && length >= LAZY_MINIMUM;
+    protection &= PROT_READ | PROT_WRITE;
     if (fixed || no_replace) {
         if (address & (PAGE - 1) || address + length > SEGMENT) return -22;
         if (no_replace && !fixed && !range_free(process, address, length)) return -17;  // MAP_FIXED_NOREPLACE
-        mark(process, address, length, 1);
     } else if (address && range_free(process, address, length)) {
         // A hint is honoured when the range is free: ART finds memory below 4 GiB this way.
-        mark(process, address, length, 1);
-    } else if (!(address = allocate(process, length))) {
+    } else if (!(address = allocate(process, length, !lazy))) {
         return -12;
     }
-    void* result = mmap(process->base + address, length, protection & (PROT_READ | PROT_WRITE),
-                        MAP_FIXED | (anonymous ? MAP_ANON : 0) | (shared && !anonymous ? MAP_SHARED : MAP_PRIVATE),
-                        anonymous ? -1 : host_fd(process, fd), anonymous ? 0 : (off_t)offset);
-    if (result == MAP_FAILED) return linux_errno(errno);
+    if (anonymous) return map_anonymous(process, address, length, protection) ? (long)address : -12;
+    if (!back(process, address, length)) return -12;
+    mark(process, address, length, 1, protection);
+    if (!map_pages(process, address, length, protection, shared ? MAP_SHARED : MAP_PRIVATE, host_fd(process, fd), offset)) return linux_errno(errno);
     return (long)address;
 }
 
-// Copies an ELF's loadable segments to module->base in the process's segment.
-static void map_module(struct Process* process, const struct Module* module) {
+static long guest_mprotect(struct Process* process, uint64_t address, uint64_t length, int protection) {
+    if (address & (PAGE - 1) || address + length > SEGMENT) return -22;
+    // Memory that becomes accessible is about to be used: back it now rather than at the first fault.
+    if (protection && length < LAZY_MINIMUM && !back(process, address, length)) return -12;
+    record_protection(process, address, length, protection);
+    protect_pages(process, address, length, protection);
+    return 0;
+}
+
+// MADV_DONTNEED must leave private anonymous pages reading as zero.
+static void discard(uint8_t* start, uint64_t length) {
+    for (uint64_t offset = 0; offset < length;) {
+        vm_address_t address = (vm_address_t)(start + offset);
+        vm_size_t size = 0;
+        vm_region_extended_info_data_t info;
+        mach_msg_type_number_t count = VM_REGION_EXTENDED_INFO_COUNT;
+        mach_port_t object = MACH_PORT_NULL;
+        if (vm_region_64(mach_task_self(), &address, &size, VM_REGION_EXTENDED_INFO, (vm_region_info_t)&info, &count, &object) != KERN_SUCCESS) break;
+        if (address >= (vm_address_t)start + length) break;
+        uint8_t* from = (uint8_t*)address > start + offset ? (uint8_t*)address : start + offset;
+        uint8_t* to = (uint8_t*)address + size < start + length ? (uint8_t*)address + size : start + length;
+        if (!info.external_pager && info.protection != VM_PROT_NONE && info.pages_resident)
+            mmap(from, (size_t)(to - from), info.protection & (PROT_READ | PROT_WRITE), MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
+        offset = (uint64_t)(to - start);
+    }
+}
+
+// Copies an ELF's loadable segments to module->base.
+static int map_module(struct Process* process, const struct Module* module) {
     const uint8_t* image = module->image;
     const uint64_t phoff = *(uint64_t*)(image + 32);
     const uint16_t phentsize = *(uint16_t*)(image + 54), phnum = *(uint16_t*)(image + 56);
-    for (int pass = 0; pass < 2; ++pass)
-        for (int index = 0; index < phnum; ++index) {
-            const uint8_t* header = image + phoff + (uint64_t)index * phentsize;
-            if (*(uint32_t*)header != 1) continue;
-            const uint64_t address = module->base + *(uint64_t*)(header + 16);
-            if (pass == 0) {
-                const uint64_t low = address & ~(PAGE - 1), high = page_up(address + *(uint64_t*)(header + 40));
-                mmap(process->base + low, high - low, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
-                mark(process, low, high - low, 1);
-            } else {
-                memcpy(process->base + address, image + *(uint64_t*)(header + 8), *(uint64_t*)(header + 32));
+    for (int index = 0; index < phnum; ++index) {
+        const uint8_t* header = image + phoff + (uint64_t)index * phentsize;
+        if (*(uint32_t*)header != 1) continue;
+        const uint64_t address = module->base + *(uint64_t*)(header + 16);
+        const uint64_t low = address & ~(PAGE - 1), high = page_up(address + *(uint64_t*)(header + 40));
+        if (!back(process, low, high - low)) return 0;
+        // Segments share pages at their edges, so pages already mapped keep their contents.
+        for (uint64_t page = low; page < high; page += PAGE)
+            if (!page_used(process, page / PAGE)) {
+                mark(process, page, PAGE, 1, PROT_READ | PROT_WRITE);
+                map_pages(process, page, PAGE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
             }
-        }
+        copy_in(process, address, image + *(uint64_t*)(header + 8), *(uint64_t*)(header + 32));
+    }
+    return 1;
 }
 
-// Puts the executable, its interpreter and a fresh stack into the process's segment and points its
-// context at the entry, as the kernel does for execve.
+// The guest value of a context's stack pointer, and setting it from one.
+static uint64_t guest_sp(const struct Context* context) { return context->sp - context->base; }
+
+static void set_guest_sp(struct Process* process, struct Context* context, uint64_t sp) {
+    sp &= ADDRESS_MASK;
+    context->sp = (uint64_t)host(process, sp);
+    context->base = context->sp - sp;
+}
+
+// Puts the executable, its interpreter and a fresh stack into the process's address space and points
+// its context at the entry, as the kernel does for execve.
 static int load_image(struct Thread* thread, const struct Module* executable, char** argv, char** envp) {
     struct Process* process = thread->process;
-    uint8_t* base = process->base;
     const uint8_t* image = executable->image;
     const uint64_t phoff = *(uint64_t*)(image + 32);
     const uint16_t phentsize = *(uint16_t*)(image + 54), phnum = *(uint16_t*)(image + 56);
@@ -386,10 +747,7 @@ static int load_image(struct Thread* thread, const struct Module* executable, ch
             return 0;
         }
     }
-    mmap(base, SEGMENT, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
-    memset(process->used, 0, sizeof process->used);
-    map_module(process, executable);
-    if (interpreter) map_module(process, interpreter);
+    if (!reset_space(process) || !map_module(process, executable) || (interpreter && !map_module(process, interpreter))) return 0;
     process->executable = executable;
 
     uint64_t prelinked = 0;
@@ -400,8 +758,8 @@ static int load_image(struct Thread* thread, const struct Module* executable, ch
     if (prelinked + PAGE > process->map_low) process->map_low = prelinked + PAGE;
     const uint64_t stack_top = SEGMENT - PAGE;
     process->map_high = process->map_hint = stack_top - STACK_SIZE - PAGE;
-    mmap(base + stack_top - STACK_SIZE, STACK_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
-    mark(process, stack_top - STACK_SIZE, STACK_SIZE, 1);
+    if (!map_anonymous(process, stack_top - STACK_SIZE, STACK_SIZE, PROT_READ | PROT_WRITE)) return 0;
+    uint8_t* base = (uint8_t*)host(process, stack_top - STACK_SIZE) - (stack_top - STACK_SIZE);  // the stack is in one run
 
     int argc = 0, envc = 0;
     while (argv[argc]) ++argc;
@@ -442,11 +800,9 @@ static int load_image(struct Thread* thread, const struct Module* executable, ch
     context->host_sp = host_sp;
     context->process = process;
     context->thread = thread;
-    context->base = (uint64_t)base;
-    for (uint64_t index = 0; index < SEGMENT >> CHUNK_SHIFT; ++index) process->chunks[index] = (uint64_t)base;
     context->memory_table = (uint64_t)process->chunks;
     context->table = (uint64_t)code_table - 2 * code_low;
-    context->sp = (uint64_t)base + cursor;
+    set_guest_sp(process, context, cursor);
     context->pc = host_code(interpreter ? interpreter->info[2] : executable->info[2]);
     return 1;
 }
@@ -471,7 +827,10 @@ static struct Thread* new_thread(struct Process* process, int tid) {
 static struct Thread* new_process(int parent) {
     struct Process* process = calloc(1, sizeof *process);
     for (int fd = 0; fd < MAX_FDS; ++fd) process->fds[fd] = -1;
-    pthread_mutex_init(&process->memory_lock, NULL);
+    pthread_mutexattr_t attributes;
+    pthread_mutexattr_init(&attributes);
+    pthread_mutexattr_settype(&attributes, PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutex_init(&process->memory_lock, &attributes);
     pthread_mutex_lock(&lock);
     process->pid = next_pid++;
     process->parent = parent;
@@ -488,8 +847,8 @@ static void finish_thread(struct Thread* thread) __attribute__((noreturn));
 static void finish_thread(struct Thread* thread) {
     struct Process* process = thread->process;
     if (thread->clear_tid && !process->exiting) {
-        *(int*)(process->base + thread->clear_tid) = 0;
-        futex_wake(process->base + thread->clear_tid, 1);
+        *(int*)host(process, thread->clear_tid) = 0;
+        futex_wake(host(process, thread->clear_tid), 1);
     }
     pthread_mutex_lock(&lock);
     thread->dead = 1;
@@ -525,7 +884,9 @@ static void terminate(struct Thread* thread, int status) {
     }
     pthread_mutex_unlock(&lock);
     for (int fd = 0; fd < MAX_FDS; ++fd) close_fd(process, fd);
-    munmap(process->base, SEGMENT);
+    pthread_mutex_lock(&process->memory_lock);
+    free_space(process);
+    pthread_mutex_unlock(&process->memory_lock);
     pthread_mutex_lock(&lock);
     struct Process* parent = processes[process->parent % MAX_PROCESSES];
     if (parent && parent->pid == process->parent) parent->pending |= SIGBIT(17);  // SIGCHLD
@@ -557,12 +918,32 @@ static long guest_fork(struct Thread* caller, uint64_t flags, uint64_t child_sta
     struct Process* parent = caller->process;
     struct Thread* thread = new_process(parent->pid);
     struct Process* child = thread->process;
+    // The child's memory is a copy-on-write copy of each run, and of the tables that describe it.
+    pthread_mutex_lock(&parent->memory_lock);
     vm_address_t address = 0;
     vm_prot_t current, maximum;
-    if (vm_remap(mach_task_self(), &address, SEGMENT, 0, VM_FLAGS_ANYWHERE, mach_task_self(), (vm_address_t)parent->base, TRUE,
-                 &current, &maximum, VM_INHERIT_COPY) != KERN_SUCCESS)
+    int copied = vm_remap(mach_task_self(), &address, space_size(), 0, VM_FLAGS_ANYWHERE, mach_task_self(), (vm_address_t)parent->space, TRUE,
+                          &current, &maximum, VM_INHERIT_COPY) == KERN_SUCCESS;
+    if (copied) attach_space(child, (void*)address);
+    for (int index = 0; copied && index < parent->run_count; ++index) {
+        const struct Run* run = &parent->runs[index];
+        uint8_t* memory = reserve(NULL, GUARD_BEFORE + run->length + GUARD_AFTER);
+        address = (vm_address_t)(memory + GUARD_BEFORE);
+        copied = memory && vm_remap(mach_task_self(), &address, run->length, 0, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE, mach_task_self(),
+                                    (vm_address_t)run->host, TRUE, &current, &maximum, VM_INHERIT_COPY) == KERN_SUCCESS;
+        if (!memory) break;
+        *add_run(child) = (struct Run){run->guest, run->length, memory + GUARD_BEFORE};
+        for (uint64_t chunk = run->guest >> CHUNK_SHIFT; chunk < (run->guest + run->length) >> CHUNK_SHIFT; ++chunk)
+            child->chunks[chunk] = (uint64_t)memory + GUARD_BEFORE - run->guest;
+    }
+    pthread_mutex_unlock(&parent->memory_lock);
+    if (!copied) {  // out of address space: the child never runs
+        free_space(child);
+        pthread_mutex_lock(&lock);
+        processes[child->pid % MAX_PROCESSES] = NULL;
+        pthread_mutex_unlock(&lock);
         return -12;
-    child->base = (uint8_t*)address;
+    }
     child->executable = parent->executable;
     child->brk_start = parent->brk_start;
     child->brk = parent->brk;
@@ -570,7 +951,6 @@ static long guest_fork(struct Thread* caller, uint64_t flags, uint64_t child_sta
     child->map_high = parent->map_high;
     child->map_hint = parent->map_hint;
     memcpy(child->actions, parent->actions, sizeof child->actions);
-    memcpy(child->used, parent->used, sizeof child->used);
     memcpy(child->command_line, parent->command_line, sizeof child->command_line);
     child->command_length = parent->command_length;
     for (int fd = 0; fd < MAX_FDS; ++fd)
@@ -584,12 +964,10 @@ static long guest_fork(struct Thread* caller, uint64_t flags, uint64_t child_sta
     thread->context = caller->context;
     thread->context.process = child;
     thread->context.thread = thread;
-    thread->context.base = (uint64_t)child->base;
-    for (uint64_t index = 0; index < SEGMENT >> CHUNK_SHIFT; ++index) child->chunks[index] = (uint64_t)child->base;
     thread->context.memory_table = (uint64_t)child->chunks;
-    thread->context.sp = child_stack ? (uint64_t)child->base + child_stack : caller->context.sp - (uint64_t)parent->base + (uint64_t)child->base;
+    set_guest_sp(child, &thread->context, child_stack ? child_stack : guest_sp(&caller->context));
     thread->context.x[0] = 0;
-    if (flags & 0x01000000 && child_tid) *(int*)(child->base + child_tid) = child->pid;  // CLONE_CHILD_SETTID
+    if (flags & 0x01000000 && child_tid) *(int*)host(child, child_tid) = child->pid;  // CLONE_CHILD_SETTID
     __atomic_add_fetch(&fork_count, 1, __ATOMIC_RELAXED);
     __atomic_add_fetch(&fork_ns, now_ns() - begin, __ATOMIC_RELAXED);
     const int pid = child->pid;
@@ -613,11 +991,11 @@ static long guest_clone_thread(struct Thread* caller, uint64_t flags, uint64_t s
     thread->clear_tid = flags & 0x00200000 ? child_tid : 0;
     thread->context = caller->context;
     thread->context.thread = thread;
-    thread->context.sp = (uint64_t)process->base + (stack & 0x00ffffffffffffffull);
+    set_guest_sp(process, &thread->context, stack);
     thread->context.x[0] = 0;
     if (flags & 0x00080000) thread->context.tpidr = tls;  // CLONE_SETTLS
-    if (flags & 0x00100000 && parent_tid) *(int*)(process->base + parent_tid) = thread->tid;  // CLONE_PARENT_SETTID
-    if (flags & 0x01000000 && child_tid) *(int*)(process->base + child_tid) = thread->tid;
+    if (flags & 0x00100000 && parent_tid) *(int*)host(process, parent_tid) = thread->tid;  // CLONE_PARENT_SETTID
+    if (flags & 0x01000000 && child_tid) *(int*)host(process, child_tid) = thread->tid;
     const int tid = thread->tid;
     start_thread(thread);
     return tid;
@@ -718,21 +1096,16 @@ static int open_proc_file(struct Process* p, const char* path) {
         for (int field = 29; field <= 52; ++field) fprintf(out, " 0");
         fprintf(out, "\n");
     } else {
+        // Mapped ranges with one protection each. Chunks that hold nothing are skipped whole.
         for (uint64_t page = 1; page < SEGMENT / PAGE;) {
+            if (page % (CHUNK / PAGE) == 0 && chunk_empty(p, page / (CHUNK / PAGE))) { page += CHUNK / PAGE; continue; }
             if (!page_used(p, page)) { ++page; continue; }
-            vm_address_t address = (vm_address_t)(p->base + page * PAGE);
-            vm_size_t size = 0;
-            vm_region_basic_info_data_64_t info;
-            mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
-            mach_port_t object = MACH_PORT_NULL;
-            if (vm_region_64(mach_task_self(), &address, &size, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &count, &object) != KERN_SUCCESS) break;
-            uint64_t start = page * PAGE, end = (uint64_t)address - (uint64_t)p->base + size;
-            if (end > SEGMENT) end = SEGMENT;
-            uint64_t stop = start;
-            while (stop < end && page_used(p, stop / PAGE)) stop += PAGE;
-            fprintf(out, "%llx-%llx %c%c-p 00000000 00:00 0%s\n", start, stop, info.protection & VM_PROT_READ ? 'r' : '-',
-                    info.protection & VM_PROT_WRITE ? 'w' : '-', stop == stack_top ? "                          [stack]" : "");
-            page = stop / PAGE;
+            const int protection = page_protection(p, page);
+            uint64_t stop = page + 1;
+            while (stop < SEGMENT / PAGE && page_used(p, stop) && page_protection(p, stop) == protection) ++stop;
+            fprintf(out, "%llx-%llx %c%c-p 00000000 00:00 0%s\n", page * PAGE, stop * PAGE, protection & PROT_READ ? 'r' : '-',
+                    protection & PROT_WRITE ? 'w' : '-', stop * PAGE == stack_top ? "                          [stack]" : "");
+            page = stop;
         }
     }
     fclose(out);
@@ -812,14 +1185,25 @@ static long guest_getdents(struct Process* process, long fd, uint8_t* buffer, ui
 }
 
 static long vector_io(struct Process* process, long fd, uint64_t vector, long count, int writing) {
-    struct iovec vectors[64];
+    struct iovec vectors[128];
     if (count < 0 || count > 64) return -22;
     const uint64_t* guest = host(process, vector);
-    for (long index = 0; index < count; ++index) {
-        vectors[index].iov_base = host(process, guest[index * 2]);
-        vectors[index].iov_len = guest[index * 2 + 1];
+    int parts = 0;
+    for (long index = 0; index < count; ++index) parts += buffer_parts(process, guest[index * 2], guest[index * 2 + 1], vectors + parts, 128 - parts);
+    return writing ? writev(host_fd(process, fd), vectors, parts) : readv(host_fd(process, fd), vectors, parts);
+}
+
+// read, write, pread and pwrite on a guest buffer, which may be in several pieces of host memory.
+static long buffer_io(struct Process* process, long fd, uint64_t address, uint64_t length, int writing, int positioned, off_t offset) {
+    struct iovec parts[8];
+    const int descriptor = host_fd(process, fd), count = buffer_parts(process, address, length, parts, 8);
+    if (count <= 1) {
+        void* buffer = count ? parts[0].iov_base : NULL;
+        if (positioned) return writing ? pwrite(descriptor, buffer, length, offset) : pread(descriptor, buffer, length, offset);
+        return writing ? write(descriptor, buffer, length) : read(descriptor, buffer, length);
     }
-    return writing ? writev(host_fd(process, fd), vectors, (int)count) : readv(host_fd(process, fd), vectors, (int)count);
+    if (positioned) return writing ? pwritev(descriptor, parts, count, offset) : preadv(descriptor, parts, count, offset);
+    return writing ? writev(descriptor, parts, count) : readv(descriptor, parts, count);
 }
 
 // A write to a pipe with no reader kills a Linux process unless it handles SIGPIPE.
@@ -862,12 +1246,13 @@ enum {
 // context->pc must be the host address of a guest instruction boundary.
 static void enter_handler(struct Thread* t, struct Context* context, int number, int code, uint64_t address, uint64_t restore_mask) {
     struct Process* p = t->process;
-    const uint64_t base = (uint64_t)p->base;
-    uint64_t sp = context->sp - base;
+    uint64_t sp = guest_sp(context);
     const int on_alternate = t->alternate_size && sp > t->alternate_stack && sp <= t->alternate_stack + t->alternate_size;
     if (p->actions[number].flags & 0x08000000 && t->alternate_size && !on_alternate) sp = t->alternate_stack + t->alternate_size;  // SA_ONSTACK
     sp = (sp - FRAME_SIZE) & ~15ull;
-    uint8_t* frame = p->base + sp;
+    const uint64_t interrupted_sp = guest_sp(context);
+    set_guest_sp(p, context, sp);  // a signal stack is one mapping, so the frame is contiguous
+    uint8_t* frame = (uint8_t*)context->sp;
     memset(frame, 0, FRAME_VECTORS + 544);
     if (p->has_queued & SIGBIT(number)) {  // the sender supplied the siginfo
         memcpy(frame, p->queued[number], 128);
@@ -884,7 +1269,7 @@ static void enter_handler(struct Thread* t, struct Context* context, int number,
     uint64_t* machine = (uint64_t*)(frame + FRAME_MACHINE);
     machine[0] = address;
     memcpy(machine + 1, context->x, sizeof context->x);
-    machine[32] = context->sp - base;
+    machine[32] = interrupted_sp;
     machine[33] = guest_code(context->pc);
     machine[34] = context->nzcv & 0xf0000000;
     uint32_t* vectors = (uint32_t*)(frame + FRAME_VECTORS);
@@ -897,8 +1282,7 @@ static void enter_handler(struct Thread* t, struct Context* context, int number,
     context->x[1] = sp;
     context->x[2] = sp + FRAME_UCONTEXT;
     context->x[30] = code_high;
-    context->sp = base + sp;
-    context->pc = host_code(p->actions[number].handler & 0x00ffffffffffffffull);
+    context->pc = host_code(p->actions[number].handler & ADDRESS_MASK);
 }
 
 // rt_sigreturn: the handler has returned with sp at the frame.
@@ -908,7 +1292,7 @@ static void leave_handler(struct Thread* t, struct Context* context) {
     if (machine[33] < code_low || machine[33] >= code_high) terminate(t, 11);
     t->blocked = *(const uint64_t*)(frame + FRAME_MASK) & ~(SIGBIT(9) | SIGBIT(19));
     memcpy(context->x, machine + 1, sizeof context->x);
-    context->sp = (uint64_t)t->process->base + machine[32];
+    set_guest_sp(t->process, context, machine[32]);
     context->pc = host_code(machine[33]);
     context->nzcv = machine[34];
     if (trace > 1) fprintf(stderr, "[runtime] pid %d: sigreturn to guest pc 0x%llx, x30 0x%llx\n", t->process->pid, machine[33], context->x[30]);
@@ -938,12 +1322,144 @@ static void deliver_signals(struct Thread* t, struct Context* context, uint64_t 
     }
 }
 
-// A host memory fault in translated code becomes the guest's SIGSEGV. The host handler only records
-// the state and redirects the thread here, on its own stack, where it may block or exit.
+// The guest address that a host address stands for: in the void, or in a run or its guards.
+static int guest_address(struct Process* p, uint64_t address, uint64_t* guest) {
+    if (address - VOID_OFFSET < SEGMENT + CHUNK) {
+        *guest = address - VOID_OFFSET;
+        return 1;
+    }
+    const struct Run* run = run_of_host(p, address);
+    if (!run) return 0;
+    *guest = address - ((uint64_t)run->host - run->guest);
+    return 1;
+}
+
+// Carries out the load or store at the faulting host instruction on guest memory, piece by piece.
+// It is for an access that left the run of its base register, which the instruction itself cannot
+// do. Returns 1 when done, 0 when the instruction is not one it knows, and -1 when the guest may
+// not make this access, with the fault filled in.
+static int emulate_access(struct Thread* t, struct Context* context) {
+    struct Process* p = t->process;
+    const uint32_t w = *(const uint32_t*)t->fault.host_pc;
+    const unsigned rn = w >> 5 & 31, vector = w >> 26 & 1;
+    unsigned registers[2] = {w & 31, 0};
+    int count = 1, load, extend = 0, wide = 1, size_log = (int)(w >> 30);
+    int64_t offset = 0, write_back = 0;
+    if ((w & 0x3A000000) == 0x28000000) {  // pair
+        const unsigned opc = w >> 30, mode = w >> 23 & 3;
+        size_log = vector ? 2 + (int)opc : opc & 2 ? 3 : 2;
+        const int64_t immediate = ((int64_t)(w >> 15 & 0x7f) << 57 >> 57) * (1ll << size_log);
+        load = w >> 22 & 1;
+        extend = !vector && opc == 1;  // ldpsw
+        registers[1] = w >> 10 & 31;
+        count = 2;
+        offset = mode == 1 ? 0 : immediate;
+        write_back = mode & 1 ? immediate : 0;
+    } else if ((w & 0x3B000000) == 0x39000000 || (w & 0x3B200000) == 0x38000000 || (w & 0x3B200C00) == 0x38200800) {
+        const unsigned opc = w >> 22 & 3;
+        if (vector) {
+            if (opc & 2) size_log = 4;
+            load = opc & 1;
+        } else {
+            if (size_log == 3 && opc == 2) return 1;  // a prefetch does nothing
+            load = opc != 0;
+            extend = opc >= 2;
+            wide = opc != 3;  // opc 3 sign-extends to 32 bits
+        }
+        if ((w & 0x3B000000) == 0x39000000) {
+            offset = (int64_t)(w >> 10 & 0xfff) << size_log;
+        } else if (w >> 21 & 1) {  // register offset
+            const unsigned rm = w >> 16 & 31, option = w >> 13 & 7;
+            const uint64_t index = rm == 31 ? 0 : context->x[rm];
+            const int64_t extended = option == 2 ? (int64_t)(uint32_t)index : option == 6 ? (int64_t)(int32_t)index : (int64_t)index;
+            offset = extended * (1ll << (w >> 12 & 1 ? size_log : 0));
+        } else {
+            const int64_t immediate = (int64_t)(w >> 12 & 0x1ff) << 55 >> 55;
+            const unsigned mode = w >> 10 & 3;
+            offset = mode == 1 ? 0 : immediate;
+            write_back = mode & 1 ? immediate : 0;
+        }
+    } else {
+        return 0;
+    }
+    const uint64_t size = 1ull << size_log, total = size * (uint64_t)count;
+    uint64_t address;
+    if (!guest_address(p, ((rn == 31 ? context->sp : context->x[rn]) + (uint64_t)offset) & ADDRESS_MASK, &address)) return 0;
+    for (uint64_t page = address / PAGE; page <= (address + total - 1) / PAGE; ++page)
+        if (page >= SEGMENT / PAGE || !page_used(p, page) || !(page_protection(p, page) & (load ? PROT_READ : PROT_WRITE))) {
+            t->fault.address = page * PAGE > address ? page * PAGE : address;
+            t->fault.code = page < SEGMENT / PAGE && page_used(p, page) ? 2 : 1;
+            return -1;
+        }
+    uint8_t bytes[32] = {0};
+    if (load) {
+        copy_out(p, bytes, address, total);
+        for (int index = 0; index < count; ++index) {
+            if (vector) {
+                context->q[registers[index]] = 0;
+                memcpy(&context->q[registers[index]], bytes + (uint64_t)index * size, size);
+            } else if (registers[index] != 31) {
+                uint64_t value = 0;
+                memcpy(&value, bytes + (uint64_t)index * size, size);
+                if (extend && size < 8) value = (uint64_t)((int64_t)(value << (64 - size * 8)) >> (64 - size * 8));
+                context->x[registers[index]] = wide ? value : (uint32_t)value;
+            }
+        }
+    } else {
+        for (int index = 0; index < count; ++index) {
+            if (vector) memcpy(bytes + (uint64_t)index * size, &context->q[registers[index]], size);
+            else memcpy(bytes + (uint64_t)index * size, registers[index] == 31 ? (const uint64_t[]){0} : &context->x[registers[index]], size);
+        }
+        copy_in(p, address, bytes, total);
+    }
+    if (write_back && rn == 31) context->sp += (uint64_t)write_back;
+    else if (write_back) context->x[rn] += (uint64_t)write_back;
+    __atomic_add_fetch(&emulated_count, 1, __ATOMIC_RELAXED);
+    return 1;
+}
+
+// A host memory fault in translated code. The host handler only records the state and redirects the
+// thread here, on its own stack, where it may block or exit. The fault is one of:
+//   - the first touch of memory that has no host memory yet: back it and run the instruction again;
+//   - an access that left the run of its base register: carry it out here and continue after it;
+//   - the guest's own fault, which becomes its SIGSEGV.
 static void continue_fault(struct Context* context) __attribute__((noreturn));
 static void continue_fault(struct Context* context) {
     struct Thread* t = context->thread;
     struct Process* p = t->process;
+    uint64_t address = t->fault.host_address;
+    t->fault.address = address;
+    if (guest_address(p, t->fault.host_address, &address)) {
+        t->fault.address = address;
+        const struct Run* run = run_of_host(p, t->fault.host_address);
+        const int in_run = run && t->fault.host_address - (uint64_t)run->host < run->length;
+        if (address < SEGMENT && page_used(p, address / PAGE)) {
+            t->fault.code = 2;  // SEGV_ACCERR, unless one of the cases below applies
+            if (!run && !chunk_backed(p, address >> CHUNK_SHIFT)) {
+                materialize(p, address >> CHUNK_SHIFT);
+                guest_resume(context);
+            }
+            if (!in_run) {
+                pthread_mutex_lock(&p->memory_lock);
+                const int done = emulate_access(t, context);
+                pthread_mutex_unlock(&p->memory_lock);
+                if (done > 0) {
+                    context->pc = t->fault.host_pc + 4;
+                    guest_resume(context);
+                }
+                // Not an instruction emulate_access knows. If another thread backed the chunk between
+                // the fault and now, running the instruction again succeeds. Give that a few tries.
+                const int repeated = t->fault.repeat_pc == t->fault.host_pc && t->fault.repeat_address == t->fault.host_address;
+                t->fault.repeats = repeated ? t->fault.repeats + 1 : 0;
+                t->fault.repeat_pc = t->fault.host_pc;
+                t->fault.repeat_address = t->fault.host_address;
+                if (done == 0 && t->fault.repeats < 3) guest_resume(context);
+                if (done == 0)
+                    fprintf(stderr, "[runtime] pid %d: cannot emulate instruction %08x across chunks at guest address 0x%llx\n", p->pid,
+                            *(const uint32_t*)t->fault.host_pc, address);
+            }
+        }
+    }
     if (p->actions[11].handler <= 1 || t->blocked & SIGBIT(11)) {
         fprintf(stderr, "[runtime] pid %d: segmentation fault at guest address 0x%llx, pc 0x%llx\n", p->pid, t->fault.address,
                 guest_code(context->pc));
@@ -972,9 +1488,9 @@ static void on_host_fault(int number, siginfo_t* info, void* raw) {
     context->nzcv = state->__cpsr;
     memcpy(context->q, host_context->uc_mcontext->__ns.__v, sizeof context->q);
     context->pc = host_code(guest_pc);  // the access has had no effect yet: report the whole instruction
-    const uint64_t address = (uint64_t)info->si_addr, base = (uint64_t)t->process->base;
-    t->fault.address = address >= base && address < base + SEGMENT ? address - base : address;
-    t->fault.code = number == SIGBUS ? 2 : 1;  // SEGV_ACCERR for a protection fault, SEGV_MAPERR otherwise
+    t->fault.host_address = (uint64_t)info->si_addr & ADDRESS_MASK;
+    t->fault.host_pc = state->__pc;
+    t->fault.code = 1;  // SEGV_MAPERR until continue_fault finds the page mapped
     state->__x[0] = (uint64_t)context;
     state->__sp = context->host_sp;
     state->__lr = 0;
@@ -1112,9 +1628,10 @@ static long guest_futex(struct Process* p, uint64_t address, int operation, uint
 // modules and the boot image are, which shows the chain of return addresses and methods.
 static void dump_stack(struct Process* p, struct Context* context) {
     const uint64_t* stack = (const uint64_t*)context->sp;
-    for (int index = 0; index < 16384 && (uint64_t)(stack + index) < (uint64_t)p->base + SEGMENT - PAGE; ++index)
+    const struct Run* run = run_of_host(p, context->sp);
+    for (int index = 0; run && index < 16384 && (uint8_t*)(stack + index) < run->host + run->length; ++index)
         if (stack[index] >= 0x10000000 && stack[index] < 0x80000000)
-            fprintf(stderr, "[stack] sp+%05x %llx: %llx\n", index * 8, (uint64_t)(stack + index) - (uint64_t)p->base, stack[index]);
+            fprintf(stderr, "[stack] sp+%05x %llx: %llx\n", index * 8, (uint64_t)(stack + index) - context->base, stack[index]);
 }
 
 void guest_syscall(struct Context* context) {
@@ -1205,12 +1722,12 @@ void guest_syscall(struct Context* context) {
     }
     case 61: r = guest_getdents(p, (long)a[0], host(p, a[1]), a[2]); break;
     case 62: r = RESULT(lseek(host_fd(p, (long)a[0]), (off_t)a[1], (int)a[2])); break;
-    case 63: r = RESULT(read(host_fd(p, (long)a[0]), host(p, a[1]), a[2])); break;
-    case 64: r = written(t, write(host_fd(p, (long)a[0]), host(p, a[1]), a[2])); break;
+    case 63: r = RESULT(buffer_io(p, (long)a[0], a[1], a[2], 0, 0, 0)); break;
+    case 64: r = written(t, buffer_io(p, (long)a[0], a[1], a[2], 1, 0, 0)); break;
     case 65: r = RESULT(vector_io(p, (long)a[0], a[1], (long)a[2], 0)); break;
     case 66: r = written(t, vector_io(p, (long)a[0], a[1], (long)a[2], 1)); break;
-    case 67: r = RESULT(pread(host_fd(p, (long)a[0]), host(p, a[1]), a[2], (off_t)a[3])); break;
-    case 68: r = RESULT(pwrite(host_fd(p, (long)a[0]), host(p, a[1]), a[2], (off_t)a[3])); break;
+    case 67: r = RESULT(buffer_io(p, (long)a[0], a[1], a[2], 0, 1, (off_t)a[3])); break;
+    case 68: r = RESULT(buffer_io(p, (long)a[0], a[1], a[2], 1, 1, (off_t)a[3])); break;
     case 73: {
         struct pollfd* guest = host(p, a[0]);
         struct pollfd fds[64];
@@ -1262,11 +1779,15 @@ void guest_syscall(struct Context* context) {
         const uint64_t* local = host(p, a[1]);
         const uint64_t* remote = host(p, a[3]);
         if ((long)a[0] != p->pid || a[2] != 1 || a[4] != 1) { r = -38; break; }
-        const uint64_t from = remote[0] & 0x00ffffffffffffffull, length = remote[1] < local[1] ? remote[1] : local[1];
-        int mapped = from >= PAGE && from + length <= SEGMENT;
-        for (uint64_t page = from / PAGE; mapped && page <= (from + length - 1) / PAGE; ++page) mapped = page_used(p, page);
+        const uint64_t from = remote[0] & ADDRESS_MASK, length = remote[1] < local[1] ? remote[1] : local[1];
+        int mapped = from >= PAGE && from + length <= SEGMENT && length <= 1 << 20;
+        for (uint64_t page = from / PAGE; mapped && length && page <= (from + length - 1) / PAGE; ++page)
+            mapped = page_used(p, page) && page_protection(p, page) & PROT_READ;
         if (!mapped) { r = -14; break; }
-        memcpy(host(p, local[0]), p->base + from, length);
+        uint8_t* copy = malloc(length);
+        copy_out(p, copy, from, length);
+        copy_in(p, local[0] & ADDRESS_MASK, copy, length);
+        free(copy);
         r = (long)length;
         break;
     }
@@ -1428,8 +1949,7 @@ void guest_syscall(struct Context* context) {
         if (a[0] >= p->brk_start && a[0] <= p->brk_start + BRK_LIMIT) {
             const uint64_t old = page_up(p->brk), wanted = page_up(a[0]);
             if (wanted > old) {
-                mmap(p->base + old, wanted - old, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
-                mark(p, old, wanted - old, 1);
+                map_anonymous(p, old, wanted - old, PROT_READ | PROT_WRITE);
             } else if (wanted < old) {
                 release(p, wanted, old - wanted);
             }
@@ -1440,13 +1960,13 @@ void guest_syscall(struct Context* context) {
         break;
     case 215:
         pthread_mutex_lock(&p->memory_lock);
-        release(p, a[0] & 0x00ffffffffffffffull, page_up(a[1]));
+        release(p, a[0] & ADDRESS_MASK, page_up(a[1]));
         pthread_mutex_unlock(&p->memory_lock);
         r = 0;
         break;
     case 216:
         pthread_mutex_lock(&p->memory_lock);
-        r = guest_mremap(p, a[0] & 0x00ffffffffffffffull, page_up(a[1]), page_up(a[2]), a[3] & 1);
+        r = guest_mremap(p, a[0] & ADDRESS_MASK, page_up(a[1]), page_up(a[2]), a[3] & 1);
         pthread_mutex_unlock(&p->memory_lock);
         break;
     case 220:
@@ -1459,34 +1979,30 @@ void guest_syscall(struct Context* context) {
         break;
     case 222:
         pthread_mutex_lock(&p->memory_lock);
-        r = guest_mmap(p, a[0] & 0x00ffffffffffffffull, a[1], (int)a[2], (int)a[3], (long)a[4], a[5]);
+        r = guest_mmap(p, a[0] & ADDRESS_MASK, a[1], (int)a[2], (int)a[3], (long)a[4], a[5]);
         pthread_mutex_unlock(&p->memory_lock);
         break;
-    case 226: r = RESULT(mprotect(host(p, a[0]), page_up(a[1]), (int)a[2] & (PROT_READ | PROT_WRITE))); break;
+    case 226:
+        pthread_mutex_lock(&p->memory_lock);
+        r = guest_mprotect(p, a[0] & ADDRESS_MASK, page_up(a[1]), (int)a[2] & (PROT_READ | PROT_WRITE));
+        pthread_mutex_unlock(&p->memory_lock);
+        break;
     case 227: case 232:  // msync, mincore: ART probes with these for unmapped address space
         r = range_free(p, a[0] & ~(PAGE - 1), PAGE) ? -12 : 0;
         if (r == 0 && number == 232) memset(host(p, a[2]), 1, page_up(a[1]) / PAGE);
         break;
-    case 233: {  // madvise. MADV_DONTNEED must leave private anonymous pages reading as zero.
+    case 233: {  // madvise: only MADV_DONTNEED has an effect the guest can see
         r = 0;
         if (a[2] != 4) break;
-        const uint64_t start = a[0] & 0x00ffffffffffffffull, length = page_up(a[1]);
+        const uint64_t start = a[0] & ADDRESS_MASK, length = page_up(a[1]);
         if (start & (PAGE - 1) || start + length > SEGMENT) { r = -22; break; }
-        for (uint64_t offset = 0; offset < length;) {
-            vm_address_t address = (vm_address_t)(p->base + start + offset);
-            vm_size_t size = 0;
-            vm_region_extended_info_data_t info;
-            mach_msg_type_number_t count = VM_REGION_EXTENDED_INFO_COUNT;
-            mach_port_t object = MACH_PORT_NULL;
-            if (vm_region_64(mach_task_self(), &address, &size, VM_REGION_EXTENDED_INFO, (vm_region_info_t)&info, &count, &object) != KERN_SUCCESS) break;
-            const uint64_t region_start = (uint64_t)address - (uint64_t)p->base, region_end = region_start + size;
-            if (region_start >= start + length) break;
-            const uint64_t from = region_start > start + offset ? region_start : start + offset;
-            const uint64_t to = region_end < start + length ? region_end : start + length;
-            if (!info.external_pager && info.protection != VM_PROT_NONE && info.pages_resident)
-                mmap(p->base + from, to - from, info.protection & (PROT_READ | PROT_WRITE), MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
-            offset = to - start;
+        pthread_mutex_lock(&p->memory_lock);
+        for (uint64_t done = 0; done < length;) {
+            const uint64_t part = piece(p, start + done, length - done);
+            if (chunk_backed(p, (start + done) >> CHUNK_SHIFT)) discard((uint8_t*)(start + done + p->chunks[(start + done) >> CHUNK_SHIFT]), part);
+            done += part;
         }
+        pthread_mutex_unlock(&p->memory_lock);
         break;
     }
     case 260: r = guest_wait(p, (long)(int)a[0], a[1], (long)a[2]); break;
@@ -1540,7 +2056,6 @@ int GUEST_MAIN(int argc, char** argv, char** envp) {
     const uint64_t begin = now_ns();
     struct Thread* main_thread = new_process(1);
     struct Process* first = main_thread->process;
-    first->base = mmap(NULL, SEGMENT, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
     for (int fd = 0; fd < 3; ++fd) first->fds[fd] = dup(fd);
     char* environment[] = {root ? "PATH=/system/bin" : "PATH=/nonexistent", "HOME=/", "TERM=dumb", "LANG=C",
                            "ANDROID_ROOT=/system", "ANDROID_DATA=/data", NULL};
@@ -1553,7 +2068,8 @@ int GUEST_MAIN(int argc, char** argv, char** envp) {
     const int status = first->status;
     pthread_mutex_unlock(&lock);
     if (getenv("G0E3_STATS"))
-        fprintf(stderr, "[runtime] pid=%d status=0x%x elapsed_ms=%.1f system_calls=%llu forks=%llu fork_mean_us=%.1f\n", pid, status,
-                (double)(now_ns() - begin) / 1e6, syscall_count, fork_count, fork_count ? (double)fork_ns / 1e3 / (double)fork_count : 0);
+        fprintf(stderr, "[runtime] pid=%d status=0x%x elapsed_ms=%.1f system_calls=%llu forks=%llu fork_mean_us=%.1f chunks_backed_on_touch=%llu "
+                "accesses_emulated=%llu\n", pid, status, (double)(now_ns() - begin) / 1e6, syscall_count, fork_count,
+                fork_count ? (double)fork_ns / 1e3 / (double)fork_count : 0, lazy_count, emulated_count);
     return status & 0x7f ? 128 + (status & 0x7f) : status >> 8;
 }

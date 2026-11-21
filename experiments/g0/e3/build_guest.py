@@ -5,8 +5,12 @@ Every ELF file in the tree is translated for a fixed load address and linked wit
 The tree is laid out as on a device (system/..., apex/...), from a build patched by
 experiments/aosp/patch.py.
 
-usage: build_guest.py <source tree> <output directory> [--segment '(16ull << 30)'] [--tests]
+usage: build_guest.py <source tree> <output directory> [--segment '(16ull << 30)'] [--sparse]
 Run the result with: <output>/guest <output>/root /system/bin/sh -c '...'
+
+--sparse translates memory accesses through the per-chunk table and gives the guest a 39-bit address
+space whose chunks get host memory when they are used. Without it one process is one block of
+--segment bytes.
 """
 import concurrent.futures
 import os
@@ -18,6 +22,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIRST_BASE = 0x10000000
 RESERVED = ["-ffixed-x18", "-ffixed-x25", "-ffixed-x26", "-ffixed-x27", "-ffixed-x28"]
+SPARSE = ["--table"] if "--sparse" in sys.argv else []
 
 
 def ndk():
@@ -65,7 +70,7 @@ def load_size(path):
 def translate(job):
     name, path, base, objects = job
     assembly = os.path.join(objects, name + ".S")
-    summary = subprocess.run([sys.executable, os.path.join(HERE, "rewrite.py"), "--base", hex(base), "--name", name, path, assembly],
+    summary = subprocess.run([sys.executable, os.path.join(HERE, "rewrite.py"), *SPARSE, "--base", hex(base), "--name", name, path, assembly],
                              capture_output=True, text=True, check=True).stdout.splitlines()[0]
     subprocess.run(["clang", "-arch", "arm64", "-c", assembly, "-o", os.path.join(objects, name + ".o")], check=True)
     return name, summary
@@ -169,7 +174,7 @@ def main():
     subprocess.run([sys.executable, os.path.join(HERE, "modules.py"), os.path.join(objects, "modules.c")]
                    + ["%s=%s@%d" % (symbol, guest, start) for symbol, _, start, _, guest in jobs], check=True)
     program = os.path.join(out, "guest")
-    subprocess.run(["clang", "-O2", "-arch", "arm64", "-DSEGMENT=" + segment, os.path.join(HERE, "runtime.c"), os.path.join(HERE, "entry.S"),
+    subprocess.run(["clang", "-O2", "-arch", "arm64", "-DSPARSE" if SPARSE else "-DSEGMENT=" + segment, os.path.join(HERE, "runtime.c"), os.path.join(HERE, "entry.S"),
                     os.path.join(objects, "modules.c")] + [os.path.join(objects, job[0] + ".o") for job in jobs] + ["-o", program], check=True)
 
     # toybox picks its command from the name it is run as, so give every command a link, as Android does.
