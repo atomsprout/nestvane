@@ -674,8 +674,8 @@ DynamicReport probeInit(const std::string& directory, const std::string& databas
         constexpr auto filename = "/system/bin/init";
         constexpr auto interpreter = "/system/bin/bootstrap/linker64";
         std::map<std::string, ReadOnlyImageFile, std::less<>> files;
-        // File-backed input includes the speed-compiled ART image and Launcher.
-        constexpr uint64_t maxRootBytes = 1344ULL * 1024 * 1024;
+        // File-backed input includes the offline ART boot and system-server artifacts.
+        constexpr uint64_t maxRootBytes = 1536ULL * 1024 * 1024;
         uint64_t total = 0;
         for (const auto& entry : fs::recursive_directory_iterator(root)) {
             const auto type = entry.symlink_status();

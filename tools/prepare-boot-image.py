@@ -131,6 +131,99 @@ def precompile_framework_code(adb, remote, guest, stage, bootclasspath):
                 raise SystemExit(f"Reference produced an empty {artifact.name}")
 
 
+def complete_boot_image(adb, remote, root, output, classpaths, active_modules):
+    primary = classpaths["DEX2OATBOOTCLASSPATH"]
+    full = classpaths["BOOTCLASSPATH"]
+    server = classpaths["SYSTEMSERVERCLASSPATH"]
+    standalone = classpaths["STANDALONE_SYSTEMSERVER_JARS"]
+    if full[:len(primary)] != primary or len(full) == len(primary):
+        raise SystemExit("Unexpected primary and Mainline boot classpaths")
+    if len(set(server + standalone)) != len(server + standalone):
+        raise SystemExit("Duplicate system-server classpath entries")
+
+    reference_files = set()
+    for jar in full + server + standalone:
+        if jar.startswith("/apex/"):
+            module = jar.split("/")[2]
+            apex = active_modules.get(module, "")
+            if not re.fullmatch(r"/system/apex/[A-Za-z0-9_.-]+\.apex", apex):
+                raise SystemExit(f"Expected an active factory APEX for {module}")
+            reference_files.add(apex)
+        else:
+            reference_files.add(jar)
+    check_reference_files(remote, root, reference_files)
+
+    stage = remote("mktemp", "-d", "/data/local/tmp/nestvane-preopt.XXXXXX")
+    if not re.fullmatch(r"/data/local/tmp/nestvane-preopt\.[A-Za-z0-9]+", stage):
+        raise SystemExit("Unexpected reference work directory")
+
+    def pull(source, destination):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(adb + ["pull", source, str(destination)], check=True)
+        if destination.stat().st_size == 0:
+            raise SystemExit(f"Reference produced an empty {destination.name}")
+
+    def compile_code(options, jars):
+        command = ["/apex/com.android.art/bin/dex2oat64",
+                   "--runtime-arg", "-Xbootclasspath:" + ":".join(full),
+                   "--runtime-arg", "-Xgc:CC", "--runtime-arg", "-Xmx384m", "-j2",
+                   "--instruction-set=arm64", "--instruction-set-features=default",
+                   "--avoid-storing-invocation", *options]
+        for jar in jars:
+            command.extend(("--dex-file=" + jar, "--dex-location=" + jar))
+        remote(*command)
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        remote("mkdir", stage + "/arm64")
+        for suffix in ("art", "oat", "vdex"):
+            name = f"boot.{suffix}"
+            source = root / "system/framework/arm64" / name
+            subprocess.run(adb + ["push", str(source), f"{stage}/arm64/{name}"], check=True)
+
+        with tempfile.TemporaryDirectory(dir=output.parent) as temporary:
+            guest = Path(temporary) / "guest"
+            shutil.copytree(root, guest)
+            extension_jars = full[len(primary):]
+            extension_name = "boot-" + Path(extension_jars[0]).stem
+            remote("mkdir", stage + "/extension")
+            stem = stage + "/extension/boot"
+            extension = stage + "/arm64/" + extension_name
+            compile_code(["--compiler-filter=verify", "--single-image", "--image-format=uncompressed",
+                          "--boot-image=" + stage + "/boot.art", "--image=" + stem + ".art",
+                          "--oat-file=" + stem + ".oat",
+                          f"--oat-location=/system/framework/arm64/{extension_name}.oat",
+                          "--output-vdex=" + stem + ".vdex"], extension_jars)
+            # For a boot extension dex2oat adds the first JAR's name to ART/OAT, but not VDEX.
+            for suffix in ("art", "oat", "vdex"):
+                file = (stem if suffix == "vdex" else f"{stage}/extension/{extension_name}") + "." + suffix
+                destination = guest / "system/framework/arm64" / f"{extension_name}.{suffix}"
+                pull(file, destination)
+                remote("mv", file, extension + "." + suffix)
+
+            for index, jar in enumerate(server + standalone):
+                source = Path(jar)
+                if jar.startswith("/apex/"):
+                    encoded = jar.lstrip("/").replace("/", "@") + "@classes"
+                    location = Path("/system/framework/oat/arm64") / encoded
+                else:
+                    location = source.parent / "oat/arm64" / source.stem
+                parents = ":".join(server[:index])
+                context = f"PCL[{parents}]"
+                if index >= len(server):
+                    context = "PCL[];" + context
+                stem = f"{stage}/{index:02d}"
+                compile_code(["--compiler-filter=speed",
+                              f"--boot-image={stage}/boot.art:{stage}/{extension_name}.art",
+                              "--class-loader-context=" + context, "--oat-file=" + stem + ".odex",
+                              "--oat-location=" + str(location) + ".odex",
+                              "--output-vdex=" + stem + ".vdex"], [jar])
+                for suffix in ("odex", "vdex"):
+                    pull(f"{stem}.{suffix}", guest / (str(location)[1:] + "." + suffix))
+            guest.rename(output)
+    finally:
+        remote("rm", "-rf", stage)
+
 def replace_line(path, pattern, value):
     updated, count = re.subn(pattern, value, path.read_text(), flags=re.MULTILINE)
     if count != 1:
@@ -223,6 +316,8 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--compiler-filter", choices=("verify", "speed"), default="verify",
                         help="ART filter for the offline boot image")
+    parser.add_argument("--complete-existing-image", action="store_true",
+                        help="Add Mainline ART and system-server artifacts to an assembled guest root")
     parser.add_argument("--framework-diagnostic", action="store_true",
                         help="Produce a complete offline diagnostic guest root using the compiled image")
     parser.add_argument("--framework-apps", action="store_true",
@@ -240,6 +335,8 @@ def main():
     args = parser.parse_args()
     if args.output.exists():
         parser.error("Choose a new output directory")
+    if args.complete_existing_image and (args.framework_diagnostic or args.compiler_filter != "verify"):
+        parser.error("--complete-existing-image reuses the staged primary image and cannot reassemble the guest")
     if args.defer_zygote_preload and not args.framework_diagnostic:
         parser.error("--defer-zygote-preload requires --framework-diagnostic")
     if args.framework_apps and not args.framework_diagnostic:
@@ -271,7 +368,7 @@ def main():
     if args.hardware_timeout_multiplier is not None:
         if not args.framework_diagnostic or not 1 <= args.hardware_timeout_multiplier <= 0x7fffffff:
             parser.error("--hardware-timeout-multiplier requires --framework-diagnostic and a positive Android int")
-    if args.framework_diagnostic and args.root.resolve() in args.output.resolve().parents:
+    if (args.framework_diagnostic or args.complete_existing_image) and args.root.resolve() in args.output.resolve().parents:
         parser.error("Choose an output directory outside the input guest root")
     adb = ["adb", "-s", args.serial]
 
@@ -306,6 +403,20 @@ def main():
         for module in apex_info.findall("apex-info")
         if module.get("isActive") == "true" and module.get("isFactory") == "true"
     }
+    if args.complete_existing_image:
+        classpaths = {"DEX2OATBOOTCLASSPATH": jars}
+        for name in ("BOOTCLASSPATH", "SYSTEMSERVERCLASSPATH", "STANDALONE_SYSTEMSERVER_JARS"):
+            match = re.search(rf"^export {name} (\S+)$", path_input, re.MULTILINE)
+            if not match:
+                raise SystemExit(f"The reference did not export {name}")
+            paths = match[1].split(":")
+            if any(not re.fullmatch(r"/(?:apex|system|system_ext)/[A-Za-z0-9_.+/-]+\.jar", path) or
+                   ".." in Path(path).parts for path in paths):
+                raise SystemExit(f"Unexpected JAR path in {name}")
+            classpaths[name] = paths
+        complete_boot_image(adb, remote, args.root, args.output, classpaths, active_modules)
+        return
+
     reference_files = set()
     if args.framework_diagnostic:
         for module, path in (
