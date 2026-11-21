@@ -677,3 +677,6 @@
 - iPhone 14 进程 1552 使用既有签名包和已装应用的数据卷冷启动。BOOT_COMPLETED 广播约在 793 秒完成。之后一份客体帧显示 Settings 无响应提示，随后该进程在未关闭 Settings 的情况下于 1053.881 秒报告 Launcher Displayed，UIKit 呈现 578 × 1064，峰值物理占用 2,623,824,224 字节。该轮测试未启用 SHA2。第一次 Editor 自动化启动时测试运行器因自动录屏提前退出，已在同一客体进程按截图模式复测。
 - iPhone 14 进程 1552 报告 Launcher Displayed 后，截图确认 System UI 无响应对话框覆盖桌面。两条 system_server 的 ANR 诊断线程停在 fcntl(F_SETPIPE_SZ, 1048576)，当时客体不支持该命令。实际点 Wait 后弹窗消失，仍使用同一进程复测 Editor。当前补齐 F_SETPIPE_SZ 和 F_GETPIPE_SZ。回归覆盖两端共享容量、1 MiB 申请、写入超过旧 64 KiB 上限、缩容 EBUSY、容量舍入、超限拒绝和读回一致。iPhoneOS Release 与签名通过。诊断线程停点已确认，System UI ANR 根因仍待验证。
 - Mac 同一诊断二进制、镜像与数据副本，顺序完成 SHA2 开关各一轮。原版 Launcher Displayed 落在开启时的 510.134–540.135 秒，关闭时的 570.002–600.002 秒，两轮均验证 sys.boot_completed=1。该单组按 30 秒快照取区间，不能给出精确差值或真机收益。
+- iPhone 14 进程 1552 在 System UI 弹窗消失后重新打开 Editor，XCUITest 触摸原版 LatinIME 键盘。独立导出的 578 × 1064 真机客体帧明确显示正文 Nestvane17 和字数 10。测试内整屏 OCR 未认出该行，未进入保存。Mac Vision 对同一截图只识别正文区域并关闭词典纠正，读回原样文本。后续真机测试用这一设置复验。
+- 同一进程使用 Stop Android 正常结束。备份数据库 quick_check 通过，仍保留发布 ScriptWidget APK 的原始 SHA-256 及 OpenCalc 的 7×8 → 56 历史。第一次覆盖安装的新包缺少 application-identifier。沿用已验证的原包开发签名授权重签后，新包安装成功，iPhone 14 进程 1578 开始带 SHA2 和管道修复的冷启动。
+- Mac 将 PCRE2、ART 的 141 个内存 AOT 试验块绑定到原版只读映射，四轮各用全新数据卷启动至 40 亿指令。基线 67.601 和 66.587 秒，候选 68.713 和 69.297 秒。两轮候选各走约 2,715 万条 PCRE2 和 158–191 万条 ART 原生块指令，合计约占 0.7%，未观察到候选块引起的客体错误。在这一对照下未提速，试验块未合入。
