@@ -50,7 +50,12 @@ struct ProbeLinux {
     void setGuestTouch(std::shared_ptr<GuestTouch> touch);
     void setGraphicsDma(std::shared_ptr<GuestColorDma> dma) { graphicsDma = std::move(dma); }
     bool syncData();
-    Machine createMachine(const Image& image) const { return Machine(image, anonymousBudget); }
+    // With native memory, every process gets a guest address space and its private lazy memory lives
+    // there (NESTVANE_NATIVE_MEMORY in the environment turns it on; it needs 16 KiB guest pages).
+    void setNativeMemory(bool enabled) { nativeMemory = enabled; }
+    Machine createMachine(const Image& image) const {
+        return Machine(image, anonymousBudget, nativeMemory ? std::make_shared<GuestSpace>() : nullptr);
+    }
     uint64_t dirtyAnonymousBytes() const { return anonymousBudget->dirty; }
 
     // Handles only the implemented guest syscalls. Unknown calls remain visible to the probe.
@@ -808,6 +813,7 @@ private:
         std::map<uint32_t, std::array<uint64_t, 2>> limits;
         std::map<uint32_t, Descriptor> descriptors;
         std::vector<Segment> segments;
+        std::shared_ptr<GuestSpace> space;  // held here while another process runs, like the segments
         std::array<std::array<uint64_t, 4>, 65> signalActions{};
         PendingSignals pendingSignals;
         uint64_t signalTrampoline = 0;
@@ -888,6 +894,7 @@ private:
     unsigned permissionShift(uint32_t uid, uint32_t gid, bool realIds = false) const;
     uint64_t pid, memoryLimit;
     std::shared_ptr<AnonymousBudget> anonymousBudget;
+    bool nativeMemory = false;
     struct ChildExit {
         uint64_t parent;
         uint32_t status, uid, code;

@@ -370,8 +370,8 @@ std::vector<uint8_t> readFile(const std::string& path) {
     return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
 }
 
-Machine::Machine(const Image& image, const std::shared_ptr<AnonymousBudget>& budget)
-    : segments(image.segments), topByteIgnore(image.startup.has_value()) {
+Machine::Machine(const Image& image, const std::shared_ptr<AnonymousBudget>& budget, std::shared_ptr<GuestSpace> guestSpace)
+    : space(std::move(guestSpace)), segments(image.segments), topByteIgnore(image.startup.has_value()) {
     const auto stackSize = image.startup ? image.startup->stackSize : staticStackSize;
     if (!stackSize || stackSize % pageSize || stackSize > maxGuestStackSize)
         throw std::runtime_error("invalid guest stack size");
@@ -383,7 +383,8 @@ Machine::Machine(const Image& image, const std::shared_ptr<AnonymousBudget>& bud
     Segment stack{stackTop - stackSize, {}, readable | writable};
     if (image.startup && budget) {
         stack.reservedSize = stackSize;
-        stack.anonymousPages = AnonymousPages::allocate(stackSize, budget);
+        stack.anonymousPages = space ? AnonymousPages::allocateIn(space, stack.address, stackSize)
+                                     : AnonymousPages::allocate(stackSize, budget);
         if (!stack.anonymousPages) throw std::bad_alloc();
     } else {
         stack.bytes.resize(stackSize);
@@ -423,7 +424,24 @@ std::shared_ptr<AnonymousPages> AnonymousPages::allocate(uint64_t length, const 
     }
 }
 
+AnonymousPages::AnonymousPages(const std::shared_ptr<GuestSpace>& guestSpace, uint64_t guestBase, uint64_t length)
+    : space(guestSpace), base(guestBase), hostPage(GuestSpace::page), size(length) {}
+
+std::shared_ptr<AnonymousPages> AnonymousPages::allocateIn(const std::shared_ptr<GuestSpace>& space, uint64_t base, uint64_t length,
+                                                          bool map) {
+    if (!length || base % GuestSpace::page || length % GuestSpace::page || base + length > GuestSpace::size) return {};
+    // Host memory comes when a chunk is first touched, so a large sparse mapping costs nothing.
+    if (map && !space->mapAnonymous(base, length, GuestSpace::read | GuestSpace::write, false)) return {};
+    return std::shared_ptr<AnonymousPages>(new AnonymousPages(space, base, length));
+}
+
+void AnonymousPages::release(uint64_t offset, uint64_t length) {
+    if (space) space->unmap(base + offset, length);
+    else discard(offset, length);
+}
+
 AnonymousPages::~AnonymousPages() {
+    if (space) return;  // the address space owns the memory, and release has returned what was unmapped
     for (size_t index = 0; index < blocks.size(); ++index) releaseBlock(index);
     budget->reserved -= size;
     budget->dirty -= dirtyBytes;
@@ -439,6 +457,8 @@ void AnonymousPages::releaseBlock(size_t index) {
 const uint8_t* AnonymousPages::read(uint64_t offset, size_t length) const {
     if (offset >= size || length > size - offset || length > blockSize - offset % blockSize) return nullptr;
     static constexpr std::array<uint8_t, blockSize> zero{};
+    // A block lies within one chunk, so it is contiguous in host memory. Untouched memory reads as zero.
+    if (space) return space->backed(base + offset) ? space->host(base + offset) : zero.data() + offset % blockSize;
     const auto* data = blocks[offset / blockSize].data;
     return (data ? data : zero.data()) + offset % blockSize;
 }
@@ -453,6 +473,10 @@ void AnonymousPages::readInto(uint64_t offset, std::span<uint8_t> bytes) const {
 }
 
 void AnonymousPages::write(uint64_t offset, std::span<const uint8_t> bytes) {
+    if (space) {
+        space->copyIn(base + offset, bytes.data(), bytes.size());
+        return;
+    }
     while (!bytes.empty()) {
         const auto within = offset % blockSize;
         const auto count = std::min(bytes.size(), blockSize - size_t(within));
@@ -463,6 +487,7 @@ void AnonymousPages::write(uint64_t offset, std::span<const uint8_t> bytes) {
 }
 
 bool AnonymousPages::resident(uint64_t offset) const {
+    if (space) return offset < size && space->backed(base + offset);
     return offset < size && dirty[offset / hostPage];
 }
 
@@ -470,6 +495,11 @@ bool AnonymousPages::prepareWrite(uint64_t offset, uint64_t length, int* mapping
     if (mappingError) *mappingError = 0;
     if (!length) return true;
     if (offset >= size || length > size - offset) return false;
+    if (space) {
+        for (uint64_t at = (base + offset) & ~(GuestSpace::chunk - 1); at < base + offset + length; at += GuestSpace::chunk)
+            if (!space->touch(std::max(at, base + offset))) return false;
+        return true;
+    }
     const auto first = offset / hostPage, last = (offset + length - 1) / hostPage;
     uint64_t additional = 0;
     for (auto index = first; index <= last; ++index) {
@@ -505,6 +535,18 @@ bool AnonymousPages::prepareWrite(uint64_t offset, uint64_t length, int* mapping
 
 void AnonymousPages::discard(uint64_t offset, uint64_t length) {
     const auto end = offset + length;
+    if (space) {
+        // Whole pages are replaced by fresh ones. The partial pages at the ends are cleared in place.
+        const auto first = (offset + hostPage - 1) & ~(hostPage - 1), last = end & ~(hostPage - 1);
+        const auto clear = [&](uint64_t from, uint64_t to) {
+            if (from < to && space->backed(base + from)) std::memset(space->host(base + from), 0, to - from);
+        };
+        if (first >= last) return clear(offset, end);
+        clear(offset, first);
+        space->discard(base + first, last - first);
+        clear(last, end);
+        return;
+    }
     for (auto position = offset; position < end;) {
         const auto index = position / hostPage;
         const auto next = std::min(end, (index + 1) * hostPage);
@@ -535,6 +577,20 @@ bool AnonymousPages::copyTo(AnonymousPages& target, uint64_t source, uint64_t de
                             uint64_t length, int* mappingError) const {
     if (mappingError) *mappingError = 0;
     const auto end = source + length;
+    if (space) {
+        // After fork the child's pages are already a copy in its own address space.
+        if (target.space && target.space != space && target.base + destination == base + source) return true;
+        for (auto position = source; position < end;) {
+            const auto next = std::min(end, (position / blockSize + 1) * blockSize);
+            if (space->backed(base + position)) {
+                const auto targetOffset = destination + position - source;
+                if (!target.prepareWrite(targetOffset, next - position, mappingError)) return false;
+                target.write(targetOffset, {read(position, next - position), size_t(next - position)});
+            }
+            position = next;
+        }
+        return true;
+    }
     for (auto position = source; position < end;) {
         const auto index = position / hostPage;
         const auto next = std::min(end, (index + 1) * hostPage);

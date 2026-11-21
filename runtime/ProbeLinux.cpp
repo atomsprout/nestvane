@@ -182,7 +182,7 @@ void changeRange(Machine& machine, uint64_t start, uint64_t end, std::optional<u
             continue;
         }
         if (!retain && segment.anonymousPages)
-            segment.anonymousPages->discard(segment.fileOffset + left - segment.address, right - left);
+            segment.anonymousPages->release(segment.fileOffset + left - segment.address, right - left);
         const auto applyAdvice = [&](Segment& part) {
             if (!advice) return;
             switch (*advice) {
@@ -406,6 +406,7 @@ ProbeLinux::ProbeLinux(uint64_t pid, uint64_t uid, uint64_t memoryLimit)
       current(&threads[pid]), currentTid(pid), nextTid(pid + 1) {
     current->process = std::make_shared<Process>();
     current->process->id = pid;
+    nativeMemory = pageSize == GuestSpace::page && std::getenv("NESTVANE_NATIVE_MEMORY");
     processes.emplace(pid, current->process.get());
     current->process->userIds.fill(uint32_t(uid));
     current->process->groupIds.fill(uint32_t(uid));
@@ -5007,7 +5008,13 @@ uint64_t ProbeLinux::map(Machine& machine) {
                     false, {}, 0, anon, !anon && sharing == 1, false, !anon};
     segment.sharedAnonymous = anon && sharing == 1;
     if (lazy) {
-        segment.anonymousPages = AnonymousPages::allocate(length, anonymousBudget);
+        if (machine.space) {
+            // The range may still hold pages of mappings this one replaces: they go first.
+            if (atAddress) changeRange(machine, start, end, {});
+            segment.anonymousPages = AnonymousPages::allocateIn(machine.space, start, length);
+        } else {
+            segment.anonymousPages = AnonymousPages::allocate(length, anonymousBudget);
+        }
         if (!segment.anonymousPages) return noMemory;
     } else if (!sparse && copiedLength) {
         if (snapshotFile && snapshotFile->privateMappingOffset == x[5] &&
@@ -5509,7 +5516,9 @@ bool ProbeLinux::switchThread(Machine& machine, std::chrono::steady_clock::time_
             if (!exited) current->saved = std::move(machine.cpu);
             if (current->process != next->second.process) {
                 current->process->segments = std::move(machine.segments);
+                current->process->space = std::move(machine.space);
                 machine.segments = std::move(next->second.process->segments);
+                machine.space = std::move(next->second.process->space);
             }
             currentTid = next->first;
             current = &next->second;
@@ -5598,6 +5607,15 @@ bool ProbeLinux::forkProcess(Machine& machine) {
     child.process->pendingSignals.clear();
     child.process->cpuTime = child.process->reapedCpuTime = {};
     child.process->segments = machine.segments;
+    // The child's address space is a copy-on-write copy. Its page stores below only point into it.
+    std::shared_ptr<GuestSpace> childSpace;
+    if (machine.space && !(childSpace = machine.space->fork())) return retry("guest address space", 0);
+    child.process->space = childSpace;
+    if (childSpace) {
+        for (const auto& segment : machine.segments)
+            if (segment.omitOnFork && segment.anonymousPages && segment.anonymousPages->guestSpace())
+                childSpace->unmap(segment.address, segment.mappedSize());
+    }
     std::erase_if(child.process->segments, [](const Segment& segment) { return segment.omitOnFork; });
     std::map<const AnonymousPages*, std::shared_ptr<AnonymousPages>> privateCopies;
     for (auto& segment : child.process->segments) {
@@ -5608,6 +5626,15 @@ bool ProbeLinux::forkProcess(Machine& machine) {
         }
         const auto& source = segment.anonymousPages;
         auto& copy = privateCopies[source.get()];
+        if (!copy && source->guestSpace()) {
+            copy = AnonymousPages::allocateIn(childSpace, source->guestBase(), source->capacity(), false);
+            if (!copy) return retry("guest address space", source->capacity());
+        }
+        if (source->guestSpace()) {
+            if (segment.wipeOnFork) copy->discard(segment.fileOffset, segment.mappedSize());
+            segment.anonymousPages = copy;
+            continue;
+        }
         if (!copy) {
             int mappingError = 0;
             copy = AnonymousPages::allocate(source->capacity(), anonymousBudget, &mappingError);
@@ -5643,10 +5670,13 @@ bool ProbeLinux::forkProcess(Machine& machine) {
     child.saved.exclusiveSize = 0;
     // The child TID is written only to its private memory view.
     auto parent = std::move(machine.segments);
+    auto parentSpace = std::move(machine.space);
     machine.segments = std::move(child.process->segments);
+    machine.space = childSpace;
     const bool wrote = writeGuest(machine, x[4], uint32_t(nextTid));
     child.process->segments = std::move(machine.segments);
     machine.segments = std::move(parent);
+    machine.space = std::move(parentSpace);
     if (!wrote) { x[0] = uint64_t(-14); return true; }
     const auto task = threads.emplace(nextTid, std::move(child)).first;
     processes.emplace(nextTid, task->second.process.get());
@@ -10555,7 +10585,7 @@ bool ProbeLinux::syscall(Machine& machine) {
                 }
                 if (!copied) { x[0] = noMemory; break; }
                 for (auto part = mapping; part != after; ++part)
-                    part->anonymousPages->discard(part->fileOffset, part->mappedSize());
+                    part->anonymousPages->release(part->fileOffset, part->mappedSize());
             } else if (!sparse) {
                 if (std::next(mapping) == after) {
                     moved.bytes = std::move(mapping->bytes);
@@ -10572,6 +10602,13 @@ bool ProbeLinux::syscall(Machine& machine) {
             }
             machine.segments.erase(mapping, after);
             if (flags & fixed) changeRange(machine, target, target + newSize, {});
+            if (lazy && machine.space) {
+                // The contents were gathered outside the address space, because the old and the new
+                // range may overlap. Now that the target is free they go to their place in it.
+                auto placed = AnonymousPages::allocateIn(machine.space, target, newSize);
+                if (!placed || !moved.anonymousPages->copyTo(*placed, 0, 0, newSize)) { x[0] = noMemory; break; }
+                moved.anonymousPages = std::move(placed);
+            }
             machine.insertSegment(std::move(moved));
             next = std::max(next, target + newSize);
             machine.cpu.exclusiveSize = 0;

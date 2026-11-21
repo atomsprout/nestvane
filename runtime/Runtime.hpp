@@ -12,6 +12,8 @@
 #include <string_view>
 #include <vector>
 
+#include "GuestSpace.hpp"
+
 namespace nestvane {
 
 // The guest's page size. 16384 matches the host, which native execution of guest code needs.
@@ -53,6 +55,16 @@ class AnonymousPages {
 public:
     static std::shared_ptr<AnonymousPages> allocate(uint64_t size, const std::shared_ptr<AnonymousBudget>& budget,
                                                      int* mappingError = nullptr);
+    // Pages that are the memory of a guest address space at `base`, where native guest code reaches
+    // them directly. With `map` they are mapped there now, readable and writable and zero-filled;
+    // without it they describe memory that is already mapped, as after fork.
+    static std::shared_ptr<AnonymousPages> allocateIn(const std::shared_ptr<GuestSpace>& space, uint64_t base, uint64_t size,
+                                                       bool map = true);
+    const std::shared_ptr<GuestSpace>& guestSpace() const { return space; }
+    uint64_t guestBase() const { return base; }
+    // Gives a range up for good, when its mapping goes away. Pages in a guest address space are
+    // unmapped. Other pages only need discard.
+    void release(uint64_t offset, uint64_t length);
     ~AnonymousPages();
     AnonymousPages(const AnonymousPages&) = delete;
     AnonymousPages& operator=(const AnonymousPages&) = delete;
@@ -69,7 +81,10 @@ public:
 
 private:
     AnonymousPages(uint64_t size, const std::shared_ptr<AnonymousBudget>& budget);
+    AnonymousPages(const std::shared_ptr<GuestSpace>& space, uint64_t base, uint64_t size);
     static constexpr size_t blockSize = 64 * 1024;
+    std::shared_ptr<GuestSpace> space;  // set for pages in a guest address space
+    uint64_t base = 0;
     struct Block {
         uint8_t* data = nullptr;
         size_t dirtyPages = 0;
@@ -212,9 +227,12 @@ struct CPU {
 };
 
 struct Machine {
-    explicit Machine(const Image& image, const std::shared_ptr<AnonymousBudget>& budget = {});
+    explicit Machine(const Image& image, const std::shared_ptr<AnonymousBudget>& budget = {},
+                     std::shared_ptr<GuestSpace> space = {});
 
     CPU cpu;
+    // Set when guest memory is laid out for native execution: private memory then lives in this space.
+    std::shared_ptr<GuestSpace> space;
     // Kept in address order. Insert new mappings through insertSegment().
     std::vector<Segment> segments;
     void insertSegment(Segment segment);
