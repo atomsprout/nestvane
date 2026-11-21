@@ -12,6 +12,15 @@
 
 整机软件解释用于必要时复现同一客体上的问题或验证性能差距。无 JIT 的 QEMU TCI 会解释内核和用户态指令，可能明显慢于硬件辅助虚拟化。真实差距以同一台 iPhone 上的任务数据为准。Linux 上用带真实内核的参考设备来核对语义，这项工作可独立于 iOS 整机模拟进行。
 
+## Apache-2.0 发布路线
+
+首版以 **Nestvane 自有代码采用 Apache-2.0，随包分发的第三方组件保留各自许可** 为目标。当前仓库尚未声明项目许可证。确认首方代码、文档和素材的授权来源后，再正式添加根目录 `LICENSE`。按发布构建的实际内容列出第三方版本、来源、许可和适用的通知。保留上游版权和 SPDX 标识，包括补丁携带的上游代码。Apache-2.0 标签只用于有权按该许可发布的文件。[Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0)
+
+- **宿主运行时**沿用自有 ARM64 执行器、Linux ABI 和 iOS 桥接。参考 Kernarium 的架构及对照数据，避免把 GPL 运行时或原生 Linux 内核链接进首版 App。Kernarium 的 Linux 内核为 GPL-2.0-only，并与宿主代码组成同一二进制文件。更换链接方式本身无法解决由此产生的许可问题。[Kernarium 许可说明](https://github.com/imxieyi/Kernarium/blob/main/LICENSES/README.md) · [ASF 兼容性说明](https://www.apache.org/licenses/GPL-compatibility.html)
+- **Android 17 发布镜像**由固定的 AOSP 源码版本自建，记录 Repo manifest 和产物校验值。保留实际打包模块的许可与适用通知，包含 APEX、原生库和生成的预编译产物。现有 SDK `default` 镜像用于内部验证。不能仅凭 `default` 名称推定整包的再分发权限。第三方验收 APK 单独导入。图形框架及其传递依赖按实际发布二进制核对许可和通知。[AOSP 许可说明](https://source.android.com/docs/setup/contribute/licenses) · [Android SDK 条款](https://developer.android.com/studio/terms)
+- **性能先验证执行器，再决定投入。** 用同一镜像和数据卷在 iPhone CX 上采样，区分用户态指令、ABI 调度和等待开销。先做可开关的镜像绑定宿主 AOT，覆盖启动采样命中的系统 ELF 和 `boot*.oat`，保留对后装 APK、未知映射和异常的解释路径。范围从真实启动关键路径扩大，净收益用端到端时间和峰值内存判断。
+- **并行按正确性和实测收益推进。** 若采样显示不同地址空间有足够的并行工作，先验证两个宿主执行线程，并回归共享页可见性、原子操作、futex、Binder 唤醒和退出。继续条件为真机启动阶段确有收益。最终仍按 P3 完成 APK、持久化和实体相机验收，并在无宿主 JIT 的 iPhone CX 上连续三次 30 秒内进入可触控桌面。若性能差距仍大，再评估是否接受独立分发、保有自身 GPL 义务的内核组件及真实设备边界。
+
 ## P0 固定基线和测试条件
 
 - **客体**：首轮锁定 AOSP `android-17.0.0_r1`、ARM64 64-bit-only、开发用 `userdebug`。记录 Repo manifest revision、构建变量、工具链、产物 SHA-256 和客体页大小。先固定一种页大小，选择和目标库及 Android 构建都匹配的配置。宿主页粒度与客体页语义分别处理。
@@ -37,7 +46,7 @@
 
 ## P3 首版真机验收
 
-Android 镜像使用 SDK 的 AOSP `default` 变体，保留桌面、设置、文件选择器、输入法和运行所需的系统组件。首版不预装 Play 商店、Google Play 服务、Google 服务框架或 Google 应用。验收 APK 通过 iOS「文件」导入，并在这一环境中完成各自的验收操作。
+当前验证镜像使用 SDK 的 AOSP `default` 变体，首版发布镜像按 Apache-2.0 发布路线从 AOSP 源码构建。两者都保留桌面、设置、文件选择器、输入法和运行所需的系统组件。首版不预装 Play 商店、Google Play 服务、Google 服务框架或 Google 应用。验收 APK 通过 iOS「文件」导入，并在这一环境中完成各自的验收操作。
 
 - **Android 桌面**。在当前验收设备上正常打开开发签名的 Nestvane，客体完成启动、可触摸操作 Launcher 和切换应用。连续三次冷启动均进入桌面，记录首个可交互帧的耗时和峰值内存。
 - **安装和运行 APK**。从 iOS「文件」选择 APK，经 Android 包管理器安装，在桌面启动并完成每款应用约定的基本操作。验收覆盖自有冒烟 APK 和至少两个在同版 ARM64 Android 参考环境通过的第三方 APK。重启 Nestvane 后，验证已安装应用仍可启动且应用数据保留。
@@ -60,7 +69,7 @@ iOS「文件」导入与客体安装助手已经实现。用户选择的 APK 以
 
 1. 保留现有无 JIT 路径，收集各启动阶段的客体 ELF、文件偏移、解释和 AOT 指令数，以及宿主执行、文件 I/O、Binder、等待和绘制成本。
 2. 做可开关的镜像绑定 AOT 批次。先覆盖采样确认的 Bionic、ART 和系统库基本块，再扩大到同一镜像的 `boot*.oat`。生成代码随 Release App 签名，只接受匹配的不可变客体指令。差分比较跨页读写、异常、寄存器和可变映射回退。用真实启动对照评估耗时、包体积和内存，再扩大覆盖。
-3. 按实测启动关键路径评估 ART 预编译产物复用和非关键工作的后移。保留 Binder、原版包管理、输入、图形和相机验收。若 AOT 扩覆盖后仍有数量级差距，在独立原型里用同一台 iPhone CX 对照原生 User-mode Linux、预编译指令分派和并行客体调度的收益，建立后续架构决策的测量依据。
+3. 按实测启动关键路径评估 ART 预编译产物复用和非关键工作的后移。保留 Binder、原版包管理、输入、图形和相机验收。若扩大 AOT 覆盖后仍有数量级差距，按 Apache-2.0 发布路线评估预编译指令分派和并行客体调度。原生 User-mode Linux 可作为独立架构基准。
 
 参考 Kernarium 的 Android 17 版 Andarium。其 AOT 构建流程覆盖指定 ARM64 ELF 和 `boot*.oat`，以 Android 发布版本和不可变代码页校验控制绑定。其 Android 数据快照保存磁盘状态，运行内存休眠用于同一宿主进程内恢复。Kernarium 的宿主 CPU、内核和图形路径与 Nestvane 不同，此前在同一台 iPhone 17 Pro 测得 Andarium 两次冷启动到 Settings 分别为 27.602 和 28.941 秒，当前 iPhone CX 的目标以 Nestvane 真机实测为准。[AOT 实现](https://github.com/imxieyi/Kernarium/blob/main/tools/aot/README.md) · [架构](https://github.com/imxieyi/Kernarium/blob/main/docs/architecture.md) · [优化记录](https://github.com/imxieyi/Kernarium/blob/main/docs/optimization-history.md)
 
