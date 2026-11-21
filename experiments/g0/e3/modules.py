@@ -9,7 +9,7 @@ import sys
 output, entries = sys.argv[1], []
 for argument in sys.argv[2:]:
     name, _, rest = argument.partition("=")
-    path, _, base = rest.partition("@")
+    path, _, base = rest.rpartition("@")  # HIDL library names have an @ of their own
     entries.append((name, path, int(base, 0) if base else 0))
 
 lines = ["#include <stdint.h>", "struct Module { const char* guest_path; const uint64_t* info; uint64_t base;",

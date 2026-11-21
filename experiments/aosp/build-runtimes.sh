@@ -53,6 +53,9 @@ keep() {  # back a prebuilt up once, then replace it
     echo "installed $2"
 }
 
+# SANITIZERS_ONLY=1 skips to the sanitizer runtimes, which link the libraries built before them.
+if [ -z "${SANITIZERS_ONLY:-}" ]; then
+
 configure builtins 21 "$llvm/compiler-rt/lib/builtins" "" "" \
     -DCOMPILER_RT_BUILTINS_HIDE_SYMBOLS=TRUE -DCOMPILER_RT_DEFAULT_TARGET_ONLY=TRUE \
     -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY -DCOMPILER_RT_EXCLUDE_ATOMIC_BUILTIN=OFF -DCOMPILER_RT_OS_DIR=android
@@ -101,6 +104,28 @@ for name in libc++abi_noexcept.a libc++_static_noexcept.a libc++demangle_noexcep
 done
 for name in libc++abi.a libc++_static.a libc++_shared.so; do
     keep "$work/libcxx-ndk/lib/$name" "$clang/android_libc++/ndk/aarch64/lib/$name"
+done
+
+fi
+
+# The sanitizer runtimes the platform uses outside sanitizer builds: the minimal UBSan handlers,
+# linked into most libraries, and the standalone UBSan library that libraries with diagnostics load.
+configure sanitizers 30 "$llvm/compiler-rt" "" "-L$work/libcxx-platform/lib -L$work/libunwind-hermetic/lib -unwindlib=none" \
+    -DCOMPILER_RT_BUILD_BUILTINS=OFF -DCOMPILER_RT_USE_BUILTINS_LIBRARY=ON -DCOMPILER_RT_DEFAULT_TARGET_ONLY=TRUE \
+    -DCOMPILER_RT_INCLUDE_TESTS=OFF -DCOMPILER_RT_OS_DIR=android \
+    -DCOMPILER_RT_SANITIZERS_TO_BUILD=ubsan_minimal -DCOMPILER_RT_BUILD_LIBFUZZER=OFF -DCOMPILER_RT_BUILD_XRAY=OFF \
+    -DCOMPILER_RT_BUILD_PROFILE=OFF -DCOMPILER_RT_BUILD_MEMPROF=OFF -DCOMPILER_RT_BUILD_ORC=OFF -DCOMPILER_RT_BUILD_GWP_ASAN=OFF \
+    -DCOMPILER_RT_BUILD_CTX_PROFILE=OFF -DSANITIZER_CXX_ABI=libcxxabi -DSANITIZER_COMMON_LINK_LIBS=-lunwind \
+    -DSANITIZER_COMMON_LINK_FLAGS=-Wl,-z,defs
+for name in libclang_rt.ubsan_minimal-aarch64-android.a libclang_rt.ubsan_minimal-aarch64-android.so \
+    libclang_rt.ubsan_standalone-aarch64-android.a libclang_rt.ubsan_standalone-aarch64-android.so \
+    libclang_rt.ubsan_standalone_cxx-aarch64-android.a; do
+    built=$(find "$work/sanitizers" -name "$name" | head -1)
+    [ -n "$built" ] && [ -f "$resource/$name" ] && keep "$built" "$resource/$name"
+done
+for file in "$resource"/libclang_rt.ubsan_*-aarch64-android.*; do
+    case $file in *.prebuilt) continue;; esac
+    echo "$(basename "$file") uses_x25_x28=$("$clang/bin/llvm-objdump" -d --no-show-raw-insn "$file" 2>/dev/null | grep -cE '\b[xw](25|26|27|28)\b')"
 done
 
 # Report what is left: only libunwind's register save and restore should mention the registers.
