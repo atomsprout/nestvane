@@ -1,0 +1,15 @@
+probe=e5 bundle=com.everettjf.nestvane.g0code
+machine=iPhone12,1 os=Version 26.0.1 (Build 23A355) build_config=optimized
+traced=0 host_page=16384 kernel_page=16384 physical_memory_mib=3853 available_mib=2093 footprint_mib=4.8
+vm_map min=0x1006f4000 max=0x458000000 span_gib=13.37 virtual_size_gib=391.07
+e5 frameworks=8
+e5 G0Code0 text_mib=64.0 dlopen_ms=4.91 first_touch=read first_touch_ms=42.5 first_touch_us_per_page=10.37 second_touch_ms=0.05 run_all_ms=16.7 run_minst_per_s=1007 footprint_mib=6.6 checksum=24468536760510
+e5 G0Code1 text_mib=64.0 dlopen_ms=2.68 first_touch=execute first_touch_ms=42.1 first_touch_us_per_page=10.27 second_touch_ms=3.97 run_all_ms=18.0 run_minst_per_s=934 footprint_mib=6.6 checksum=0
+e5 G0Code2 text_mib=64.0 dlopen_ms=2.08 first_touch=read first_touch_ms=40.1 first_touch_us_per_page=9.78 second_touch_ms=0.05 run_all_ms=15.3 run_minst_per_s=1097 footprint_mib=6.7 checksum=24484255357626
+e5 G0Code3 text_mib=64.0 dlopen_ms=2.70 first_touch=execute first_touch_ms=42.9 first_touch_us_per_page=10.48 second_touch_ms=4.23 run_all_ms=19.3 run_minst_per_s=868 footprint_mib=6.7 checksum=0
+e5 G0Code4 text_mib=64.0 dlopen_ms=2.06 first_touch=read first_touch_ms=39.8 first_touch_us_per_page=9.71 second_touch_ms=0.05 run_all_ms=17.3 run_minst_per_s=972 footprint_mib=6.8 checksum=24565674313390
+e5 G0Code5 text_mib=64.0 dlopen_ms=2.54 first_touch=execute first_touch_ms=41.3 first_touch_us_per_page=10.08 second_touch_ms=4.02 run_all_ms=18.8 run_minst_per_s=892 footprint_mib=6.8 checksum=0
+e5 G0Code6 text_mib=64.0 dlopen_ms=2.20 first_touch=read first_touch_ms=41.6 first_touch_us_per_page=10.16 second_touch_ms=0.06 run_all_ms=16.3 run_minst_per_s=1028 footprint_mib=6.8 checksum=24472367092250
+e5 G0Code7 text_mib=64.0 dlopen_ms=2.45 first_touch=execute first_touch_ms=41.9 first_touch_us_per_page=10.23 second_touch_ms=3.95 run_all_ms=17.3 run_minst_per_s=972 footprint_mib=6.9 checksum=0
+e5 total text_mib=512.0 dlopen_ms=21.6 first_touch_ms=332.2 second_touch_ms=16.4 first_touch_mib_per_s=1541 footprint_mib=6.9
+done probe=e5 elapsed_ms=512

@@ -1,0 +1,22 @@
+probe=e2 bundle=com.everettjf.nestvane.g0extended
+machine=iPhone12,1 os=Version 26.0.1 (Build 23A355) build_config=optimized
+traced=0 host_page=16384 kernel_page=16384 physical_memory_mib=3853 available_mib=2343 footprint_mib=4.8
+vm_map min=0x104ae8000 max=0xfc0000000 span_gib=58.93 virtual_size_gib=391.08
+e2 sparse size_gib=1.0 resident_mib=64 pages=4096 first_touch_us_per_page=1.90 remap_ms=2.580 cur_prot=3 child_read_us_per_page=0.70 child_cow_write_us_per_page=3.66 parent_write_after_us_per_page=4.42 mismatches=0 footprint_mib before=5.0 touched=69.5 remapped=69.5 child_read=134.1 child_written=134.1 end=135.5 internal_mib before_read=68.7 after_read=132.7 host_free_mib before_read=2209 after_read=2208 after_child_write=2140
+e2 sparse size_gib=1.0 resident_mib=256 pages=16384 first_touch_us_per_page=1.14 remap_ms=11.873 cur_prot=3 child_read_us_per_page=0.81 child_cow_write_us_per_page=3.56 parent_write_after_us_per_page=3.74 mismatches=0 footprint_mib before=6.4 touched=262.9 remapped=262.9 child_read=519.4 child_written=519.4 end=519.5 internal_mib before_read=260.7 after_read=516.7 host_free_mib before_read=2002 after_read=2001 after_child_write=1744
+e2 sparse size_gib=2.0 resident_mib=256 pages=16384 first_touch_us_per_page=1.09 remap_ms=10.592 cur_prot=3 child_read_us_per_page=0.69 child_cow_write_us_per_page=3.49 parent_write_after_us_per_page=3.66 mismatches=0 footprint_mib before=6.4 touched=263.4 remapped=263.4 child_read=520.4 child_written=520.4 end=520.5 internal_mib before_read=260.7 after_read=516.7 host_free_mib before_read=2000 after_read=2000 after_child_write=1742
+e2 sparse size_gib=2.0 resident_mib=512 pages=32768 first_touch_us_per_page=1.08 remap_ms=25.387 cur_prot=3 child_read_us_per_page=0.73 child_cow_write_us_per_page=3.24 parent_write_after_us_per_page=8.25 mismatches=0 footprint_mib before=6.4 touched=519.4 remapped=519.4 child_read=1032.4 child_written=1032.5 end=1032.5 internal_mib before_read=516.7 after_read=1028.7 host_free_mib before_read=1742 after_read=1742 after_child_write=1742
+e2 read_accounting backing=anonymous second_mapping=copy_on_write resident_mib=256 read_us_per_page=0.68 write_us_per_page=3.18 footprint_mib before=6.5 touched=262.6 second_mapping_read=518.7 second_mapping_written=518.7 host_free_mib before=1742 touched=1742 second_mapping_read=1742 second_mapping_written=1769 sum=16384
+e2 read_accounting backing=anonymous second_mapping=shared resident_mib=256 read_us_per_page=0.71 write_us_per_page=0.00 footprint_mib before=6.5 touched=262.6 second_mapping_read=518.7 second_mapping_written=518.7 host_free_mib before=2153 touched=1958 second_mapping_read=1962 second_mapping_written=1962 sum=16384
+e2 read_accounting backing=unlinked_file second_mapping=copy_on_write resident_mib=256 read_us_per_page=0.82 write_us_per_page=3.64 footprint_mib before=6.5 touched=6.6 second_mapping_read=6.7 second_mapping_written=262.7 host_free_mib before=1962 touched=1962 second_mapping_read=1962 second_mapping_written=1962 sum=16384
+e2 read_accounting backing=unlinked_file second_mapping=shared resident_mib=256 read_us_per_page=0.84 write_us_per_page=0.00 footprint_mib before=6.5 touched=6.6 second_mapping_read=6.7 second_mapping_written=6.7 host_free_mib before=1962 touched=1962 second_mapping_read=1962 second_mapping_written=1962 sum=16384
+e2 fixed_overwrite_into_reserved kr=0 same_address=1 cow_ok=1 remap_ms=0.827
+e2 fragmented entries=1024 size_mib=16 mprotect_ms=0.71 remap_kr=0 remap_ms=0.782 remap_us_per_entry=0.763 first_entry_protection_kept=1
+e2 fragmented entries=16384 size_mib=256 mprotect_ms=7.34 remap_kr=0 remap_ms=8.530 remap_us_per_entry=0.521 first_entry_protection_kept=1
+e2 fragmented entries=65536 size_mib=1024 mprotect_ms=34.86 remap_kr=0 remap_ms=39.928 remap_us_per_entry=0.609 first_entry_protection_kept=1
+e2 granularity request_offset=4096 request_size=4096 kr=0 target=0x1051f4000 target_low_bits=0x0
+e2 granularity whole_host_page_copied=1 parent_unchanged=1
+e2 granularity mprotect_4k_inside_page result=-1 errno=22
+e2 shared_file copy_kr=0 child_sees_parent_write_after_copy=0 share_kr=0 child_sees_parent_write_after_share=1 parent_sees_child_write=1 file_sees_child_write=1
+e2 generations depth=12 resident_mib_each=16 remap_mean_ms=0.079 remap_worst_ms=0.469 wrong_values=0 deepest_read_us_per_page=0.00 footprint_mib=216.1 checksum=6016
+done probe=e2 elapsed_ms=2637

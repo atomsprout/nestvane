@@ -1,0 +1,23 @@
+probe=e4 bundle=com.everettjf.nestvane.g0
+machine=iPhone12,1 os=Version 26.0.1 (Build 23A355) build_config=optimized
+traced=0 host_page=16384 kernel_page=16384 physical_memory_mib=3853 available_mib=2093 footprint_mib=4.7
+vm_map min=0x1040e4000 max=0x458000000 span_gib=13.31 virtual_size_gib=391.07
+e4 signal null_load iterations=100000 delivered=100000 landing=0 value_preserved=100000 signal=11 si_addr=0x0 mean_us=2.47 worst_us=1004.6
+e4 signal low_address_load iterations=100000 delivered=100000 landing=0 value_preserved=100000 signal=11 si_addr=0x1238 mean_us=2.41 worst_us=240.8
+e4 signal prot_none_load iterations=100000 delivered=100000 landing=0 value_preserved=100000 signal=10 si_addr=0x1046b8000 mean_us=2.39 worst_us=34.6
+e4 signal read_only_store iterations=100000 delivered=100000 landing=0 value_preserved=0 signal=10 si_addr=0x1046bc000 mean_us=2.39 worst_us=36.6
+e4 signal null_load_redirected iterations=100000 delivered=100000 landing=100000 value_preserved=0 signal=11 si_addr=0x0 mean_us=2.38 worst_us=45.5
+e4 signal second_thread null_load iterations=20000 delivered=20000 landing=0 value_preserved=20000 signal=11 si_addr=0x0 mean_us=2.38 worst_us=31.1
+e4 signal second_thread protected_store iterations=20000 delivered=20000 landing=20000 value_preserved=0 signal=10 si_addr=0x1046bc000 mean_us=2.39 worst_us=35.2
+e4 mach port_setup kr=0
+e4 mach task_swap_exception_ports kr=0 previous_handlers=1
+e4 mach_forwarded_to_signal null_load iterations=20000 delivered=20000 landing=0 value_preserved=20000 signal=11 si_addr=0x0 mean_us=7.56 worst_us=44.2
+e4 mach_forwarded_to_signal read_only_store_redirected iterations=20000 delivered=20000 landing=20000 value_preserved=0 signal=10 si_addr=0x1046bc000 mean_us=7.52 worst_us=33.9
+e4 mach forwarded received=40000 bad_messages=0 send_errors=0
+e4 mach_repairs_state null_load iterations=20000 delivered=0 landing=0 value_preserved=20000 signal=10 si_addr=0x1046bc000 mean_us=4.82 worst_us=26.0
+e4 mach_repairs_state prot_none_load iterations=20000 delivered=0 landing=0 value_preserved=20000 signal=10 si_addr=0x1046bc000 mean_us=4.82 worst_us=30.6
+e4 mach repaired received=40000 bad_messages=0 send_errors=0
+e4 mach_forwarded_again null_load iterations=20000 delivered=20000 landing=0 value_preserved=20000 signal=11 si_addr=0x0 mean_us=7.53 worst_us=30.1
+e4 signal after_mach_port_removed null_load iterations=100000 delivered=100000 landing=0 value_preserved=100000 signal=11 si_addr=0x0 mean_us=2.37 worst_us=45.2
+e4 traced_at_end=0
+done probe=e4 elapsed_ms=2186

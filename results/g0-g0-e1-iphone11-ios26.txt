@@ -1,0 +1,25 @@
+probe=e1 bundle=com.everettjf.nestvane.g0
+machine=iPhone12,1 os=Version 26.0.1 (Build 23A355) build_config=optimized
+traced=0 host_page=16384 kernel_page=16384 physical_memory_mib=3853 available_mib=2093 footprint_mib=4.9
+vm_map min=0x1049b8000 max=0x458000000 span_gib=13.30 virtual_size_gib=391.07
+e1 single size_gib=65536 result=fail errno=12
+e1 single size_gib=32768 result=fail errno=12
+e1 single size_gib=16384 result=fail errno=12
+e1 single size_gib=8192 result=fail errno=12
+e1 single size_gib=4096 result=fail errno=12
+e1 single size_gib=2048 result=fail errno=12
+e1 single size_gib=1024 result=fail errno=12
+e1 single size_gib=512 result=fail errno=12
+e1 single size_gib=256 result=fail errno=12
+e1 single size_gib=128 result=fail errno=12
+e1 single size_gib=64 result=fail errno=12
+e1 single size_gib=32 result=fail errno=12
+e1 single size_gib=16 result=fail errno=12
+e1 single size_gib=8 result=fail errno=12
+e1 single size_gib=4 result=ok address=0x300000000
+e1 single size_gib=2 result=ok address=0x300000000
+e1 single size_gib=1 result=ok address=0x108c80000
+e1 cumulative prot_none total_gib=7.203 chunks=13 lowest=0x108c80000 highest=0x458000000 last_errno=12 reserve_ms=0.0 virtual_size_gib=398.28 footprint_mib=5.2
+e1 cumulative read_write_untouched total_gib=7.203 chunks=13 lowest=0x108c80000 highest=0x458000000 last_errno=12 reserve_ms=0.0 virtual_size_gib=398.28 footprint_mib=5.2
+e1 cumulative prot_none_repeat total_gib=7.203 chunks=13 lowest=0x108c80000 highest=0x458000000 last_errno=12 reserve_ms=0.0 virtual_size_gib=398.28 footprint_mib=5.2
+done probe=e1 elapsed_ms=4
