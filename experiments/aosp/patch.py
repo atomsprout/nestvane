@@ -134,3 +134,26 @@ edit("art/runtime/interpreter/mterp/nterp.cc", [(
     "    case InstructionSet::kThumb2:\n      return kReserveMarkingRegister && !kUseTableLookupReadBarrier;\n"
     "    case InstructionSet::kArm64:\n      return false;  // Nestvane: nterp uses x25-x28, which belong to the host runtime.\n")],
     "Nestvane: nterp uses x25-x28")
+
+# ---------------------------------------------------------------- dynamic linker
+# The host translates each system ELF ahead of time for one load address. The linker asks the host
+# where a file must go. On a real kernel the call fails with ENOSYS and nothing changes.
+edit("bionic/linker/linker_phdr.cpp", [(
+    "    start = ReserveWithAlignmentPadding(load_size_, kLibraryAlignment, start_alignment, &gap_start_,\n"
+    "                                        &gap_size_);\n",
+    "    // Nestvane: system call 0x4e56 returns the address this file was translated for, if any.\n"
+    "    start = nullptr;\n"
+    "    long nestvane_address = syscall(0x4e56, fd_, load_size_);\n"
+    "    if (nestvane_address > 0) {\n"
+    "      void* fixed = mmap(reinterpret_cast<void*>(nestvane_address), load_size_, PROT_NONE,\n"
+    "                         MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);\n"
+    "      if (fixed != MAP_FAILED) {\n"
+    "        start = fixed;\n"
+    "        gap_start_ = nullptr;\n"
+    "        gap_size_ = 0;\n"
+    "      }\n"
+    "    }\n"
+    "    if (start == nullptr) {\n"
+    "      start = ReserveWithAlignmentPadding(load_size_, kLibraryAlignment, start_alignment, &gap_start_,\n"
+    "                                          &gap_size_);\n"
+    "    }\n")], "Nestvane: system call 0x4e56")

@@ -22,7 +22,12 @@ sparse to reserve as one block, and it costs two more instructions and a load pe
 With --host-lr, bl and ret stay native calls and returns and x30 holds a host address. Without it,
 x30 holds the guest return address and every return goes through the table.
 
-usage: rewrite.py [--host-lr] [--table] [--symbols] <elf> <output.s>
+A position-independent ELF (an Android executable or shared library) is translated for one load
+address, given with --base. --name sets the module name used in symbols, so that several modules
+can be linked into one program. Each module exports _guest_module_<name>: its text start, text end,
+entry point and code table.
+
+usage: rewrite.py [--host-lr] [--table] [--symbols] [--base 0x...] [--name module] <elf> <output.s>
 """
 import struct
 import sys
@@ -32,6 +37,9 @@ TPIDR_OFFSET = 784
 BASE_OFFSET, MEMORY_TABLE_OFFSET = 800, 824
 CHUNK_SHIFT = 24
 CONDITIONS = "eq ne hs lo mi pl vs vc hi ls ge lt gt le al nv".split()
+# xpaclri, pacia1716 ... autibsp: the hint-space pointer authentication instructions.
+PAC_HINTS = {0xD50320FF, 0xD503211F, 0xD503215F, 0xD503219F, 0xD50321DF, 0xD503231F, 0xD503233F, 0xD503235F,
+             0xD503237F, 0xD503239F, 0xD50323BF, 0xD50323DF, 0xD50323FF}
 
 
 def signed(value, bits):
@@ -39,20 +47,22 @@ def signed(value, bits):
 
 
 class Rewriter:
-    def __init__(self, path, host_lr, symbols=False, table=False):
+    def __init__(self, path, host_lr, symbols=False, table=False, base=0, name="main"):
+        self.base, self.name = base, name
         self.host_lr = host_lr
         self.table = table
         self.symbols = symbols  # keep a symbol per guest instruction, for debugging
         self.data = open(path, "rb").read()
         assert self.data[:4] == b"\x7fELF" and self.data[4] == 2, "need a 64-bit ELF"
         (self.entry, phoff) = struct.unpack_from("<QQ", self.data, 24)
+        self.entry += base
         phentsize, phnum = struct.unpack_from("<HH", self.data, 54)
         self.start = self.end = None
         for index in range(phnum):
             kind, flags, offset, vaddr, _, filesz, _, _ = struct.unpack_from("<IIQQQQQQ", self.data, phoff + index * phentsize)
             if kind == 1 and flags & 1:
                 assert self.start is None, "one executable segment expected"
-                self.start, self.end, self.offset = vaddr, vaddr + (filesz + 3 & ~3), offset
+                self.start, self.end, self.offset = base + vaddr, base + vaddr + (filesz + 3 & ~3), offset
         # Pad the front so the first instruction is 4-byte aligned in guest address terms.
         assert self.start % 4 == 0
         self.out = []
@@ -70,7 +80,7 @@ class Rewriter:
         self.emit(".long 0x%08x" % (value & 0xFFFFFFFF))
 
     def label(self, address):
-        return ("g_%x" if self.symbols else "Lg_%x") % address
+        return ("g_%s_%x" if self.symbols else "Lg_%s_%x") % (self.name, address)
 
     def is_code(self, address):
         return self.start <= address < self.end and address % 4 == 0
@@ -275,6 +285,9 @@ class Rewriter:
     def instruction(self, pc, w):
         if self.branch(pc, w):
             return
+        if w in PAC_HINTS:
+            self.word(0xD503201F)
+            return self.count("pac_hint", 0)
         if w & 0xFFE0001F == 0xD4000001:  # svc
             self.emit("adr x28, 1f")
             self.emit("b _guest_svc")
@@ -307,25 +320,33 @@ class Rewriter:
         out = self.out
         out.append(".section __TEXT,__text,regular,pure_instructions")
         out.append(".p2align 4")
-        out.append(".globl _guest_code")
-        out.append("_guest_code:")
+        out.append(".globl _guest_code_%s" % self.name)
+        out.append("_guest_code_%s:" % self.name)
         for pc in range(self.start, self.end, 4):
             out.append(self.label(pc) + ":")
             self.instruction(pc, struct.unpack_from("<I", self.data, self.offset + pc - self.start)[0])
         out.append("\tbrk #0x3ff")
         out.append(".section __DATA,__const")
         out.append(".p2align 3")
-        for name, value in (("text_start", self.start), ("text_end", self.end), ("entry", self.entry)):
-            out.append(".globl _guest_%s\n_guest_%s:\n\t.quad 0x%x" % (name, name, value))
-        out.append(".globl _guest_table\n_guest_table:")
+        table = "Lguest_table_%s" % self.name
+        out.append(".globl _guest_module_%s\n_guest_module_%s:" % (self.name, self.name))
+        out.append("\t.quad 0x%x, 0x%x, 0x%x, %s" % (self.start, self.end, self.entry, table))
+        out.append(table + ":")
         for pc in range(self.start, self.end, 4):
             out.append("\t.quad " + self.label(pc))
         return "\n".join(out) + "\n"
 
 
 def main():
-    arguments = [argument for argument in sys.argv[1:] if not argument.startswith("--")]
-    rewriter = Rewriter(arguments[0], "--host-lr" in sys.argv, "--symbols" in sys.argv, "--table" in sys.argv)
+    arguments, options = [], {}
+    values = iter(sys.argv[1:])
+    for argument in values:
+        if argument in ("--base", "--name"):
+            options[argument] = next(values)
+        elif not argument.startswith("--"):
+            arguments.append(argument)
+    rewriter = Rewriter(arguments[0], "--host-lr" in sys.argv, "--symbols" in sys.argv, "--table" in sys.argv,
+                        int(options.get("--base", "0"), 0), options.get("--name", "main"))
     open(arguments[1], "w").write(rewriter.run())
     guest = (rewriter.end - rewriter.start) // 4
     added = sum(extra for _, extra in rewriter.counts.values())

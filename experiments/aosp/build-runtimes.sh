@@ -4,14 +4,15 @@
 # them over the prebuilts in the checkout. The recipe follows toolchain/llvm_android's builders.py
 # for the same toolchain revision, minus LTO and profile flags.
 #
-#   build-runtimes.sh <aosp root> <llvm-project at the toolchain's base revision> <llvm_android> <ndk>
+#   build-runtimes.sh <aosp root> <llvm-project at the toolchain's base revision> <llvm_android> <ndk> <clang version>
 set -euo pipefail
 
 aosp=$1 llvm=$2 llvm_android=$3 ndk=$4
-clang=$(ls -d "$aosp"/prebuilts/clang/host/linux-x86/clang-r* | tail -1)
+# The clang that the release config selects (RELEASE_BUILD_CLANG_VERSION), e.g. clang-r584948b.
+clang=$aosp/prebuilts/clang/host/linux-x86/$5
 resource=$(ls -d "$clang"/lib/clang/*/lib/linux)
 sysroot=$ndk/toolchains/llvm/prebuilt/linux-x86_64/sysroot
-work=${WORK:-$HOME/tc/build}
+work=${WORK:-$HOME/tc/build-$5}
 reserved="-ffixed-x18 -ffixed-x25 -ffixed-x26 -ffixed-x27 -ffixed-x28"
 mkdir -p "$work"
 
@@ -35,7 +36,7 @@ configure() {  # <name> <api level> <source dir> <extra c flags> <extra ld flags
     local link="-fuse-ld=lld -rtlib=compiler-rt -Wl,-z,defs -Wl,--gc-sections -Wl,--build-id=sha1 -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384 $xom_link -resource-dir $clang/lib/clang/$(basename "$(dirname "$(dirname "$resource")")") $ldflags"
     rm -rf "$work/$name"
     cmake -G Ninja -S "$source" -B "$work/$name" \
-        -DCMAKE_BUILD_TYPE=Release -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=aarch64 -DANDROID=TRUE -DANDROID_PLATFORM_LEVEL="$api" -DANDROID_NATIVE_API_LEVEL="$api" \
+        -DCMAKE_BUILD_TYPE=Release -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=aarch64 -DANDROID=TRUE -DCMAKE_PLATFORM_NO_VERSIONED_SONAME=ON -DANDROID_PLATFORM_LEVEL="$api" -DANDROID_NATIVE_API_LEVEL="$api" \
         -DCMAKE_C_COMPILER="$clang/bin/clang" -DCMAKE_CXX_COMPILER="$clang/bin/clang++" -DCMAKE_ASM_COMPILER="$clang/bin/clang" \
         -DCMAKE_AR="$clang/bin/llvm-ar" -DCMAKE_RANLIB="$clang/bin/llvm-ranlib" -DCMAKE_NM="$clang/bin/llvm-nm" \
         -DCMAKE_C_COMPILER_TARGET="aarch64-linux-android$api" -DCMAKE_CXX_COMPILER_TARGET="aarch64-linux-android$api" \
@@ -103,6 +104,9 @@ for name in libc++abi.a libc++_static.a libc++_shared.so; do
 done
 
 # Report what is left: only libunwind's register save and restore should mention the registers.
+for file in "$clang"/android_libc++/platform/aarch64/lib/libc++.so "$clang"/android_libc++/ndk/aarch64/lib/libc++_shared.so; do
+    echo "$(basename "$file") soname=$("$clang/bin/llvm-readelf" -d "$file" | grep SONAME | sed 's/.*\[\(.*\)\]/\1/') was=$("$clang/bin/llvm-readelf" -d "$file.prebuilt" | grep SONAME | sed 's/.*\[\(.*\)\]/\1/')"
+done
 for file in "$resource/libclang_rt.builtins-aarch64-android.a" "$resource"/aarch64/libunwind*.a \
     "$clang"/android_libc++/platform/aarch64/lib/* "$clang"/android_libc++/platform_noexcept/aarch64/lib/* \
     "$clang"/android_libc++/ndk/aarch64/lib/*; do

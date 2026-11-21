@@ -1,8 +1,11 @@
-// Host runtime for a guest rewritten by rewrite.py: one guest process is one 1 GiB segment and one
-// host thread, fork is a copy-on-write vm_remap of the segment, and Linux system calls are served by
-// the host. It implements what toybox needs and nothing more.
+// Host runtime for guests rewritten by rewrite.py: one guest process is one segment of memory and
+// one host thread, fork is a copy-on-write vm_remap of the segment, and Linux system calls are
+// served by the host. It implements what toybox needs, static (musl) or dynamic (Bionic).
 //
-// usage: <program> <guest elf> <guest argv...>
+// usage: <program> <guest elf> <guest argv...>       one static module, files are the host's
+//        <program> <guest root> <guest argv...>      Android layout: argv[0] is a path under the root
+//
+// The modules linked into the program are listed in guest_modules (see modules.py).
 
 #include <dirent.h>
 #include <errno.h>
@@ -17,6 +20,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/param.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/time.h>
@@ -30,6 +34,7 @@
 #define PAGE 16384ull
 #define STACK_SIZE (8ull << 20)
 #define BRK_LIMIT (128ull << 20)
+#define ROOT_BRK_START (64ull << 20)  // with a guest root, modules are prelinked above the heap
 #define MAX_FDS 256
 #define MAX_PROCESSES 1024
 
@@ -54,10 +59,26 @@ _Static_assert(__builtin_offsetof(struct Context, host_sp) == 816, "entry.S");
 _Static_assert(__builtin_offsetof(struct Context, memory_table) == 824, "entry.S, rewrite.py");
 #define CHUNK_SHIFT 24
 
+// One translated ELF. `info` is the block rewrite.py emits: text start, text end, entry, table.
+struct Module {
+    const char* guest_path;  // NULL for the single static module named on the command line
+    const uint64_t* info;
+    uint64_t base;
+    // Filled at startup.
+    const char* host_path;
+    const uint8_t* image;
+    uint64_t end, headers;  // guest addresses: end of the image, and its program headers
+    int32_t device;
+    uint64_t inode;
+};
+extern struct Module guest_modules[];
+extern const int guest_module_count;
+
 struct Process {
     int pid, parent;
     int exited, status, reaped, vfork_done;
     uint8_t* base;
+    const struct Module* executable;
     uint64_t brk_start, brk, map_low, map_high;
     uint8_t used[SEGMENT / PAGE / 8];  // one bit per page handed out by mmap
     int fds[MAX_FDS];
@@ -68,13 +89,12 @@ struct Process {
     struct Context context;
 };
 
-extern const uint64_t guest_text_start, guest_text_end, guest_entry;
-extern const uint64_t guest_table[];
 void guest_enter(struct Context*) __attribute__((noreturn));
 
-static uint8_t* image;
-static size_t image_size;
-static const char* image_path;
+static const char* root;  // host directory that is the guest's "/", or NULL
+static size_t root_length;
+static uint64_t code_low, code_high;
+static uint64_t* code_table;
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t changed = PTHREAD_COND_INITIALIZER;
 static struct Process* processes[MAX_PROCESSES];
@@ -122,6 +142,64 @@ static void close_fd(struct Process* process, int fd) {
     process->fds[fd] = -1;
 }
 
+// ---------------------------------------------------------------- modules
+
+static const struct Module* module_for_stat(const struct stat* info) {
+    for (int index = 0; index < guest_module_count; ++index)
+        if (guest_modules[index].image && guest_modules[index].inode == info->st_ino && guest_modules[index].device == info->st_dev)
+            return &guest_modules[index];
+    return NULL;
+}
+
+static const struct Module* module_for_file(const char* path) {
+    struct stat info;
+    return stat(path, &info) == 0 ? module_for_stat(&info) : NULL;
+}
+
+// Maps every translated ELF and builds the one table that turns a guest pc into host code.
+static int load_modules(const char* single) {
+    code_low = ~0ull;
+    for (int index = 0; index < guest_module_count; ++index) {
+        struct Module* module = &guest_modules[index];
+        char path[MAXPATHLEN];
+        if (module->guest_path && root) snprintf(path, sizeof path, "%s%s", root, module->guest_path);
+        else if (!module->guest_path && single) snprintf(path, sizeof path, "%s", single);
+        else continue;
+        module->host_path = realpath(path, NULL);
+        const int descriptor = module->host_path ? open(module->host_path, O_RDONLY) : -1;
+        struct stat info;
+        if (descriptor < 0 || fstat(descriptor, &info) != 0) {
+            fprintf(stderr, "[runtime] cannot open module %s\n", path);
+            return 0;
+        }
+        module->image = mmap(NULL, (size_t)info.st_size, PROT_READ, MAP_PRIVATE, descriptor, 0);
+        close(descriptor);
+        module->device = info.st_dev;
+        module->inode = info.st_ino;
+        const uint64_t phoff = *(uint64_t*)(module->image + 32);
+        const uint16_t phentsize = *(uint16_t*)(module->image + 54), phnum = *(uint16_t*)(module->image + 56);
+        for (int header = 0; header < phnum; ++header) {
+            const uint8_t* entry = module->image + phoff + (uint64_t)header * phentsize;
+            if (*(uint32_t*)entry != 1) continue;
+            const uint64_t high = module->base + *(uint64_t*)(entry + 16) + *(uint64_t*)(entry + 40);
+            if (page_up(high) > module->end) module->end = page_up(high);
+            if (*(uint64_t*)(entry + 8) == 0) module->headers = module->base + *(uint64_t*)(entry + 16) + phoff;
+        }
+        if (module->info[0] < code_low) code_low = module->info[0];
+        if (module->info[1] > code_high) code_high = module->info[1];
+    }
+    if (code_low >= code_high) return 0;
+    code_table = mmap(NULL, (code_high - code_low) * 2, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    for (int index = 0; index < guest_module_count; ++index) {
+        const struct Module* module = &guest_modules[index];
+        if (!module->image) continue;
+        memcpy(code_table + (module->info[0] - code_low) / 4, (const void*)module->info[3], (module->info[1] - module->info[0]) * 2);
+    }
+    return 1;
+}
+
+static uint64_t host_code(uint64_t guest_pc) { return code_table[(guest_pc - code_low) / 4]; }
+
 // ---------------------------------------------------------------- guest memory
 
 static void map_none(struct Process* process, uint64_t address, uint64_t length) {
@@ -153,7 +231,7 @@ static uint64_t allocate(struct Process* process, uint64_t length) {
 
 static void release(struct Process* process, uint64_t address, uint64_t length) {
     map_none(process, address, length);
-    mark(process, address, length, 0);
+    if (address >= process->map_low && address + length <= process->map_high) mark(process, address, length, 0);
 }
 
 // Grows in place when the pages above are free, otherwise moves the mapping without copying it.
@@ -182,9 +260,10 @@ static long guest_mremap(struct Process* process, uint64_t address, uint64_t old
 static long guest_mmap(struct Process* process, uint64_t address, uint64_t length, int protection, int flags, long fd, uint64_t offset) {
     length = page_up(length);
     if (!length) return -22;
-    const int fixed = flags & 0x10, anonymous = flags & 0x20, shared = flags & 1;
+    const int fixed = flags & (0x10 | 0x100000), anonymous = flags & 0x20, shared = flags & 1;  // MAP_FIXED, MAP_FIXED_NOREPLACE
     if (fixed) {
         if (address & (PAGE - 1) || address + length > SEGMENT) return -22;
+        if (address >= process->map_low && address + length <= process->map_high) mark(process, address, length, 1);
     } else if (!(address = allocate(process, length))) {
         return -12;
     }
@@ -195,30 +274,54 @@ static long guest_mmap(struct Process* process, uint64_t address, uint64_t lengt
     return (long)address;
 }
 
-// Puts the ELF and a fresh stack into the process's segment and points its context at the entry.
-static void load_image(struct Process* process, char** argv, char** envp) {
-    uint8_t* base = process->base;
-    mmap(base, SEGMENT, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
+// Copies an ELF's loadable segments to module->base in the process's segment.
+static void map_module(struct Process* process, const struct Module* module) {
+    const uint8_t* image = module->image;
     const uint64_t phoff = *(uint64_t*)(image + 32);
     const uint16_t phentsize = *(uint16_t*)(image + 54), phnum = *(uint16_t*)(image + 56);
-    uint64_t end = 0, first = ~0ull;
+    for (int pass = 0; pass < 2; ++pass)
+        for (int index = 0; index < phnum; ++index) {
+            const uint8_t* header = image + phoff + (uint64_t)index * phentsize;
+            if (*(uint32_t*)header != 1) continue;
+            const uint64_t address = module->base + *(uint64_t*)(header + 16);
+            if (pass == 0) {
+                const uint64_t low = address & ~(PAGE - 1), high = page_up(address + *(uint64_t*)(header + 40));
+                mmap(process->base + low, high - low, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
+            } else {
+                memcpy(process->base + address, image + *(uint64_t*)(header + 8), *(uint64_t*)(header + 32));
+            }
+        }
+}
+
+// Puts the executable, its interpreter and a fresh stack into the process's segment and points its
+// context at the entry, as the kernel does for execve.
+static int load_image(struct Process* process, const struct Module* executable, char** argv, char** envp) {
+    uint8_t* base = process->base;
+    const uint8_t* image = executable->image;
+    const uint64_t phoff = *(uint64_t*)(image + 32);
+    const uint16_t phentsize = *(uint16_t*)(image + 54), phnum = *(uint16_t*)(image + 56);
+    const struct Module* interpreter = NULL;
     for (int index = 0; index < phnum; ++index) {
         const uint8_t* header = image + phoff + (uint64_t)index * phentsize;
-        if (*(uint32_t*)header != 1) continue;
-        const uint64_t address = *(uint64_t*)(header + 16);
-        const uint64_t memory_size = *(uint64_t*)(header + 40);
-        const uint64_t low = address & ~(PAGE - 1), high = page_up(address + memory_size);
-        mmap(base + low, high - low, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
-        if (address < first) first = address;
-        if (high > end) end = high;
+        if (*(uint32_t*)header != 3) continue;  // PT_INTERP
+        char path[MAXPATHLEN];
+        snprintf(path, sizeof path, "%s%s", root ? root : "", (const char*)image + *(uint64_t*)(header + 8));
+        if (!(interpreter = module_for_file(path))) {
+            fprintf(stderr, "[runtime] interpreter %s is not a translated module\n", path);
+            return 0;
+        }
     }
-    for (int index = 0; index < phnum; ++index) {
-        const uint8_t* header = image + phoff + (uint64_t)index * phentsize;
-        if (*(uint32_t*)header != 1) continue;
-        memcpy(base + *(uint64_t*)(header + 16), image + *(uint64_t*)(header + 8), *(uint64_t*)(header + 32));
-    }
-    process->brk_start = process->brk = end;
-    process->map_low = end + BRK_LIMIT;
+    mmap(base, SEGMENT, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
+    map_module(process, executable);
+    if (interpreter) map_module(process, interpreter);
+    process->executable = executable;
+
+    uint64_t prelinked = 0;
+    for (int index = 0; index < guest_module_count; ++index)
+        if (guest_modules[index].end > prelinked) prelinked = guest_modules[index].end;
+    process->brk_start = process->brk = executable->guest_path ? ROOT_BRK_START : executable->end;
+    process->map_low = process->brk_start + BRK_LIMIT;
+    if (prelinked + PAGE > process->map_low) process->map_low = prelinked + PAGE;
     const uint64_t stack_top = SEGMENT - PAGE;
     process->map_high = stack_top - STACK_SIZE - PAGE;
     memset(process->used, 0, sizeof process->used);
@@ -238,8 +341,8 @@ static void load_image(struct Process* process, char** argv, char** envp) {
     cursor -= 16;
     arc4random_buf(base + cursor, 16);
     const uint64_t random = cursor;
-    const uint64_t auxv[] = {3, first + phoff, 4, phentsize, 5, phnum, 6, PAGE, 9, guest_entry, 11, 0, 12, 0, 13, 0,
-                             14, 0, 16, 0, 23, 0, 25, random, 0, 0};
+    const uint64_t auxv[] = {3, executable->headers, 4, phentsize, 5, phnum, 6, PAGE, 7, interpreter ? interpreter->base : 0,
+                             9, executable->info[2], 11, 0, 12, 0, 13, 0, 14, 0, 16, 0, 23, 0, 25, random, 31, pointers[0], 0, 0};
     const uint64_t words = 1 + argc + 1 + envc + 1 + sizeof auxv / 8;
     cursor = (cursor - words * 8) & ~15ull;
     uint64_t* stack = (uint64_t*)(base + cursor);
@@ -258,9 +361,10 @@ static void load_image(struct Process* process, char** argv, char** envp) {
     context->base = (uint64_t)base;
     for (uint64_t index = 0; index < SEGMENT >> CHUNK_SHIFT; ++index) process->chunks[index] = (uint64_t)base;
     context->memory_table = (uint64_t)process->chunks;
-    context->table = (uint64_t)guest_table - 2 * guest_text_start;
+    context->table = (uint64_t)code_table - 2 * code_low;
     context->sp = (uint64_t)base + cursor;
-    context->pc = guest_table[(guest_entry - guest_text_start) / 4];
+    context->pc = host_code(interpreter ? interpreter->info[2] : executable->info[2]);
+    return 1;
 }
 
 // ---------------------------------------------------------------- processes
@@ -302,7 +406,7 @@ static void start_thread(struct Process* process) {
     pthread_create(&thread, &attributes, run_process, process);
 }
 
-static long guest_fork(struct Process* parent, uint64_t flags, uint64_t child_stack) {
+static long guest_fork(struct Process* parent, uint64_t flags, uint64_t child_stack, uint64_t child_tid) {
     const uint64_t begin = now_ns();
     struct Process* child = new_process(parent->pid);
     vm_address_t address = 0;
@@ -311,6 +415,7 @@ static long guest_fork(struct Process* parent, uint64_t flags, uint64_t child_st
                  &current, &maximum, VM_INHERIT_COPY) != KERN_SUCCESS)
         return -12;
     child->base = (uint8_t*)address;
+    child->executable = parent->executable;
     child->brk_start = parent->brk_start;
     child->brk = parent->brk;
     child->map_low = parent->map_low;
@@ -330,6 +435,7 @@ static long guest_fork(struct Process* parent, uint64_t flags, uint64_t child_st
     child->context.memory_table = (uint64_t)child->chunks;
     child->context.sp = child_stack ? (uint64_t)child->base + child_stack : parent->context.sp - (uint64_t)parent->base + (uint64_t)child->base;
     child->context.x[0] = 0;
+    if (flags & 0x01000000 && child_tid) *(int*)(child->base + child_tid) = child->pid;  // CLONE_CHILD_SETTID
     __atomic_add_fetch(&fork_count, 1, __ATOMIC_RELAXED);
     __atomic_add_fetch(&fork_ns, now_ns() - begin, __ATOMIC_RELAXED);
     start_thread(child);
@@ -374,14 +480,15 @@ static char** copy_strings(struct Process* process, uint64_t address) {
 }
 
 static long guest_exec(struct Process* process, const char* path, uint64_t argv, uint64_t envp) {
-    struct stat wanted, ours;
-    if (stat(path, &wanted) != 0) return linux_errno(errno);
-    if (stat(image_path, &ours) != 0 || wanted.st_ino != ours.st_ino || wanted.st_dev != ours.st_dev) return -8;
+    struct stat info;
+    if (stat(path, &info) != 0) return linux_errno(errno);
+    const struct Module* module = module_for_stat(&info);
+    if (!module) return -8;
     char** arguments = copy_strings(process, argv);
     char** environment = copy_strings(process, envp);
     for (int fd = 0; fd < MAX_FDS; ++fd)
         if (process->cloexec[fd]) close_fd(process, fd);
-    load_image(process, arguments, environment);
+    if (!load_image(process, module, arguments, environment)) terminate(process, 127 << 8);
     pthread_mutex_lock(&lock);
     process->vfork_done = 1;
     pthread_cond_broadcast(&changed);
@@ -391,8 +498,25 @@ static long guest_exec(struct Process* process, const char* path, uint64_t argv,
 
 // ---------------------------------------------------------------- files
 
-static const char* host_path(const char* path) {
-    return strcmp(path, "/proc/self/exe") == 0 ? image_path : path;
+// Translates a guest path to a host path. Two results can be alive at once (rename).
+static const char* host_path_in(struct Process* process, const char* path, int slot) {
+    static _Thread_local char buffers[2][MAXPATHLEN];
+    if (!path) return NULL;
+    if (strcmp(path, "/proc/self/exe") == 0) return process->executable->host_path;
+    if (!root || path[0] != '/') return path;
+    if (strncmp(path, "/dev/", 5) == 0 && (!strcmp(path + 5, "null") || !strcmp(path + 5, "zero") || !strcmp(path + 5, "urandom") ||
+                                           !strcmp(path + 5, "random") || !strcmp(path + 5, "tty")))
+        return path;
+    snprintf(buffers[slot], MAXPATHLEN, "%s%s", root, path);
+    return buffers[slot];
+}
+#define HP(address) host_path_in(p, host(p, address), 0)
+#define HP2(address) host_path_in(p, host(p, address), 1)
+
+// The guest's name for a host path: the part below the root.
+static const char* guest_path(const char* path) {
+    if (root && strncmp(path, root, root_length) == 0) return path[root_length] ? path + root_length : "/";
+    return path;
 }
 
 static int host_directory(struct Process* process, long fd) { return fd == -100 ? AT_FDCWD : host_fd(process, fd); }
@@ -483,6 +607,23 @@ static long written(struct Process* process, long result) {
     return RESULT(result);
 }
 
+static long guest_readlink(struct Process* p, long directory, const char* path, char* buffer, uint64_t size) {
+    char target[MAXPATHLEN];
+    const char* text = NULL;
+    if (strcmp(path, "/proc/self/exe") == 0) {
+        text = p->executable->guest_path ? p->executable->guest_path : p->executable->host_path;
+    } else if (strncmp(path, "/proc/self/fd/", 14) == 0) {
+        // The dynamic linker asks for the real path of each library it has opened.
+        if (fcntl(host_fd(p, atol(path + 14)), F_GETPATH, target) != 0) return -2;
+        text = guest_path(target);
+    }
+    if (!text) return RESULT(readlinkat(host_directory(p, directory), host_path_in(p, path, 0), buffer, size));
+    uint64_t length = strlen(text);
+    if (length > size) length = size;
+    memcpy(buffer, text, length);
+    return (long)length;
+}
+
 // ---------------------------------------------------------------- system calls
 
 void guest_syscall(struct Context* context) {
@@ -492,7 +633,15 @@ void guest_syscall(struct Context* context) {
     long r;
     ++syscall_count;
     switch (number) {
-    case 17: r = getcwd(host(p, a[0]), a[1]) ? (long)strlen(host(p, a[0])) + 1 : linux_errno(errno); break;
+    case 17: {
+        char path[MAXPATHLEN];
+        if (!getcwd(path, sizeof path)) { r = linux_errno(errno); break; }
+        const char* visible = guest_path(path);
+        if (strlen(visible) + 1 > a[1]) { r = -34; break; }
+        strcpy(host(p, a[0]), visible);
+        r = (long)strlen(visible) + 1;
+        break;
+    }
     case 23: r = install_fd(p, dup(host_fd(p, (long)a[0])), 0, 0); break;
     case 24:
         if (host_fd(p, (long)a[0]) < 0 || a[1] >= MAX_FDS) { r = -9; break; }
@@ -523,25 +672,25 @@ void guest_syscall(struct Context* context) {
         else if (a[1] == 0x5401 && isatty(host_fd(p, (long)a[0]))) { memset(host(p, a[2]), 0, 36); r = 0; }
         else r = -25;
         break;
-    case 34: r = RESULT(mkdirat(host_directory(p, (long)a[0]), host(p, a[1]), (mode_t)a[2])); break;
-    case 35: r = RESULT(unlinkat(host_directory(p, (long)a[0]), host(p, a[1]), a[2] & 0x200 ? AT_REMOVEDIR : 0)); break;
-    case 36: r = RESULT(symlinkat(host(p, a[0]), host_directory(p, (long)a[1]), host(p, a[2]))); break;
-    case 38: case 276: r = RESULT(renameat(host_directory(p, (long)a[0]), host(p, a[1]), host_directory(p, (long)a[2]), host(p, a[3]))); break;
+    case 34: r = RESULT(mkdirat(host_directory(p, (long)a[0]), HP(a[1]), (mode_t)a[2])); break;
+    case 35: r = RESULT(unlinkat(host_directory(p, (long)a[0]), HP(a[1]), a[2] & 0x200 ? AT_REMOVEDIR : 0)); break;
+    case 36: r = RESULT(symlinkat(host(p, a[0]), host_directory(p, (long)a[1]), HP(a[2]))); break;
+    case 38: case 276: r = RESULT(renameat(host_directory(p, (long)a[0]), HP(a[1]), host_directory(p, (long)a[2]), HP2(a[3]))); break;
     case 46: r = RESULT(ftruncate(host_fd(p, (long)a[0]), (off_t)a[1])); break;
     case 48: case 439: {
         // Execute permission comes from the mode bits: the host's answer reflects its own exec policy
         // (iOS denies it for every file an app can write), and the guest never execs through the host.
         struct stat info;
         const int directory = host_directory(p, (long)a[0]);
-        const char* path = host_path(host(p, a[1]));
+        const char* path = HP(a[1]);
         r = RESULT(faccessat(directory, path, (int)a[2] & ~X_OK, 0));
         if (r == 0 && a[2] & X_OK && (fstatat(directory, path, &info, 0) != 0 || !(info.st_mode & 0111))) r = -13;
         break;
     }
-    case 49: r = RESULT(chdir(host(p, a[0]))); break;
+    case 49: r = RESULT(chdir(HP(a[0]))); break;
     case 52: r = RESULT(fchmod(host_fd(p, (long)a[0]), (mode_t)a[1])); break;
-    case 53: r = RESULT(fchmodat(host_directory(p, (long)a[0]), host(p, a[1]), (mode_t)a[2], 0)); break;
-    case 56: r = install_fd(p, openat(host_directory(p, (long)a[0]), host_path(host(p, a[1])), open_flags((long)a[2]), (mode_t)a[3]), 0, (a[2] & 02000000) != 0); break;
+    case 53: r = RESULT(fchmodat(host_directory(p, (long)a[0]), HP(a[1]), (mode_t)a[2], 0)); break;
+    case 56: r = install_fd(p, openat(host_directory(p, (long)a[0]), HP(a[1]), open_flags((long)a[2]), (mode_t)a[3]), 0, (a[2] & 02000000) != 0); break;
     case 57:
         if (host_fd(p, (long)a[0]) < 0) { r = -9; break; }
         close_fd(p, (int)a[0]);
@@ -574,22 +723,12 @@ void guest_syscall(struct Context* context) {
         for (uint64_t index = 0; index < a[1]; ++index) guest[index].revents = fds[index].revents;
         break;
     }
-    case 78: {
-        const char* path = host(p, a[1]);
-        if (strcmp(path, "/proc/self/exe") == 0) {
-            r = (long)strlen(image_path);
-            if ((uint64_t)r > a[3]) r = (long)a[3];
-            memcpy(host(p, a[2]), image_path, (size_t)r);
-        } else {
-            r = RESULT(readlinkat(host_directory(p, (long)a[0]), path, host(p, a[2]), a[3]));
-        }
-        break;
-    }
+    case 78: r = guest_readlink(p, (long)a[0], host(p, a[1]), host(p, a[2]), a[3]); break;
     case 79: {
         struct stat info;
         const char* path = host(p, a[1]);
         if (a[3] & 0x1000 && !*path) r = put_stat(fstat(host_fd(p, (long)a[0]), &info), &info, host(p, a[2]));
-        else r = put_stat(fstatat(host_directory(p, (long)a[0]), host_path(path), &info, a[3] & 0x100 ? AT_SYMLINK_NOFOLLOW : 0), &info, host(p, a[2]));
+        else r = put_stat(fstatat(host_directory(p, (long)a[0]), host_path_in(p, path, 0), &info, a[3] & 0x100 ? AT_SYMLINK_NOFOLLOW : 0), &info, host(p, a[2]));
         break;
     }
     case 80: {
@@ -598,10 +737,11 @@ void guest_syscall(struct Context* context) {
         break;
     }
     case 82: case 83: r = RESULT(fsync(host_fd(p, (long)a[0]))); break;
-    case 88: r = RESULT(utimensat(host_directory(p, (long)a[0]), host(p, a[1]), host(p, a[2]), a[3] & 0x100 ? AT_SYMLINK_NOFOLLOW : 0)); break;
+    case 88: r = RESULT(utimensat(host_directory(p, (long)a[0]), HP(a[1]), host(p, a[2]), a[3] & 0x100 ? AT_SYMLINK_NOFOLLOW : 0)); break;
     case 93: case 94: terminate(p, (int)(a[0] & 0xff) << 8);
     case 96: r = p->pid; break;
     case 98: r = (a[1] & 0x7f) == 0 ? -11 : 0; break;
+    case 99: case 132: r = 0; break;  // set_robust_list, sigaltstack
     case 101: r = RESULT(nanosleep(host(p, a[0]), host(p, a[1]))); break;
     case 113: r = RESULT(clock_gettime(a[0] == 0 ? CLOCK_REALTIME : a[0] == 2 ? CLOCK_PROCESS_CPUTIME_ID : CLOCK_MONOTONIC, host(p, a[1]))); break;
     case 123: memset(host(p, a[2]), 0, a[1]); *(uint8_t*)host(p, a[2]) = 1; r = 8; break;
@@ -664,10 +804,10 @@ void guest_syscall(struct Context* context) {
     case 216: r = guest_mremap(p, a[0], page_up(a[1]), page_up(a[2]), a[3] & 1); break;
     case 220:
         if (a[0] & 0x10000) { r = -38; break; }  // CLONE_THREAD
-        r = guest_fork(p, a[0], a[1]);
+        r = guest_fork(p, a[0], a[1], a[4]);
         break;
     case 221:
-        r = guest_exec(p, host_path(host(p, a[0])), a[1], a[2]);
+        r = guest_exec(p, HP(a[0]), a[1], a[2]);
         if (r == 0) return;  // the context now describes the new image
         break;
     case 222: r = guest_mmap(p, a[0], a[1], (int)a[2], (int)a[3], (long)a[4], a[5]); break;
@@ -675,6 +815,13 @@ void guest_syscall(struct Context* context) {
     case 233: r = 0; break;
     case 260: r = guest_wait(p, (long)(int)a[0], a[1], (long)a[2]); break;
     case 278: arc4random_buf(host(p, a[0]), a[1]); r = (long)a[1]; break;
+    case 0x4e56: {
+        // The dynamic linker asks where a library must be loaded for its translated code to apply.
+        struct stat info;
+        const struct Module* module = fstat(host_fd(p, (long)a[0]), &info) == 0 ? module_for_stat(&info) : NULL;
+        r = module ? (long)module->base : -2;
+        break;
+    }
     default:
         if (trace) fprintf(stderr, "[runtime] pid %d: unimplemented system call %ld\n", p->pid, number);
         r = -38;
@@ -688,27 +835,32 @@ void guest_syscall(struct Context* context) {
 #endif
 
 int GUEST_MAIN(int argc, char** argv, char** envp) {
+    (void)envp;
     if (argc < 3) {
-        fprintf(stderr, "usage: %s <guest elf> <guest argv...>\n", argv[0]);
+        fprintf(stderr, "usage: %s <guest elf or guest root> <guest argv...>\n", argv[0]);
         return 2;
     }
     trace = getenv("G0E3_TRACE") ? atoi(getenv("G0E3_TRACE")) : 0;
-    image_path = realpath(argv[1], NULL);
-    const int descriptor = image_path ? open(image_path, O_RDONLY) : -1;
     struct stat info;
-    if (descriptor < 0 || fstat(descriptor, &info) != 0) { perror(argv[1]); return 2; }
-    image_size = (size_t)info.st_size;
-    image = mmap(NULL, image_size, PROT_READ, MAP_PRIVATE, descriptor, 0);
-    close(descriptor);
+    if (stat(argv[1], &info) != 0) { perror(argv[1]); return 2; }
+    if (S_ISDIR(info.st_mode)) {
+        root = realpath(argv[1], NULL);
+        root_length = strlen(root);
+    }
+    if (!code_table && !load_modules(root ? NULL : argv[1])) return 2;
+    char path[MAXPATHLEN];
+    snprintf(path, sizeof path, "%s%s", root ? root : "", root ? argv[2] : argv[1]);
+    const struct Module* executable = module_for_file(path);
+    if (!executable) { fprintf(stderr, "[runtime] %s is not a translated module\n", path); return 2; }
     signal(SIGPIPE, SIG_IGN);
 
     const uint64_t begin = now_ns();
     struct Process* first = new_process(1);
     first->base = mmap(NULL, SEGMENT, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
     for (int fd = 0; fd < 3; ++fd) first->fds[fd] = dup(fd);
-    char* environment[] = {"PATH=/nonexistent", "HOME=/", "TERM=dumb", "LANG=C", NULL};
-    (void)envp;
-    load_image(first, argv + 2, environment);
+    char* environment[] = {root ? "PATH=/system/bin" : "PATH=/nonexistent", "HOME=/", "TERM=dumb", "LANG=C",
+                           "ANDROID_ROOT=/system", "ANDROID_DATA=/data", NULL};
+    if (!load_image(first, executable, argv + 2, environment)) return 2;
     const int pid = first->pid;
     start_thread(first);
 
