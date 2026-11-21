@@ -121,7 +121,8 @@ def main():
     for key, last in list(copies.items()):
         path, size, guest = files[(key, 0)]
         twice = any(files[(key, copy)][2].startswith(("/system/lib64/", "/system_ext/lib64/", "/product/lib64/")) or
-                    "/framework/oat/" in files[(key, copy)][2] for copy in range(last + 1))
+                    ("/framework/oat/" in files[(key, copy)][2] and ".apk@classes" not in files[(key, copy)][2])
+                    for copy in range(last + 1))
         if last > 0 or twice:
             files[(key, last + 1)] = (path, size, "~spare of " + guest)
     jobs, base = [], FIRST_BASE

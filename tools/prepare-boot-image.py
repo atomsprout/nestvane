@@ -266,6 +266,35 @@ def add_low_memory_killer(adb, guest):
             file.write("/system/bin/lmkd u:r:init:s0 u:object_r:lmkd_exec:s0 2 u:r:lmkd:s0\n")
 
 
+def precompile_apex_apps(adb, remote, guest):
+    """Compiles the apps that live inside APEX modules, which the build leaves without compiled code.
+
+    Without it they run in ART's interpreter: the media provider alone took 2.2 s of a 14 s boot. The
+    reference's own package manager compiles each package, so that the class loader context in the
+    result is the one the runtime will compare it with. ART looks for the code of anything under /apex
+    in /system/framework/oat, named after the file's path, which is also the name in the dalvik cache.
+    """
+    present = {path.stem for path in (guest / "system/apex").glob("*.apex")}
+    count = 0
+    for line in remote("pm", "list", "packages", "-f").splitlines():
+        match = re.fullmatch(r"package:(/apex/([A-Za-z0-9_.-]+)/[A-Za-z0-9_.@/-]+\.apk)=([A-Za-z0-9_.]+)", line.strip())
+        if not match or match[2] not in present:
+            continue
+        apk, package = match[1], match[3]
+        name = apk.lstrip("/").replace("/", "@") + "@classes"
+        cached = f"/data/dalvik-cache/arm64/{name}"
+        subprocess.run(adb + ["shell", shlex.join(["pm", "compile", "-m", "speed", "-f", package])],
+                       check=True, stdout=subprocess.DEVNULL)
+        if remote("sh", "-c", f"test -s {shlex.quote(cached + '.dex')} && echo yes || echo no") != "yes":
+            continue  # a package without code
+        for cache_suffix, suffix in (("dex", "odex"), ("vdex", "vdex")):
+            local = guest / "system/framework/oat/arm64" / f"{name}.{suffix}"
+            local.parent.mkdir(parents=True, exist_ok=True)
+            subprocess.run(adb + ["pull", f"{cached}.{cache_suffix}", str(local)], check=True, stdout=subprocess.DEVNULL)
+        count += 1
+    print(f"Compiled {count} apps of APEX modules", flush=True)
+
+
 def copy_prebuilt_code(adb, remote, guest):
     """Takes the image's own compiled code for every JAR and APK that is in the guest root."""
     listing = remote("find", "/system", "/system_ext", "/product", "/vendor", "-path", "*/oat/arm64/*", "-type", "f")
@@ -356,6 +385,12 @@ def make_framework_root(base, image, guest, defer_zygote_preload, hardware_timeo
         # A phone gives one app far less memory than this image expects of a device: Android's own
         # low-memory profile keeps fewer processes and caches.
         set_property(system_properties, "ro.config.low_ram", "true")
+        # Code that the guest compiles for itself has no translation, and a process that maps it is
+        # interpreted from then on. The package manager only verifies; compiled code comes with the image.
+        for reason in ("first-boot", "boot-after-ota", "boot-after-mainline-update", "post-boot", "install",
+                       "install-fast", "install-bulk", "install-bulk-secondary", "install-bulk-downgraded",
+                       "install-bulk-secondary-downgraded", "bg-dexopt", "ab-ota", "inactive", "cmdline", "shared"):
+            set_property(system_properties, "pm.dexopt." + reason, "verify")
         remove_absent_hardware(guest)
     set_property(system_properties, "dalvik.vm.usejit", "false")
     # ART creates a code-cache memory file for every app even with JIT disabled.
@@ -577,6 +612,7 @@ def main():
                 if args.prebuilt_code:
                     copy_prebuilt_code(adb, remote, guest)
                     add_low_memory_killer(adb, guest)
+                    precompile_apex_apps(adb, remote, guest)
                 if args.precompile_framework_code:
                     check_reference_files(
                         remote, guest, {active_modules[module] for module in FRAMEWORK_APP_APEXES}

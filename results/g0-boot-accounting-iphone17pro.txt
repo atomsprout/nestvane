@@ -1,0 +1,115 @@
+Where a 14 s boot goes: guest processes and system_server steps (iPhone 17 Pro, iOS 27.0.1)
+date: 2026-11-21, tree at 55681d5 plus the process report option; step 0 of the trimming plan in PLAN.md.
+run: relaunch on an existing data volume, NESTVANE_INIT_SNAPSHOT_SECONDS=16 NESTVANE_INIT_PROCESS_REPORT=120;
+the launcher was displayed after 14,199 ms. Figures are from the snapshot at 16 s.
+
+host thread: 7512 ms in guest code, 3493 ms in system calls (mmap 656, mprotect 522, fstat 399, munmap 240,
+statfs 222, writev 165, execve 161, clone 151), 3403 ms in the scheduler of which 1175 ms asleep;
+445,455 thread switches; 80.6 million guest instructions interpreted.
+52 guest address spaces at 16 s.
+
+CPU per guest process, ms (as the kernel layer accounts it), all 52:
+  2430  /system/bin/app_process64 (system_server)
+  2158  /system/bin/app_process64 (rs.media.module)
+  1270  /system/bin/app_process64 (ndroid.systemui)
+   799  /system/bin/app_process64 (main)
+   455  /system/bin/app_process64 (droid.launcher3)
+   427  /system/bin/surfaceflinger (surfaceflinger)
+   258  () 
+   166  /system/bin/app_process64 (ndroid.settings)
+   140  /system/bin/audioserver (audioserver)
+   121  /system/bin/app_process64 (ssioncontroller)
+   110  /system/bin/cameraserver (cameraserver)
+   101  /system/bin/netd (binder:162_2)
+    82  /system/bin/app_process64 (putmethod.latin)
+    65  /vendor/bin/hw/android.hardware.graphics.composer3-service.ranchu (android.hardwar)
+    65  /system/bin/servicemanager (servicemanager)
+    61  /system/bin/app_process64 (id.ext.services)
+    60  /system/bin/app_process64 (elockcontroller)
+    55  /apex/com.android.os.statsd/bin/statsd (statsd)
+    52  /vendor/bin/hw/android.hardware.sensors-service.multihal (android.hardwar)
+    42  /system/bin/installd (binder:204_2)
+    41  /vendor/bin/hw/android.hardware.audio.service (android.hardwar)
+    41  /system/bin/app_process64 (nect.controller)
+    40  /apex/com.android.adbd/bin/adbd (adbd)
+    39  /system/bin/ueventd (ueventd)
+    38  /system/bin/keystore2 (keystore2)
+    38  /system/bin/app_process64 (d.process.media)
+    38  /system/bin/app_process64 (.adservices)
+    36  /system/bin/vold (binder:86_2)
+    34  /system/bin/app_process64 (rkstack.process)
+    33  /system/bin/app_process64 (ndroid.keychain)
+    32  /system/bin/app_process64 (zation.services)
+    28  /system/bin/app_process64 (ompute.services)
+    28  /system/bin/apexd (apexd)
+    27  /vendor/bin/hw/android.hardware.camera.provider.ranchu (android.hardwar)
+    27  /system/bin/app_process64 (ackageinstaller)
+    24  /vendor/bin/hw/android.hardware.graphics.allocator-service.ranchu (android.hardwar)
+    21  /system/system_ext/bin/hwservicemanager (hwservicemanage)
+    21  /system/bin/init (init)
+    18  /vendor/bin/hw/android.hardware.security.keymint-service (android.hardwar)
+    18  /system/bin/nestvane-apk-install (nestvane-apk-in)
+    15  /system/bin/hw/android.system.suspend-service (android.system.)
+    14  /vendor/bin/hw/android.hardware.health-service.example (android.hardwar)
+    13  /system/bin/iptables-restore (iptables-restor)
+    13  /apex/com.android.hardware.gatekeeper/bin/hw/android.hardware.gatekeeper-service.nonsecure (
+    12  /system/bin/lmkd (lmkd)
+    12  /system/bin/ip6tables-restore (ip6tables-resto)
+    11  /system/bin/tombstoned (tombstoned)
+    11  /system/bin/gatekeeperd (gatekeeperd)
+    10  /vendor/bin/hw/android.hardware.lights-service.example (android.hardwar)
+    10  /apex/com.android.hardware.power/bin/hw/android.hardware.power-service.example (android.hard
+     7  /system/bin/lmkd (lmkd)
+     7  /apex/com.android.hardware.power/bin/hw/android.hardware.power.stats-service.example (androi
+
+system_server steps that took 20 ms or more (SystemServerTiming and PackageManagerTiming, ms):
+  2242  StartServices
+  1617  startOtherServices
+   584  startBootstrapServices
+   436  PhaseActivityManagerReady
+   421  SystemUserUnlock
+   281  InitBeforeStartServices
+   280  StartPackageManagerService
+   272  PM:
+   236  UM.onBeforeUnlockUser-0
+   153  prepareUserData-0
+   148  ActivityManagerStartApps
+   115  StartBootPhaseSystemServicesReady
+   115  OnBootPhase_500
+   110  StartActivityManager
+   106  StartActivityManagerReadyPhase
+   106  OnBootPhase_550
+    80  StartNetworkStatsService
+    78  PhaseThirdPartyAppsCanStart
+    78  OnBootPhase_600
+    76  reconcileAppsData-0
+    61  StartConnectivityService
+    56  StartAudioService
+    56  MakeConnectivityServiceReady
+    47  OnBootPhase_500_com.android.server.notification.NotificationManagerService
+    45  StartNetworkPolicyManagerService
+    43  SetWindowManagerService
+    41  startCoreServices
+    41  InstallSystemProviders
+    39  StartNotificationManager
+    38  startHomeOnAllDisplays
+    36  OnBootPhase_550_com.android.server.inputmethod.InputMethodManagerService$Lifecycle
+    33  WaitForDisplay
+    33  OnBootPhase_100_com.android.server.display.DisplayManagerService
+    33  OnBootPhase_100
+    33  MakeDisplayManagerServiceReady
+    30  PM:
+    29  StartWindowManagerService
+    25  HealthConnectManagerService
+    24  SetSystemProcess
+    24  MakeVpnManagerServiceReady
+    22  StartCrashRecoveryModule
+    22  PM:
+    21  StartInputManagerService
+    21  PM:
+
+Read as: system_server is a quarter of the guest CPU; the media provider is as large as SystemUI and the
+launcher together, and like every app that lives in an APEX module it has no compiled code in the image;
+52 processes share one host thread, and switching between them cost the scheduler 2.2 s.
+After this run the scheduler was changed to scan timers every 200 microseconds instead of at every switch:
+the next relaunch on this phone displayed the launcher after 12,500 ms.
