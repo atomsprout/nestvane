@@ -339,12 +339,10 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
             ++intervalSamples;
             nextSample = cpu.retired + sampleStride + ((samples * 0x9e37) & 0xffff);
             if (const auto location = linux.guestCodeFile(bytes)) {
-                auto [path, offset] = *location;
-                if (path.size() > 1 && path[1] == '\0') {
-                    if (const auto slash = path.find('/', 2); slash != std::string_view::npos) path.remove_prefix(slash);
-                }
-                ++codeSamples[{std::string(path), offset & ~uint64_t(4095)}];
-                ++intervalCodeSamples[{std::string(path), offset & ~uint64_t(63)}];
+                const auto [path, offset] = *location;
+                const auto module = linux.guestCodeFileName(path);
+                ++codeSamples[{module, offset & ~uint64_t(4095)}];
+                ++intervalCodeSamples[{module, offset & ~uint64_t(63)}];
             } else {
                 ++unattributedSamples;
                 ++intervalUnattributed;

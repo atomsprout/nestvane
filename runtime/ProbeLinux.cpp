@@ -7069,6 +7069,16 @@ std::optional<std::pair<std::string_view, uint64_t>> ProbeLinux::guestCodeFile(c
     return {};
 }
 
+std::string ProbeLinux::guestCodeFileName(std::string_view path) const {
+    if (path.size() < 2 || path[1] != '\0') return std::string(path);
+    const auto separator = path.find('/', 2);
+    const auto backing = path.substr(0, separator);
+    const auto relative = separator == std::string_view::npos ? std::string{} : std::string(path.substr(separator));
+    for (const auto& [source, mount] : mountedExt4)
+        if (mount.backing == backing) return std::get<0>(source) + ':' + relative;
+    return relative;
+}
+
 std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedProcess) const {
     std::string report;
     for (const auto& [path, tid] : propertyPollers) {
@@ -7087,11 +7097,8 @@ std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedPr
         if (!segment || !segment->imageView || address - segment->address >= segment->mappedSize()) return;
         const auto location = guestCodeFile(segment->imageView + (address - segment->address));
         if (!location) return;
-        auto [path, offset] = *location;
-        if (path.size() > 1 && path[1] == '\0') {
-            if (const auto slash = path.find('/', 2); slash != std::string_view::npos) path.remove_prefix(slash);
-        }
-        tasks << ' ' << field << '=' << path << "+0x" << std::hex << offset << std::dec;
+        const auto [path, offset] = *location;
+        tasks << ' ' << field << '=' << guestCodeFileName(path) << "+0x" << std::hex << offset << std::dec;
     };
     const auto active = std::ranges::count_if(threads, [](const auto& entry) {
         return entry.second.wait != Wait::exited;

@@ -72,6 +72,7 @@ struct ProbeLinux {
     }
     std::string workerReport(const Machine& machine, uint64_t observedProcess = 0) const;
     std::optional<std::pair<std::string_view, uint64_t>> guestCodeFile(const uint8_t* instruction) const;
+    std::string guestCodeFileName(std::string_view backingPath) const;
     void setBootContext(std::string context);
     void setCommandLine(const Startup& startup, const Machine* machine = nullptr);
     bool loadBootTransition(std::string_view manifest);
