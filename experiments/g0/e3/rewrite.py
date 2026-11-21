@@ -209,7 +209,10 @@ class Rewriter:
         plain = w
         if w & 0xBFA00000 == 0x0C800000:  # AdvSIMD multiple structures, post-index
             rm = w >> 16 & 31
-            registers = {0: 4, 2: 4, 4: 3, 6: 3, 7: 1, 8: 2, 10: 2}[w >> 12 & 15]
+            registers = {0: 4, 2: 4, 4: 3, 6: 3, 7: 1, 8: 2, 10: 2}.get(w >> 12 & 15)
+            if registers is None:  # not an instruction: data that sits in the code
+                self.word(w)
+                return self.count("unchanged", 0)
             after = registers * (16 if w >> 30 & 1 else 8) if rm == 31 else ("register", rm)
             plain = w & ~(1 << 23 | 31 << 16)
         elif w & 0xBF800000 == 0x0D800000:  # AdvSIMD single structure, post-index

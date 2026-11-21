@@ -245,3 +245,11 @@ edit("device/generic/goldfish/64bitonly/product/sdk_phone16k_arm64.mk", [(
     "PRODUCT_SYSTEM_SERVER_COMPILER_FILTER := speed\nPRODUCT_DEX_PREOPT_DEFAULT_COMPILER_FILTER := speed\n"
     "\nPRODUCT_NAME := sdk_phone16k_arm64\n")],
     "Nestvane: compile everything ahead of time")
+
+# So is the copy that the federated compute library builds, through the flex delegate.
+edit("external/tensorflow/Android.bp", [(
+    '        "-DTF_ANDROID_ENABLE_LOGSINK",\n',
+    '        "-DTF_ANDROID_ENABLE_LOGSINK",\n'
+    '        "-DGOOGLE_L4T", // Nestvane: no assembly kernels, as in tflite_defaults.\n'
+    '        "-DTFLITE_WITH_RUY",\n')],
+    "-DGOOGLE_L4T")
