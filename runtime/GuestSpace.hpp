@@ -79,6 +79,9 @@ public:
     // For a process that has code without a translation: none of its code runs natively any more.
     void dropCode() { interpreted_ = true; code_.clear(); lastCode_ = {}; }
     bool interpreted() const { return interpreted_; }
+    // The dynamic linker's code: the kernel layer tells its address space reservations by it.
+    void setLinker(uint64_t start, uint64_t end) { linker_ = {start, end - start}; }
+    bool inLinker(uint64_t pc) const { return pc - linker_.start < linker_.length; }
     bool hasCode(uint64_t pc) const {
         if (pc - lastCode_.start < lastCode_.length) return true;
         for (const auto& range : code_)
@@ -129,6 +132,7 @@ private:
     std::vector<CodeRange> code_;
     mutable struct { uint64_t start = 0, length = 0; } lastCode_;
     bool interpreted_ = false;
+    struct { uint64_t start = 0, length = 0; } linker_;
     uint64_t reserved_ = 0;
 };
 

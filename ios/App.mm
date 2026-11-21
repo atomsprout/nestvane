@@ -568,6 +568,68 @@ static NSString* ThermalState() {
                     report += '\n';
                     AppendMemoryUsage(report);
                     exportReport(launcherURL, report);
+                    // NESTVANE_TEST_SWIPE=1 checks touch without a finger: some seconds after the launcher
+                    // is displayed, a swipe up the middle of the screen goes in through the same device
+                    // the view feeds, with the frame saved before it and after it.
+                    if ([NSProcessInfo.processInfo.environment[@"NESTVANE_TEST_SWIPE"] isEqualToString:@"1"]) {
+                        const auto device = touch;
+                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 6 * NSEC_PER_SEC),
+                                       dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                            const auto save = ^(NSString* name) {
+                                dispatch_sync(dispatch_get_main_queue(), ^{
+                                    if (UIImage* frame = self.display.image)
+                                        WriteGuestDisplayPNG(UIImagePNGRepresentation(frame),
+                                                             [documents URLByAppendingPathComponent:name]);
+                                });
+                            };
+                            // NESTVANE_TEST_APK=<file in Documents> installs that APK first, the way the
+                            // Install APK button does, and writes the outcome to apk-result.txt.
+                            if (NSString* name = NSProcessInfo.processInfo.environment[@"NESTVANE_TEST_APK"]; name && apkInbox) {
+                                NSData* data = [NSData dataWithContentsOfURL:[documents URLByAppendingPathComponent:name]];
+                                const auto* bytes = static_cast<const uint8_t*>(data.bytes);
+                                const auto submitted = NSProcessInfo.processInfo.systemUptime;
+                                dispatch_semaphore_t done = dispatch_semaphore_create(0);
+                                const auto outcome = std::make_shared<std::atomic_int>(-1);
+                                const bool accepted = data.length && apkInbox->submit(std::vector<uint8_t>(bytes, bytes + data.length),
+                                    [outcome, done](nestvane::GuestApkInbox::Result result) {
+                                        outcome->store(int(result));
+                                        dispatch_semaphore_signal(done);
+                                    });
+                                if (accepted) dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 300 * NSEC_PER_SEC));
+                                NSString* text = [NSString stringWithFormat:@"process %d | %lu bytes | accepted %d | result %d (0 is installed) | %.1f s\n",
+                                    NSProcessInfo.processInfo.processIdentifier, (unsigned long)data.length, accepted, outcome->load(),
+                                    NSProcessInfo.processInfo.systemUptime - submitted];
+                                [text writeToURL:[documents URLByAppendingPathComponent:@"apk-result.txt"] atomically:YES
+                                        encoding:NSUTF8StringEncoding error:nil];
+                                sleep(2);
+                            }
+                            save(@"touch-before.png");
+                            const int32_t axis = nestvane::GuestTouch::maximumAxis;
+                            for (int step = 0; step <= 20; ++step) {
+                                device->submit(axis / 2, axis * (150 - step * 5) / 200, true);
+                                usleep(15000);
+                            }
+                            device->submit(axis / 2, axis / 4, false);
+                            sleep(3);
+                            save(@"touch-after.png");
+                            // NESTVANE_TEST_TAPS="x:y:hold:wait,..." then taps: position in thousandths of the
+                            // screen, how long the finger stays down in milliseconds, and seconds to wait
+                            // before the frame is saved as touch-tap-<n>.png.
+                            NSString* taps = NSProcessInfo.processInfo.environment[@"NESTVANE_TEST_TAPS"];
+                            int number = 0;
+                            for (NSString* tap in [taps componentsSeparatedByString:@","]) {
+                                NSArray<NSString*>* fields = [tap componentsSeparatedByString:@":"];
+                                if (fields.count != 4) continue;
+                                const int32_t x = axis * fields[0].intValue / 1000, y = axis * fields[1].intValue / 1000;
+                                const bool pressed = device->submit(x, y, true);
+                                usleep(useconds_t(fields[2].intValue) * 1000);
+                                const bool released = device->submit(x, y, false);
+                                NSLog(@"test tap %d at %d,%d: down %d up %d", number, x, y, pressed, released);
+                                sleep(unsigned(fields[3].intValue));
+                                save([NSString stringWithFormat:@"touch-tap-%d.png", number++]);
+                            }
+                        });
+                    }
                 }
             };
             NSURL* watchdogURL = [documents URLByAppendingPathComponent:@"guest-watchdog.txt"];

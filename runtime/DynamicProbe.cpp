@@ -886,7 +886,12 @@ service nestvane-apk-install /system/bin/sh /system/etc/nestvane/apk-ready.sh
                 "BootAnimation: BootAnimationStartTiming", "BootAnimation: BootAnimationShownTiming",
                 "BootAnimation: Unable to", "BootAnimation: egl", "guest SIGSEGV delivered",
                 "libEGL: couldn't find an OpenGL ES implementation", "libEGL: eglInitialize(",
-                "Watchdog: *** WATCHDOG KILLING SYSTEM PROCESS"
+                "Watchdog: *** WATCHDOG KILLING SYSTEM PROCESS",
+                // What happens to an app after the boot: its process, its activity, its death.
+                "ActivityTaskManager: ", "ActivityManager: Start proc", "ActivityManager: Process ",
+                "ActivityManager: ANR", "ActivityManager: Killing", "AndroidRuntime: ", "DEBUG: ",
+                "PackageInstaller", "PackageManager: Package ", "installd: ", "Zygote: Process ",
+                "native execution: "
             };
             if (message.starts_with("Zygote: System zygote died") ||
                 message.starts_with("SystemServer: Failure") ||

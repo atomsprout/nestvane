@@ -417,6 +417,7 @@ Machine::Machine(const Image& image, const std::shared_ptr<AnonymousBudget>& bud
     if (space && image.interpreted) space->dropCode();
     if (space)
         for (const auto& range : image.nativeCode) space->addCode(range[0], range[1]);
+    if (space && image.nativeCode.size() == 2) space->setLinker(image.nativeCode[1][0], image.nativeCode[1][1]);
     cpu.pc = image.entry;
     if (image.startup) {
         setupStack(*this, *image.startup);

@@ -393,6 +393,9 @@ def make_framework_root(base, image, guest, defer_zygote_preload, hardware_timeo
             set_property(system_properties, "pm.dexopt." + reason, "verify")
         remove_absent_hardware(guest)
     set_property(system_properties, "dalvik.vm.usejit", "false")
+    # The guest is one app's window on a phone that has a lock screen of its own.
+    set_property(system_properties, "ro.lockscreen.disable.default", "true")
+    set_property(system_properties, "ro.hw_timeout_multiplier", "10")
     # ART creates a code-cache memory file for every app even with JIT disabled.
     values = system_properties.read_text().rstrip("\n")
     cache = "dalvik.vm.jitmaxsize=8m"

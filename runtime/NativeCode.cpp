@@ -82,6 +82,7 @@ struct Registry {
     std::unordered_map<const Module*, size_t> byModule;
     std::unordered_set<uint64_t> traps;                        // host code of the entry traps in use
     uint64_t low = 0, high = 0;                       // guest addresses of all translated code
+    uint64_t covered = 0;                             // where the table's address space ends, as a guest address
     uint64_t* table = nullptr;                        // host code for guest pc at table[(pc - low) / 4]
     uint64_t codeStart = 0, codeEnd = 0;              // host addresses of all translated code
     bool wanted = false;
@@ -127,7 +128,13 @@ Registry& registry() {
         result.high = high;
         // Only address space: a module's table is mapped in when a process first maps the module, and
         // a look-up anywhere else faults, which sends the guest's jump to the interpreter.
-        result.table = static_cast<uint64_t*>(mmap(nullptr, (high - low) * 2, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0));
+        // The table also spans the addresses of code without a translation, if there is room for it.
+        result.covered = std::max(high, foreignHigh);
+        result.table = static_cast<uint64_t*>(mmap(nullptr, (result.covered - low) * 2, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0));
+        if (result.table == MAP_FAILED) {
+            result.covered = high;
+            result.table = static_cast<uint64_t*>(mmap(nullptr, (high - low) * 2, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0));
+        }
         if (result.table == MAP_FAILED) {
             result.modules.clear();
             result.failure = "no address space for the table of translated code";
@@ -280,6 +287,11 @@ void prepareThread() {
 bool enabled() { return !registry().modules.empty(); }
 
 const char* failure() { return registry().failure; }
+
+bool covers(uint64_t start, uint64_t end) {
+    const auto& all = registry();
+    return !all.modules.empty() && start >= all.low && end <= all.covered;
+}
 
 uint64_t signalReturnPage() { return registry().modules.empty() ? 0 : registry().signalPage; }
 

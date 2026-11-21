@@ -27,6 +27,13 @@ const char* failure();
 // whose code runs natively, or 0. A handler's return looks its return address up in the table of
 // translated code, which has an entry for this address: the trampoline starts 4 bytes into the page.
 uint64_t signalReturnPage();
+// Guest addresses set aside for code that has no translation, such as the libraries of an app the user
+// installs. The table of translated code spans them without any entries, so a jump from native code to
+// such code faults at the look-up and goes on in the interpreter, and the rest of the process stays
+// native. The kernel layer puts the dynamic linker's reservations here.
+inline constexpr uint64_t foreignLow = 0x1'0000'0000, foreignHigh = 0x1'4000'0000;
+// Whether the table spans these guest addresses: native code may jump there without harm.
+bool covers(uint64_t start, uint64_t end);
 uint64_t contentKey(std::span<const uint8_t> file);
 // A translation of an ELF file, or null. Files with the same bytes can exist under several paths and
 // be loaded together, so there may be several translations, each for an address of its own: `copy`

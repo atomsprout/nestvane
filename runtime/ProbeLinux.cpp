@@ -4921,20 +4921,35 @@ uint64_t ProbeLinux::randomMappingBase() const {
     const auto bits = kernelSettings.at("/proc/sys/vm/mmap_rnd_bits").value;
     std::random_device entropy;
     std::uniform_int_distribution<uint64_t> pages(0, (uint64_t{1} << bits) - 1);
-    return mappingFloor + pages(entropy) * pageSize;
+    // With native execution the first addresses are for code without a translation (native::foreignLow).
+    // The random part stays in the lower half of the arena whatever the page size is: a base beyond the
+    // arena would make every mapping of the process a search for free addresses from the floor.
+    const uint64_t floor = native::enabled() ? native::foreignHigh : mappingFloor;
+    return floor + pages(entropy) * pageSize % ((mappingLimit - floor) / 2);
 }
 
 // Keep the randomized bump allocator on the fast path. Long-lived processes
 // must still be able to reuse unmapped addresses after reaching the arena end.
 static uint64_t freeMappingAddress(const Machine& machine, uint64_t next, uint64_t length) {
     if (next <= mappingLimit - length) return next;
-    auto candidate = mappingFloor;
+    auto candidate = native::enabled() ? native::foreignHigh : mappingFloor;
     for (const auto& segment : machine.segments) {
         if (candidate > mappingLimit - length) return 0;
         if (segment.address >= candidate + length) return candidate;
         candidate = std::max(candidate, pageAlignedLength(segment.address + segment.mappedSize()));
     }
     return candidate <= mappingLimit - length ? candidate : 0;
+}
+
+// The lowest free addresses among those set aside for code without a translation, or 0.
+static uint64_t freeForeignAddress(const Machine& machine, uint64_t length) {
+    auto candidate = native::foreignLow;
+    for (const auto& segment : machine.segments) {
+        if (segment.address + segment.mappedSize() <= candidate) continue;
+        if (segment.address >= candidate + length) break;
+        candidate = pageAlignedLength(segment.address + segment.mappedSize());
+    }
+    return candidate <= native::foreignHigh && length <= native::foreignHigh - candidate ? candidate : 0;
 }
 
 uint64_t ProbeLinux::map(Machine& machine) {
@@ -4960,7 +4975,17 @@ uint64_t ProbeLinux::map(Machine& machine) {
     };
     const bool lowHint = !atAddress && hint >= lowMappingFloor && hint < mappingFloor &&
                          length <= mappingFloor - hint && !overlaps(hint, false);
-    const auto start = atAddress ? x[0] : lowHint ? hint : freeMappingAddress(machine, nextMapping, length);
+    // What the dynamic linker reserves is for a library. It goes where native code can jump to it even
+    // if it has no translation: a prelinked library is mapped at an address of its own instead.
+    const uint64_t forLibrary = !atAddress && !lowHint && anon && !(x[2] & 7) && machine.space && !machine.space->interpreted() &&
+        machine.space->inLinker(machine.cpu.pc) ? freeForeignAddress(machine, length) : 0;
+    const auto start = atAddress ? x[0] : lowHint ? hint : forLibrary ? forLibrary : freeMappingAddress(machine, nextMapping, length);
+    if (static const bool trace = std::getenv("NESTVANE_NATIVE_TRACE"); trace && machine.space && !(x[2] & 7) && anon)
+        std::fprintf(stderr, "[native] pid %llu reserves 0x%llx bytes hint 0x%llx flags 0x%llx pc 0x%llx: linker %d interpreted %d -> 0x%llx\n",
+                     static_cast<unsigned long long>(processId()), static_cast<unsigned long long>(length),
+                     static_cast<unsigned long long>(x[0]), static_cast<unsigned long long>(x[3]),
+                     static_cast<unsigned long long>(machine.cpu.pc), machine.space->inLinker(machine.cpu.pc),
+                     machine.space->interpreted(), static_cast<unsigned long long>(start));
     if (start < lowMappingFloor || start > mappingLimit - length) return noMemory;
     const auto end = start + length;
     if ((x[3] & fixedNoReplace) && overlaps(start, false)) {
@@ -5156,12 +5181,24 @@ uint64_t ProbeLinux::map(Machine& machine) {
                 }
             }
         } else {
-            // Code that can only be interpreted. Native code that calls it would look for it in the
-            // table of translated code, where it is not, so the whole process is interpreted from here on.
-            if (!machine.space->interpreted() && androidLogObserver)
+            // Code that can only be interpreted. Native code that calls it looks for it in the table of
+            // translated code. Where the table spans the address, the look-up faults and the interpreter
+            // takes over until the code returns; anywhere else the look-up would read memory that is no
+            // table, so the whole process is interpreted from here on.
+            const bool inPlace = native::covers(start, end);
+            if (!machine.space->interpreted() && androidLogObserver) {
+                std::string name = fd.path.substr(0, 200);
+                for (char& character : name)
+                    if (character < 0x20 || character > 0x7e) character = '?';
+                char where[64];
+                std::snprintf(where, sizeof(where), " at 0x%llx", static_cast<unsigned long long>(start));
+                const bool known = !fd.temporary && native::moduleFor(fd.contents());
                 androidLogObserver("native execution: " + current->process->executable + " (pid " + std::to_string(processId()) +
-                                   ") is interpreted from here on, it maps code without a translation in place: " + fd.path);
-            machine.space->dropCode();
+                                   (inPlace ? ") interprets code without a translation in place: " :
+                                              ") is interpreted from here on, it maps code without a translation in place: ") +
+                                   name + where + (known ? ", translated for another address" : ""));
+            }
+            if (!inPlace) machine.space->dropCode();
             if (static const bool report = std::getenv("NESTVANE_NATIVE_TRACE"); report) {
                 const auto* known = fd.temporary ? nullptr : native::moduleFor(fd.contents());
                 std::fprintf(stderr, "[native] interpreted code: %s at 0x%llx offset 0x%llx (%s) in pid %llu %s, %zu prelinked\n", fd.path.c_str(),
