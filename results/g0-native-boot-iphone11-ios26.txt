@@ -1,0 +1,26 @@
+Native boot in the app on iPhone 11 (iOS 26.0.1), with the graphics frameworks
+date: 2026-11-21. iPhone 11 (A13, 4 GB). The iPhone 15 Pro was disconnected before a run with native
+execution enabled could be made on it, so there is no 15 Pro number for this build.
+app: nestvane-native at fa18b35 plus the graphics frameworks (tools/embed-ios-graphics.sh):
+     gfxstream 79c2174f with the nine patches of tools/patches in the order they were added, built for iOS;
+     ANGLE 64a0b114 with tools/angle-iphoneos.gn. 1830 translations in 12 libraries, root android17r-framework-full.
+launch: xcrun devicectl device process launch --terminate-existing com.everettjf.nestvane.native, fresh install,
+        first launch (nothing cached). Times are the app's own, from boot-milestones.txt and boot-progress.txt.
+
+iOS device 26.0.1 | process 1669 | thermal nominal → nominal
+[11 ms] Initializing local Android renderer
+[4632 ms] Local Android renderer initialized
+[4675 ms] Starting Android 17 init
+[14214 ms] Zygote: Preloading classes...
+[16402 ms] Zygote: end preload
+[20756 ms] SystemServerTiming: StartPackageManagerService
+
+last lines of boot-progress.txt:
+[20925 ms] PackageManagerTiming: setFirstBoot: 
+[20929 ms] PackageManagerTiming: setFirstBoot:  took to complete: 3ms
+[22037 ms] PackageManager: Failed to parse /system/framework/arm64: Missing base APK in /system/framework/arm64
+[22068 ms] PackageManager: Failed to parse /system/framework/oat: Missing base APK in /system/framework/oat/arm64
+
+The process was then killed by iOS for memory: JetsamEvent-2026-11-21-104022, reason per-process-limit,
+2348 MiB resident. It did not reach the launcher. No final report was written, so the counts of native
+runs and interpreted instructions of this run are not known.
