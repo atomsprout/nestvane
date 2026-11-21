@@ -5169,13 +5169,52 @@ int main() {
         const std::array<uint64_t, 7> header{0, 0, vector, 1, control, 32, 0};
         assert(machine.write(message, {reinterpret_cast<const uint8_t*>(header.data()), sizeof(header)}));
         assert(call(212, {receiver, message, 0x40004028}) == 1 && load(data) == 'k');
-        assert(load(message + 40) == 32 && load(message + 48) == 0);
+        assert(load(message + 40) == 32 && load(message + 48) == 0x40000000);
         assert(load(control) == 28 && load(control + 8) == 0x200000001);
         assert(load(control + 16) == 1 && uint32_t(load(control + 24)) == 0);
         assert(machine.write(message, {reinterpret_cast<const uint8_t*>(outbound.data()), sizeof(outbound)}));
         assert(machine.store64(control, 12) && machine.store64(control + 8, 0x100000001));
         assert(call(211, {sender, message, 0x4000}) == uint64_t(-22)); // A malformed header still fails.
         for (const auto descriptor : {receiver, sender, listener}) assert(call(57, {descriptor}) == 0);
+    }
+
+    {
+        constexpr auto pair = base + 0x300, pipe = base + 0x310, data = base + 0x320, vector = base + 0x340;
+        constexpr auto message = base + 0x360, control = base + 0x3a0;
+        constexpr uint64_t closeOnExec = 0x40000000;
+        assert(call(199, {1, 5, 0, pair}) == 0); // AF_UNIX, SOCK_SEQPACKET.
+        assert(call(59, {pipe, 0}) == 0);
+        const auto sender = uint32_t(load(pair)), receiver = uint32_t(load(pair) >> 32);
+        const auto readEnd = uint32_t(load(pipe)), writeEnd = uint32_t(load(pipe) >> 32);
+        assert(machine.store64(data, 'k'));
+        assert(machine.store64(vector, data) && machine.store64(vector + 8, 1));
+        const auto header = [&](uint64_t buffer, uint64_t capacity) {
+            const std::array<uint64_t, 7> bytes{0, 0, vector, 1, buffer, capacity, 0};
+            assert(machine.write(message, {reinterpret_cast<const uint8_t*>(bytes.data()), sizeof(bytes)}));
+        };
+        header(control, 24);
+        assert(machine.store64(control, 20) && machine.store64(control + 8, 0x100000001));
+        assert(machine.store64(control + 16, writeEnd));
+        assert(call(211, {sender, message, 0}) == 1);
+        assert(call(57, {writeEnd}) == 0); // The queued packet retains the pipe.
+        header(control, 0);
+        assert(call(212, {receiver, message, 2}) == 1); // PEEK without space for rights.
+        assert(load(message + 40) == 0 && load(message + 48) == 8);
+        header(UINT64_MAX, 24);
+        assert(call(212, {receiver, message, 0}) == uint64_t(-14)); // A bad control buffer keeps the packet.
+        header(control, 24);
+        assert(call(212, {receiver, message, closeOnExec}) == 1);
+        assert(load(message + 40) == 24 && load(message + 48) == closeOnExec);
+        assert(load(control) == 20 && load(control + 8) == 0x100000001);
+        const auto received = uint32_t(load(control + 16));
+        assert(call(25, {received, 1}) == 1); // F_GETFD.
+        assert(call(64, {received, data, 1}) == 1 && call(63, {readEnd, data, 1}) == 1);
+        assert(load(data) == 'k');
+        assert(call(57, {sender}) == 0);
+        header(control, 24);
+        assert(call(212, {receiver, message, closeOnExec}) == 0);
+        assert(load(message + 40) == 0 && load(message + 48) == closeOnExec);
+        for (const auto descriptor : {received, readEnd, receiver}) assert(call(57, {descriptor}) == 0);
     }
 
     {

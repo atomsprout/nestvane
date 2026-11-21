@@ -685,3 +685,4 @@
 - Mac 用同一镜像和已装 APK 的真机数据副本，交替复测 4,096 和 16,384 条指令的客体调度时间片，每轮执行 50 亿条指令。原设置耗时 96.411、96.619 秒，较长时间片为 93.476、94.014 秒。较长时间片两轮观察到 66.6–66.7 万次系统调用，原设置为 78.6–79.2 万次。执行到相同指令数时客体工作量已有差异，未据此认定完整启动提速，候选未合入。
 - 从发布版 ScriptWidget 1.0.0 提取原始 ARM64 JNI 库及前端脚本，用最小 JNI 驱动和发布版相同的 Java 线程栈、QuickJS 堆及栈限额进行分段测量。Android 17 参考模拟器上，android-host.js、2,805,380 字节的 core.js、prepare.js、android-compiler.js 依次用时 1、134、2、0 毫秒。该夹具只测引擎初始化，完整模板编译和渲染仍需 App 端验收。Nestvane 对照使用同一夹具，已启动客体。
 - iPhone 14 进程 1578 的 1,140.188 秒快照记录 289.23 亿条客体指令，热状态仍为 serious。随后只读导出的对应客体帧仍显示 Android 开机字标，未计为桌面可交互。本轮 Editor 保存和重启读回由真机测试等待 Launcher 里程碑后执行。
+- iPhone 14 真机继续启动时反复记录 tombstoned 拒收控制消息。Android 17 参考模拟器使用原版 Bionic 对照，确认 AF_UNIX SOCK_SEQPACKET 可以传递管道描述符，接收方可用 MSG_CMSG_CLOEXEC 设置新描述符标记，EOF 将 msg_controllen 归零。Nestvane 现支持这两个操作，复用流套接字的描述符控制消息写入路径。宿主 ABI 回归覆盖文件身份、短控制缓冲区、PEEK、坏地址重试和 EOF，iPhoneOS Release 编译通过。是否能取得真机 ANR 的完整 Java 堆栈仍需复测。

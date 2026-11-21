@@ -278,6 +278,7 @@ private:
         struct Packet {
             std::vector<uint8_t> payload;
             std::optional<std::array<uint32_t, 3>> credentials{};
+            SocketRights files{};
         };
         std::deque<Packet> inbox;
         struct RightsMessage {
@@ -712,6 +713,9 @@ private:
                          SocketRights rights = {});
     void consumeSocketStream(SocketState& endpoint, size_t count);
     uint64_t readSocketRights(const Machine& machine, uint64_t control, uint64_t length, SocketRights& rights) const;
+    bool writeSocketRights(Machine& machine, const SocketRights& rights, uint64_t control,
+                           uint64_t capacity, bool closeOnExec, uint64_t& used, uint32_t& flags,
+                           std::map<uint32_t, Descriptor>& transferred);
     uint64_t receiveUnixStreamMessage(Machine& machine, SocketState& endpoint);
     bool socketCall(Machine& machine);
     uint64_t receiveKernelNetlink(Machine& machine, SocketState& endpoint);
