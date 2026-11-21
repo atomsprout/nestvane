@@ -73,6 +73,19 @@ iOS「文件」导入与客体安装助手已经实现。用户选择的 APK 以
 2. **重做启动执行路径。** 发布入口直接启动客体，诊断探针独立运行。先测宿主诊断、根目录枚举和渲染器初始化的成本，并验证渲染准备和客体早期启动能否重叠。用同版本镜像开启和关闭宿主 AOT 对照，先覆盖从 linker/Bionic 到 Zygote 和 system_server 的实际热点，并纳入相应的 `boot*.oat`。跨已验证代码块保留宿主寄存器状态，在内存映射、系统调用及异常边界准确恢复客体状态。由 Clang/LLVM 在构建机生成签名链接所需的目标文件，后装 APK 仍由解释器兜底。Apache-2.0 的 Remill 可做 AArch64 指令提升的离线对照，原型先比较同一段 Bionic 热路径的吞吐、回退和产物大小。[Android ART](https://source.android.com/docs/core/runtime/configure) · [Remill](https://github.com/lifting-bits/remill) · [LLVM 许可](https://llvm.org/docs/DeveloperPolicy.html)
 3. **用整机收益决定是否扩大。** 每种镜像先内部配对 AOT 开关，再比较精简镜像与原参考镜像。记录真实启动关键路径上的宿主 CPU、ABI 服务、等待和 I/O 时间。按地址空间可运行情况决定是否投入双执行线程。Kernarium 用作独立性能基准，gVisor 的 KVM 与 Linux syscall 拦截路径需要额外移植，Apple 公开的 Hypervisor 文档面向 macOS。若精简镜像加整模块 AOT 仍无法接近 10 秒，单独评估从设备本地检查点恢复，要求 GPU、输入和相机重新连接后通过同一触摸动作，镜像与数据版本不匹配时正常冷启动。[Kernarium 优化记录](https://github.com/imxieyi/Kernarium/blob/main/docs/optimization-history.md) · [gVisor 平台](https://gvisor.dev/docs/architecture_guide/platforms/) · [Apple Hypervisor](https://developer.apple.com/documentation/hypervisor)
 
+## 精简客体的裁剪方案
+
+新路线（保留寄存器重编 AOSP、静态改写、原生执行，见 [G0 记录](results/G0.md)）已经在 App 里启动到 Launcher。再次启动的时间：iPad Air (M3) 12.2 秒，iPhone 17 Pro 13.8 秒，iPhone 11 30.7 秒；全新安装后的首次启动是 36–38 秒。到桌面时物理内存约 2.2 GB。现在的开机基本是算力，所有客体线程轮流使用一个宿主线程。iPhone 11 上 33 秒时客体 CPU 最大的几项是 system_server 6.5 秒、两个应用进程各约 3 秒、zygote 2 秒、Launcher 1.3 秒。
+
+裁剪减少的是总工作量，对再次启动、首次启动和内存都有效，先于多核调度进行。每一步记录三个数：再次启动到 Launcher 的时间、首次启动的时间、到桌面时的物理内存。每一步都要保持 Launcher 显示、触摸可用、APK 可安装，先在参考模拟器上确认开机，再上真机。
+
+0. **算清账。** 不改镜像。列出开机时启动的全部守护进程和 Java 进程各自的 CPU 和内存，system_server 各服务的启动耗时，以及首次启动比再次启动多出的时间花在哪。
+1. **不重编的裁剪。** 只改开机目录：去掉用不上的守护进程的启动脚本，用特性开关关掉 system_server 里不需要的服务，不打包开机时被拉起而用不上的系统应用。
+2. **重编的裁剪。** 在构建机上做精简的产品配置：去掉不需要的模块和应用；换成不带最近任务和手势服务的 Launcher3，默认桌面不放搜索框等 Widget；逐个评估 mainline 模块的去留，每去掉一个都会改变启动类路径，一次只动一个；按裁剪后的系统重新生成预加载类表。SystemUI 先保留，只关掉用不上的部分。
+3. **多核调度。** 裁剪之后进行：客体线程的原生执行段放到辅助宿主线程上并行，系统调用仍由主循环串行处理。
+
+不裁的部分：包管理、Activity 和窗口管理、输入、存储、权限、设置存储、输入法、WebView。第三方应用依赖它们。
+
 ## 首个开发批次
 
 按依赖切成三个可独立验收的改动。
