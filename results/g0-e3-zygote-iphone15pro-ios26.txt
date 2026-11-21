@@ -1,25 +1,21 @@
-probe=e3 bundle=com.everettjf.nestvane.g0zygote
-machine=iPhone16,1 os=Version 26.2 (Build 23C55) build_config=optimized
-traced=0 host_page=16384 kernel_page=16384 physical_memory_mib=7680 available_mib=6138 footprint_mib=5.9
-vm_map min=0x104604000 max=0xfc0000000 span_gib=58.93 virtual_size_gib=392.36
-e3 zygote exit=0 bytes=0 sha=e3b0c44298fc ms=3200
-e3 output 
-e3 b_zygote exit=0 bytes=0 sha=e3b0c44298fc ms=300
-e3 footprint_mib=580.3
-done probe=e3 elapsed_ms=7577
+# iPhone 15 Pro, iOS 26.2, G0Zygote: app_process64 -Xzygote /system/bin --zygote --start-system-server --socket-name=zygote
+# first run after installing the app (cold); G0E3_TIMES=1, milliseconds since the runtime started
+[ 1402.7 ms] [logcat] D AndroidRuntime: >>>>>> START com.android.internal.os.ZygoteInit uid 0 <<<<<<
+[ 1818.0 ms] [logcat] V Zygote64Timing: BeginPreload took to complete: 78ms
+[ 2154.9 ms] [logcat] I Zygote: ...preloaded 18596 classes in 337ms.
+[ 2155.1 ms] [logcat] V Zygote64Timing: PreloadClasses took to complete: 337ms
+[ 2188.0 ms] [logcat] V Zygote64Timing: PreloadResources took to complete: 15ms
+[ 2231.4 ms] [logcat] V Zygote64Timing: ZygotePreload took to complete: 492ms
+[ 2258.1 ms] [logcat] V Zygote64Timing: PostZygoteInitGC took to complete: 26ms
+[ 2258.1 ms] [logcat] V Zygote64Timing: ZygoteInit took to complete: 523ms
+[ 2309.3 ms] [logcat] D Zygote: Forked child process 106
+[ 2309.3 ms] [logcat] I Zygote: System server process 106 has been created
+[ 2310.5 ms] [logcat] I Zygote: Accepting command socket connections
+[ 2312.2 ms] [logcat] I system_server: Using generational CollectorTypeCMC GC.
+[ 2321.1 ms] [logcat] F libbinder.ProcessState: Binder driver '/dev/binder' could not be opened. Error: 2 (No such file or directory) Opening '/dev/binder' failed. Terminating.
 
-# zygote log of the last run (G0E3_TIMES=1)
-[  150.7 ms] [logcat] I Zygote: Preloading classes...
-[  161.3 ms] [logcat] I Typeface: Preloading /system/fonts/Roboto-Regular.ttf
-[  161.3 ms] [logcat] I Typeface: Preloading /system/fonts/RobotoStatic-Regular.ttf
-[  261.3 ms] [logcat] I Zygote: ...preloaded 18596 classes in 111ms.
-[  261.3 ms] [logcat] V Zygote64Timing: PreloadClasses took to complete: 111ms
-[  273.7 ms] [logcat] V Zygote64Timing: CacheNonBootClasspathClassLoaders took to complete: 12ms
-[  273.7 ms] [logcat] I Resources: Preloading resources...
-[  277.2 ms] [logcat] I Resources: ...preloaded 63 resources in 4ms.
-[  277.8 ms] [logcat] I Resources: ...preloaded 41 resources in 0ms.
-[  277.8 ms] [logcat] V Zygote64Timing: PreloadResources took to complete: 5ms
-[  277.9 ms] [logcat] I Zygote: Preloading shared libraries...
-[  285.0 ms] [logcat] I Zygote: Preloading compat config...
-[  287.0 ms] [logcat] E Zygote: System zygote died with fatal exception
-[runtime] pid=118 status=0x0 elapsed_ms=299.4 system_calls=118048 forks=4 fork_mean_us=214.2 chunks_backed_on_touch=152 accesses_emulated=997 reserved_peak_mib=928 reserved_now_mib=0 processes_left=0
+# the run before it, second in its launch (warm), which ended at the control sockets:
+[   58.7 ms] START com.android.internal.os.ZygoteInit
+[  265.5 ms] preloaded 18596 classes in 112ms
+[  299.5 ms] ZygotePreload took to complete: 164ms
+[  325.4 ms] ZygoteInit took to complete: 191ms

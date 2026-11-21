@@ -1430,7 +1430,10 @@ static socklen_t host_address(struct Process* p, const uint8_t* guest, uint64_t 
 static void guest_address_out(struct Process* p, const struct sockaddr_un* from, uint64_t address, uint64_t length_address) {
     if (!address || !length_address) return;
     uint8_t out[112] = {1, 0};
-    const char* path = from->sun_path[0] ? guest_path(from->sun_path) : "";
+    // A name without a directory is a control socket, which is bound from inside /dev/socket.
+    char control[128];
+    snprintf(control, sizeof control, "/dev/socket/%s", from->sun_path);
+    const char* path = !from->sun_path[0] ? "" : from->sun_path[0] == '/' ? guest_path(from->sun_path) : control;
     const size_t size = strlen(path) < 107 ? strlen(path) : 107;
     memcpy(out + 2, path, size);
     uint32_t* length = host(p, length_address);
@@ -2636,12 +2639,21 @@ int GUEST_MAIN(int argc, char** argv, char** envp) {
         char* names = strdup(getenv("G0E3_CONTROL_SOCKETS"));
         int count = 6;
         for (char* name = strtok(names, ","); name && count < 14; name = strtok(NULL, ",")) {
+            // A socket address holds about a hundred bytes, and an app's directories on iOS have longer
+            // names than that, so the socket is bound by its name alone from inside its directory.
             struct sockaddr_un address = {.sun_family = AF_UNIX};
-            snprintf(address.sun_path, sizeof address.sun_path, "%s/dev/socket/%s", root, name);
-            unlink(address.sun_path);
-            const int descriptor = socket(AF_UNIX, SOCK_STREAM, 0);
-            if (descriptor < 0 || bind(descriptor, (struct sockaddr*)&address, (socklen_t)SUN_LEN(&address)) != 0 || listen(descriptor, 16) != 0) {
-                fprintf(stderr, "[runtime] cannot create control socket %s: %s\n", address.sun_path, strerror(errno));
+            char directory[MAXPATHLEN];
+            snprintf(directory, sizeof directory, "%s/dev/socket", root);
+            snprintf(address.sun_path, sizeof address.sun_path, "%s", name);
+            const int back = open(".", O_RDONLY), descriptor = socket(AF_UNIX, SOCK_STREAM, 0);
+            int bound = descriptor >= 0 && chdir(directory) == 0;
+            if (bound) {
+                unlink(name);
+                bound = bind(descriptor, (struct sockaddr*)&address, (socklen_t)SUN_LEN(&address)) == 0 && listen(descriptor, 16) == 0;
+            }
+            if (back >= 0) { fchdir(back); close(back); }
+            if (!bound) {
+                fprintf(stderr, "[runtime] cannot create control socket %s/%s: %s\n", directory, name, strerror(errno));
                 continue;
             }
             const int fd = (int)install_fd(first, descriptor, 3, 0);
