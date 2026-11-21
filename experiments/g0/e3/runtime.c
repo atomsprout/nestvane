@@ -97,6 +97,8 @@ struct Process {
     uint64_t chunks[SEGMENT >> CHUNK_SHIFT];  // every chunk is in the one segment here, so all hold the base
     struct Thread* threads[MAX_THREADS];
     int live_threads, exiting;
+    char command_line[2048];  // argv as /proc/self/cmdline shows it: strings, each ending in a zero byte
+    int command_length;
     pthread_mutex_t memory_lock;  // guards the address-space bookkeeping and the descriptor table
 };
 
@@ -404,6 +406,13 @@ static int load_image(struct Thread* thread, const struct Module* executable, ch
     int argc = 0, envc = 0;
     while (argv[argc]) ++argc;
     while (envp[envc]) ++envc;
+    process->command_length = 0;
+    for (int index = 0; index < argc; ++index) {
+        const int length = (int)strlen(argv[index]) + 1;
+        if (process->command_length + length > (int)sizeof process->command_line) break;
+        memcpy(process->command_line + process->command_length, argv[index], length);
+        process->command_length += length;
+    }
     uint64_t cursor = stack_top;
     uint64_t pointers[argc + envc + 2];
     for (int index = 0; index < argc + envc; ++index) {
@@ -562,6 +571,8 @@ static long guest_fork(struct Thread* caller, uint64_t flags, uint64_t child_sta
     child->map_hint = parent->map_hint;
     memcpy(child->actions, parent->actions, sizeof child->actions);
     memcpy(child->used, parent->used, sizeof child->used);
+    memcpy(child->command_line, parent->command_line, sizeof child->command_line);
+    child->command_length = parent->command_length;
     for (int fd = 0; fd < MAX_FDS; ++fd)
         if (parent->fds[fd] >= 0) {
             child->fds[fd] = dup(parent->fds[fd]);
@@ -689,15 +700,17 @@ static const char* guest_path(const char* path) {
 static int open_proc_file(struct Process* p, const char* path) {
     if (strncmp(path, "/proc/self/", 11) != 0) return -1;
     const char* name = path + 11;
-    const int is_maps = !strcmp(name, "maps"), is_stat = !strcmp(name, "stat");
-    if (!is_maps && !is_stat) return -1;
+    const int is_maps = !strcmp(name, "maps"), is_stat = !strcmp(name, "stat"), is_command = !strcmp(name, "cmdline");
+    if (!is_maps && !is_stat && !is_command) return -1;
     char file[] = "/tmp/nestvane-proc-XXXXXX";
     const int descriptor = mkstemp(file);
     if (descriptor < 0) return -1;
     unlink(file);
     FILE* out = fdopen(dup(descriptor), "w");
     const uint64_t stack_top = SEGMENT - PAGE;
-    if (is_stat) {
+    if (is_command) {
+        fwrite(p->command_line, 1, p->command_length, out);
+    } else if (is_stat) {
         // Field 28 is the start of the stack. Bionic looks it up in maps to size the main thread's stack.
         fprintf(out, "%d (guest) R %d %d %d 0 -1 0 0 0 0 0 0 0 0 0 20 0 %d 0 0 0 0 -1 0 0 %llu", p->pid, p->parent, p->pid, p->pid,
                 p->live_threads, stack_top - 256);
@@ -974,7 +987,7 @@ static void on_host_fault(int number, siginfo_t* info, void* raw) {
 static void* print_log(void* raw) {
     const int descriptor = (int)(intptr_t)raw;
     static const char priorities[] = "??VDIWEF";
-    uint8_t packet[4096];
+    static uint8_t packet[65536];
     for (;;) {
         const ssize_t length = recv(descriptor, packet, sizeof packet - 1, 0);
         if (length <= 0) break;
@@ -992,6 +1005,9 @@ static void* print_log(void* raw) {
 static int open_log_socket(void) {
     int pair[2];
     if (socketpair(AF_UNIX, SOCK_DGRAM, 0, pair) != 0) return -1;
+    const int buffer = 256 << 10;  // the default limits a datagram to 2 KiB, and abort messages are longer
+    setsockopt(pair[0], SOL_SOCKET, SO_SNDBUF, &buffer, sizeof buffer);
+    setsockopt(pair[1], SOL_SOCKET, SO_RCVBUF, &buffer, sizeof buffer);
     pthread_t thread;
     pthread_create(&thread, NULL, print_log, (void*)(intptr_t)pair[1]);
     pthread_detach(thread);
@@ -1090,6 +1106,15 @@ static long guest_futex(struct Process* p, uint64_t address, int operation, uint
 }
 
 // ---------------------------------------------------------------- system calls
+
+// For an abort at the highest trace level: the words on the stack that point into low memory, where
+// modules and the boot image are, which shows the chain of return addresses and methods.
+static void dump_stack(struct Process* p, struct Context* context) {
+    const uint64_t* stack = (const uint64_t*)context->sp;
+    for (int index = 0; index < 16384 && (uint64_t)(stack + index) < (uint64_t)p->base + SEGMENT - PAGE; ++index)
+        if (stack[index] >= 0x10000000 && stack[index] < 0x80000000)
+            fprintf(stderr, "[stack] sp+%05x %llx: %llx\n", index * 8, (uint64_t)(stack + index) - (uint64_t)p->base, stack[index]);
+}
 
 void guest_syscall(struct Context* context) {
     struct Thread* t = context->thread;
@@ -1261,6 +1286,7 @@ void guest_syscall(struct Context* context) {
         break;
     case 203: r = host_fd(p, (long)a[0]) < 0 ? -9 : 0; break;  // connect on the log socket
     case 240: {  // rt_tgsigqueueinfo: a signal with caller-supplied siginfo, as the unwinder sends to threads
+        if (a[2] == 6 && trace > 2) dump_stack(p, context);
         if (a[2] < 1 || a[2] > 64 || (long)a[0] != p->pid) { r = -22; break; }
         pthread_mutex_lock(&lock);
         memcpy(p->queued[a[2]], host(p, a[3]), 128);
@@ -1278,6 +1304,7 @@ void guest_syscall(struct Context* context) {
     case 129: case 130: case 131: {  // kill, tkill, tgkill
         const uint64_t signal = a[number == 131 ? 2 : 1];
         if (signal > 64) { r = -22; break; }
+        if (signal == 6 && trace > 2) dump_stack(p, context);
         pthread_mutex_lock(&lock);
         struct Process* target = number == 129 && a[0] != 0 && (long)a[0] != p->pid ? processes[a[0] % MAX_PROCESSES] : p;
         if (target && number == 129 && a[0] != 0 && target->pid != (long)a[0]) target = NULL;

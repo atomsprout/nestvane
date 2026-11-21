@@ -146,6 +146,13 @@ def main():
             seen.add(identity)
             guest = path[len(root):]
             symbol = "".join(character if character.isalnum() else "_" for character in guest.strip("/"))
+            image = path[:-4] + ".art"
+            if path.endswith(".oat") and os.path.exists(image):
+                # Compiled boot class path code. ART maps it where its image expects it (with -Xnorelocate),
+                # which the image header records as oat_file_begin.
+                with open(image, "rb") as file:
+                    jobs.append((symbol, path, struct.unpack_from("<I", file.read(36), 32)[0], objects, guest))
+                continue
             jobs.append((symbol, path, base, objects, guest))
             base = (base + size + 0x1ffff) & ~0xffff
     print("modules=%d prelinked 0x%x-0x%x" % (len(jobs), FIRST_BASE, base))
@@ -167,6 +174,24 @@ def main():
             if not os.path.lexists(os.path.join(root, "system/bin", applet)):
                 os.symlink("toybox", os.path.join(root, "system/bin", applet))
     print("program=%s bytes=%d" % (program, os.path.getsize(program)))
+
+    # A launcher for dalvikvm with the boot class path in the order the boot image was compiled for.
+    if os.path.exists(os.path.join(root, "apex/com.android.art/bin/dalvikvm64")):
+        jars = ["/apex/com.android.art/javalib/%s.jar" % name for name in ("core-oj", "core-libart", "okhttp", "bouncycastle", "apache-xml")]
+        jars += ["/system/framework/%s.jar" % name for name in ("framework", "framework-graphics", "framework-location", "ext", "telephony-common",
+                                                               "voip-common", "ims-common", "framework-ondeviceintelligence-platform")]
+        jars.append("/apex/com.android.i18n/javalib/core-icu4j.jar")
+        jars = [jar for jar in jars if os.path.exists(root + jar)]
+        launcher = os.path.join(out, "run-art.sh")
+        open(launcher, "w").write("""#!/bin/sh
+# usage: run-art.sh [dalvikvm options...] -cp <jar> <class> [args]
+# Add -Ximage:/system/framework/boot.art -Xnorelocate to run the compiled boot class path, or -Xint to interpret.
+here=$(dirname "$0")
+exec "$here/${GUEST:-guest}" "$here/root" /system/bin/toybox env ANDROID_ROOT=/system ANDROID_DATA=/data \\
+  ANDROID_ART_ROOT=/apex/com.android.art ANDROID_I18N_ROOT=/apex/com.android.i18n ANDROID_TZDATA_ROOT=/apex/com.android.tzdata \\
+  /apex/com.android.art/bin/dalvikvm64 -Xusejit:false -Xnoimage-dex2oat -Xbootclasspath:%s "$@"
+""" % ":".join(jars))
+        os.chmod(launcher, 0o755)
 
 
 if __name__ == "__main__":

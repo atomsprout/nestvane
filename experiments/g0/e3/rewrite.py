@@ -37,6 +37,7 @@ TPIDR_OFFSET = 784
 BASE_OFFSET, MEMORY_TABLE_OFFSET = 800, 824
 CHUNK_SHIFT = 24
 CONDITIONS = "eq ne hs lo mi pl vs vc hi ls ge lt gt le al nv".split()
+FAR_CONDITIONAL = 0x60000  # b.cond and cbz reach 1 MiB; translated code is up to about 1.8 times larger
 # xpaclri, pacia1716 ... autibsp: the hint-space pointer authentication instructions.
 PAC_HINTS = {0xD50320FF, 0xD503211F, 0xD503215F, 0xD503219F, 0xD50321DF, 0xD503231F, 0xD503233F, 0xD503235F,
              0xD503237F, 0xD503239F, 0xD50323BF, 0xD50323DF, 0xD50323FF}
@@ -220,7 +221,17 @@ class Rewriter:
         if w & 0x7C000000 == 0x14000000:
             target = pc + signed(w & 0x3FFFFFF, 26) * 4
             if not self.is_code(target):
-                return False
+                # Into another module: compiled boot class path code calls thunks in the first oat file
+                # of its image. Where it leads is only known once both are mapped, so go through the table.
+                if not 0 <= target < 1 << 48 or target % 4:
+                    return False
+                extra = self.constant(SCRATCH, target)
+                self.lookup(SCRATCH)
+                if w >> 31:
+                    extra += self.constant(30, pc + 4) if not self.host_lr else 0
+                self.emit("blr x28" if w >> 31 and self.host_lr else "br x28")
+                self.count("external_branch", extra + 2)
+                return True
             if not w >> 31:
                 self.emit("b " + self.label(target))
                 self.count("direct_branch", 0)
@@ -236,15 +247,28 @@ class Rewriter:
             target = pc + signed(w >> 5 & 0x7FFFF, 19) * 4
             if not self.is_code(target):
                 return False
-            self.emit("b.%s %s" % (CONDITIONS[w & 15], self.label(target)))
-            self.count("direct_branch", 0)
+            if abs(target - pc) < FAR_CONDITIONAL:
+                self.emit("b.%s %s" % (CONDITIONS[w & 15], self.label(target)))
+                self.count("direct_branch", 0)
+            else:  # the rewritten code is larger, so a far conditional branch may no longer reach
+                self.emit("b.%s 1f" % CONDITIONS[w & 15 ^ 1])
+                self.emit("b " + self.label(target))
+                self.out.append("1:")
+                self.count("direct_branch", 1)
             return True
         if w & 0x7E000000 == 0x34000000:
             target = pc + signed(w >> 5 & 0x7FFFF, 19) * 4
             if not self.is_code(target):
                 return False
-            self.emit("%s %s%d, %s" % ("cbnz" if w >> 24 & 1 else "cbz", "x" if w >> 31 else "w", w & 31, self.label(target)))
-            self.count("direct_branch", 0)
+            register = "%s%d" % ("x" if w >> 31 else "w", w & 31)
+            if abs(target - pc) < FAR_CONDITIONAL:
+                self.emit("%s %s, %s" % ("cbnz" if w >> 24 & 1 else "cbz", register, self.label(target)))
+                self.count("direct_branch", 0)
+            else:
+                self.emit("%s %s, 1f" % ("cbz" if w >> 24 & 1 else "cbnz", register))
+                self.emit("b " + self.label(target))
+                self.out.append("1:")
+                self.count("direct_branch", 1)
             return True
         if w & 0x7E000000 == 0x36000000:
             target = pc + signed(w >> 5 & 0x3FFF, 14) * 4
