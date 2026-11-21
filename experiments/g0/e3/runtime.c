@@ -103,12 +103,13 @@ struct Thread {
     pthread_t host;
     uint64_t blocked;
     uint64_t clear_tid;  // CLONE_CHILD_CLEARTID: zeroed and woken when the thread exits
-    struct { struct Context context; uint64_t blocked; } frames[4];  // contexts interrupted by handlers
-    int frame_count;
+    uint64_t alternate_stack, alternate_size;  // sigaltstack, as guest addresses
+    struct { int code; uint64_t address; } fault;  // the host fault being turned into a guest SIGSEGV
     struct Context context;
 };
 
 void guest_enter(struct Context*) __attribute__((noreturn));
+void guest_resume(struct Context*) __attribute__((noreturn));
 void guest_signal_return(void);  // entry.S: what a guest handler returns to
 
 static const char* root;  // host directory that is the guest's "/", or NULL
@@ -230,6 +231,24 @@ static int load_modules(const char* single) {
 }
 
 static uint64_t host_code(uint64_t guest_pc) { return code_table[(guest_pc - code_low) / 4]; }
+
+// The guest instruction whose translation contains a host pc, or 0 outside translated code.
+static uint64_t guest_code(uint64_t host_pc) {
+    for (int index = 0; index < guest_module_count; ++index) {
+        const struct Module* module = &guest_modules[index];
+        if (!module->image) continue;
+        const uint64_t* table = (const uint64_t*)module->info[3];
+        uint64_t low = 0, high = (module->info[1] - module->info[0]) / 4;
+        // The entry after the last instruction is the module's closing brk, so `high` is a valid index.
+        if (host_pc < table[0] || host_pc >= table[high - 1] + 64) continue;
+        while (high - low > 1) {
+            const uint64_t middle = (low + high) / 2;
+            if (table[middle] <= host_pc) low = middle; else high = middle;
+        }
+        return module->info[0] + low * 4;
+    }
+    return 0;
+}
 
 // ---------------------------------------------------------------- guest memory
 
@@ -491,6 +510,9 @@ static void terminate(struct Thread* thread, int status) {
 }
 
 static void* run_thread(void* raw) {
+    // Host fault handlers need their own stack: the guest's may be the thing that overflowed.
+    stack_t stack = {malloc(64 * 1024), 64 * 1024, 0};
+    sigaltstack(&stack, NULL);
     guest_enter(&((struct Thread*)raw)->context);
 }
 
@@ -750,9 +772,72 @@ static long guest_readlink(struct Process* p, long directory, const char* path, 
 
 // ---------------------------------------------------------------- signals
 
-// Runs the handler of one pending, unblocked signal on top of the current context. The interrupted
-// context is kept by the runtime and comes back with rt_sigreturn. siginfo and ucontext are not built.
-static void deliver_signals(struct Thread* t, struct Context* context) {
+// The frame Linux arm64 puts on the stack for a handler: siginfo, then ucontext with the interrupted
+// registers. Handlers read and change it (ART redirects pc from it), and rt_sigreturn loads it back.
+enum {
+    FRAME_UCONTEXT = 128,
+    FRAME_STACK = FRAME_UCONTEXT + 16,
+    FRAME_MASK = FRAME_UCONTEXT + 40,
+    FRAME_MACHINE = FRAME_UCONTEXT + 176,  // fault address, x0-x30, sp, pc, pstate
+    FRAME_VECTORS = FRAME_MACHINE + 288,   // fpsimd_context: magic, size, fpsr, fpcr, v0-v31
+    FRAME_SIZE = FRAME_VECTORS + 4096,
+};
+
+// Points the context at the guest handler for `number`, with the interrupted state in a frame.
+// context->pc must be the host address of a guest instruction boundary.
+static void enter_handler(struct Thread* t, struct Context* context, int number, int code, uint64_t address, uint64_t restore_mask) {
+    struct Process* p = t->process;
+    const uint64_t base = (uint64_t)p->base;
+    uint64_t sp = context->sp - base;
+    const int on_alternate = t->alternate_size && sp > t->alternate_stack && sp <= t->alternate_stack + t->alternate_size;
+    if (p->actions[number].flags & 0x08000000 && t->alternate_size && !on_alternate) sp = t->alternate_stack + t->alternate_size;  // SA_ONSTACK
+    sp = (sp - FRAME_SIZE) & ~15ull;
+    uint8_t* frame = p->base + sp;
+    memset(frame, 0, FRAME_VECTORS + 544);
+    *(int*)frame = number;
+    *(int*)(frame + 8) = code;
+    *(uint64_t*)(frame + 16) = address;
+    *(uint64_t*)(frame + FRAME_STACK) = t->alternate_stack;
+    *(int*)(frame + FRAME_STACK + 8) = t->alternate_size ? on_alternate : 2;  // SS_ONSTACK or SS_DISABLE
+    *(uint64_t*)(frame + FRAME_STACK + 16) = t->alternate_size;
+    *(uint64_t*)(frame + FRAME_MASK) = restore_mask;
+    uint64_t* machine = (uint64_t*)(frame + FRAME_MACHINE);
+    machine[0] = address;
+    memcpy(machine + 1, context->x, sizeof context->x);
+    machine[32] = context->sp - base;
+    machine[33] = guest_code(context->pc);
+    machine[34] = context->nzcv & 0xf0000000;
+    uint32_t* vectors = (uint32_t*)(frame + FRAME_VECTORS);
+    vectors[0] = 0x46508001;
+    vectors[1] = 528;
+    memcpy(vectors + 4, context->q, sizeof context->q);
+
+    t->blocked |= p->actions[number].mask | (p->actions[number].flags & 0x40000000 ? 0 : 1ull << number);  // SA_NODEFER
+    context->x[0] = (uint64_t)number;
+    context->x[1] = sp;
+    context->x[2] = sp + FRAME_UCONTEXT;
+    context->x[30] = code_high;
+    context->sp = base + sp;
+    context->pc = host_code(p->actions[number].handler & 0x00ffffffffffffffull);
+}
+
+// rt_sigreturn: the handler has returned with sp at the frame.
+static void leave_handler(struct Thread* t, struct Context* context) {
+    const uint8_t* frame = (const uint8_t*)context->sp;
+    const uint64_t* machine = (const uint64_t*)(frame + FRAME_MACHINE);
+    if (machine[33] < code_low || machine[33] >= code_high) terminate(t, 11);
+    t->blocked = *(const uint64_t*)(frame + FRAME_MASK) & ~(1ull << 9 | 1ull << 19);
+    memcpy(context->x, machine + 1, sizeof context->x);
+    context->sp = (uint64_t)t->process->base + machine[32];
+    context->pc = host_code(machine[33]);
+    context->nzcv = machine[34];
+    if (trace > 1) fprintf(stderr, "[runtime] pid %d: sigreturn to guest pc 0x%llx, x30 0x%llx\n", t->process->pid, machine[33], context->x[30]);
+    memcpy(context->q, frame + FRAME_VECTORS + 16, sizeof context->q);
+}
+
+// Runs the handler of one pending, unblocked signal on top of the current context.
+// `restore_mask` is the mask to return to afterwards.
+static void deliver_signals(struct Thread* t, struct Context* context, uint64_t restore_mask) {
     struct Process* p = t->process;
     for (;;) {
         pthread_mutex_lock(&lock);
@@ -767,17 +852,52 @@ static void deliver_signals(struct Thread* t, struct Context* context) {
             if (number == 17 || number == 18 || number == 23 || number == 28) continue;  // ignored by default
             terminate(t, number);
         }
-        if (t->frame_count == 4) return;
-        t->frames[t->frame_count].context = *context;
-        t->frames[t->frame_count++].blocked = t->blocked;
-        t->blocked |= p->actions[number].mask | (p->actions[number].flags & 0x40000000 ? 0 : 1ull << number);  // SA_NODEFER
-        context->x[0] = (uint64_t)number;
-        context->x[1] = context->x[2] = 0;
-        context->x[30] = code_high;
-        context->sp = (context->sp - 256) & ~15ull;
-        context->pc = host_code(handler & 0x00ffffffffffffffull);
+        enter_handler(t, context, number, 0, 0, restore_mask);
         return;
     }
+}
+
+// A host memory fault in translated code becomes the guest's SIGSEGV. The host handler only records
+// the state and redirects the thread here, on its own stack, where it may block or exit.
+static void continue_fault(struct Context* context) __attribute__((noreturn));
+static void continue_fault(struct Context* context) {
+    struct Thread* t = context->thread;
+    struct Process* p = t->process;
+    if (p->actions[11].handler <= 1 || t->blocked & (1ull << 11)) {
+        fprintf(stderr, "[runtime] pid %d: segmentation fault at guest address 0x%llx, pc 0x%llx\n", p->pid, t->fault.address,
+                guest_code(context->pc));
+        terminate(t, 11);
+    }
+    if (trace > 1) fprintf(stderr, "[runtime] pid %d: fault at 0x%llx, guest pc 0x%llx, x30 0x%llx\n", p->pid, t->fault.address,
+                           guest_code(context->pc), context->x[30]);
+    enter_handler(t, context, 11, t->fault.code, t->fault.address, t->blocked);
+    guest_resume(context);
+}
+
+static void on_host_fault(int number, siginfo_t* info, void* raw) {
+    ucontext_t* host_context = raw;
+    struct __darwin_arm_thread_state64* state = &host_context->uc_mcontext->__ss;
+    const uint64_t guest_pc = guest_code(state->__pc);
+    if (!guest_pc) {  // a fault in the runtime itself: let it crash where it happened
+        signal(number, SIG_DFL);
+        return;
+    }
+    struct Context* context = (struct Context*)state->__x[25];
+    struct Thread* t = context->thread;
+    memcpy(context->x, state->__x, 29 * 8);
+    context->x[29] = state->__fp;
+    context->x[30] = state->__lr;
+    context->sp = state->__sp;
+    context->nzcv = state->__cpsr;
+    memcpy(context->q, host_context->uc_mcontext->__ns.__v, sizeof context->q);
+    context->pc = host_code(guest_pc);  // the access has had no effect yet: report the whole instruction
+    const uint64_t address = (uint64_t)info->si_addr, base = (uint64_t)t->process->base;
+    t->fault.address = address >= base && address < base + SEGMENT ? address - base : address;
+    t->fault.code = number == SIGBUS ? 2 : 1;  // SEGV_ACCERR for a protection fault, SEGV_MAPERR otherwise
+    state->__x[0] = (uint64_t)context;
+    state->__sp = context->host_sp;
+    state->__lr = 0;
+    state->__pc = (uint64_t)&continue_fault;
 }
 
 // ---------------------------------------------------------------- futex
@@ -966,7 +1086,19 @@ void guest_syscall(struct Context* context) {
     case 94: terminate(t, (int)(a[0] & 0xff) << 8);
     case 96: t->clear_tid = a[0]; r = t->tid; break;
     case 98: r = guest_futex(p, a[0], (int)a[1], (uint32_t)a[2], a[3]); break;
-    case 99: case 132: r = 0; break;  // set_robust_list, sigaltstack
+    case 99: r = 0; break;  // set_robust_list
+    case 132: {  // sigaltstack: sp, flags, size
+        uint64_t* old = host(p, a[1]);
+        const uint64_t* new = host(p, a[0]);
+        const uint64_t previous[3] = {t->alternate_stack, t->alternate_size ? 0 : 2, t->alternate_size};
+        if (new) {
+            t->alternate_stack = new[0];
+            t->alternate_size = (uint32_t)new[1] & 2 ? 0 : new[2];  // SS_DISABLE
+        }
+        if (old) memcpy(old, previous, sizeof previous);
+        r = 0;
+        break;
+    }
     case 118: case 119: case 120: case 121: case 122: r = 0; break;  // scheduler parameters: SCHED_OTHER
     case 43: case 44: {  // statfs, fstatfs: report an ext4 volume
         uint64_t* out = host(p, a[1]);
@@ -1003,10 +1135,9 @@ void guest_syscall(struct Context* context) {
         while (!(p->pending & ~t->blocked)) pthread_cond_wait(&changed, &lock);
         pthread_mutex_unlock(&lock);
         context->x[0] = (uint64_t)-4;
-        deliver_signals(t, context);
-        // The handler runs with the temporary mask applied on top; the original comes back afterwards.
-        if (t->frame_count) t->frames[t->frame_count - 1].blocked = saved;
-        else t->blocked = saved;
+        const uint64_t temporary = t->blocked;
+        deliver_signals(t, context, saved);  // the handler's frame returns to the original mask
+        if (t->blocked == temporary) t->blocked = saved;  // nothing was delivered
         return;
     }
     case 134: {  // rt_sigaction: handler, flags, restorer, mask
@@ -1034,10 +1165,8 @@ void guest_syscall(struct Context* context) {
         break;
     }
     case 139:  // rt_sigreturn
-        if (!t->frame_count) terminate(t, 11);
-        *context = t->frames[--t->frame_count].context;
-        t->blocked = t->frames[t->frame_count].blocked;
-        deliver_signals(t, context);
+        leave_handler(t, context);
+        deliver_signals(t, context, t->blocked);
         return;
     case 154: case 157: r = 0; break;
     case 155: case 156: r = p->pid; break;
@@ -1123,7 +1252,7 @@ void guest_syscall(struct Context* context) {
     }
     if (trace > 1) fprintf(stderr, "[runtime] pid %d: %ld(%llx, %llx, %llx) = %ld\n", p->pid, number, a[0], a[1], a[2], r);
     context->x[0] = (uint64_t)r;
-    if (p->pending & ~t->blocked) deliver_signals(t, context);
+    if (p->pending & ~t->blocked) deliver_signals(t, context, t->blocked);
 }
 
 #ifndef GUEST_MAIN
@@ -1150,6 +1279,9 @@ int GUEST_MAIN(int argc, char** argv, char** envp) {
     if (!executable) { fprintf(stderr, "[runtime] %s is not a translated module\n", path); return 2; }
     signal(SIGPIPE, SIG_IGN);
     signal(SIGUSR1, on_thread_stop);
+    struct sigaction fault = {.sa_sigaction = on_host_fault, .sa_flags = SA_SIGINFO | SA_ONSTACK};
+    sigaction(SIGSEGV, &fault, NULL);
+    sigaction(SIGBUS, &fault, NULL);
 
     const uint64_t begin = now_ns();
     struct Thread* main_thread = new_process(1);

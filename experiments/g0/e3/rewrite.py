@@ -138,7 +138,9 @@ class Rewriter:
         if rn == 31:
             self.word(w)
             return self.count("sp_relative", 0)
-        before = after = 0
+        # `after` is the write-back. It is applied after the access, so that a faulting access has
+        # changed nothing and can be reported or retried as one guest instruction.
+        after = 0
         plain = w
         if w & 0xBFA00000 == 0x0C800000:  # AdvSIMD multiple structures, post-index
             rm = w >> 16 & 31
@@ -156,23 +158,24 @@ class Rewriter:
             mode = w >> 23 & 3
             if mode in (1, 3):
                 opc, vector = w >> 30, w >> 26 & 1
-                amount = signed(w >> 15 & 0x7F, 7) << (2 + opc if vector else 2 + (opc >> 1))
-                before, after = (amount, 0) if mode == 3 else (0, amount)
-                plain = w & ~(3 << 23 | 0x7F << 15) | 2 << 23
+                after = signed(w >> 15 & 0x7F, 7) << (2 + opc if vector else 2 + (opc >> 1))
+                plain = w & ~(3 << 23) | 2 << 23  # the signed-offset form
+                if mode == 1:
+                    plain &= ~(0x7F << 15)  # post-index: access at the base
         elif w & 0x3B200000 == 0x38000000:  # register with a 9-bit offset
             mode = w >> 10 & 3
             if mode in (1, 3):
-                amount = signed(w >> 12 & 0x1FF, 9)
-                before, after = (amount, 0) if mode == 3 else (0, amount)
-                plain = w & ~(0x1FF << 12 | 3 << 10)
-        self.adjust(rn, before)
+                after = signed(w >> 12 & 0x1FF, 9)
+                plain = w & ~(3 << 10)  # the unscaled-offset form
+                if mode == 1:
+                    plain &= ~(0x1FF << 12)  # post-index: access at the base
         added = self.add_base(rn)
         self.word(plain & ~(31 << 5) | SCRATCH << 5)
         if isinstance(after, tuple):
             self.emit("add x%d, x%d, x%d" % (rn, rn, after[1]))
         else:
             self.adjust(rn, after)
-        self.count("memory", added + (before != 0) + (after != 0))
+        self.count("memory", added + (after != 0))
 
     def set_sp(self):
         """sp = host address of the guest address in x28."""
