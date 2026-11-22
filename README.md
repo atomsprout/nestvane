@@ -22,6 +22,7 @@
   <img alt="Android 17" src="https://img.shields.io/badge/Android-17-3fe0b0">
   <img alt="iOS 26 or later" src="https://img.shields.io/badge/iOS-26%2B-5aa9ff">
   <img alt="arm64" src="https://img.shields.io/badge/arch-arm64-9b7bff">
+  <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-f2c14e"></a>
 </p>
 
 <p align="center">
@@ -136,6 +137,14 @@ pages/         the website
 - Email: <atomsprout@gmail.com>
 
 Reports of apps that work, and of apps that do not, are the most useful thing you can send.
+
+## License
+
+Nestvane is released under the [Apache License, Version 2.0](LICENSE), the license the Android Open Source
+Project itself uses. See [NOTICE](NOTICE).
+
+The license covers what is in this repository. The Android system, gfxstream, ANGLE and SQLite that a built app
+contains are separate works under their own licenses.
 
 ## Acknowledgements
 

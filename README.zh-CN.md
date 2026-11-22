@@ -22,6 +22,7 @@
   <img alt="Android 17" src="https://img.shields.io/badge/Android-17-3fe0b0">
   <img alt="iOS 26 及以上" src="https://img.shields.io/badge/iOS-26%2B-5aa9ff">
   <img alt="arm64" src="https://img.shields.io/badge/arch-arm64-9b7bff">
+  <a href="LICENSE"><img alt="许可证：Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-f2c14e"></a>
 </p>
 
 <p align="center">
@@ -131,6 +132,13 @@ pages/         网站
 - 邮箱：<atomsprout@gmail.com>
 
 哪些应用能用、哪些不能用，是你能给我们的最有用的反馈。
+
+## 许可证
+
+Nestvane 以 [Apache License 2.0](LICENSE) 发布，与 Android 开源项目本身使用的许可证相同。另见 [NOTICE](NOTICE)。
+
+这份许可证覆盖的是本仓库里的内容。构建出来的 App 里包含的 Android 系统、gfxstream、ANGLE 和 SQLite 是各自独立的
+作品，适用它们自己的许可证。
 
 ## 致谢
 

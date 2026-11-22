@@ -69,7 +69,7 @@ English version: [../README.md](../README.md).
 
 文档里的每个数字都来自 `results/G0.md`，并注明测量所用的设备。
 没有验证过的内容，文中会直接说明。
-项目尚未选定许可证，这组文档也不声明任何许可证。
+项目以 Apache License 2.0 发布，见 [`LICENSE`](../../LICENSE)。
 
 ## 联系方式
 

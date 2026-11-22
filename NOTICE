@@ -1,0 +1,6 @@
+Nestvane
+Copyright 2026 AtomSprout
+
+This product is built on the Android Open Source Project and uses gfxstream,
+ANGLE and SQLite. Those works are not part of this repository and keep their
+own licenses.

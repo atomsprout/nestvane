@@ -69,7 +69,7 @@ The documents summarise; the records hold the detail.
 
 Every number in these documents comes from `results/G0.md` and names the device it was measured on.
 Where something has not been verified, the text says so.
-No license has been chosen for the project yet, and these documents do not state one.
+The project is released under the Apache License, Version 2.0; see [`LICENSE`](../LICENSE).
 
 ## Contact
 
