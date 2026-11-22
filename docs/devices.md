@@ -85,8 +85,8 @@ Host sockets are non-blocking; a guest thread that waits on one is checked again
 Only IPv4 is supported.
 
 **DNS.**
-The address `10.0.2.3` stands for whichever name server the host uses. Queries sent to it are sent to the host's server, and the answers appear to come from `10.0.2.3`.
-The host's name server is usually the router on the local network, which iOS lets an app reach only after the user has allowed local network access. Until then sending to it fails with "no route to host", and the next server in a list of public ones is used.
+The address `10.0.2.3` is a name server inside the app (`runtime/DnsProxy.hpp`). It listens on the host's loopback and answers each query from the system's resolver (`DNSServiceQueryRecord`), so names resolve as they do for every other app on the phone, VPN and DNS settings included. Only queries over UDP are answered, and names under `.local` are refused.
+The app never sends to the network's own name server. That server is usually the router, and iOS asks the user for local network access the moment an app sends to it, which used to happen on the first boot. Multicast and broadcast packets from the guest, and packets to the guest's own made-up subnet, are not carried out either. An Android app that connects to a device on the local network still brings the question up, at that moment.
 
 **The iOS network permission.**
 On phones where each app must be allowed onto the network, iOS shows its prompt only when the app uses the system's own networking interface; plain sockets do not trigger it and are simply refused.

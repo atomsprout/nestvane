@@ -9234,7 +9234,7 @@ uint64_t ProbeLinux::connectHostSocket(const std::shared_ptr<SocketState>& socke
         nextEphemeralPort = nextEphemeralPort >= 60999 ? 32768 : nextEphemeralPort + 1;
     };
     // The guest's network is IPv4: there is no route to an IPv6 address out there.
-    if (hostnet::ipv4(destination).empty()) return uint64_t(-101);
+    if (hostnet::ipv4(destination).empty() || hostnet::unreachable(destination)) return uint64_t(-101);
     if (socket->inetDatagram()) {
         // Connecting a datagram socket to port 0 only asks whether there is a route, which is how the
         // resolver finds out which address families the network has. The host refuses such a connect.
@@ -9577,7 +9577,13 @@ uint64_t ProbeLinux::sendInetDatagram(Machine& machine, const std::shared_ptr<So
         if (!filterInetAddress(*socket, socket->family == 2 ? BpfProgram::send4 : BpfProgram::send6, destination))
             return uint64_t(-1);
         if (hostNetwork && hostnet::external(destination)) {
-            if (hostnet::ipv4(destination).empty()) return uint64_t(-101);
+            NETWORK_TRACE("udp to %u.%u.%u.%u:%u%s", hostnet::ipv4(destination).empty() ? 0 : hostnet::ipv4(destination)[0],
+                          hostnet::ipv4(destination).empty() ? 0 : hostnet::ipv4(destination)[1],
+                          hostnet::ipv4(destination).empty() ? 0 : hostnet::ipv4(destination)[2],
+                          hostnet::ipv4(destination).empty() ? 0 : hostnet::ipv4(destination)[3],
+                          unsigned(destination[2]) << 8 | destination[3],
+                          hostnet::ipv4(destination).empty() || hostnet::unreachable(destination) ? " (not carried)" : "");
+            if (hostnet::ipv4(destination).empty() || hostnet::unreachable(destination)) return uint64_t(-101);
             if (socket->hostFd < 0) socket->hostFd = hostnet::openDatagram(destination);
             if (socket->hostFd < 0) return uint64_t(int64_t(std::exchange(socket->hostFd, -1)));
         } else if (const auto error = routeInetDestination(destination)) {
@@ -9604,12 +9610,7 @@ uint64_t ProbeLinux::sendInetDatagram(Machine& machine, const std::shared_ptr<So
             return address || !socket->connected ? hostnet::sendTo(socket->hostFd, payload, destination)
                                                  : hostnet::send(socket->hostFd, payload);
         };
-        auto sent = transmit();
-        // The name server may be one the host does not let this app reach: on to the next.
-        while (sent < 0 && hostnet::isNameServer(destination) && hostnet::nextNameServer(sent)) {
-            if (!address && socket->connected) hostnet::connectDatagram(socket->hostFd, destination);
-            sent = transmit();
-        }
+        const auto sent = transmit();
         NETWORK_TRACE("udp send %zu bytes -> %lld", payload.size(), static_cast<long long>(sent));
         return uint64_t(sent);
     }

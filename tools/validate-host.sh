@@ -14,5 +14,9 @@ xcrun clang++ -O2 -std=c++20 -Wall -Wextra -Werror -Iruntime \
 generated/validate-boot-abi
 
 xcrun clang++ -O2 -std=c++20 -Wall -Wextra -Werror -Iruntime \
+    tools/validate-dns-proxy.cpp -o generated/validate-dns-proxy
+generated/validate-dns-proxy
+
+xcrun clang++ -O2 -std=c++20 -Wall -Wextra -Werror -Iruntime \
     runtime/GuestSpace.cpp tools/validate-guest-space.cpp -o generated/validate-guest-space
 generated/validate-guest-space

@@ -2,8 +2,8 @@
 
 // The guest's way out to the network: its TCP and UDP sockets to addresses that are not its own are
 // carried by sockets of the host. The guest sees the network of the Android emulator's user mode:
-// it is 10.0.2.15, its gateway 10.0.2.2, and its name server 10.0.2.3, which stands for whichever
-// name server the host uses.
+// it is 10.0.2.15, its gateway 10.0.2.2, and its name server 10.0.2.3, which is answered from the
+// system's resolver.
 
 #include <arpa/inet.h>
 #include <array>
@@ -14,10 +14,11 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
-#include <resolv.h>
 #include <span>
 #include <sys/socket.h>
 #include <unistd.h>
+
+#include "DnsProxy.hpp"
 
 namespace nestvane::hostnet {
 
@@ -77,46 +78,28 @@ inline int linuxError(int error) {
     }
 }
 
-// The name servers that stand behind the guest's 10.0.2.3: the one the host uses, and public ones
-// after it. The host's is usually the router of the local network, which iOS lets an app reach only
-// when the user has allowed it access to the local network; until then sending to it fails with
-// "no route to host", and the next one is taken.
-inline const std::array<sockaddr_storage, 4>& nameServers() {
-    static const std::array<sockaddr_storage, 4> servers = [] {
-        std::array<sockaddr_storage, 4> result{};
-        const auto set = [&](size_t index, const char* address) {
-            auto& entry = reinterpret_cast<sockaddr_in&>(result[index]);
-            entry.sin_len = sizeof(sockaddr_in);
-            entry.sin_family = AF_INET;
-            inet_pton(AF_INET, address, &entry.sin_addr);
-        };
-        set(0, "223.5.5.5");
-        set(1, "223.5.5.5");
-        set(2, "1.1.1.1");
-        set(3, "8.8.8.8");
-        struct __res_state state{};
-        if (res_ninit(&state) == 0) {
-            union res_sockaddr_union found[4];
-            if (res_getservers(&state, found, 4) > 0) {
-                if (found[0].sin.sin_family == AF_INET) std::memcpy(&result[0], &found[0].sin, sizeof(sockaddr_in));
-                else if (found[0].sin6.sin6_family == AF_INET6) std::memcpy(&result[0], &found[0].sin6, sizeof(sockaddr_in6));
-            }
-            res_ndestroy(&state);
-        }
-        return result;
-    }();
-    return servers;
+// What stands behind the guest's 10.0.2.3: the server on the host's loopback that answers from the
+// system's resolver (DnsProxy.hpp). The network's own name server is usually the router, and an app
+// that sends to it is asked by iOS for access to the local network; this way none is needed.
+inline sockaddr_in hostNameServer(uint16_t guestPort) {
+    sockaddr_in address{};
+    address.sin_len = sizeof(address);
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    // Only queries by UDP are answered. Port 1 for everything else: nothing listens there.
+    address.sin_port = htons(guestPort == 53 && dnsproxy::port() ? dnsproxy::port() : 1);
+    return address;
 }
-inline size_t& nameServerChoice() {
-    static size_t choice = 0;
-    return choice;
-}
-inline const sockaddr_storage& hostNameServer() { return nameServers()[nameServerChoice()]; }
-// After a send to the name server failed for want of a route: whether there is another to try.
-inline bool nextNameServer(int64_t error) {
-    if ((error != -113 && error != -101 && error != -100) || nameServerChoice() + 1 >= nameServers().size()) return false;
-    ++nameServerChoice();
-    return true;
+
+// Destinations the guest's packets are not carried to: multicast and broadcast, which iOS counts as
+// reaching the local network and which bring no answers back through this bridge, and the guest's
+// own made-up subnet apart from its name server.
+inline bool isNameServer(const Address& address);
+inline bool unreachable(const Address& address) {
+    const auto four = ipv4(address);
+    if (four.empty()) return address[0] == 10 && address[8] == 0xff;
+    if (four[0] >= 224) return true;
+    return four[0] == guestAddress[0] && four[1] == guestAddress[1] && four[2] == guestAddress[2] && !isNameServer(address);
 }
 
 inline bool isNameServer(const Address& address) {
@@ -128,10 +111,9 @@ inline bool isNameServer(const Address& address) {
 inline socklen_t toHost(const Address& guest, sockaddr_storage& host) {
     host = {};
     if (isNameServer(guest)) {
-        host = hostNameServer();
-        // The port is the same field in both families.
-        std::memcpy(&reinterpret_cast<sockaddr_in&>(host).sin_port, guest.data() + 2, 2);
-        return host.ss_len;
+        const auto server = hostNameServer(uint16_t(guest[2] << 8 | guest[3]));
+        std::memcpy(&host, &server, sizeof(server));
+        return sizeof(server);
     }
     if (const auto four = ipv4(guest); !four.empty()) {
         auto& address = reinterpret_cast<sockaddr_in&>(host);
@@ -156,14 +138,12 @@ inline Address toGuest(const sockaddr_storage& host, uint32_t family) {
     guest[0] = uint8_t(family);
     std::array<uint8_t, 4> four{};
     bool hasFour = false;
-    bool fromServer = false;
-    for (const auto& server : nameServers())
-        fromServer |= host.ss_family == server.ss_family &&
-            (host.ss_family == AF_INET
-                ? !std::memcmp(&reinterpret_cast<const sockaddr_in&>(host).sin_addr, &reinterpret_cast<const sockaddr_in&>(server).sin_addr, 4)
-                : !std::memcmp(&reinterpret_cast<const sockaddr_in6&>(host).sin6_addr, &reinterpret_cast<const sockaddr_in6&>(server).sin6_addr, 16));
+    const bool fromServer = host.ss_family == AF_INET &&
+        reinterpret_cast<const sockaddr_in&>(host).sin_addr.s_addr == htonl(INADDR_LOOPBACK);
     std::memcpy(guest.data() + 2, &reinterpret_cast<const sockaddr_in&>(host).sin_port, 2);
     if (fromServer) {
+        guest[2] = 0;
+        guest[3] = 53;
         four = nameServer;
         hasFour = true;
     } else if (host.ss_family == AF_INET) {
