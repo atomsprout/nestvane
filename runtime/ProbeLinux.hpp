@@ -703,9 +703,9 @@ private:
     uint64_t renameDirectory(const std::string& source, const std::string& destination, bool noReplace);
     sqlite3* dataDatabase = nullptr;
     int64_t dataGeneration = 0;
-    static constexpr uint64_t maxDataFileBytes = 64 * 1024 * 1024;
+    static constexpr uint64_t maxDataFileBytes = 256 * 1024 * 1024;
     // Persistent data and transient filesystem writes each have their own budget.
-    static constexpr uint64_t maxWritableBytes = 128 * 1024 * 1024;
+    static constexpr uint64_t maxWritableBytes = 2048ULL * 1024 * 1024;
     static constexpr size_t maxPersistentFiles = 4096;
     static constexpr size_t maxTransientFiles = 2048;
     static constexpr size_t maxGuestDirectories = 2048;

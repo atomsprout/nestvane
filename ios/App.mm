@@ -477,7 +477,7 @@ static NSString* const InstallApkShortcut = @"com.atomsprout.nestvane.install-ap
         }
         if (data.length > Inbox::maxBytes) {
             if (access) [source stopAccessingSecurityScopedResource];
-            report(@"Choose an APK file up to 64 MiB.");
+            report(@"Choose an APK file up to 256 MiB.");
             return;
         }
         const auto* bytes = static_cast<const uint8_t*>(data.bytes);
@@ -664,23 +664,28 @@ static NSString* const InstallApkShortcut = @"com.atomsprout.nestvane.install-ap
                             };
                             // NESTVANE_TEST_APK=<file in Documents> installs that APK first, the way the
                             // Install APK button does, and writes the outcome to apk-result.txt.
-                            if (NSString* name = NSProcessInfo.processInfo.environment[@"NESTVANE_TEST_APK"]; name && apkInbox) {
-                                NSData* data = [NSData dataWithContentsOfURL:[documents URLByAppendingPathComponent:name]];
-                                const auto* bytes = static_cast<const uint8_t*>(data.bytes);
-                                const auto submitted = NSProcessInfo.processInfo.systemUptime;
-                                dispatch_semaphore_t done = dispatch_semaphore_create(0);
-                                const auto outcome = std::make_shared<std::atomic_int>(-1);
-                                const bool accepted = data.length && apkInbox->submit(std::vector<uint8_t>(bytes, bytes + data.length),
-                                    [outcome, done](nestvane::GuestApkInbox::Result result) {
-                                        outcome->store(int(result));
-                                        dispatch_semaphore_signal(done);
-                                    });
-                                if (accepted) dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 300 * NSEC_PER_SEC));
-                                NSString* text = [NSString stringWithFormat:@"process %d | %lu bytes | accepted %d | result %d (0 is installed) | %.1f s\n",
-                                    NSProcessInfo.processInfo.processIdentifier, (unsigned long)data.length, accepted, outcome->load(),
-                                    NSProcessInfo.processInfo.systemUptime - submitted];
-                                [text writeToURL:[documents URLByAppendingPathComponent:@"apk-result.txt"] atomically:YES
-                                        encoding:NSUTF8StringEncoding error:nil];
+                            // A list separated by commas installs one after the other.
+                            if (NSString* names = NSProcessInfo.processInfo.environment[@"NESTVANE_TEST_APK"]; names && apkInbox) {
+                                NSMutableString* text = [NSMutableString string];
+                                for (NSString* name in [names componentsSeparatedByString:@","]) {
+                                    NSData* data = [NSData dataWithContentsOfURL:[documents URLByAppendingPathComponent:name]];
+                                    const auto* bytes = static_cast<const uint8_t*>(data.bytes);
+                                    const auto submitted = NSProcessInfo.processInfo.systemUptime;
+                                    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+                                    const auto outcome = std::make_shared<std::atomic_int>(-1);
+                                    const bool accepted = data.length && apkInbox->submit(std::vector<uint8_t>(bytes, bytes + data.length),
+                                        [outcome, done](nestvane::GuestApkInbox::Result result) {
+                                            outcome->store(int(result));
+                                            dispatch_semaphore_signal(done);
+                                        });
+                                    if (accepted) dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 300 * NSEC_PER_SEC));
+                                    [text appendFormat:@"%@ | %lu bytes | accepted %d | result %d (0 is installed) | %.1f s\n",
+                                        name, (unsigned long)data.length, accepted, outcome->load(),
+                                        NSProcessInfo.processInfo.systemUptime - submitted];
+                                    [text writeToURL:[documents URLByAppendingPathComponent:@"apk-result.txt"] atomically:YES
+                                            encoding:NSUTF8StringEncoding error:nil];
+                                    sleep(1);
+                                }
                                 sleep(2);
                             }
                             save(@"touch-before.png");
