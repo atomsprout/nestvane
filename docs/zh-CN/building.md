@@ -28,7 +28,7 @@
 
 在 Linux 机器上的 AOSP 源码树里进行。脚本在 [`experiments/aosp/`](../../experiments/aosp)。
 
-对源码树应用修改（21 个文件上的 26 处修改）：
+对源码树应用修改（共改动 23 个文件）：
 
 ```
 usage: patch.py <aosp root>      (safe to run again; every edit checks whether it is already applied)
@@ -53,6 +53,42 @@ usage: audit.py <tree> [--top N]
 ```
 
 补丁还改了构建配置，让启动镜像、system_server 和应用全部事先完整编译（`speed`）；因为没有 JIT，没编译到的方法就只能一直解释执行。
+
+### 从零重建 AOSP 源码树
+
+AOSP 源码和构建产物只在构建机上有，别处没有保存，也不需要保存：它与原版 AOSP 的全部差别都来自本仓库。
+这一点在 2026 年 11 月 22 日核对过，为的是构建机可以不再保留：
+
+- 把 `patch.py` 改动的 23 个文件取原始版本，重新运行 `patch.py`，得到的文件与实际构建所用的源码树逐字节相同。`repo status` 显示各源码项目没有其他改动。
+- 对 `clang-r584948b` 重新运行 `build-runtimes.sh`：源码树里装着的 15 个运行时库逐字节重现；5 个 UBSan 库代码相同，只有构建标识不同。
+- 构建机上的脚本就是 [`experiments/aosp/`](../../experiments/aosp) 里的这几个。
+
+一台新机器需要的东西，按记录里那台机器的实际情况：
+
+| | |
+| --- | --- |
+| 机器 | 32 核、125 GB 内存、Ubuntu 24.04。从零完整构建一次约 75 分钟。 |
+| 磁盘 | 500 GB 够用：源码约 190 GB（其中 `.repo` 84 GB），一份完整的 `out/` 114 GB，工具链源码 8 GB。 |
+| 软件包 | `git curl zip unzip rsync tmux python3 build-essential bison flex cmake ninja-build openjdk-21-jdk-headless fontconfig xsltproc libxml2-utils zlib1g-dev lib32z1-dev libc6-dev-i386 libx11-dev x11proto-core-dev libgl1-mesa-dev`，以及 `repo` 工具（当时是 v2.73）。 |
+| 源码 | 清单仓库 `https://android.googlesource.com/platform/manifest` 的标签 `android-17.0.0_r1`，浅克隆（`--depth=1`）到 `~/aosp`。 |
+| 编译器 | 发布配置 `cp2a` 选用 `clang-r584948b`。它的运行时库用 `llvm-project` 的 `6d4a0935c850ec3ddfc70c4ba97b98adc35c676e` 和 `toolchain/llvm_android` 的 `d0417d2b702f40bd6afb92b159d07f19e2a69112` 重编。 |
+| 第二个编译器 | 源码树里还有 `clang-r596125`，它的运行时库用同样的办法重编过：`llvm-project` 的 `2bc22ea02edda5926f3e53f141def9bf212ac1db`，`llvm_android` 的 `c48b7b1b29d64f31cfaa84013c93e4861f509179`。构建是否用到它没有核对过。 |
+| NDK | r29（29.0.14206865），提供运行时库的 sysroot。 |
+
+顺序如下，源码在 `~/aosp`，工具链源码在 `~/tc` 下：
+
+```sh
+python3 patch.py ~/aosp
+build-runtimes.sh ~/aosp ~/tc/llvm-6d4a ~/tc/llvm_android-d041 ~/tc/android-ndk-r29 clang-r584948b
+build.sh full -- droid Launcher3      # 系统，以及客体使用的桌面
+build.sh emu -- emu_img_zip           # 参考模拟器用的镜像
+```
+
+`llvm-project` 和 `llvm_android` 是上游仓库（`https://github.com/llvm/llvm-project`、`https://android.googlesource.com/toolchain/llvm_android`）在上述版本的检出；`build-runtimes.sh` 自己把 Android 的补丁打到 LLVM 源码上。
+`emu_img_zip` 在产品输出目录里生成 `sdk-repo-linux-system-images.zip`；在 Mac 上解到 Android SDK 的 `system-images/android-37/<名字>/arm64-v8a/` 下，就是第 2 步参考模拟器的镜像。
+[`experiments/aosp/fetch.sh`](../../experiments/aosp/fetch.sh) 把 `/system` 和解开的 APEX 模块复制到 Mac，供第 6 步翻译。
+
+检出源码和安装软件包的命令当时没有存成脚本：上面的清单是从机器上读出来的（已装的软件包、检出的配置、构建自己记录的目标）。
 
 ## 第 2 步：在参考模拟器里启动镜像
 

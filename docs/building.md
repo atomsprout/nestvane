@@ -28,7 +28,7 @@ There is no single command that performs the whole build, and no continuous inte
 
 On the Linux machine, in the AOSP checkout. The scripts are in [`experiments/aosp/`](../experiments/aosp).
 
-Apply the edits to the tree (26 edits over 21 files):
+Apply the edits to the tree (23 files change):
 
 ```
 usage: patch.py <aosp root>      (safe to run again; every edit checks whether it is already applied)
@@ -53,6 +53,42 @@ usage: audit.py <tree> [--top N]
 ```
 
 The patch also changes the build so that the boot image, the system server and the apps are compiled ahead of time in full (`speed`), because without a JIT a method that was not compiled would be interpreted for good.
+
+### Rebuilding the AOSP tree from nothing
+
+The AOSP checkout and its build output are not kept anywhere but on the build machine, and they do not need to be: everything that differs from stock AOSP comes from this repository.
+This was checked on 22 November 2026, so that the build machine can be given up:
+
+- `patch.py`, run on pristine copies of the 23 files it touches, gives exactly the files of the tree that was built. `repo status` shows no other change to any source project.
+- `build-runtimes.sh`, run again for `clang-r584948b`, reproduced the 15 runtime libraries installed in the tree byte for byte, and the five UBSan libraries with the same code and a different build ID.
+- The scripts on the machine were the ones in [`experiments/aosp/`](../experiments/aosp).
+
+What a new machine needs, as the one in the record had it:
+
+| | |
+| --- | --- |
+| Machine | 32 cores, 125 GB of memory, Ubuntu 24.04. A full build from scratch took about 75 minutes. |
+| Disk | 500 GB was enough: the checkout takes about 190 GB (84 GB of it `.repo`), a full `out/` 114 GB, the toolchain sources 8 GB. |
+| Packages | `git curl zip unzip rsync tmux python3 build-essential bison flex cmake ninja-build openjdk-21-jdk-headless fontconfig xsltproc libxml2-utils zlib1g-dev lib32z1-dev libc6-dev-i386 libx11-dev x11proto-core-dev libgl1-mesa-dev`, and the `repo` tool (v2.73 was used). |
+| Source | The manifest `https://android.googlesource.com/platform/manifest` at the tag `android-17.0.0_r1`, checked out shallow (`--depth=1`) into `~/aosp`. |
+| Compiler | The release configuration `cp2a` selects `clang-r584948b`. Its runtimes are rebuilt from `llvm-project` at `6d4a0935c850ec3ddfc70c4ba97b98adc35c676e` with `toolchain/llvm_android` at `d0417d2b702f40bd6afb92b159d07f19e2a69112`. |
+| Second compiler | The tree also carries `clang-r596125`, whose runtimes were rebuilt the same way from `llvm-project` at `2bc22ea02edda5926f3e53f141def9bf212ac1db` with `llvm_android` at `c48b7b1b29d64f31cfaa84013c93e4861f509179`. Whether the build uses it has not been checked. |
+| NDK | r29 (29.0.14206865), for the runtimes' sysroot. |
+
+The order, with the checkout at `~/aosp` and the toolchain sources under `~/tc`:
+
+```sh
+python3 patch.py ~/aosp
+build-runtimes.sh ~/aosp ~/tc/llvm-6d4a ~/tc/llvm_android-d041 ~/tc/android-ndk-r29 clang-r584948b
+build.sh full -- droid Launcher3      # the system, and the launcher the guest uses
+build.sh emu -- emu_img_zip           # the image for the reference emulator
+```
+
+`llvm-project` and `llvm_android` are the upstream repositories (`https://github.com/llvm/llvm-project`, `https://android.googlesource.com/toolchain/llvm_android`) checked out at the revisions above; `build-runtimes.sh` applies Android's patches to the LLVM sources itself.
+`emu_img_zip` writes `sdk-repo-linux-system-images.zip` into the product's output directory; unpacked under the Android SDK's `system-images/android-37/<name>/arm64-v8a/` on the Mac, it is the image of the reference emulator in step 2.
+[`experiments/aosp/fetch.sh`](../experiments/aosp/fetch.sh) copies `/system` and the unpacked APEX modules to the Mac for the translation in step 6.
+
+The commands that checked the sources out and installed the packages were not saved as a script: the list above was read from the machine (its installed packages, the checkout's configuration, the build's own log of its targets).
 
 ## Step 2: boot the image in the reference emulator
 
