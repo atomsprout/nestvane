@@ -7367,6 +7367,37 @@ int main() {
         constexpr auto firstPath = base + 0x280, secondPath = base + 0x300, payload = base + 0x380;
 
         {
+            // A large file is kept in a host file beside the database: it comes back with what was
+            // last written, also after the last sync, and its host file goes when the file does.
+            const auto databasePath = (cleanup.directory / "large-data.sqlite3").string();
+            const auto hostFiles = fs::path(databasePath + ".files");
+            constexpr uint64_t far = 3 * 1024 * 1024;
+            put(firstPath, "/data/large");
+            {
+                ProbeLinux writer(1, 0);
+                writer.mountData(databasePath);
+                assert(machine.store64(payload, 0x1122334455667788));
+                const auto file = invoke(writer, 56, {atCwd, firstPath, 0xc2, 0600});
+                assert(file < 256 && invoke(writer, 68, {file, payload, 8, far}) == 8);
+                assert(fs::is_empty(hostFiles) == false && writer.syncData());
+                assert(std::distance(fs::directory_iterator(hostFiles), fs::directory_iterator()) == 1);
+                assert(fs::file_size(databasePath) < far);
+                assert(machine.store64(payload, 77) && invoke(writer, 68, {file, payload, 8, 16}) == 8);
+            }
+            {
+                ProbeLinux reopened(1, 0);
+                reopened.mountData(databasePath);
+                assert(std::distance(fs::directory_iterator(hostFiles), fs::directory_iterator()) == 1);
+                const auto file = invoke(reopened, 56, {atCwd, firstPath, 2});
+                assert(file < 256 && invoke(reopened, 67, {file, payload, 8, far}) == 8 && load(payload) == 0x1122334455667788);
+                assert(invoke(reopened, 67, {file, payload, 8, 16}) == 8 && load(payload) == 77);
+                assert(invoke(reopened, 67, {file, payload, 8, far + 8}) == 0);
+                assert(invoke(reopened, 57, {file}) == 0 && invoke(reopened, 35, {atCwd, firstPath, 0}) == 0);
+                assert(reopened.syncData() && fs::is_empty(hostFiles));
+            }
+        }
+
+        {
             const auto databasePath = (cleanup.directory / "incremental-data.sqlite3").string();
             ProbeLinux writer(1, 0);
             writer.mountData(databasePath);

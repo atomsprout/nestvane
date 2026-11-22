@@ -3,6 +3,10 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <fcntl.h>
+#include <mutex>
+#include <sys/stat.h>
+#include <utility>
 #include <cstring>
 #include <cstdlib>
 #include <fstream>
@@ -758,11 +762,84 @@ bool Segment::prepareWrite(uint64_t offset, uint64_t length) {
     return true;
 }
 
+namespace {
+std::mutex retiredLock;
+std::vector<std::string> retiredFiles;
+
+size_t hostPages(size_t size) {
+    return std::max<size_t>((size + GuestSpace::page - 1) & ~(GuestSpace::page - 1), GuestSpace::page);
+}
+} // namespace
+
 SharedBuffer::~SharedBuffer() {
     if (mapping) munmap(mapping, reserved);
+    if (!file.empty()) {
+        const std::lock_guard lock(retiredLock);
+        retiredFiles.push_back(std::move(file));
+    }
+}
+
+std::vector<std::string> SharedBuffer::takeRetired(std::string_view directory) {
+    const std::lock_guard lock(retiredLock);
+    std::vector<std::string> taken;
+    std::erase_if(retiredFiles, [&](std::string& path) {
+        if (!path.starts_with(directory)) return false;
+        taken.push_back(std::move(path));
+        return true;
+    });
+    return taken;
+}
+
+uint8_t* SharedBuffer::pages() const {
+    if (mapping || !reserved) return mapping;
+    const int fd = ::open(file.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    struct stat status{};
+    if (fd < 0 || fstat(fd, &status) || (size_t(status.st_size) < reserved && ftruncate(fd, off_t(reserved)))) {
+        if (fd >= 0) ::close(fd);
+        throw std::bad_alloc();
+    }
+    void* memory = mmap(nullptr, reserved, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    ::close(fd);
+    if (memory == MAP_FAILED) throw std::bad_alloc();
+    mapping = static_cast<uint8_t*>(memory);
+    return mapping;
+}
+
+void SharedBuffer::attach(std::string path, size_t size) {
+    if (mapping) munmap(mapping, reserved);
+    mapping = nullptr;
+    bytes = {};
+    file = std::move(path);
+    length = size;
+    reserved = hostPages(size);
+    ++moves;
+}
+
+bool SharedBuffer::backWith(std::string path) {
+    if (!file.empty()) return true;
+    const size_t content = size();
+    const size_t wanted = std::max(hostPages(content), reserved);
+    const int fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    if (fd < 0) return false;
+    void* memory = ftruncate(fd, off_t(wanted)) ? MAP_FAILED : mmap(nullptr, wanted, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    ::close(fd);
+    if (memory == MAP_FAILED) {
+        ::unlink(path.c_str());
+        return false;
+    }
+    if (content) std::memcpy(memory, data(), content);
+    if (mapping) munmap(mapping, reserved);
+    bytes = {};
+    mapping = static_cast<uint8_t*>(memory);
+    length = content;
+    reserved = wanted;
+    file = std::move(path);
+    ++moves;
+    return true;
 }
 
 bool SharedBuffer::makeShareable() {
+    if (!file.empty()) return true;
     if (mapping) return true;
     const size_t wanted = std::max<size_t>((bytes.size() + GuestSpace::page - 1) & ~(GuestSpace::page - 1), GuestSpace::page);
     void* memory = mmap(nullptr, wanted, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
@@ -780,10 +857,20 @@ void SharedBuffer::resize(size_t size) {
     // Large storage lives in pages of its own from the start: the parts nothing has written take no
     // memory, as in a file system that keeps files sparse.
     constexpr size_t sparseFrom = 64 * 1024;
-    if (!mapping && (size < sparseFrom || !makeShareable())) return bytes.resize(size);
+    if (!paged() && (size < sparseFrom || !makeShareable())) return bytes.resize(size);
     if (size <= reserved) {
-        if (size < length) std::memset(mapping + size, 0, length - size);  // what is cut off reads as zero if it comes back
+        if (size < length) std::memset(pages() + size, 0, length - size);  // what is cut off reads as zero if it comes back
         length = size;
+        return;
+    }
+    if (!file.empty()) {
+        // The file grows, and is mapped again where there is room for all of it.
+        if (mapping) munmap(mapping, reserved);
+        mapping = nullptr;
+        reserved = std::max<size_t>(hostPages(size), reserved + std::min<size_t>(reserved, 64 * 1024 * 1024));
+        length = size;
+        ++moves;
+        pages();
         return;
     }
     // Room to grow into costs only address space. The pages move to the new place as they are: a copy

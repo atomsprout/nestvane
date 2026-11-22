@@ -44,6 +44,10 @@ bool endsBlock(Op op);
 // The bytes of storage that several mappings share. It behaves like a vector of bytes until it is
 // made shareable, which moves it to host pages of its own that can be mapped into guest address
 // spaces page for page. Growing it may move it again: `moved` then tells the owner.
+//
+// The pages can instead be those of a host file (`backWith`, `attach`): then they take no memory of
+// their own, the host writes what changes to the file, and a file that nothing reads is not even
+// mapped. The file is as long as the reserved pages; the size of the content is the owner's to keep.
 class SharedBuffer {
 public:
     using value_type = uint8_t;
@@ -56,10 +60,10 @@ public:
         std::copy(content.begin(), content.end(), data());
         return *this;
     }
-    uint8_t* data() { return mapping ? mapping : bytes.data(); }
-    const uint8_t* data() const { return mapping ? mapping : bytes.data(); }
-    size_t size() const { return mapping ? length : bytes.size(); }
-    size_t capacity() const { return mapping ? reserved : bytes.capacity(); }
+    uint8_t* data() { return paged() ? pages() : bytes.data(); }
+    const uint8_t* data() const { return paged() ? pages() : bytes.data(); }
+    size_t size() const { return paged() ? length : bytes.size(); }
+    size_t capacity() const { return paged() ? reserved : bytes.capacity(); }
     bool empty() const { return size() == 0; }
     uint8_t* begin() { return data(); }
     uint8_t* end() { return data() + size(); }
@@ -68,14 +72,27 @@ public:
     void resize(size_t size);
     // Moves the bytes to shareable host pages. False if the host has no memory for it.
     bool makeShareable();
-    bool shareable() const { return mapping != nullptr; }
+    bool shareable() const { return paged(); }
+    // Moves the bytes into a host file, new or emptied, and keeps them there from now on.
+    bool backWith(std::string path);
+    // Takes a host file that holds `size` bytes of content already as the bytes.
+    void attach(std::string path, size_t size);
+    bool backed() const { return !file.empty(); }
+    const std::string& backingFile() const { return file; }
+    // The files under a directory whose buffers are gone since the last call: their owner decides
+    // when the content is no longer needed and removes them.
+    static std::vector<std::string> takeRetired(std::string_view directory);
     // Counts the times the bytes have moved in host memory.
     uint64_t moves = 0;
 
 private:
+    bool paged() const { return mapping || !file.empty(); }
+    // The pages, mapped from the file now if they were not yet.
+    uint8_t* pages() const;
     std::vector<uint8_t> bytes;
-    uint8_t* mapping = nullptr;
+    mutable uint8_t* mapping = nullptr;
     size_t length = 0, reserved = 0;
+    std::string file;
 };
 
 struct SharedFileBytes {

@@ -2,6 +2,10 @@
 
 #include <sqlite3.h>
 
+#include <dirent.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -83,6 +87,14 @@ void ProbeLinux::mountData(const std::string& databasePath) {
         " m_sec INTEGER NOT NULL, m_ns INTEGER NOT NULL, c_sec INTEGER NOT NULL, c_ns INTEGER NOT NULL); BEGIN;"))
         throw std::runtime_error("cannot open guest data database");
 
+    std::string filesDirectory;
+    if (databasePath != ":memory:" && !databasePath.starts_with("file:")) {
+        filesDirectory = databasePath + ".files";
+        if (mkdir(filesDirectory.c_str(), 0700) && errno != EEXIST) filesDirectory.clear();
+    }
+    // What an earlier guest in this process left to remove is settled below, against the records.
+    if (!filesDirectory.empty()) SharedBuffer::takeRetired(filesDirectory + "/");
+    std::set<std::string> externalNames;
     auto version = prepare(raw, "SELECT generation FROM state WHERE singleton=1");
     auto records = prepare(raw, "SELECT path,kind,mode,uid,gid,inode,bytes,label FROM entries ORDER BY path");
     if (!version || !records || sqlite3_step(version.get()) != SQLITE_ROW)
@@ -131,6 +143,36 @@ void ProbeLinux::mountData(const std::string& databasePath) {
             file->storage->pages.resize(allocation);
             if (file->storage->placedMoves != file->storage->pages.moves) file->storage->replace();
             if (!bytes.empty()) std::memcpy(file->storage->pages.data(), bytes.data(), bytes.size());
+            if (!label.empty()) file->attributes.emplace("security.selinux",
+                                                        std::vector<uint8_t>(label.begin(), label.end()));
+            // A large file that an earlier version kept in the database moves out of it.
+            dataFilesDirectory = filesDirectory;
+            if (!filesDirectory.empty() && bytes.size() >= externalFileBytes &&
+                file->storage->pages.backWith(externalFile(uint64_t(inode)))) {
+                externalNames.insert(std::to_string(inode));
+                compactData = true;
+            }
+            dataFilesDirectory.clear();
+            loadedFiles.emplace(path, std::move(file));
+            nextPersistentInode = std::max(nextPersistentInode, uint64_t(inode) + 1);
+        } else if (kind == 3 && inode >= 65536 && inode < INT64_MAX - 4096 && bytes.size() == sizeof(uint64_t) &&
+                   !filesDirectory.empty() && inodes.insert(inode).second) {
+            // A regular file whose content is in a host file: the record has its size.
+            uint64_t size;
+            std::memcpy(&size, bytes.data(), sizeof(size));
+            if (size > maxDataFileBytes) throw std::runtime_error("invalid guest data record");
+            const auto allocation = (size + pageMask) & ~pageMask;
+            bytesTotal += allocation;
+            if (bytesTotal > maxWritableBytes) throw std::runtime_error("guest data capacity exceeded");
+            auto file = std::make_shared<WritableFile>();
+            file->inode = inode;
+            file->mode = mode;
+            file->uid = uid;
+            file->gid = gid;
+            file->persistent = true;
+            file->storage->size = size;
+            file->storage->pages.attach(filesDirectory + "/" + std::to_string(inode), allocation);
+            externalNames.insert(std::to_string(inode));
             if (!label.empty()) file->attributes.emplace("security.selinux",
                                                         std::vector<uint8_t>(label.begin(), label.end()));
             loadedFiles.emplace(path, std::move(file));
@@ -223,6 +265,17 @@ void ProbeLinux::mountData(const std::string& databasePath) {
     if (result != SQLITE_DONE || !execute(raw, "COMMIT") || directories.contains("/data") ||
         current->mountNamespace->mounts.contains("/data"))
         throw std::runtime_error("cannot mount guest data database");
+    // Host files that no record names were written after the last sync, or belong to files deleted since.
+    if (!filesDirectory.empty()) {
+        if (DIR* listing = opendir(filesDirectory.c_str())) {
+            while (const dirent* entry = readdir(listing)) {
+                const std::string name = entry->d_name;
+                if (name != "." && name != ".." && !externalNames.contains(name)) unlink((filesDirectory + "/" + name).c_str());
+            }
+            closedir(listing);
+        }
+    }
+    dataFilesDirectory = filesDirectory;
     directories.merge(loadedDirectories);
     writableFiles.merge(loadedFiles);
     links.merge(loadedLinks);
@@ -242,6 +295,7 @@ bool ProbeLinux::syncData() {
     if (!dataDatabase) return true;
     auto* database = dataDatabase;
     if (!execute(database, "BEGIN IMMEDIATE")) return false;
+    std::set<std::string_view> externalFiles;
     const auto write = [&] {
         auto check = prepare(database, "SELECT generation FROM state WHERE singleton=1");
         if (!check || sqlite3_step(check.get()) != SQLITE_ROW ||
@@ -331,8 +385,12 @@ bool ProbeLinux::syncData() {
             const auto attribute = file->attributes.find("security.selinux");
             const auto label = attribute == file->attributes.end() ? std::span<const uint8_t>{} :
                                std::span<const uint8_t>(attribute->second);
-            if (!row(path, 1, file->mode, file->uid, file->gid, file->inode,
-                     std::span(file->storage->pages).first(file->storage->size), label) ||
+            const uint64_t size = file->storage->size;
+            const bool external = file->storage->pages.backed();
+            if (external) externalFiles.insert(file->storage->pages.backingFile());
+            const auto content = external ? std::span(reinterpret_cast<const uint8_t*>(&size), sizeof(size)) :
+                                 std::span<const uint8_t>(file->storage->pages).first(size);
+            if (!row(path, external ? 3 : 1, file->mode, file->uid, file->gid, file->inode, content, label) ||
                 !writeTimes(path, file->times) || !writeAcl(path, false, file->accessAcl) ||
                 !writeAttributes(fileAttributes.get(), path, file->userAttributes)) return false;
         }
@@ -350,6 +408,11 @@ bool ProbeLinux::syncData() {
         return false;
     }
     ++dataGeneration;
+    // The files of large files that are gone: no record names them any more.
+    if (!dataFilesDirectory.empty())
+        for (const auto& path : SharedBuffer::takeRetired(dataFilesDirectory + "/"))
+            if (!externalFiles.contains(path)) unlink(path.c_str());
+    if (std::exchange(compactData, false)) execute(database, "VACUUM");
     return true;
 }
 

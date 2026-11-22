@@ -747,6 +747,16 @@ private:
     uint64_t renameFile(Machine& machine);
     uint64_t renameDirectory(const std::string& source, const std::string& destination, bool noReplace);
     sqlite3* dataDatabase = nullptr;
+    // Where the content of the guest's large files is kept, one host file per inode, beside the
+    // database that has everything else of /data. A large file is mapped from there when something
+    // reads it, so it takes no memory of its own and the database does not carry it. The database is
+    // a snapshot taken when the guest syncs; the content of a large file is whatever was last written.
+    // After the app is killed a large file can so be newer than the snapshot, never older.
+    std::string dataFilesDirectory;
+    static constexpr uint64_t externalFileBytes = 1024 * 1024;
+    std::string externalFile(uint64_t inode) const { return dataFilesDirectory + "/" + std::to_string(inode); }
+    // The database still has the content of files that have moved out of it: it is packed after the next sync.
+    bool compactData = false;
     int64_t dataGeneration = 0;
     static constexpr uint64_t maxDataFileBytes = 256 * 1024 * 1024;
     // Persistent data and transient filesystem writes each have their own budget.

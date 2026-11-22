@@ -1631,6 +1631,9 @@ uint64_t ProbeLinux::resize(const WritableFile& file, uint64_t size) {
         if (pages - file.storage->pages.size() + allocated > limit) return uint64_t(-28);
     }
     const uint64_t before = file.storage->pages.size();
+    // A file of /data that becomes large moves to a host file of its own. If that fails it stays in memory.
+    if (file.persistent && !dataFilesDirectory.empty() && size >= externalFileBytes && !file.storage->pages.backed())
+        file.storage->pages.backWith(externalFile(file.inode));
     file.storage->pages.resize(pages);
     if (file.storage->placedMoves != file.storage->pages.moves) file.storage->replace();
     const auto zeroFrom = std::min(size, file.storage->size);
