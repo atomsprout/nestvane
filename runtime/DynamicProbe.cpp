@@ -902,6 +902,11 @@ service nestvane-apk-install /system/bin/sh /system/etc/nestvane/apk-ready.sh
             if (expectSmoke && message.starts_with("NestvaneSmoke: Opened activity with count "))
                 smokeActivityOpened = true;
             if (!progress) return;
+            // NESTVANE_LOG_ALL=1 passes every line on, for finding what a boot waits for.
+            if (static const bool all = std::getenv("NESTVANE_LOG_ALL"); all) {
+                progress(message.substr(0, message.find('\n')));
+                return;
+            }
             constexpr std::string_view milestones[] = {
                 "Zygote: Preloading classes", "Zygote: ...preloaded", "Zygote: end preload",
                 "Resources: Preloading resources",

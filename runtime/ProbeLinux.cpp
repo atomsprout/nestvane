@@ -175,8 +175,21 @@ using SparseBacking = std::map<uint64_t, std::shared_ptr<AnonymousPages>>;
 void changeRange(Machine& machine, uint64_t start, uint64_t end, std::optional<unsigned> flags,
                  std::optional<ForkAdvice> advice = {}, const SparseBacking& sparseBacking = {}) {
     const bool retain = flags || advice;
+    // The segments are in address order and do not overlap: only those that reach into the range are
+    // looked at and replaced. A process has thousands, and a boot changes ranges a hundred thousand times.
+    auto& all = machine.segments;
+    if (static const bool check = std::getenv("NESTVANE_CHECK_SEGMENTS"); check)
+        for (size_t index = 1; index < all.size(); ++index)
+            if (all[index].address < all[index - 1].address + all[index - 1].mappedSize()) std::abort();
+    const auto first = std::partition_point(all.begin(), all.end(), [&](const Segment& segment) {
+        return segment.address + segment.mappedSize() <= start;
+    });
+    auto last = first;
+    while (last != all.end() && last->address < end) ++last;
     std::vector<Segment> pages;
-    for (auto& segment : machine.segments) {
+    pages.reserve(size_t(last - first) + 2);
+    for (auto each = first; each != last; ++each) {
+        auto& segment = *each;
         const auto segmentEnd = segment.address + segment.mappedSize();
         const auto left = std::max(start, segment.address), right = std::min(end, segmentEnd);
         if (left >= right) {
@@ -268,9 +281,15 @@ void changeRange(Machine& machine, uint64_t start, uint64_t end, std::optional<u
         if (retain) part(left, right, flags.value_or(segment.flags), true);
         part(right, segmentEnd, segment.flags);
     }
-    machine.segments = std::move(pages);
+    const size_t index = size_t(first - all.begin());
+    if (pages.size() == size_t(last - first)) {
+        std::move(pages.begin(), pages.end(), first);
+    } else {
+        all.erase(first, last);
+        all.insert(all.begin() + index, std::make_move_iterator(pages.begin()), std::make_move_iterator(pages.end()));
+    }
     if (machine.space)
-        for (auto& segment : machine.segments) machine.place(segment);  // fragments that got buffers of their own
+        for (size_t each = index; each < index + pages.size(); ++each) machine.place(all[each]);  // fragments that got buffers of their own
     machine.cpu.exclusiveSize = 0;
 }
 
@@ -1044,11 +1063,17 @@ uint64_t ProbeLinux::statFilesystem(Machine& machine, uint64_t address, std::str
     std::array<uint64_t, 15> stat{};
     stat[0] = 0x01021994; // TMPFS_MAGIC
     stat[1] = pageSize;
-    for (const auto& [path, bytes] : files) {
-        const auto ext4 = ext4Nodes.find(path);
-        const auto size = ext4 == ext4Nodes.end() ? bytes.size() : ext4->second->size;
-        stat[2] += pageAlignedLength(size) / pageSize;
+    // The linker asks for every library it opens, and the image has tens of thousands of files.
+    static thread_local struct { const void* owner = nullptr; size_t count = 0; uint64_t blocks = 0; } total;
+    if (total.owner != this || total.count != files.size()) {
+        total = {this, files.size(), 0};
+        for (const auto& [path, bytes] : files) {
+            const auto ext4 = ext4Nodes.find(path);
+            const auto size = ext4 == ext4Nodes.end() ? bytes.size() : ext4->second->size;
+            total.blocks += pageAlignedLength(size) / pageSize;
+        }
     }
+    stat[2] = total.blocks;
     stat[5] = files.size();
     stat[8] = 255;
     stat[9] = pageSize;
