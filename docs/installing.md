@@ -58,5 +58,5 @@ Each release lists the SHA-256 of its IPA. Compare it with `shasum -a 256 Nestva
 ## What is inside
 
 The app contains an Android 17 system built from the Android Open Source Project with this repository's patch,
-translated ahead of time, together with gfxstream and ANGLE. Their notices are in `NOTICE-AOSP.txt`, attached to
-each release. How to build all of it yourself is in [building.md](building.md).
+translated ahead of time, together with gfxstream and ANGLE. Their notices are inside the app, in `Licenses/`, and
+attached to each release as `NOTICE-AOSP.txt` and `THIRD-PARTY-NOTICES.txt`. How to build all of it yourself is in [building.md](building.md).

@@ -55,4 +55,4 @@ Android 启动到了桌面（这次首次启动 15.5 秒）。改包标识符，
 ## 里面有什么
 
 App 里是用本仓库的补丁从 Android 开源项目构建并提前翻译的 Android 17 系统，以及 gfxstream 和 ANGLE。
-它们的许可声明在每个 Release 附带的 `NOTICE-AOSP.txt` 里。怎样自己构建这一切，见[构建](building.md)。
+它们的许可声明在 App 里的 `Licenses/` 目录中，也作为 `NOTICE-AOSP.txt` 和 `THIRD-PARTY-NOTICES.txt` 附在每个 Release 上。怎样自己构建这一切，见[构建](building.md)。

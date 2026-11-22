@@ -192,7 +192,7 @@ Usage: embed-ios-graphics.sh input.app gfxstream.dylib angle-build-directory out
 
 [`tools/embed-ios-graphics.sh`](../../tools/embed-ios-graphics.sh) 检查各 framework 的最低 iOS 版本不高于 App 的，把 gfxstream 库包成 `NestvaneGfxstream.framework`，复制 ANGLE 的 `libEGL` 和 `libGLESv2` 两个 framework，并用输入 App 签名时所用的 Apple Development 身份给全部内容签名。输出路径必须以 `.app` 结尾，且尚不存在。
 
-`tools/package-ipa.sh <app> <ipa>` 把 App 打成 Release 里那个不带签名的 IPA。装到设备上、产生 TestFlight 构建，仓库里没有脚本。
+`tools/package-ipa.sh <app> <ipa> <AOSP 构建产生的 NOTICE.txt>` 把 App 连同它分发时适用的许可声明一起，打成 Release 里那个不带签名的 IPA。装到设备上、产生 TestFlight 构建，仓库里没有脚本。
 
 ## 在 Mac 上检查运行时
 
