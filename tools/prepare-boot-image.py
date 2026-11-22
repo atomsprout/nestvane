@@ -25,6 +25,8 @@ FRAMEWORK_APPS = (
     "com.android.launcher3",
     "com.android.location.fused",
     "com.android.modulemetadata",
+    # Brings the Ethernet interface up and checks the network: without it nothing is ever connected.
+    "com.android.networkstack",
     "com.android.packageinstaller",
     "com.android.providers.downloads",
     "com.android.providers.downloads.ui",
@@ -266,6 +268,27 @@ def add_low_memory_killer(adb, guest):
             file.write("/system/bin/lmkd u:r:init:s0 u:object_r:lmkd_exec:s0 2 u:r:lmkd:s0\n")
 
 
+def add_overlay_daemon(adb, guest):
+    """idmap2d, which the overlay manager starts to put resource overlays into effect.
+
+    Without it the overlays that tools/build-overlays.sh installs are scanned and never applied.
+    """
+    for path in ("system/bin/idmap2d", "system/lib64/libidmap2.so"):
+        if not (guest / path).is_file():
+            subprocess.run(adb + ["pull", "/" + path, str(guest / path)], check=True, stdout=subprocess.DEVNULL)
+    (guest / "system/bin/idmap2d").chmod(0o755)
+    transitions = guest / "nestvane-metadata/selinux-process-transition.txt"
+    if "/system/bin/idmap2d " not in transitions.read_text():
+        with transitions.open("a") as file:
+            file.write("/system/bin/idmap2d u:r:init:s0 u:object_r:idmap_exec:s0 2 u:r:idmap:s0\n")
+    # The policy rows were captured for the domains of the processes the root had then: the daemon's
+    # own domain may add and find its service.
+    services = guest / "nestvane-metadata/selinux-service-access.txt"
+    if "u:r:idmap:s0 u:object_r:idmap_service:s0 " not in services.read_text():
+        with services.open("a") as file:
+            file.write("u:r:idmap:s0 u:object_r:idmap_service:s0 3 ffffffff 0 ffffffff 1 0\n")
+
+
 def precompile_apex_apps(adb, remote, guest):
     """Compiles the apps that live inside APEX modules, which the build leaves without compiled code.
 
@@ -341,6 +364,14 @@ UNUSED_COMPILED = ("com.android.bt@", "com.android.wifi@", "com.android.uwb@", "
                    "com.android.webapp@", "com.android.uprobestats@", "com.android.profiling@")
 
 
+def declare_network(guest):
+    """The guest's network is an Ethernet interface (runtime/HostSocket.hpp): the feature starts the
+    Ethernet service, and fixtures/overlay-connectivity gives the interface its fixed configuration."""
+    feature = guest / "system/etc/permissions/nestvane-ethernet.xml"
+    feature.write_text('<?xml version="1.0" encoding="utf-8"?>\n<permissions>\n'
+                       '    <feature name="android.hardware.ethernet" />\n</permissions>\n')
+
+
 def remove_unused_files(guest):
     """Takes out what only adds to the size of the image."""
     # A second, serif family for Chinese, Japanese and Korean: the sans family stays.
@@ -414,6 +445,7 @@ def make_framework_root(base, image, guest, defer_zygote_preload, hardware_timeo
             set_property(system_properties, "pm.dexopt." + reason, "verify")
         remove_absent_hardware(guest)
         remove_unused_files(guest)
+        declare_network(guest)
     set_property(system_properties, "dalvik.vm.usejit", "false")
     # The guest is one app's window on a phone that has a lock screen of its own.
     set_property(system_properties, "ro.lockscreen.disable.default", "true")
@@ -640,6 +672,7 @@ def main():
                 if args.prebuilt_code:
                     copy_prebuilt_code(adb, remote, guest)
                     add_low_memory_killer(adb, guest)
+                    add_overlay_daemon(adb, guest)
                     precompile_apex_apps(adb, remote, guest)
                 if args.precompile_framework_code:
                     check_reference_files(

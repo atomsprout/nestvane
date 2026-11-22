@@ -28,6 +28,15 @@ namespace {
 
 constexpr uint64_t maxReservation = 16ULL * 1024 * 1024 * 1024;
 constexpr uint64_t mappingFloor = 0x1'0000'0000;
+// The settings of the guest's Ethernet interface under /proc/sys/net, which the network daemon and
+// the address configuration write as they bring the interface up. The host's network takes no notice.
+static bool isInterfaceSetting(std::string_view path) {
+    for (const std::string_view prefix : {"/proc/sys/net/ipv4/conf/eth0/", "/proc/sys/net/ipv6/conf/eth0/",
+                                          "/proc/sys/net/ipv4/neigh/eth0/", "/proc/sys/net/ipv6/neigh/eth0/"})
+        if (path.starts_with(prefix) && path.find('/', prefix.size()) == std::string_view::npos) return true;
+    return false;
+}
+
 constexpr uint64_t lowMappingFloor = 0x10000;
 constexpr uint64_t mappingLimit = 0x20'0000'0000; // 128 GiB guest arena; includes 24 randomized page bits.
 constexpr uint64_t maxGuestFileBytes = 2 * 1024 * 1024;
@@ -1485,6 +1494,8 @@ std::optional<ProbeLinux::Descriptor> ProbeLinux::find(std::string_view path, ui
         return entry;
     }
     if (socketPaths.contains(path)) return Descriptor{std::string(path), {}, flags, Node::socket};
+    if (hostNetwork && isInterfaceSetting(path))
+        const_cast<ProbeLinux*>(this)->kernelSettings.try_emplace(std::string(path), Setting{0, 0, UINT32_MAX});
     if (kernelSettings.contains(path)) return Descriptor{std::string(path), {}, flags, Node::kernelSetting};
     if (path == "/proc/pressure/memory" || path == "/proc/pressure/io" || path == "/proc/pressure/cpu") {
         // Pressure stall information. lmkd will not run without it. The guest's memory is the host's
@@ -2263,22 +2274,30 @@ bool ProbeLinux::eventCall(Machine& machine) {
                 const auto pipeEvents = pipe ? pipe->pollEvents(watch.pipeReader) : 0;
                 const auto ring = watch.ring.lock();
                 const auto ringEvents = ring && ring->ringReadable() ? 0x41 : 0;
-                const bool receiveEnded = endpoint && (endpoint->receiveShutdown ||
+                const bool guestReceiveEnded = endpoint && (endpoint->receiveShutdown ||
                     (!endpoint->netlink && !endpoint->inetDatagram() && endpoint->connected && (!peer || peer->sendShutdown)));
-                const bool readable = (state && state->counter) || childReady || (binder && binderReadable(*binder, processId(), currentTid)) ||
+                const bool guestReadable = (state && state->counter) || childReady || (binder && binderReadable(*binder, processId(), currentTid)) ||
                     (touch && touch->ready()) ||
                     (endpoint && (endpoint->hasInput() || !endpoint->pending.empty() ||
-                                  ((peer || endpoint->family == 1) && receiveEnded)));
-                const bool writable = (state && watch.eventCounter && state->counter < UINT64_MAX - 1) ||
+                                  ((peer || endpoint->family == 1) && guestReceiveEnded)));
+                const bool guestWritable = (state && watch.eventCounter && state->counter < UINT64_MAX - 1) ||
                     (endpoint && (endpoint->tcpConnectFailed ||
                         (endpoint->netlink && endpoint->protocol != 15) ||
                         (endpoint->inetDatagram() && !endpoint->sendShutdown))) ||
                     (peer && !endpoint->sendShutdown && !peer->receiveShutdown &&
                      peer->queuedBytes < endpoint->sendBuffer && peer->inbox.size() < 256);
-                const bool hungUp = endpoint && (endpoint->tcpConnectFailed ||
+                const bool guestHungUp = endpoint && (endpoint->tcpConnectFailed ||
                     (!endpoint->netlink && !endpoint->inetDatagram() && endpoint->connected &&
-                     (!peer || (receiveEnded && endpoint->sendShutdown))));
-                const bool socketError = endpoint && endpoint->inetError;
+                     (!peer || (guestReceiveEnded && endpoint->sendShutdown))));
+                const bool guestSocketError = endpoint && endpoint->inetError;
+                // A socket that the host carries is ready when the host's is.
+                const int host = endpoint && endpoint->hostFd >= 0 ? hostSocketEvents(*endpoint) : -1;
+                watchesHostEvents |= host >= 0;
+                const bool receiveEnded = host < 0 && guestReceiveEnded;
+                const bool readable = host >= 0 ? bool(host & 1) : guestReadable;
+                const bool writable = host >= 0 ? bool(host & 4) : guestWritable;
+                const bool hungUp = host >= 0 ? bool(host & 16) : guestHungUp;
+                const bool socketError = host >= 0 ? bool(host & 8) : guestSocketError;
                 const bool mountsChanged = state && state->mountNamespace &&
                     state->observedMountGeneration != state->mountNamespace->generation;
                 const auto readEvents = readable ? epollIn | (endpoint && endpoint->family == 1 ? epollNormalRead : 0) : 0;
@@ -2346,6 +2365,17 @@ uint64_t ProbeLinux::socketRead(Machine& machine, const Descriptor& fd, uint64_t
     auto& endpoint = *fd.socket;
     if (!size && (!reportPacketSize || endpoint.type == 1)) return 0;
     if (endpoint.inetDatagram()) return receiveInetDatagram(machine, endpoint, address, size);
+    if (endpoint.hostFd >= 0) {
+        if (endpoint.hostConnecting) hostSocketEvents(endpoint);
+        if (endpoint.inetError) return uint64_t(-std::exchange(endpoint.inetError, 0));
+        if (!endpoint.connected) return uint64_t(-107);
+        if (endpoint.receiveShutdown) return 0;
+        std::vector<uint8_t> bytes(std::min<uint64_t>(size, 256 * 1024));
+        const auto received = hostnet::receive(endpoint.hostFd, bytes);
+        if (received == -11) hostSocketWait = true;
+        if (received <= 0) return uint64_t(received);
+        return machine.write(address, std::span(bytes).first(size_t(received))) ? uint64_t(received) : uint64_t(-14);
+    }
     if (endpoint.inetError && endpoint.inbox.empty()) return uint64_t(-std::exchange(endpoint.inetError, 0));
     if (endpoint.inbox.empty()) {
         if (endpoint.netlink) return uint64_t(-11);
@@ -2788,6 +2818,24 @@ uint64_t ProbeLinux::socketWrite(Machine& machine, const Descriptor& fd, std::sp
                                 SocketRights rights) {
     if (fd.socket->inetDatagram()) return sendInetDatagram(machine, fd.socket, vectors);
     if (fd.socket->netlink && fd.socket->protocol != 15) return sendKernelNetlink(machine, fd.socket, vectors);
+    if (fd.socket->hostFd >= 0) {
+        auto& endpoint = *fd.socket;
+        if (endpoint.hostConnecting) hostSocketEvents(endpoint);
+        if (endpoint.inetError) return uint64_t(-std::exchange(endpoint.inetError, 0));
+        if (!endpoint.connected) return uint64_t(-107);
+        if (endpoint.sendShutdown) return uint64_t(-32);
+        std::vector<uint8_t> bytes;
+        for (const auto& vector : vectors) {
+            const uint64_t length = std::min<uint64_t>(vector[1], 256 * 1024 - bytes.size());
+            const size_t offset = bytes.size();
+            bytes.resize(offset + length);
+            if (length && !machine.readInto(vector[0], std::span(bytes).subspan(offset, length))) return uint64_t(-14);
+            if (length < vector[1]) break;
+        }
+        const auto sent = hostnet::send(endpoint.hostFd, bytes);
+        if (sent == -11) hostSocketWait = true;
+        return uint64_t(sent);
+    }
     if (fd.socket->inetStream() && !inetLoopbackUp) return uint64_t(-100);
     if (fd.socket->inetError) return uint64_t(-std::exchange(fd.socket->inetError, 0));
     constexpr uint64_t maxPacketBytes = 65536;
@@ -3053,6 +3101,57 @@ std::array<uint8_t, 4> netlinkNetwork32(uint32_t value) {
 }
 } // namespace
 
+void ProbeLinux::enableHostNetwork() {
+    hostNetwork = true;
+    if (std::getenv("NESTVANE_NETWORK_TRACE")) {
+        // Whether the host lets this program out at all: a datagram and a connection to a public address.
+        sockaddr_in target{};
+        target.sin_len = sizeof(target);
+        target.sin_family = AF_INET;
+        target.sin_port = htons(53);
+        inet_pton(AF_INET, "223.5.5.5", &target.sin_addr);
+        const int datagram = ::socket(AF_INET, SOCK_DGRAM, 0);
+        const char probe[] = "x";
+        const auto sent = ::sendto(datagram, probe, 1, 0, reinterpret_cast<const sockaddr*>(&target), sizeof(target));
+        const int sendError = sent < 0 ? errno : 0;
+        ::close(datagram);
+        const int stream = ::socket(AF_INET, SOCK_STREAM, 0);
+        const int connected = ::connect(stream, reinterpret_cast<const sockaddr*>(&target), sizeof(target));
+        const int connectError = connected ? errno : 0;
+        ::close(stream);
+        std::fprintf(stderr, "[network] host self-test: datagram to 223.5.5.5:53 errno %d, connection errno %d\n", sendError, connectError);
+    }
+    auto& ethernet = guestRoutes.ethernet;
+    ethernet.present = true;
+    ethernet.hardware = hostnet::hardwareAddress;
+    char hardware[32];
+    std::snprintf(hardware, sizeof(hardware), "%02x:%02x:%02x:%02x:%02x:%02x\n", ethernet.hardware[0], ethernet.hardware[1],
+                  ethernet.hardware[2], ethernet.hardware[3], ethernet.hardware[4], ethernet.hardware[5]);
+    addDirectory("/sys/class/net/eth0", 0555);
+    kernelFiles.emplace("/sys/class/net/eth0/ifindex", std::to_string(ethernet.index) + "\n");
+    kernelFiles.emplace("/sys/class/net/eth0/address", hardware);
+    kernelFiles.emplace("/sys/class/net/eth0/mtu", std::to_string(ethernet.mtu) + "\n");
+    kernelFiles.emplace("/sys/class/net/eth0/type", "1\n");
+    kernelFiles.emplace("/sys/class/net/eth0/operstate", "up\n");
+    kernelFiles.emplace("/sys/class/net/eth0/carrier", "1\n");
+    kernelFiles.emplace("/sys/class/net/eth0/flags", "0x1043\n");
+    // The IPv6 addresses of all interfaces: none, the guest's network is IPv4.
+    addDirectory("/proc/net", 0555);
+    kernelFiles.emplace("/proc/net/if_inet6", "");
+    // Changes of links and addresses go to the route sockets that asked for their group.
+    guestRoutes.notify = [this](uint32_t groups, uint16_t type, std::vector<uint8_t> payload) {
+        const NetlinkHeader header{uint32_t(sizeof(NetlinkHeader) + payload.size()), type, 0, 0, 0};
+        std::vector<uint8_t> packet(sizeof(header) + payload.size());
+        std::memcpy(packet.data(), &header, sizeof(header));
+        std::ranges::copy(payload, packet.begin() + sizeof(header));
+        for (const auto& [port, listener] : netlinkPorts) {
+            const auto endpoint = listener.lock();
+            if (endpoint && port.first == 0 && endpoint->netlink && (endpoint->netlink->groups & groups))
+                queueNetlink(*endpoint, packet);
+        }
+    };
+}
+
 uint64_t ProbeLinux::bindNetlink(const std::shared_ptr<SocketState>& endpoint, uint32_t port, uint32_t groups) {
     auto& socket = *endpoint->netlink;
     if (socket.pid) return invalid;
@@ -3181,6 +3280,11 @@ uint64_t ProbeLinux::sendKernelNetlink(Machine& machine, const std::shared_ptr<S
                 if (route)
                     status = guestRoutes.process(request, payload, admin, inetLoopbackUp,
                                                  guestLoopbackIndex, guestLoopbackMtu, reply);
+                // NESTVANE_NETWORK_TRACE=1 puts every route request and its answer into the Android log.
+                if (static const bool trace = std::getenv("NESTVANE_NETWORK_TRACE"); trace && route && androidLogObserver)
+                    androidLogObserver("native execution: netlink route type " + std::to_string(request.type) + " flags " +
+                                       std::to_string(request.flags) + " family " + std::to_string(payload.empty() ? 0 : payload[0]) +
+                                       " from " + current->process->executable + " (" + std::string(reinterpret_cast<const char*>(current->name.data()), strnlen(reinterpret_cast<const char*>(current->name.data()), current->name.size())) + ") -> " + std::to_string(status));
                 else if (xfrm)
                     status = handleGuestXfrm(request, payload, admin, reply);
                 else if (request.type == netfilterLogConfig)
@@ -3628,6 +3732,7 @@ bool ProbeLinux::socketCall(Machine& machine) {
             if (!endpoint->connected) { x[0] = uint64_t(-107); break; }
             if (x[1] != 1) endpoint->receiveShutdown = true;
             if (x[1] != 0) endpoint->sendShutdown = true;
+            if (endpoint->hostFd >= 0) ::shutdown(endpoint->hostFd, int(x[1]));
             if (endpoint->family == 1) {
                 ++endpoint->pollNotifications.stateChange;
                 if (endpoint->type != 2) {
@@ -3929,8 +4034,33 @@ bool ProbeLinux::socketCall(Machine& machine) {
                 x[0] = 0;
                 break;
             }
+            if (level == 270 && endpoint.netlink) { // SOL_NETLINK
+                // Joining and leaving a group by its number, and options about how errors are
+                // reported, which change nothing in what this layer sends.
+                if (name == 1 || name == 2) {
+                    uint32_t group = 0;
+                    if (x[4] < 4 || !machine.readInto(x[3], {reinterpret_cast<uint8_t*>(&group), sizeof(group)})) { x[0] = uint64_t(-14); break; }
+                    if (!group || group > 32) { x[0] = invalid; break; }
+                    if (name == 1) endpoint.netlink->groups |= 1u << (group - 1);
+                    else endpoint.netlink->groups &= ~(1u << (group - 1));
+                }
+                x[0] = 0;
+                break;
+            }
             if (level != 1) {
                 if (!endpoint.storageIdentity) return false;
+                // Options of TCP and IP: with the network there, programs set them as a matter of
+                // course (no delay, keep-alive times, the type of service). The host's own socket keeps
+                // its defaults, but for the one that changes what the program sees.
+                if (hostNetwork && (level == 6 || level == 0 || level == 41)) {
+                    if (level == 6 && name == 1 && endpoint.hostFd >= 0 && x[4] >= 4) {
+                        int value = 0;
+                        if (machine.readInto(x[3], {reinterpret_cast<uint8_t*>(&value), sizeof(value)}))
+                            ::setsockopt(endpoint.hostFd, IPPROTO_TCP, TCP_NODELAY, &value, sizeof(value));
+                    }
+                    x[0] = 0;
+                    break;
+                }
                 x[0] = uint64_t(-92);
                 break;
             }
@@ -5443,7 +5573,7 @@ uint64_t ProbeLinux::writeDescriptor(Machine& machine, const Descriptor& fd, uin
     if (fd.node == Node::pressure) return size <= 256 ? size : invalid;  // a trigger: accepted, never fires
     if (fd.node == Node::kernelSetting) {
         if (userId() != 0) return uint64_t(-1);
-        if (*fd.offset || !size || size > 16) return invalid;
+        if (*fd.offset || !size || size > (isInterfaceSetting(fd.path) ? 128u : 16u)) return invalid;
         std::vector<uint8_t> dataScratch;
         const auto* data = machine.read(address, size, 4, dataScratch);
         if (!data) return uint64_t(-14);
@@ -5453,6 +5583,10 @@ uint64_t ProbeLinux::writeDescriptor(Machine& machine, const Descriptor& fd, uin
         unsigned number = 0;
         const auto result = std::from_chars(value.data(), value.data() + value.size(), number);
         auto& setting = kernelSettings.at(fd.path);
+        if (isInterfaceSetting(fd.path) && (result.ec != std::errc{} || result.ptr != value.data() + value.size())) {
+            *fd.offset += size;  // a setting that is not a number, such as the secret for stable addresses
+            return size;
+        }
         if (result.ec != std::errc{} || result.ptr != value.data() + value.size() ||
             number < setting.minimum || number > setting.maximum) return invalid;
         if (fd.path == "/proc/sys/kernel/unprivileged_bpf_disabled" && setting.value == 1 && number != 1)
@@ -7109,6 +7243,7 @@ bool ProbeLinux::syncDataSoon() {
 }
 
 bool ProbeLinux::waitForEvents() {
+    if (std::exchange(hostSocketWait, false)) return waitForHostEvents();
     current->waitingEpoll.reset();
     current->wait = Wait::poll;
     sliceEnd = 0;
@@ -7412,6 +7547,10 @@ bool ProbeLinux::poll(Machine& machine) {
             entry.returned = entry.events & ((count ? 1 : 0) | (count < UINT64_MAX - 1 ? 4 : 0));
         } else if (descriptor->second.binder) {
             entry.returned = entry.events & (binderReadable(*descriptor->second.binder, processId(), currentTid) ? 1 : 0);
+        } else if (const auto carried = descriptor->second.socket; carried && carried->hostFd >= 0) {
+            watchesHostEvents = true;
+            const int host = hostSocketEvents(*carried);
+            entry.returned = (entry.events & host & 5) | (host & 0x18);
         } else if (const auto endpoint = descriptor->second.socket) {
             const auto peer = endpoint->peer.lock();
             const bool receiveEnded = endpoint->receiveShutdown ||
@@ -8523,6 +8662,78 @@ std::shared_ptr<ProbeLinux::SocketState> ProbeLinux::findInetDestination(
     return nullptr;
 }
 
+int ProbeLinux::hostSocketEvents(SocketState& socket) {
+    if (socket.hostConnecting) {
+        const int state = hostnet::connectState(socket.hostFd);
+        if (state == -115) return 0;
+        socket.hostConnecting = false;
+        if (state < 0) {
+            socket.inetError = -state;
+            socket.tcpConnectFailed = true;
+            return 1 | 4 | 8 | 16;
+        }
+        socket.connected = true;
+    }
+    return hostnet::events(socket.hostFd);
+}
+
+// NESTVANE_NETWORK_TRACE=1: what the guest's sockets do out on the network, in the Android log.
+#define NETWORK_TRACE(...) do { \
+        if (static const bool traced = std::getenv("NESTVANE_NETWORK_TRACE"); traced && androidLogObserver) { \
+            char line[200]; \
+            std::snprintf(line, sizeof(line), "native execution: network " __VA_ARGS__); \
+            androidLogObserver(line); \
+        } \
+    } while (false)
+
+uint64_t ProbeLinux::connectHostSocket(const std::shared_ptr<SocketState>& socket, const InetAddress& destination,
+                                       bool nonblocking) {
+    NETWORK_TRACE("connect %s to %u.%u.%u.%u:%u family %u fd %d", socket->inetDatagram() ? "udp" : "tcp",
+                  hostnet::ipv4(destination).empty() ? 0 : hostnet::ipv4(destination)[0], hostnet::ipv4(destination).empty() ? 0 : hostnet::ipv4(destination)[1],
+                  hostnet::ipv4(destination).empty() ? 0 : hostnet::ipv4(destination)[2], hostnet::ipv4(destination).empty() ? 0 : hostnet::ipv4(destination)[3],
+                  unsigned(destination[2]) << 8 | destination[3], unsigned(destination[0]), socket->hostFd);
+    const auto setLocal = [&] {
+        if (socket->localInetAddress[0] && inetPort(socket->localInetAddress)) return;
+        socket->localInetAddress = hostnet::localAddress(socket->family, nextEphemeralPort);
+        nextEphemeralPort = nextEphemeralPort >= 60999 ? 32768 : nextEphemeralPort + 1;
+    };
+    // The guest's network is IPv4: there is no route to an IPv6 address out there.
+    if (hostnet::ipv4(destination).empty()) return uint64_t(-101);
+    if (socket->inetDatagram()) {
+        // Connecting a datagram socket to port 0 only asks whether there is a route, which is how the
+        // resolver finds out which address families the network has. The host refuses such a connect.
+        if (inetPort(destination)) {
+            if (socket->hostFd < 0) socket->hostFd = hostnet::openDatagram(destination);
+            if (socket->hostFd < 0) return uint64_t(int64_t(std::exchange(socket->hostFd, -1)));
+            if (const int error = hostnet::connectDatagram(socket->hostFd, destination)) return uint64_t(int64_t(error));
+        }
+        setLocal();
+        socket->peerInetAddress = destination;
+        socket->connected = true;
+        socket->inetError = 0;
+        return 0;
+    }
+    if (socket->hostFd < 0) {
+        if (socket->connected || socket->listening) return uint64_t(-106);
+        const int fd = hostnet::openStream(destination);
+        if (fd < 0) return uint64_t(int64_t(fd));
+        socket->hostFd = fd;
+        socket->hostConnecting = true;
+        socket->hostConnectReported = false;
+        socket->peerInetAddress = destination;
+        setLocal();
+    }
+    if (!socket->hostConnecting) return socket->connected ? uint64_t(-106) : uint64_t(-std::exchange(socket->inetError, 111));
+    hostSocketEvents(*socket);
+    if (!socket->hostConnecting) {
+        if (socket->connected) return std::exchange(socket->hostConnectReported, true) && nonblocking ? uint64_t(-106) : 0;
+        return uint64_t(-std::exchange(socket->inetError, 0));
+    }
+    if (nonblocking) return std::exchange(socket->hostConnectReported, true) ? uint64_t(-114) : uint64_t(-115);
+    hostSocketWait = true;
+    return uint64_t(-11);
+}
+
 uint64_t ProbeLinux::connectInetSocket(Machine& machine, const std::shared_ptr<SocketState>& socket,
                                        bool nonblocking) {
     const auto& x = machine.cpu.x;
@@ -8541,6 +8752,8 @@ uint64_t ProbeLinux::connectInetSocket(Machine& machine, const std::shared_ptr<S
     if (const auto error = readInetDestination(machine, x[1], x[2], socket->family, destination)) return error;
     if (!filterInetAddress(*socket, socket->family == 2 ? BpfProgram::connect4 : BpfProgram::connect6, destination))
         return uint64_t(-1);
+    if (hostNetwork && (socket->hostFd >= 0 || hostnet::external(destination)))
+        return connectHostSocket(socket, destination, nonblocking);
     if (const auto error = routeInetDestination(destination)) return error;
     if (const auto error = guestRoutes.routeLoopback(asWireAddress(destination)[0], socket->socketMark,
                                                     socket->credentials[1])) return uint64_t(error);
@@ -8827,11 +9040,43 @@ uint64_t ProbeLinux::sendInetDatagram(Machine& machine, const std::shared_ptr<So
             return error;
         if (!filterInetAddress(*socket, socket->family == 2 ? BpfProgram::send4 : BpfProgram::send6, destination))
             return uint64_t(-1);
-        if (const auto error = routeInetDestination(destination)) return error;
+        if (hostNetwork && hostnet::external(destination)) {
+            if (hostnet::ipv4(destination).empty()) return uint64_t(-101);
+            if (socket->hostFd < 0) socket->hostFd = hostnet::openDatagram(destination);
+            if (socket->hostFd < 0) return uint64_t(int64_t(std::exchange(socket->hostFd, -1)));
+        } else if (const auto error = routeInetDestination(destination)) {
+            return error;
+        }
     } else if (!socket->connected) {
         return uint64_t(-89);
     }
     if (socket->sendShutdown) return uint64_t(-32);
+    if (socket->hostFd >= 0) {
+        // Out on the network: the host sends it.
+        std::vector<uint8_t> payload;
+        for (const auto& [base, length] : vectors) {
+            if (length > 65507 - payload.size()) return uint64_t(-90);
+            const size_t offset = payload.size();
+            payload.resize(offset + length);
+            if (length && !machine.readInto(base, std::span(payload).subspan(offset, length))) return uint64_t(-14);
+        }
+        if (!socket->localInetAddress[0] || !inetPort(socket->localInetAddress)) {
+            socket->localInetAddress = hostnet::localAddress(socket->family, nextEphemeralPort);
+            nextEphemeralPort = nextEphemeralPort >= 60999 ? 32768 : nextEphemeralPort + 1;
+        }
+        const auto transmit = [&] {
+            return address || !socket->connected ? hostnet::sendTo(socket->hostFd, payload, destination)
+                                                 : hostnet::send(socket->hostFd, payload);
+        };
+        auto sent = transmit();
+        // The name server may be one the host does not let this app reach: on to the next.
+        while (sent < 0 && hostnet::isNameServer(destination) && hostnet::nextNameServer(sent)) {
+            if (!address && socket->connected) hostnet::connectDatagram(socket->hostFd, destination);
+            sent = transmit();
+        }
+        NETWORK_TRACE("udp send %zu bytes -> %lld", payload.size(), static_cast<long long>(sent));
+        return uint64_t(sent);
+    }
     if (const auto error = guestRoutes.routeLoopback(asWireAddress(destination)[0], socket->socketMark,
                                                     socket->credentials[1])) return uint64_t(error);
     if (!inetLoopbackUp) return uint64_t(-100);
@@ -8921,6 +9166,22 @@ uint64_t ProbeLinux::sendInetDatagram(Machine& machine, const std::shared_ptr<So
 uint64_t ProbeLinux::receiveInetDatagram(Machine& machine, SocketState& socket, uint64_t address, uint64_t size,
     uint64_t flags, uint64_t source, uint64_t sourceLength) {
     if (socket.inetError) return uint64_t(-std::exchange(socket.inetError, 0));
+    if (socket.hostFd >= 0 && socket.datagrams.empty()) {
+        // What the host has received for it joins the queue, and is handed on like any other datagram.
+        SocketState::Datagram arrived;
+        arrived.payload.resize(65536);
+        const auto received = hostnet::receiveFrom(socket.hostFd, arrived.payload, socket.family, arrived.source);
+        if (received == -11) {
+            if (socket.receiveShutdown) return 0;
+            hostSocketWait = true;
+            return uint64_t(-11);
+        }
+        NETWORK_TRACE("udp receive -> %lld", static_cast<long long>(received));
+        if (received < 0) return uint64_t(received);
+        arrived.payload.resize(size_t(received));
+        socket.queuedBytes += arrived.payload.size();
+        socket.datagrams.push_back(std::move(arrived));
+    }
     if (socket.datagrams.empty()) return socket.receiveShutdown ? 0 : uint64_t(-11);
     const auto& packet = socket.datagrams.front();
     const auto count = std::min<uint64_t>(size, packet.payload.size());
@@ -8968,7 +9229,10 @@ uint64_t ProbeLinux::getInetSocketOption(Machine& machine, SocketState& socket) 
         std::memcpy(original.data(), &value, size);
         status = 0;
     };
-    if (x[1] == 41 && x[2] == 26 && socket.family == 10) { // IPV6_V6ONLY
+    if (x[1] == 1 && x[2] == 4 && socket.hostFd >= 0) { // SO_ERROR, of a connection the host makes
+        if (socket.hostConnecting) hostSocketEvents(socket);
+        store(uint32_t(std::exchange(socket.inetError, 0)));
+    } else if (x[1] == 41 && x[2] == 26 && socket.family == 10) { // IPV6_V6ONLY
         store(uint32_t(socket.inetV6Only));
     } else if (x[1] == 1) {
         switch (x[2]) {
@@ -10167,6 +10431,129 @@ bool ProbeLinux::syscall(Machine& machine) {
                 break;
             }
             if (descriptor == descriptors().end()) { x[0] = uint64_t(-9); break; }
+            if (static const bool trace = std::getenv("NESTVANE_NETWORK_TRACE"); trace && androidLogObserver &&
+                descriptor->second.socket && (x[1] >> 8) == 0x89) {
+                char text[96];
+                std::snprintf(text, sizeof(text), "native execution: socket ioctl 0x%llx from %.16s", static_cast<unsigned long long>(x[1]),
+                              reinterpret_cast<const char*>(current->name.data()));
+                androidLogObserver(text);
+            }
+            if (guestRoutes.ethernet.present && descriptor->second.socket && x[1] == 0x8946) { // SIOCETHTOOL
+                // What the Ethernet service asks of a link before it takes it: its driver, whether it
+                // has a carrier, and its permanent hardware address.
+                std::array<char, 16> name{};
+                uint64_t data = 0;
+                uint32_t command = 0;
+                if (!machine.readInto(x[2], {reinterpret_cast<uint8_t*>(name.data()), name.size()}) ||
+                    !machine.readInto(x[2] + 16, {reinterpret_cast<uint8_t*>(&data), sizeof(data)}) ||
+                    !machine.readInto(data, {reinterpret_cast<uint8_t*>(&command), sizeof(command)})) { x[0] = uint64_t(-14); break; }
+                if (std::string_view(name.data(), strnlen(name.data(), name.size())) != "eth0") { x[0] = uint64_t(-19); break; }
+                if (command == 3) { // ETHTOOL_GDRVINFO
+                    std::array<uint8_t, 196> info{};
+                    std::memcpy(info.data(), &command, 4);
+                    std::memcpy(info.data() + 4, "virtio_net", 10);
+                    std::memcpy(info.data() + 36, "1.0.0", 5);
+                    std::memcpy(info.data() + 100, "nestvane", 8);
+                    x[0] = machine.write(data, info) ? 0 : uint64_t(-14);
+                } else if (command == 10) { // ETHTOOL_GLINK
+                    const std::array<uint32_t, 2> value{command, guestRoutes.ethernet.up};
+                    x[0] = writeGuest(machine, data, value) ? 0 : uint64_t(-14);
+                } else if (command == 0x20) { // ETHTOOL_GPERMADDR
+                    std::array<uint8_t, 14> value{};
+                    const uint32_t size = 6;
+                    std::memcpy(value.data(), &command, 4);
+                    std::memcpy(value.data() + 4, &size, 4);
+                    std::copy(guestRoutes.ethernet.hardware.begin(), guestRoutes.ethernet.hardware.end(), value.begin() + 8);
+                    x[0] = machine.write(data, value) ? 0 : uint64_t(-14);
+                } else {
+                    if (static const bool trace = std::getenv("NESTVANE_NETWORK_TRACE"); trace && androidLogObserver)
+                        androidLogObserver("native execution: ethtool command " + std::to_string(command));
+                    x[0] = uint64_t(-95);
+                }
+                break;
+            }
+            if (guestRoutes.ethernet.present && descriptor->second.socket &&
+                (x[1] == 0x8910 || (x[1] >= 0x8913 && x[1] <= 0x8922) || x[1] == 0x8927 || x[1] == 0x8933)) {
+                // The interface requests that name the Ethernet interface; the others go on below.
+                struct Request {
+                    std::array<char, 16> name;
+                    std::array<uint8_t, 24> value;
+                };
+                Request input{};
+                if (!machine.readInto(x[2], {reinterpret_cast<uint8_t*>(&input), sizeof(input)})) { x[0] = uint64_t(-14); break; }
+                auto& ethernet = guestRoutes.ethernet;
+                auto name = std::string_view(input.name.data(), input.name.size());
+                name = name.substr(0, name.find('\0'));
+                name = name.substr(0, name.find(':'));
+                uint32_t wanted = 0;
+                std::memcpy(&wanted, input.value.data(), sizeof(wanted));
+                if (x[1] == 0x8910 ? wanted == ethernet.index : name == "eth0") {
+                    const bool admin = current->process->effectiveCaps & (1ULL << 12);
+                    const auto address = [&](std::array<uint8_t, 4> ip) {
+                        input.value = {};
+                        input.value[0] = 2;  // AF_INET
+                        std::copy(ip.begin(), ip.end(), input.value.begin() + 4);
+                    };
+                    const auto mask = [&] {
+                        const uint32_t bits = ethernet.prefix ? ~uint32_t{0} << (32 - ethernet.prefix) : 0;
+                        return std::array<uint8_t, 4>{uint8_t(bits >> 24), uint8_t(bits >> 16), uint8_t(bits >> 8), uint8_t(bits)};
+                    };
+                    int64_t status = 0;
+                    switch (x[1]) {
+                        case 0x8910: input.name = {'e', 't', 'h', '0'}; break;                    // SIOCGIFNAME
+                        case 0x8913: {                                                              // SIOCGIFFLAGS
+                            const uint16_t flags = 2 | 0x1000 | (ethernet.up ? 1 | 0x40 : 0);
+                            input.value = {};
+                            std::memcpy(input.value.data(), &flags, sizeof(flags));
+                            break;
+                        }
+                        case 0x8914:                                                                // SIOCSIFFLAGS
+                            if (!admin) status = -1;
+                            else guestRoutes.setEthernetUp(input.value[0] & 1);
+                            break;
+                        case 0x8915:                                                                // SIOCGIFADDR
+                            if (!ethernet.address) status = -99;
+                            else address(*ethernet.address);
+                            break;
+                        case 0x8916:                                                                // SIOCSIFADDR
+                            if (!admin) { status = -1; break; }
+                            if (input.value[4] | input.value[5] | input.value[6] | input.value[7])
+                                guestRoutes.setEthernetAddress(std::array<uint8_t, 4>{input.value[4], input.value[5], input.value[6], input.value[7]},
+                                                               ethernet.prefix);
+                            else guestRoutes.setEthernetAddress({}, ethernet.prefix);
+                            break;
+                        case 0x8919: {                                                              // SIOCGIFBRDADDR
+                            auto broadcast = ethernet.address.value_or(std::array<uint8_t, 4>{});
+                            const auto bits = mask();
+                            for (size_t each = 0; each < 4; ++each) broadcast[each] |= uint8_t(~bits[each]);
+                            address(broadcast);
+                            break;
+                        }
+                        case 0x891b: address(mask()); break;                                       // SIOCGIFNETMASK
+                        case 0x891c: {                                                              // SIOCSIFNETMASK
+                            if (!admin) { status = -1; break; }
+                            const uint32_t bits = uint32_t(input.value[4]) << 24 | uint32_t(input.value[5]) << 16 |
+                                                  uint32_t(input.value[6]) << 8 | input.value[7];
+                            ethernet.prefix = uint8_t(std::popcount(bits));
+                            break;
+                        }
+                        case 0x8921: input.value = {}; std::memcpy(input.value.data(), &ethernet.mtu, 4); break;   // SIOCGIFMTU
+                        case 0x8922:                                                                // SIOCSIFMTU
+                            if (!admin) status = -1;
+                            else std::memcpy(&ethernet.mtu, input.value.data(), 4);
+                            break;
+                        case 0x8927:                                                                // SIOCGIFHWADDR
+                            input.value = {};
+                            input.value[0] = 1;  // ARPHRD_ETHER
+                            std::copy(ethernet.hardware.begin(), ethernet.hardware.end(), input.value.begin() + 2);
+                            break;
+                        case 0x8933: input.value = {}; std::memcpy(input.value.data(), &ethernet.index, 4); break; // SIOCGIFINDEX
+                        default: status = -95; break;
+                    }
+                    x[0] = status ? uint64_t(status) : writeGuest(machine, x[2], input) ? 0 : uint64_t(-14);
+                    break;
+                }
+            }
             if (x[1] == 0x8910 || x[1] == 0x8913 || x[1] == 0x8914 || x[1] == 0x8921 || x[1] == 0x8933) {
                 if (!descriptor->second.socket) { x[0] = uint64_t(-25); break; }
                 struct Request {

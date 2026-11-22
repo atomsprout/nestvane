@@ -4,6 +4,7 @@
 #include "GuestApkInbox.hpp"
 #include "GuestCamera.hpp"
 #include "GuestRoute.hpp"
+#include "HostSocket.hpp"
 #include "GuestTouch.hpp"
 #include "GuestColorDma.hpp"
 #include "Runtime.hpp"
@@ -133,6 +134,12 @@ struct ProbeLinux {
     std::string recentAndroidOutput;
     std::string watchdogReport;
     bool captureAndroidLogs = false;
+    // Whether the guest reaches the network through the host's sockets. Without it there is only loopback.
+    bool hostNetwork = false;
+    // Gives the guest its Ethernet interface and lets its sockets out through the host's.
+    void enableHostNetwork();
+    // The call that is about to wait does so for a host socket, which cannot wake it: it looks again soon.
+    bool hostSocketWait = false;
     std::function<void(std::string_view)> androidLogObserver, watchdogObserver;
     size_t exportFiles(ProbeLinux& reader, std::string_view prefix) const;
     bool exportExt4Mount(ProbeLinux& reader, std::string_view path) const;
@@ -301,6 +308,10 @@ private:
             std::vector<uint8_t> payload;
         };
         std::deque<Datagram> datagrams;
+        // A host socket that carries this one to the network (HostSocket.hpp), or -1 while the socket
+        // only talks to the guest's own loopback.
+        int hostFd = -1;
+        bool hostConnecting = false, hostConnectReported = false;
         bool inetDatagram() const { return protocol == 17; }
         bool firewallSocket() const { return type == 3 && protocol == 255; }
         bool hasInput() const { return !inbox.empty() || !datagrams.empty(); }
@@ -316,6 +327,7 @@ private:
                 if (const auto remote = peer.lock()) ++remote->pollNotifications.stateChange;
             }
             if (onClose) onClose(*this);
+            if (hostFd >= 0) ::close(hostFd);
         }
         PollNotifications pollNotifications;
         std::array<uint32_t, 3> peerCredentials{0, UINT32_MAX, UINT32_MAX};
@@ -382,6 +394,11 @@ private:
     bool filterInetAddress(const SocketState& socket, uint32_t type, SocketState::InetAddress& address,
         bool* skipBindCapability = nullptr);
     uint64_t connectInetSocket(Machine& machine, const std::shared_ptr<SocketState>& socket, bool nonblocking);
+    // Connects a socket to an address out on the network, through a host socket.
+    uint64_t connectHostSocket(const std::shared_ptr<SocketState>& socket, const SocketState::InetAddress& destination, bool nonblocking);
+    // What a socket that a host socket carries can do now, in poll's bits; a connection that was being
+    // made is finished here.
+    int hostSocketEvents(SocketState& socket);
     uint64_t connectInetStream(const std::shared_ptr<SocketState>& socket,
         const SocketState::InetAddress& destination, bool nonblocking);
     uint64_t resolveFirewallBpf(std::string_view path, int32_t fd, std::shared_ptr<const BpfProgram>& program);

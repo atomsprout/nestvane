@@ -3,6 +3,7 @@
 #include "GuestNetlink.hpp"
 
 #include <array>
+#include <functional>
 #include <optional>
 #include <string>
 
@@ -12,7 +13,7 @@ class GuestRoute {
 public:
     enum Message : uint16_t {
         newLink = 16, getLink = 18, newAddress = 20, getAddress = 22, newRoute = 24, getRoute = 26,
-        newRule = 32, deleteRule = 33, getRule = 34
+        newRule = 32, deleteRule = 33, getRule = 34, getNeighbor = 30
     };
 
     GuestRoute() {
@@ -25,7 +26,31 @@ public:
 
     static bool isDump(uint16_t type, uint16_t flags) {
         return (flags & netlinkDump) == netlinkDump &&
-               (type == getRule || type == getLink || type == getAddress || type == getRoute);
+               (type == getRule || type == getLink || type == getAddress || type == getRoute || type == getNeighbor);
+    }
+
+    // A second link beside the loopback: the guest's way to the network, whose packets the host's
+    // sockets carry. The connectivity service brings it up like any Ethernet interface.
+    struct Ethernet {
+        bool present = false, up = true;
+        uint32_t index = 2, mtu = 1500;
+        std::array<uint8_t, 6> hardware{};
+        std::optional<std::array<uint8_t, 4>> address;
+        uint8_t prefix = 24;
+    };
+    Ethernet ethernet;
+    // Tells the sockets that listen to a group (RTMGRP_*) of a change.
+    std::function<void(uint32_t groups, uint16_t type, std::vector<uint8_t> payload)> notify;
+
+    void setEthernetAddress(std::optional<std::array<uint8_t, 4>> address, uint8_t prefix) {
+        if (ethernet.address && notify) notify(0x10, 21, ethernetAddress());
+        ethernet.address = address;
+        ethernet.prefix = prefix;
+        if (ethernet.address && notify) notify(0x10, newAddress, ethernetAddress());
+    }
+    void setEthernetUp(bool up) {
+        ethernet.up = up;
+        if (notify) notify(1, newLink, ethernetLink());
     }
 
     int32_t process(const NetlinkHeader& message, std::span<const uint8_t> payload, bool admin, bool up,
@@ -35,15 +60,66 @@ public:
             return changeRule(message, payload);
         }
         const auto family = payload.empty() ? 0 : payload.front();
-        if (family && family != 2 && family != 10 && !(message.type == getLink && family == 17)) return -97;
         const bool dump = isDump(message.type, message.flags);
+        if (ethernet.present) {
+            constexpr uint16_t deleteAddress = 21, deleteRoute = 25, newNeighbor = 28, deleteNeighbor = 29, setLink = 19;
+            if (message.type == newAddress || message.type == deleteAddress) {
+                if (!admin) return -1;
+                if (payload.size() < 8) return -22;
+                if (readNetlink<uint32_t>(payload, 4) != ethernet.index) return message.type == newAddress ? -95 : -99;
+                if (payload[0] != 2) return 0;  // the link's IPv6 addresses are accepted and not kept
+                std::optional<std::array<uint8_t, 4>> wanted;
+                forAttributes(payload.subspan(8), [&](uint16_t type, auto value) {
+                    if ((type == 1 || type == 2) && value.size() == 4) wanted = readNetlink<std::array<uint8_t, 4>>(value, 0);
+                    return 0;
+                });
+                const bool none = wanted && *wanted == std::array<uint8_t, 4>{};
+                if (message.type == newAddress && none) {
+                    // Setting the unspecified address is how the address is taken away.
+                    if (ethernet.address) setEthernetAddress({}, ethernet.prefix);
+                } else if (message.type == newAddress) {
+                    if (!wanted) return -22;
+                    if (wanted != ethernet.address || payload[1] != ethernet.prefix) setEthernetAddress(wanted, payload[1]);
+                } else if (ethernet.address && (!wanted || wanted == ethernet.address)) {
+                    setEthernetAddress({}, ethernet.prefix);
+                } else {
+                    return -99;
+                }
+                return 0;
+            }
+            // The tables of routes and neighbours that the network daemon keeps: the host routes.
+            if (message.type == newRoute || message.type == deleteRoute || message.type == newNeighbor ||
+                message.type == deleteNeighbor) return admin ? 0 : -1;
+            // Queueing disciplines and filters, which the connectivity service attaches its packet
+            // programs to: accepted, there are no packets of the guest's for them to see.
+            if (message.type == 36 || message.type == 37 || message.type == 44 || message.type == 45) return admin ? 0 : -1;
+            if (message.type == getNeighbor && dump) {
+                reply(netlinkDone, netlinkMulti, std::vector<uint8_t>(sizeof(int32_t)));
+                return 0;
+            }
+            if ((message.type == newLink || message.type == setLink) && payload.size() >= 16 &&
+                (readNetlink<int32_t>(payload, 4) == int32_t(ethernet.index) || namesEthernet(payload.subspan(16)))) {
+                if (!admin) return -1;
+                const auto flags = readNetlink<uint32_t>(payload, 8), change = readNetlink<uint32_t>(payload, 12);
+                forAttributes(payload.subspan(16), [&](uint16_t type, auto value) {
+                    if (type == 4 && value.size() == 4) ethernet.mtu = readNetlink<uint32_t>(value, 0);
+                    return 0;
+                });
+                setEthernetUp(change & 1 ? bool(flags & 1) : ethernet.up);
+                return 0;
+            }
+        }
+        if (family && family != 2 && family != 10 && !(message.type == getLink && family == 17)) return -97;
         if (message.type == getLink) {
+            bool wantsEthernet = false;
             if (!dump) {
                 if (payload.size() < 16) return -22;
                 const auto wanted = readNetlink<int32_t>(payload, 4);
-                if (wanted != int32_t(index) && !namesLoopback(payload.subspan(16))) return -19;
+                wantsEthernet = ethernet.present && (wanted == int32_t(ethernet.index) || namesEthernet(payload.subspan(16)));
+                if (!wantsEthernet && wanted != int32_t(index) && !namesLoopback(payload.subspan(16))) return -19;
             }
-            reply(newLink, dump ? netlinkMulti : 0, link(up, index, mtu));
+            if (!wantsEthernet) reply(newLink, dump ? netlinkMulti : 0, link(up, index, mtu));
+            if (ethernet.present && (dump || wantsEthernet)) reply(newLink, dump ? netlinkMulti : 0, ethernetLink());
         } else if (dump && message.type == getRule) {
             for (const auto& rule : rules) {
                 if (!family || rule.family == family) reply(newRule, netlinkMulti, encodeRule(rule));
@@ -54,6 +130,8 @@ public:
                 if (message.type == getAddress) reply(newAddress, netlinkMulti, address(version, index));
                 else reply(newRoute, netlinkMulti, localRoute(version, index));
             }
+            if (message.type == getAddress && ethernet.present && ethernet.address && family != 10)
+                reply(newAddress, netlinkMulti, ethernetAddress());
         } else {
             return -95;
         }
@@ -101,6 +179,43 @@ private:
             bytes = bytes.subspan(std::min(bytes.size(), netlinkAlign(size)));
         }
         return 0;
+    }
+
+    static bool namesEthernet(std::span<const uint8_t> bytes) {
+        bool found = false;
+        const auto status = forAttributes(bytes, [&](uint16_t type, auto value) {
+            if (type == 3) found = std::ranges::equal(value, std::array<uint8_t, 5>{'e', 't', 'h', '0', 0});
+            return 0;
+        });
+        return !status && found;
+    }
+
+    std::vector<uint8_t> ethernetLink() const {
+        std::vector<uint8_t> data(16); // ifinfomsg
+        const uint16_t hardware = 1; // ARPHRD_ETHER
+        // Broadcast and multicast always; up, running and with a carrier while it is up.
+        const uint32_t flags = 2 | 0x1000 | (ethernet.up ? (1 | 0x40 | 0x10000) : 0);
+        std::memcpy(data.data() + 2, &hardware, sizeof(hardware));
+        std::memcpy(data.data() + 4, &ethernet.index, sizeof(ethernet.index));
+        std::memcpy(data.data() + 8, &flags, sizeof(flags));
+        appendNetlinkValue(data, 3, "eth0");
+        appendNetlinkValue(data, 4, ethernet.mtu);
+        appendNetlinkAttribute(data, 1, ethernet.hardware);
+        appendNetlinkAttribute(data, 2, std::array<uint8_t, 6>{0xff, 0xff, 0xff, 0xff, 0xff, 0xff});
+        appendNetlinkValue(data, 16, uint8_t(ethernet.up ? 6 : 2)); // IF_OPER_UP or IF_OPER_DOWN
+        appendNetlinkValue(data, 33, uint8_t(ethernet.up));
+        return data;
+    }
+
+    std::vector<uint8_t> ethernetAddress() const {
+        std::vector<uint8_t> data{2, ethernet.prefix, 0x80, 0, 0, 0, 0, 0}; // ifaddrmsg: permanent, of the universe
+        std::memcpy(data.data() + 4, &ethernet.index, sizeof(ethernet.index));
+        const auto address = ethernet.address.value_or(std::array<uint8_t, 4>{});
+        appendNetlinkAttribute(data, 1, address);
+        appendNetlinkAttribute(data, 2, address);
+        appendNetlinkValue(data, 3, "eth0");
+        appendNetlinkValue(data, 8, uint32_t(0x80)); // IFA_FLAGS
+        return data;
     }
 
     static bool namesLoopback(std::span<const uint8_t> bytes) {

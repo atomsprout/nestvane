@@ -846,6 +846,8 @@ DynamicReport probeInit(const std::string& directory, const std::string& databas
         }
         linux.captureAndroidLogs = true;
         linux.watchdogObserver = watchdog;
+        // NESTVANE_NO_NETWORK=1 leaves the guest with its loopback only.
+        if (!std::getenv("NESTVANE_NO_NETWORK")) linux.enableHostNetwork();
         const bool expectSmoke = files.contains("/system/etc/nestvane/smoke.apk");
         if (apkInbox || expectSmoke) {
             for (const auto input : {GuestApkInbox::installer, std::string_view("/system/bin/cmd"),
@@ -917,6 +919,18 @@ service nestvane-trim /system/bin/sh /system/etc/nestvane/trim.sh
             if (static const bool all = std::getenv("NESTVANE_LOG_ALL"); all) {
                 progress(message.substr(0, message.find('\n')));
                 return;
+            }
+            // NESTVANE_LOG_MATCH=<part>,<part>... passes on the lines that have one of the parts, when
+            // everything would be too much to keep.
+            if (static const char* const wanted = std::getenv("NESTVANE_LOG_MATCH"); wanted) {
+                for (std::string_view parts = wanted; !parts.empty();) {
+                    const auto part = parts.substr(0, parts.find(','));
+                    if (!part.empty() && line.find(part) != std::string_view::npos) {
+                        progress(line);
+                        return;
+                    }
+                    parts.remove_prefix(std::min(parts.size(), part.size() + 1));
+                }
             }
             constexpr std::string_view milestones[] = {
                 "Zygote: Preloading classes", "Zygote: ...preloaded", "Zygote: end preload",

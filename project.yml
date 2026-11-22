@@ -33,6 +33,7 @@ targets:
       - sdk: CoreVideo.framework
       - sdk: CoreGraphics.framework
       - sdk: libsqlite3.tbd
+      - sdk: libresolv.tbd
     info:
       path: generated/Info.plist
       properties:
@@ -92,6 +93,7 @@ targets:
       - sdk: CoreVideo.framework
       - sdk: CoreGraphics.framework
       - sdk: libsqlite3.tbd
+      - sdk: libresolv.tbd
       - framework: generated/native-code/ios/lib/NestvaneCode0.framework
         embed: true
       - framework: generated/native-code/ios/lib/NestvaneCode1.framework
@@ -150,6 +152,7 @@ targets:
             UIApplicationShortcutItemTitle: Install APK…
             UIApplicationShortcutItemIconSymbolName: square.and.arrow.down
         NSCameraUsageDescription: Nestvane shares the rear camera with Android apps when you use their camera.
+        NSLocalNetworkUsageDescription: Android apps in Nestvane reach devices on your local network, such as your router, when they ask to.
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
