@@ -17,6 +17,8 @@ struct Ext4Node {
     std::vector<Extent> extents{};
     mutable std::vector<uint8_t> owned{};
     std::span<const uint8_t> bytes() const;
+    // The start of the file, up to `count` bytes, without putting a file of several extents together.
+    std::span<const uint8_t> head(size_t count) const;
 };
 
 struct Ext4Image {

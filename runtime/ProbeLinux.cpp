@@ -1177,8 +1177,12 @@ void ProbeLinux::notePrelink(Machine& machine, const Descriptor& fd, uint64_t st
     const std::pair<uint64_t, uint64_t> identity{record[0], record[1]};
     // Inode numbers are not kept for what a file is: the same number can come to stand for another file.
     auto& prelink = machine.space->prelink;
-    const auto contents = fd.contents();
-    const auto* first = native::moduleFor(contents);
+    // Only an ELF file can have a translation. Every file that is opened comes by here, and the
+    // bytes of a file in a mounted image may first have to be put together from its extents.
+    const auto head = fd.ext4File ? fd.ext4File->head(4) : fd.bytes.first(std::min<size_t>(4, fd.bytes.size()));
+    const bool elf = head.size() == 4 && !std::memcmp(head.data(), "\x7f" "ELF", 4);
+    const auto contents = elf ? fd.contents() : std::span<const uint8_t>{};
+    const auto* first = elf ? native::moduleFor(contents) : nullptr;
     const auto known = std::find(prelink.files.begin(), prelink.files.end(), identity);
     if (known != prelink.files.end()) {
         // The numbers are in the table already. If they were another file's when they went in, the

@@ -199,6 +199,14 @@ std::span<const uint8_t> Ext4Node::bytes() const {
     return owned;
 }
 
+std::span<const uint8_t> Ext4Node::head(size_t count) const {
+    if (!view.empty()) return view.first(std::min(count, view.size()));
+    if (!owned.empty()) return std::span<const uint8_t>(owned).first(std::min(count, owned.size()));
+    for (const auto& extent : extents)
+        if (!extent.offset) return std::span<const uint8_t>(extent.bytes).first(std::min<size_t>(count, extent.bytes.size()));
+    return {};
+}
+
 Ext4Image readExt4(std::span<const uint8_t> bytes) {
     return Reader(bytes).read();
 }

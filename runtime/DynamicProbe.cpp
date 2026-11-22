@@ -868,6 +868,17 @@ service nestvane-apk-install /system/bin/sh /system/etc/nestvane/apk-ready.sh
     seclabel u:r:shell:s0
     disabled
     stdio_to_kmsg
+
+on property:sys.boot_completed=1
+    start nestvane-trim
+
+service nestvane-trim /system/bin/sh /system/etc/nestvane/trim.sh
+    user root
+    group root
+    seclabel u:r:shell:s0
+    disabled
+    oneshot
+    stdio_to_kmsg
 )rc";
             linux.mount("/system/etc/init/nestvane-apk-install.rc",
                         {reinterpret_cast<const uint8_t*>(installer.data()), installer.size()});
