@@ -419,6 +419,9 @@ ProbeLinux::ProbeLinux(uint64_t pid, uint64_t uid, uint64_t memoryLimit)
     // With native execution, what is interpreted is an app's own library in a process whose other
     // threads are native: a turn of a few thousand instructions would be spent on switching.
     if (native::enabled()) sliceLength = 32768;
+    // NESTVANE_NATIVE_WORKERS=<n> sets how many host threads run native code beside this one; 0 for none.
+    if (const char* count = std::getenv("NESTVANE_NATIVE_WORKERS"); !count || std::atoi(count) > 0)
+        native::startWorkers(count ? unsigned(std::atoi(count)) : 3);
     processes.emplace(pid, current->process.get());
     current->process->userIds.fill(uint32_t(uid));
     current->process->groupIds.fill(uint32_t(uid));
@@ -5599,6 +5602,7 @@ void ProbeLinux::accountGuestCpu() {
 bool ProbeLinux::switchThread(Machine& machine, std::chrono::steady_clock::time_point deadline, const std::stop_token& stop) {
     using namespace std::chrono;
     serviceGraphicsDma();
+    collectNative(machine);
     auto now = steady_clock::now();
     std::optional<steady_clock::time_point> nextDeadline;
     bool runnable = false;
@@ -5606,6 +5610,12 @@ bool ProbeLinux::switchThread(Machine& machine, std::chrono::steady_clock::time_
         nextDeadline = refreshTimers(now);
         for (auto& [tid, thread] : threads) {
             const auto wait = thread.wait;
+            if (wait == Wait::native) {
+                // A signal for it is delivered at its next turn, which has to come soon then.
+                if (!thread.pendingSignals.empty() || !thread.process->pendingSignals.empty())
+                    native::recall(thread.nativeTicket, false);
+                continue;
+            }
             if (wait == Wait::signalSuspend) {
                 auto& child = thread.process->childSignal;
                 if (child && canCatchSignal(thread, sigChild) && !thread.pendingSignals.contains(sigChild)) {
@@ -5703,20 +5713,26 @@ bool ProbeLinux::switchThread(Machine& machine, std::chrono::steady_clock::time_
     if (now - lastTimerScan < microseconds(200) && pickNext()) return true;
     lastTimerScan = now;
     updateTimers();
-    while (!runnable && nextDeadline && now < deadline && !stop.stop_requested()) {
+    // Without a timer to wait for, there is still the end of a run on a worker.
+    while (!runnable && (nextDeadline || native::outstanding()) && now < deadline && !stop.stop_requested()) {
         if (dataSyncPending && now - lastDataSync >= seconds(2)) syncDataSoon();
-        auto wake = std::min(*nextDeadline, deadline);
+        auto wake = nextDeadline ? std::min(*nextDeadline, deadline) : deadline;
         if (stop.stop_possible()) wake = std::min(wake, now + milliseconds(100));
+        if (native::outstanding()) wake = std::min(wake, now + milliseconds(20));
+        uint64_t ended = 0;
         if (wake - now < microseconds(150)) {
             // Too short for the system's timers to be worth it: the wait is for another host thread.
-            while (steady_clock::now() < wake) std::this_thread::yield();
+            while (steady_clock::now() < wake && !native::finished(ended)) std::this_thread::yield();
             serviceGraphicsDma();
         } else if (graphicsDma) {
             graphicsDma->waitUntil(wake);
             serviceGraphicsDma();
+        } else if (native::outstanding()) {
+            native::waitFinished(wake);
         } else {
             std::this_thread::sleep_until(wake);
         }
+        collectNative(machine);
         const auto woke = steady_clock::now();
         idleTime += woke - now;
         ++idleWaits;
@@ -6883,7 +6899,66 @@ void ProbeLinux::finishProcess(Process& process, uint32_t status, bool killed) {
     wakePollers();
 }
 
+void ProbeLinux::collectNative(Machine& machine) {
+    uint64_t ticket = 0;
+    while (native::finished(ticket)) {
+        native::Result result;
+        const auto known = nativeTickets.find(ticket);
+        const auto found = known == nativeTickets.end() ? threads.end() : threads.find(known->second);
+        if (known != nativeTickets.end()) nativeTickets.erase(known);
+        if (found == threads.end() || found->second.nativeTicket != ticket) {
+            native::take(ticket, nullptr, result);  // the thread is gone
+            continue;
+        }
+        auto& thread = found->second;
+        native::take(ticket, found->first == currentTid ? &machine.cpu : &thread.saved, result);
+        thread.nativeResult = result;
+        thread.nativeTicket = 0;
+        thread.wait = Wait::none;
+    }
+}
+
+void ProbeLinux::recallNativeThreads(const Process* process) {
+    for (auto& [tid, thread] : threads) {
+        if (thread.wait != Wait::native || (process && thread.process.get() != process)) continue;
+        native::recall(thread.nativeTicket, true);
+        // No thread that is on a worker is the current one here: the current one is in a system call.
+        native::Result result;
+        if (native::take(thread.nativeTicket, &thread.saved, result)) thread.nativeResult = result;
+        nativeTickets.erase(thread.nativeTicket);
+        thread.nativeTicket = 0;
+        thread.wait = Wait::none;
+    }
+}
+
+bool ProbeLinux::offloadNative(Machine& machine) {
+    if (!current->cpuBound || !native::workers() || !current->pendingSignals.empty() ||
+        !current->process->pendingSignals.empty()) return false;
+    const uint64_t ticket = nextNativeTicket++;
+    if (!native::offload(machine, ticket)) return false;
+    current->nativeTicket = ticket;
+    nativeTickets[ticket] = currentTid;
+    current->wait = Wait::native;
+    ++nativeOffloads;
+    sliceEnd = 0;
+    return true;
+}
+
+std::optional<native::Result> ProbeLinux::takeNativeResult() {
+    auto result = std::exchange(current->nativeResult, std::nullopt);
+    if (result) {
+        // A thread that keeps coming back at once for a system call is better off without the detour.
+        current->briefRuns = result->brief ? current->briefRuns + 1 : 0;
+        if (current->briefRuns >= 4) {
+            current->cpuBound = false;
+            current->briefRuns = 0;
+        }
+    }
+    return result;
+}
+
 void ProbeLinux::removeSiblingThreads() {
+    recallNativeThreads(current->process.get());
     // Keep the current task until the scheduler saves its address space and advances.
     std::erase_if(threads, [&](const auto& entry) {
         return entry.first != currentTid && entry.second.process == current->process;
@@ -7596,6 +7671,7 @@ std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedPr
                 }
                 break;
             case Wait::exited: break;
+            case Wait::native: tasks << " native code on a worker"; break;
         }
         tasks << " PC=0x" << std::hex << cpu.pc << " LR=0x" << cpu.x[30] << std::dec;
         const bool handlingBinderCall = process.context == "u:r:system_server:s0" &&
@@ -11298,6 +11374,7 @@ bool ProbeLinux::syscall(Machine& machine) {
                         })) return false;
                 }
             }
+            for (const auto& [id, victim] : victims) recallNativeThreads(victim.get());
             for (const auto& [id, victim] : victims) finishProcess(*victim, signal, true);
             std::erase_if(threads, [&](const auto& task) {
                 return task.first != currentTid && victims.contains(task.second.process->id);

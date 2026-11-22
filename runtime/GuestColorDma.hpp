@@ -49,7 +49,17 @@ public:
 
     void waitUntil(std::chrono::steady_clock::time_point deadline) {
         std::unique_lock lock(mutex);
-        changed.wait_until(lock, deadline, [&] { return stopped || !pending.empty(); });
+        changed.wait_until(lock, deadline, [&] { return stopped || poked || !pending.empty(); });
+        poked = false;
+    }
+
+    // Ends a waitUntil for a reason that is not a transfer.
+    void poke() {
+        {
+            std::lock_guard lock(mutex);
+            poked = true;
+        }
+        changed.notify_all();
     }
 
     void stop() {
@@ -116,6 +126,7 @@ private:
     size_t bytesInUse = 0;
     unsigned transfers = 0;
     bool stopped = false;
+    bool poked = false;
 };
 
 } // namespace nestvane

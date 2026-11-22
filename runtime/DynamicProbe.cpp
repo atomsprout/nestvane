@@ -378,10 +378,21 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
             reachedExecutable = true;
             if (init) report << "  init entry reached after " << cpu.retired << " guest instructions\n";
         }
-        if (interpretNext) {
+        // A run on a worker that has ended is looked at now, at the thread's next turn.
+        auto taken = nativeExecution ? linux.takeNativeResult() : std::nullopt;
+        if (!taken && interpretNext) {
             interpretNext = false;
-        } else if (nativeExecution && linux.nativeAt(machine) && !(init && linux.hasChildEntryAt(cpu.pc))) {
-            const auto left = native::run(machine);
+        } else if (taken || (nativeExecution && linux.nativeAt(machine) && !(init && linux.hasChildEntryAt(cpu.pc)))) {
+            if (!taken && linux.offloadNative(machine)) continue;
+            // A thread that waits in a system call comes back to its svc whenever the wait is tried
+            // again. Entering native code there only to leave it at once costs more than the call.
+            const auto atCall = [&] {
+                const auto* code = machine.readInstruction(cpu.pc);
+                uint32_t next = 0;
+                if (code) std::memcpy(&next, code, sizeof(next));
+                return next == 0xd4000001;
+            };
+            const auto left = taken ? native::settle(machine, *taken) : atCall() ? native::Exit::syscall : native::run(machine);
             afterNative = true;
             if (left == native::Exit::fault && !(++nativeFaults & 0xffff)) {
                 // A sample of what native code could not do itself, for finding memory it cannot reach.
@@ -408,6 +419,7 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
                 case native::Exit::preempted:
                     // The scheduler counts instructions: a slice of native code counts as one of its own.
                     cpu.retired += linux.sliceLength;
+                    linux.noteNativeTurnUsed();
                     break;
                 case native::Exit::lost:
                 case native::Exit::retry:

@@ -1,11 +1,14 @@
 #pragma once
+#include <chrono>
 #include <cstdint>
+#include <functional>
 #include <span>
 #include <string>
 
 namespace nestvane {
 
 struct Machine;
+struct CPU;
 
 // Guest code that was translated ahead of time into host code (tools/build-native-code.py) and is
 // linked into this program. A translation is for one load address, so the kernel layer loads each
@@ -59,6 +62,36 @@ enum class Exit {
 // Runs the machine's current thread natively from cpu.pc, which is in translated code that is mapped
 // in machine.space. Returns with the registers in machine.cpu and pc at a guest instruction.
 Exit run(Machine& machine);
+// How native code left, for a run on another host thread whose registers the main loop takes back later.
+struct Result {
+    int reason = 0, signal = 0;
+    uint64_t pc = 0, faultPc = 0, faultAddress = 0, preemptedPc = 0;
+    uint64_t ran = 0;  // mach time in guest code
+    bool brief = false; // it left again within a fraction of a millisecond
+};
+// Host threads that run guest threads' native code beside the main loop, which goes on with other
+// threads meanwhile.
+void startWorkers(unsigned count);
+// Called on a worker when its run has ended, for a main loop that waits for something else. Null for none.
+void setFinishedHook(std::function<void()> finished);
+// Returns when a run has ended and is not taken back, or at the deadline.
+void waitFinished(std::chrono::steady_clock::time_point deadline);
+unsigned workers();
+// Runs handed over and not taken back yet.
+unsigned outstanding();
+// Hands the machine's current thread to a free worker, which runs it natively from cpu.pc. False if
+// there is none, or the instruction at pc is not entered natively. `ticket` names the run.
+bool offload(Machine& machine, uint64_t ticket);
+// A run that has ended and has not been taken back.
+bool finished(uint64_t& ticket);
+// Takes a finished run back: the thread's registers go to `cpu` unless it is null. False if the run
+// has not ended.
+bool take(uint64_t ticket, CPU* cpu, Result& result);
+// What run() returns, for a result that was taken back: with the thread's registers in machine.cpu
+// and its address space in machine.space.
+Exit settle(Machine& machine, const Result& result);
+// Asks a run to end soon, or with `wait` returns once it has.
+void recall(uint64_t ticket, bool wait);
 std::string statistics();
 // The host address of the access that made the last run end with Exit::fault.
 uint64_t lastFaultAddress();

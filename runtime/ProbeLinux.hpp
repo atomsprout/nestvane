@@ -7,11 +7,15 @@
 #include "GuestTouch.hpp"
 #include "GuestColorDma.hpp"
 #include "Runtime.hpp"
+#include "NativeCode.hpp"
 #include "PosixAcl.hpp"
 #include "GuestFirewall.hpp"
 #include "Ext4.hpp"
 
 #include <stop_token>
+#include <unordered_map>
+#include <mutex>
+#include <condition_variable>
 #include <chrono>
 #include <functional>
 #include <map>
@@ -48,7 +52,12 @@ struct ProbeLinux {
     void setTetheringLoader(std::span<const uint8_t> executable) { tetheringLoader = executable; }
     void setApkInbox(std::shared_ptr<GuestApkInbox> inbox) { apkInbox = std::move(inbox); }
     void setGuestTouch(std::shared_ptr<GuestTouch> touch);
-    void setGraphicsDma(std::shared_ptr<GuestColorDma> dma) { graphicsDma = std::move(dma); }
+    void setGraphicsDma(std::shared_ptr<GuestColorDma> dma) {
+        graphicsDma = std::move(dma);
+        // The main loop waits on the transfers' signal when it has one: a worker's finished run ends that wait.
+        if (graphicsDma) native::setFinishedHook([dma = graphicsDma] { dma->poke(); });
+        else native::setFinishedHook(nullptr);
+    }
     bool syncData();
     bool syncDataSoon();
     std::chrono::steady_clock::time_point lastDataSync{};
@@ -86,6 +95,14 @@ struct ProbeLinux {
     std::chrono::steady_clock::time_point lastTimerScan{};
     std::chrono::steady_clock::duration idleTime{};
     uint64_t idleWaits = 0, threadSwitches = 0;
+    // Hands the current thread's native code to a worker if it has shown to compute for long. The
+    // scheduler goes on with other threads and the thread has its next turn when the run has ended.
+    bool offloadNative(Machine& machine);
+    // How the current thread's run on a worker ended, once, at the thread's next turn.
+    std::optional<native::Result> takeNativeResult();
+    // The current thread's native code ran until its turn was over.
+    void noteNativeTurnUsed() { current->cpuBound = true; }
+    uint64_t nativeOffloads = 0;
     // A thread's turn, in interpreted instructions. A turn of native code is one time slice and counts as this many.
     uint64_t sliceLength = 4096;
     std::optional<std::pair<std::string_view, uint64_t>> guestCodeFile(const uint8_t* instruction) const;
@@ -142,7 +159,8 @@ private:
         uint64_t generation = 0;
         std::map<std::string, MountView, std::less<>> mounts{{"/dev", {6, 0755, 0, 0, "/dev"}}};
     };
-    enum class Wait { none, poll, recordLock, futex, futexPi, signal, sleep, exited, suspended, signalSuspend };
+    // `native`: the thread's native code runs on a worker, and its registers here are out of date.
+    enum class Wait { none, poll, recordLock, futex, futexPi, signal, sleep, exited, suspended, signalSuspend, native };
     struct Process;
     struct WritableFile;
     using SignalWords = std::array<uint32_t, 32>;
@@ -182,6 +200,10 @@ private:
         std::optional<std::chrono::steady_clock::time_point> hostWaitBegan;
         std::chrono::steady_clock::time_point hostWaitLast{};
         std::optional<std::chrono::steady_clock::time_point> nextSliceAfter;
+        uint64_t nativeTicket = 0;                  // names the run on a worker while wait is native
+        std::optional<native::Result> nativeResult; // how that run ended, until the thread has its next turn
+        bool cpuBound = false;                      // its native code used up a whole turn: worth a worker
+        unsigned briefRuns = 0;                     // runs on a worker in a row that ended at once
         uint64_t signalMask = 0;
         uint64_t signalWaitMask = 0;
         std::optional<uint64_t> suspendSignalMask;
@@ -209,6 +231,10 @@ private:
     bool waitForHostEvents();
     bool poll(Machine& machine);
     void removeSiblingThreads();
+    // Takes back the finished runs of threads whose native code ran on workers.
+    void collectNative(Machine& machine);
+    // Ends the runs on workers of a process's threads and waits for them: before the threads go.
+    void recallNativeThreads(const Process* process);
     bool exitThread(Machine& machine);
     void finishProcess(Process& process, uint32_t status, bool killed);
     bool waitChild(Machine& machine);
@@ -425,6 +451,8 @@ private:
     };
     std::map<uint64_t, std::weak_ptr<GraphicsRegion>> graphicsRegions;
     std::shared_ptr<GuestColorDma> graphicsDma;
+    uint64_t nextNativeTicket = 1;
+    std::unordered_map<uint64_t, uint64_t> nativeTickets;  // run on a worker -> thread
     void serviceGraphicsDma();
     bool transferGraphicsDma(GuestColorDma::Transfer& transfer);
     std::shared_ptr<GraphicsRegion> allocateGraphicsRegion(uint64_t requested);
