@@ -23,15 +23,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
-    # GitHub Pages is not available while the repository is private, so this job is skipped until
-    # it is public. After making it public, enable Pages in Settings -> Pages with "GitHub Actions"
-    # as the source, then run this workflow.
+  # GitHub Pages is not available while a repository is private, so both jobs are skipped then.
+  build:
     if: github.event.repository.private == false
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Check out
         uses: actions/checkout@v4
@@ -57,6 +52,14 @@ jobs:
         with:
           path: website/build
 
+  # A job of its own: in the same job as the upload, the deployment did not find the artifact yet.
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - name: Deploy
         id: deployment
         uses: actions/deploy-pages@v4
