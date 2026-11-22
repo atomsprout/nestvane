@@ -1,6 +1,6 @@
 ---
 slug: android-17-inside-an-iphone-app
-title: "I don't know Android's internals. Could an AI still run Android 17 inside an iPhone app?"
+title: "I don't know Android internals. AI still got Android 17 running inside an iPhone app in four days."
 description: How Nestvane was built in four days by one person directing coding agents, what it measures, and what it cannot do yet.
 date: 2026-11-22
 image: ./cover.png
@@ -123,7 +123,7 @@ Installing an APK takes under half a second. I installed 2048, Fossify Clock, Ma
 
 [![A frame of the demonstration video: an iPhone showing the Android home screen](./video.jpg)](https://www.youtube.com/shorts/wDVr3-UY1Ec)
 
-*The demonstration video, on YouTube.*
+*[The demonstration video, on YouTube](https://www.youtube.com/shorts/wDVr3-UY1Ec).*
 
 ## Whose ideas these are
 
