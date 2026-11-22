@@ -33,6 +33,11 @@
   <img src="docs/images/app-settings.png" width="190" alt="Nestvane 的设置页">
 </p>
 
+<p align="center">
+  <a href="https://www.youtube.com/shorts/wDVr3-UY1Ec"><img src="docs/images/video.jpg" width="190" alt="播放视频：一台 iPhone 在 Nestvane 里显示 Android 桌面"></a><br>
+  <a href="https://www.youtube.com/shorts/wDVr3-UY1Ec">▶ 观看 Nestvane 运行的视频（YouTube）</a>
+</p>
+
 ---
 
 Nestvane 在一个普通的 iOS App 里启动完整的 Android 17 系统（由 Android 开源项目 AOSP 构建）。你可以用 APK

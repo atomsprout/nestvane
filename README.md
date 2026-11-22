@@ -33,6 +33,11 @@
   <img src="docs/images/app-settings.png" width="190" alt="Nestvane's settings screen">
 </p>
 
+<p align="center">
+  <a href="https://www.youtube.com/shorts/wDVr3-UY1Ec"><img src="docs/images/video.jpg" width="190" alt="Play the video: an iPhone showing the Android home screen inside Nestvane"></a><br>
+  <a href="https://www.youtube.com/shorts/wDVr3-UY1Ec">▶ Watch Nestvane run (YouTube)</a>
+</p>
+
 ---
 
 Nestvane starts a full Android 17 system, built from the Android Open Source Project, inside an ordinary iOS

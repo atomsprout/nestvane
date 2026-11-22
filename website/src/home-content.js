@@ -24,6 +24,11 @@ export const content = {
     source: 'Source on GitHub',
     downloadNote: 'For now Nestvane is for developers only. The only way to run it is to sign the IPA with a paid Apple Developer Program membership (US$99 a year) and sideload it; people without a developer account cannot use it yet.',
     howToInstall: 'How to install it',
+    videoTitle: 'Watch it run',
+    videoIntro: 'A short video of Nestvane on an iPhone: Android 17 starting and being used.',
+    videoPlay: 'Play the video of Nestvane running',
+    videoAlt: 'An iPhone on a wooden table showing the Android home screen, under the words Run Android 17 inside iOS app.',
+    videoWatch: 'Watch on YouTube',
     shotsTitle: 'Android, on an iPhone screen',
     shotsIntro: 'These are captures from Nestvane running on iPhone 15 Pro and iPhone 17 Pro.',
     shots: shots([
@@ -119,6 +124,11 @@ export const content = {
     source: 'GitHub 上的源码',
     downloadNote: '目前 Nestvane 只有开发者能用。唯一的办法是用付费的 Apple Developer Program 会员（每年 99 美元）给 IPA 签名后侧载；没有开发者账号的普通用户现在还用不了。',
     howToInstall: '怎样安装',
+    videoTitle: '看它运行',
+    videoIntro: '一段 Nestvane 在 iPhone 上运行的短视频：Android 17 启动并被使用。',
+    videoPlay: '播放 Nestvane 运行的视频',
+    videoAlt: '木桌上的一台 iPhone 显示着 Android 桌面，画面上方写着 Run Android 17 inside iOS app。',
+    videoWatch: '在 YouTube 上观看',
     shotsTitle: 'iPhone 屏幕上的 Android',
     shotsIntro: '这些画面截自运行在 iPhone 15 Pro 和 iPhone 17 Pro 上的 Nestvane。',
     shots: shots([

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, {useState} from 'react';
 import Layout from '@theme/Layout';
 import Link from '@docusaurus/Link';
 import useBaseUrl from '@docusaurus/useBaseUrl';
@@ -8,6 +8,7 @@ import styles from './index.module.css';
 
 const releases = 'https://github.com/atomsprout/nestvane/releases';
 const repository = 'https://github.com/atomsprout/nestvane';
+const video = 'wDVr3-UY1Ec';
 
 function Shot({file, width, height, alt, caption}) {
   return (
@@ -15,6 +16,34 @@ function Shot({file, width, height, alt, caption}) {
       <img src={useBaseUrl(`img/${file}`)} width={width} height={height} alt={alt} loading="lazy" decoding="async" />
       <figcaption>{caption}</figcaption>
     </figure>
+  );
+}
+
+// The picture is the site's own file. YouTube is contacted only after the visitor presses play.
+function Video({label, alt, watch}) {
+  const [playing, setPlaying] = useState(false);
+  const poster = useBaseUrl('img/nestvane-video.jpg');
+  return (
+    <div className={styles.videoWrap}>
+      <div className={styles.video}>
+        {playing ? (
+          <iframe
+            src={`https://www.youtube-nocookie.com/embed/${video}?autoplay=1&playsinline=1`}
+            title={label}
+            allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
+            allowFullScreen
+          />
+        ) : (
+          <button type="button" className={styles.videoButton} onClick={() => setPlaying(true)} aria-label={label}>
+            <img src={poster} width="540" height="960" alt={alt} />
+            <span className={styles.play} aria-hidden="true" />
+          </button>
+        )}
+      </div>
+      <p className={styles.fine}>
+        <a href={`https://www.youtube.com/shorts/${video}`}>{watch}</a>
+      </p>
+    </div>
   );
 }
 
@@ -44,7 +73,15 @@ export default function Home() {
       </header>
 
       <main>
-        <section className={styles.section} id="screenshots">
+        <section className={styles.section} id="video">
+          <div className="container">
+            <h2>{text.videoTitle}</h2>
+            <p className={styles.intro}>{text.videoIntro}</p>
+            <Video label={text.videoPlay} alt={text.videoAlt} watch={text.videoWatch} />
+          </div>
+        </section>
+
+        <section className={`${styles.section} ${styles.alt}`} id="screenshots">
           <div className="container">
             <h2>{text.shotsTitle}</h2>
             <p className={styles.intro}>{text.shotsIntro}</p>
@@ -54,7 +91,7 @@ export default function Home() {
           </div>
         </section>
 
-        <section className={`${styles.section} ${styles.alt}`} id="works">
+        <section className={styles.section} id="works">
           <div className="container">
             <h2>{text.worksTitle}</h2>
             <p className={styles.intro}>{text.worksIntro}</p>
@@ -74,7 +111,7 @@ export default function Home() {
           </div>
         </section>
 
-        <section className={styles.section} id="how">
+        <section className={`${styles.section} ${styles.alt}`} id="how">
           <div className="container">
             <h2>{text.howTitle}</h2>
             <p className={styles.intro}>{text.howIntro}</p>
@@ -90,7 +127,7 @@ export default function Home() {
           </div>
         </section>
 
-        <section className={`${styles.section} ${styles.alt}`} id="limits">
+        <section className={styles.section} id="limits">
           <div className="container">
             <h2>{text.limitsTitle}</h2>
             <ul className={styles.plain}>
@@ -103,7 +140,7 @@ export default function Home() {
           </div>
         </section>
 
-        <section className={styles.section} id="thanks">
+        <section className={`${styles.section} ${styles.alt}`} id="thanks">
           <div className="container">
             <h2>{text.thanksTitle}</h2>
             <p className={styles.intro}>
@@ -112,14 +149,14 @@ export default function Home() {
           </div>
         </section>
 
-        <section className={`${styles.section} ${styles.alt}`} id="about">
+        <section className={styles.section} id="about">
           <div className={`container ${styles.prose}`}>
             <h2>{text.aboutTitle}</h2>
             {text.about.map(paragraph => <p key={paragraph}>{paragraph}</p>)}
           </div>
         </section>
 
-        <section className={styles.section} id="community">
+        <section className={`${styles.section} ${styles.alt}`} id="community">
           <div className="container">
             <h2>{text.communityTitle}</h2>
             <p className={styles.intro}>{text.communityIntro}</p>
@@ -136,7 +173,7 @@ export default function Home() {
         </section>
 
         {/* The iOS app links to #privacy. Keep this id, and keep the English policy text word for word. */}
-        <section className={`${styles.section} ${styles.alt}`} id="privacy">
+        <section className={styles.section} id="privacy">
           <div className={`container ${styles.prose}`}>
             <h2>{text.privacyTitle}</h2>
             <p className={styles.intro}>{text.privacyEffective}</p>
