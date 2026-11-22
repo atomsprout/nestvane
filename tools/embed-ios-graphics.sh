@@ -71,11 +71,14 @@ with open(sys.argv[1], "wb") as output:
         "CFBundleVersion": "1",
         "CFBundleShortVersionString": "0.1",
         "CFBundleSupportedPlatforms": ["iPhoneOS"],
+        "MinimumOSVersion": "17.0",
     }, output)
 PY
 
 for name in libEGL libGLESv2; do
     ditto "$angle/$name.framework" "$frameworks/$name.framework"
+    # The App Store asks every bundle for a version string, which ANGLE's build leaves out.
+    /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string 1.0" "$frameworks/$name.framework/Info.plist" 2>/dev/null || true
     /usr/bin/codesign --force --sign "$identity" "$frameworks/$name.framework"
 done
 /usr/bin/codesign --force --sign "$identity" "$gfxstream"

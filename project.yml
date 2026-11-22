@@ -121,6 +121,10 @@ targets:
       properties:
         CFBundleDisplayName: Nestvane
         CFBundleName: Nestvane
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        # One window that fills the screen, upright: the Android display is laid out for that.
+        UIRequiresFullScreen: true
         # An .apk in Files, AirDrop or a share sheet can be opened with the app, which installs it.
         CFBundleDocumentTypes:
           - CFBundleTypeName: Android app package
@@ -160,8 +164,8 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.atomsprout.nestvane
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: "1,2"
-        CURRENT_PROJECT_VERSION: "1"
-        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "2"
+        MARKETING_VERSION: "1.0"
         HEADER_SEARCH_PATHS: "$(SRCROOT)/runtime"
         GCC_PREPROCESSOR_DEFINITIONS: "$(inherited) NESTVANE_PAGE_SIZE=16384 NESTVANE_NATIVE_DEFAULT=1"
         LIBRARY_SEARCH_PATHS: "$(SRCROOT)/generated/native-code/ios/lib"
