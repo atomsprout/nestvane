@@ -289,6 +289,67 @@ def add_overlay_daemon(adb, guest):
             file.write("u:r:idmap:s0 u:object_r:idmap_service:s0 3 ffffffff 0 ffffffff 1 0\n")
 
 
+MEDIA_SERVER_FILES = ("system/bin/mediaserver", "system/lib64/libmediaplayerservice.so",
+                      "system/lib64/libresourcemanagerservice.so", "system/lib64/libstats_media_metrics.so",
+                      "system/lib64/libandroid_net.so", "system/lib64/libstagefright_httplive.so")
+# What the media server looks up besides what the audio server does.
+MEDIA_SERVER_FINDS = ("audioserver_service", "mediaextractor_service", "mediadrmserver_service", "drmserver_service",
+                      "media_session_service", "cameraserver_service", "surfaceflinger_service", "gpu_service",
+                      "processinfo_service", "hal_codec2_service", "hal_graphics_allocator_service",
+                      "media_native_packages_service", "network_management_service", "netd_service", "dnsresolver_service")
+
+
+def allow_media_server(guest):
+    """The policy rows for the media server's domain, which the captured policy has none of.
+
+    The rows were captured for the domains of the processes the root had then. These are the audio
+    server's, a daemon with much the same rights, with the media server's own services to add and
+    the ones it looks up to find. They are not read from the reference's policy.
+    """
+    metadata = guest / "nestvane-metadata"
+    transitions = metadata / "selinux-process-transition.txt"
+    if "/system/bin/mediaserver " not in transitions.read_text():
+        with transitions.open("a") as file:
+            file.write("/system/bin/mediaserver u:r:init:s0 u:object_r:mediaserver_exec:s0 2 u:r:mediaserver:s0\n")
+    for name in ("selinux-service-access.txt", "selinux-hwservice-access.txt", "selinux-property-access.txt",
+                 "selinux-fscreate-access.txt", "selinux-keystore-access.txt", "selinux-keystore-key-access.txt"):
+        path = metadata / name
+        lines = path.read_text().splitlines()
+        if any(line.startswith("u:r:mediaserver:s0 ") for line in lines):
+            continue
+        added = []
+        for line in lines:
+            fields = line.split(" ")
+            if fields[0] == "u:r:audioserver:s0":
+                fields[0] = "u:r:mediaserver:s0"
+                if fields[1] == "u:r:audioserver:s0":
+                    fields[1] = "u:r:mediaserver:s0"
+                kind = fields[1].removeprefix("u:object_r:").removesuffix(":s0")
+                if name == "selinux-service-access.txt":
+                    if kind == "mediaserver_service":
+                        fields[2] = "3"
+                    elif kind in MEDIA_SERVER_FINDS:
+                        fields[2] = "2"
+                added.append(" ".join(fields))
+            elif fields[1] == "u:r:audioserver:s0":
+                fields[1] = "u:r:mediaserver:s0"
+                added.append(" ".join(fields))
+        path.write_text("\n".join(lines + added) + "\n")
+
+
+def add_media_server(adb, guest):
+    """mediaserver, which has the list of codecs behind MediaCodecList.
+
+    Without it whoever asks for the list waits for the service for ever: the storage manager does at
+    boot, to see whether video can be transcoded, and so never mounted the shared storage.
+    """
+    for path in MEDIA_SERVER_FILES:
+        if not (guest / path).is_file():
+            subprocess.run(adb + ["pull", "/" + path, str(guest / path)], check=True, stdout=subprocess.DEVNULL)
+    (guest / "system/bin/mediaserver").chmod(0o755)
+    allow_media_server(guest)
+
+
 def precompile_apex_apps(adb, remote, guest):
     """Compiles the apps that live inside APEX modules, which the build leaves without compiled code.
 
@@ -350,6 +411,9 @@ ABSENT_FEATURES = ("android.hardware.wifi", "android.hardware.wifi.direct", "and
 def remove_absent_hardware(guest):
     for name in ABSENT_HARDWARE:
         (guest / "vendor/etc/vintf/manifest" / name).unlink(missing_ok=True)
+    # The software codecs' service, of the com.android.media.swcodec module, which the root has not:
+    # whoever lists the codecs would wait for it for ever.
+    (guest / "system/etc/vintf/manifest/manifest_media_c2_software.xml").unlink(missing_ok=True)
     config = guest / "system/etc/sysconfig/nestvane-hardware.xml"
     text = config.read_text()
     extra = "".join(f'    <unavailable-feature name="{name}" />\n' for name in ABSENT_FEATURES if f'"{name}"' not in text)
@@ -673,6 +737,7 @@ def main():
                     copy_prebuilt_code(adb, remote, guest)
                     add_low_memory_killer(adb, guest)
                     add_overlay_daemon(adb, guest)
+                    add_media_server(adb, guest)
                     precompile_apex_apps(adb, remote, guest)
                 if args.precompile_framework_code:
                     check_reference_files(

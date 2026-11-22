@@ -651,7 +651,9 @@ const ProbeLinux::MountView* ProbeLinux::mountFor(std::string_view path) const {
 }
 
 std::string ProbeLinux::backingPath(std::string_view path) const {
-    return backingPath(path, *current->mountNamespace);
+    auto backing = backingPath(path, *current->mountNamespace);
+    if (backing == sharedStorageRoot || inside(backing, sharedStorageRoot)) sharedStorageCall = true;
+    return backing;
 }
 
 std::string ProbeLinux::backingPath(std::string_view path, const MountNamespace& mountNamespace) {
@@ -675,15 +677,19 @@ bool ProbeLinux::writablePath(std::string_view path) const {
 
 void ProbeLinux::setMountPropagation(MountView& mount, uint64_t propagation) {
     constexpr uint64_t shared = 0x100000; // MS_SHARED
+    constexpr uint64_t slave = 0x80000; // MS_SLAVE
     mount.propagation = propagation;
     if (propagation == shared) {
         if (!mount.peerGroup) mount.peerGroup = nextMountPeerGroup++;
+        mount.masterGroup = 0;
     } else {
+        if (propagation != slave) mount.masterGroup = 0;
+        else if (mount.peerGroup) mount.masterGroup = mount.peerGroup;
         mount.peerGroup = 0;
     }
 }
 
-uint64_t ProbeLinux::bindMount(std::string_view from, const std::string& to, bool recursive) {
+uint64_t ProbeLinux::bindMount(std::string_view from, const std::string& to, bool recursive, std::string_view device) {
     const auto source = backingPath(from);
     const auto dest = backingPath(to);
     if (!directoryExists(source) || !directoryExists(dest)) return uint64_t(-2);
@@ -695,23 +701,41 @@ uint64_t ProbeLinux::bindMount(std::string_view from, const std::string& to, boo
     const auto propagation = targetMount ? targetMount->propagation : current->mountNamespace->rootPropagation;
     auto view = sourceMount ? *sourceMount : MountView{1, 0755};
     view.backing = source;
+    if (!device.empty()) view.device = device;
     if (const auto mode = directories.find(source); mode != directories.end()) view.mode = mode->second.mode;
     setMountPropagation(view, view.peerGroup ? view.propagation : propagation);
     view.covered.reset();
     view.obscuredMounts.reset();
-    const auto overlay = [&](const std::string& path, MountView entry) {
-        if (auto old = mounts.find(path); old != mounts.end())
+    const auto overlay = [](MountNamespace& group, const std::string& path, MountView entry) {
+        if (group.mounts.size() >= 128) return;
+        if (auto old = group.mounts.find(path); old != group.mounts.end())
             entry.covered = std::make_shared<MountView>(old->second);
-        mounts.insert_or_assign(path, std::move(entry));
+        group.mounts.insert_or_assign(path, std::move(entry));
     };
-    std::vector<std::string> destinations{to};
+    // The mount is seen wherever the directory it is on is seen through a mount of the same peer
+    // group, or through a slave of the group: in this namespace and in the others. That is how what
+    // vold mounts reaches the namespaces of the apps, which are slaves of the one they came from.
+    std::vector<std::pair<MountNamespace*, std::string>> destinations{{current->mountNamespace.get(), to}};
     if (targetMount && targetMount->peerGroup) {
-        for (const auto& [mountpoint, peer] : mounts) {
-            if (&peer == targetMount || peer.peerGroup != targetMount->peerGroup ||
-                !inside(dest, peer.backing)) continue;
-            auto path = mountpoint + dest.substr(peer.backing.size());
-            // A private overmount can hide the receiving directory in an otherwise shared tree.
-            if (mountFor(path) == &peer) destinations.push_back(std::move(path));
+        std::set<MountNamespace*> groups{current->mountNamespace.get()};
+        for (const auto& [tid, thread] : threads)
+            if (thread.mountNamespace) groups.insert(thread.mountNamespace.get());
+        for (auto* group : groups) {
+            for (const auto& [mountpoint, peer] : group->mounts) {
+                if (&peer == targetMount || (peer.peerGroup != targetMount->peerGroup && peer.masterGroup != targetMount->peerGroup) ||
+                    (dest != peer.backing && !inside(dest, peer.backing))) continue;
+                auto path = mountpoint + dest.substr(peer.backing.size());
+                if (group == current->mountNamespace.get() && path == to) continue;
+                // A private overmount can hide the receiving directory in an otherwise shared tree.
+                const MountView* shown = nullptr;
+                size_t longest = 0;
+                for (const auto& [other, entry] : group->mounts)
+                    if ((path == other || inside(path, other)) && other.size() > longest) {
+                        longest = other.size();
+                        shown = &entry;
+                    }
+                if (shown == &peer) destinations.emplace_back(group, std::move(path));
+            }
         }
     }
     std::vector<std::pair<std::string, MountView>> children;
@@ -724,10 +748,11 @@ uint64_t ProbeLinux::bindMount(std::string_view from, const std::string& to, boo
             children.emplace_back(it->first.substr(from.size()), std::move(entry));
         }
     }
-    if (mounts.size() + destinations.size() * (children.size() + 1) > 128) return uint64_t(-28);
-    for (const auto& path : destinations) {
-        overlay(path, view);
-        for (const auto& [relative, entry] : children) overlay(path + relative, entry);
+    if (mounts.size() + children.size() + 1 > 128) return uint64_t(-28);
+    for (const auto& [group, path] : destinations) {
+        overlay(*group, path, view);
+        for (const auto& [relative, entry] : children) overlay(*group, path + relative, entry);
+        ++group->generation;
     }
     ++current->mountNamespace->generation;
     wakePollers();
@@ -772,6 +797,7 @@ uint64_t ProbeLinux::mountFilesystem(Machine& machine) {
     if (!directoryExists(backingPath(path))) return uint64_t(-2);
     if (*type == "binder" && *source == "binder") return mountBinder(path, x[3], *options);
     if (*type == "ext4" && options->empty()) return mountExt4(*source, path, x[3]);
+    if (*type == "fuse") return mountFuse(path, *options);
     const bool bpf = *type == "bpf";
     if (!bpf && *type != "tmpfs") return uint64_t(-19);
     if (bpf && (*source != "bpf" || !options->empty())) return invalid;
@@ -820,6 +846,39 @@ uint64_t ProbeLinux::mountFilesystem(Machine& machine) {
     }
     mounts.emplace(path, std::move(view));
     ++current->mountNamespace->generation;
+    wakePollers();
+    return 0;
+}
+
+uint64_t ProbeLinux::mountFuse(const std::string& path, std::string_view options) {
+    uint32_t number = UINT32_MAX;
+    for (auto remaining = options; !remaining.empty();) {
+        const auto option = remaining.substr(0, remaining.find(','));
+        if (option.starts_with("fd=")) std::from_chars(option.data() + 3, option.data() + option.size(), number);
+        remaining.remove_prefix(std::min(remaining.size(), option.size() + 1));
+    }
+    const auto device = descriptors().find(number);
+    if (device == descriptors().end() || !device->second.fuse || device->second.fuse->mounted) return invalid;
+    if (const auto status = bindMount(sharedStorageRoot, path, false, "/dev/fuse")) return status;
+    auto& connection = *device->second.fuse;
+    connection.mounted = true;
+    connection.mountpoint = path;
+    fuseMounts[path] = device->second.fuse;
+    // FUSE_INIT: the header, then the protocol version, the read-ahead and what this side can do.
+    constexpr uint32_t asyncRead = 1, atomicTruncate = 1 << 3, bigWrites = 1 << 5, dontMask = 1 << 6,
+                       autoInvalidate = 1 << 12, readDirPlus = 1 << 13, readDirPlusAuto = 1 << 14,
+                       parallelDirectories = 1 << 18, maxPages = 1 << 22;
+    std::array<uint32_t, 26> init{};
+    init[0] = sizeof(init);
+    init[1] = 26;  // FUSE_INIT
+    init[2] = 2;   // the first request's number
+    init[10] = 7;
+    init[11] = 36;
+    init[12] = 128 * 1024;
+    init[13] = asyncRead | atomicTruncate | bigWrites | dontMask | autoInvalidate | readDirPlus | readDirPlusAuto |
+               parallelDirectories | maxPages;
+    const auto* bytes = reinterpret_cast<const uint8_t*>(init.data());
+    connection.requests.emplace_back(bytes, bytes + sizeof(init));
     wakePollers();
     return 0;
 }
@@ -929,9 +988,17 @@ uint64_t ProbeLinux::unmountFilesystem(Machine& machine) {
     const auto directory = directories.lower_bound(prefix);
     const auto temporary = writableFiles.lower_bound(prefix);
     const auto nested = mounts.lower_bound(visible + "/");
+    const bool fuse = found->second.device == "/dev/fuse";
     if ((nested != mounts.end() && inside(nested->first, visible)) ||
-        (!found->second.ext4 && directory != directories.end() && inside(directory->first, backing)) ||
-        (temporary != writableFiles.end() && inside(temporary->first, backing))) return uint64_t(-16);
+        (!fuse && !found->second.ext4 && directory != directories.end() && inside(directory->first, backing)) ||
+        (!fuse && temporary != writableFiles.end() && inside(temporary->first, backing))) return uint64_t(-16);
+    if (fuse) {
+        // The daemon's read finds the filesystem gone, and its session ends.
+        if (const auto mount = fuseMounts.find(visible); mount != fuseMounts.end()) {
+            if (const auto connection = mount->second.lock()) connection->unmounted = true;
+            fuseMounts.erase(mount);
+        }
+    }
     const auto obscured = found->second.obscuredMounts;
     if (auto covered = found->second.covered) found->second = *covered;
     else mounts.erase(found);
@@ -1046,7 +1113,7 @@ std::string ProbeLinux::mountList(const MountNamespace& group) {
             else escaped += c;
         }
         list += !mount.device.empty() ? mount.device : mount.hostData ? "nestvane-data" : "tmpfs";
-        const auto type = mount.binder ? " binder " : mount.ext4 ? " ext4 " :
+        const auto type = mount.binder ? " binder " : mount.ext4 ? " ext4 " : mount.device == "/dev/fuse" ? " fuse " :
                           mount.device == "bpf" ? " bpf " : mount.device == "cgroup2" ? " cgroup2 " :
                           mount.hostData ? " nestvane-data " : " tmpfs ";
         list += " " + escaped + type + ((mount.flags & 1) ? "ro" : "rw");
@@ -1525,6 +1592,11 @@ std::optional<ProbeLinux::Descriptor> ProbeLinux::find(std::string_view path, ui
     if (path == graphicsDevice && (graphicsPipeFactory || camera || current->process->context == sensorsHalContext))
         return Descriptor{std::string(path), {}, flags, Node::graphicsPipe};
     if (path == "/dev/null") return Descriptor{std::string(path), {}, flags, Node::null};
+    if (path == "/dev/fuse") {
+        Descriptor entry{std::string(path), {}, flags, Node::fuse};
+        entry.fuse = std::make_shared<FuseConnection>();
+        return entry;
+    }
     if (path == "/dev/random" || path == "/dev/urandom")
         return Descriptor{std::string(path), {}, flags, Node::entropy};
     if (path == "/dev/kmsg") return Descriptor{std::string(path), {}, flags, Node::kernelLog};
@@ -1609,6 +1681,7 @@ PosixAcl ProbeLinux::inheritAcl(const Directory* parent, uint32_t& mode) const {
 }
 
 bool ProbeLinux::inodeAllows(const auto& node, unsigned requested, bool realIds) const {
+    if (sharedStorageCall) return true;
     const auto& process = *current->process;
     const auto uid = process.userIds[realIds ? 0 : 1];
     if (!uid) return true;
@@ -1643,6 +1716,7 @@ uint64_t ProbeLinux::chmodDirectory(Directory& directory, uint32_t mode) const {
 
 bool ProbeLinux::canAccessParent(std::string_view path, bool modify, bool realIds) const {
     if (!current->process->userIds[realIds ? 0 : 1]) return true;
+    if (path == sharedStorageRoot || inside(path, sharedStorageRoot)) return true;
     const MountView* view = nullptr;
     std::string_view root = "/data";
     if (!dataPath(path)) {
@@ -3101,6 +3175,64 @@ std::array<uint8_t, 4> netlinkNetwork32(uint32_t value) {
 }
 } // namespace
 
+bool ProbeLinux::requestJavaDump(std::string_view name) {
+    const auto named = [](const Thread& thread) {
+        return std::string_view(reinterpret_cast<const char*>(thread.name.data()),
+                                strnlen(reinterpret_cast<const char*>(thread.name.data()), thread.name.size()));
+    };
+    const Process* process = nullptr;
+    for (const auto& [tid, thread] : threads)
+        if (tid == thread.process->id && named(thread) == name) process = thread.process.get();
+    if (!process) return false;
+    for (auto& [tid, thread] : threads) {
+        if (thread.process.get() != process || named(thread) != "Signal Catcher") continue;
+        SignalWords info{};
+        info[0] = 3;  // SIGQUIT
+        // With no tombstoned to take the dump, the runtime writes it into the log line by line.
+        javaDumpsToLog = true;
+        thread.pendingSignals.emplace(3, info);
+        if (thread.wait == Wait::signal) thread.wait = Wait::none;
+        sliceEnd = 0;
+        return true;
+    }
+    return false;
+}
+
+std::string ProbeLinux::guestFiles(std::string_view directory, size_t limit) const {
+    std::string text;
+    for (const auto& [path, file] : writableFiles) {
+        if (!std::string_view(path).starts_with(directory)) continue;
+        const auto size = std::min<size_t>(file->storage->size, limit);
+        text += "---- " + path + " (" + std::to_string(file->storage->size) + " bytes)\n";
+        text.append(reinterpret_cast<const char*>(file->storage->pages.data()), size);
+        text += '\n';
+    }
+    return text;
+}
+
+std::string ProbeLinux::pathReport(std::string_view path) const {
+    if (path.empty() || path[0] != '/') return {};
+    const auto& process = *current->process;
+    std::string text = "uid=" + std::to_string(process.userIds[1]) + " gid=" + std::to_string(process.groupIds[1]) + " groups=";
+    for (const auto group : process.groups) text += std::to_string(group) + ",";
+    for (size_t end = path.find('/', 1);; end = path.find('/', end + 1)) {
+        const auto part = path.substr(0, end);
+        auto backing = backingPath(part, *current->mountNamespace);
+        std::string shown = backing;
+        for (auto& c : shown) if (!c) c = '?';
+        text += " | " + std::string(part) + " -> " + shown;
+        if (const auto found = directories.find(backing); found != directories.end()) {
+            char mode[48];
+            std::snprintf(mode, sizeof(mode), " %o %u:%u", found->second.mode, found->second.uid, found->second.gid);
+            text += mode;
+        } else {
+            text += " (no directory)";
+        }
+        if (end == std::string_view::npos) break;
+    }
+    return text;
+}
+
 void ProbeLinux::enableHostNetwork() {
     hostNetwork = true;
     if (std::getenv("NESTVANE_NETWORK_TRACE")) {
@@ -3565,6 +3697,7 @@ bool ProbeLinux::socketCall(Machine& machine) {
                     x[0] = 0;
                     break;
                 }
+                if (javaDumpsToLog && path == "/dev/socket/tombstoned_java_trace") { x[0] = uint64_t(-111); break; }
                 const auto bound = socketPaths.find(path);
                 if (bound == socketPaths.end()) { x[0] = uint64_t(-2); break; }
                 auto endpoint = bound->second.endpoint.lock();
@@ -4672,6 +4805,13 @@ bool ProbeLinux::fileCall(Machine& machine) {
             x[0] = uint64_t(mountFor(input.path) != mountFor(output.path) ? -18 : -95);
             break;
         }
+        case 76: { // splice, which the FUSE daemon reads its device with: there is never a second request.
+            if (descriptor == descriptors().end() || !descriptor->second.fuse) return false;
+            if (descriptor->second.fuse->unmounted) { x[0] = uint64_t(-19); break; }
+            if (descriptor->second.fuse->requests.empty()) return waitForEvents();
+            x[0] = invalid;
+            break;
+        }
         case 71: { // sendfile between guest regular files.
             const auto input = descriptors().find(uint32_t(x[1]));
             if (descriptor == descriptors().end() || input == descriptors().end() ||
@@ -4716,6 +4856,21 @@ bool ProbeLinux::fileCall(Machine& machine) {
             auto& fd = descriptor->second;
             if ((fd.flags & 3) == 1) { x[0] = uint64_t(-9); break; }
             if (fd.node == Node::inotify) return readInotify(machine, fd);
+            if (fd.fuse) {
+                auto& requests = fd.fuse->requests;
+                if (x[8] == 67) { x[0] = uint64_t(-29); break; }
+                if (fd.fuse->unmounted) { x[0] = uint64_t(-19); break; }
+                if (requests.empty()) {
+                    if (!(fd.effectiveFlags() & 0x800)) return waitForEvents();
+                    x[0] = uint64_t(-11);
+                    break;
+                }
+                if (x[2] < requests.front().size()) { x[0] = invalid; break; }
+                if (!machine.write(x[1], requests.front())) { x[0] = uint64_t(-14); break; }
+                x[0] = requests.front().size();
+                requests.pop_front();
+                break;
+            }
             if (fd.touch) {
                 if (x[8] == 67) { x[0] = uint64_t(-29); break; }
                 if (x[2] < sizeof(GuestTouch::Event)) { x[0] = x[2] ? invalid : 0; break; }
@@ -5571,6 +5726,7 @@ uint64_t ProbeLinux::writeDescriptor(Machine& machine, const Descriptor& fd, uin
         return size;
     }
     if (fd.node == Node::pressure) return size <= 256 ? size : invalid;  // a trigger: accepted, never fires
+    if (fd.fuse) return size;  // the daemon's answer to the one request it gets
     if (fd.node == Node::kernelSetting) {
         if (userId() != 0) return uint64_t(-1);
         if (*fd.offset || !size || size > (isInterfaceSetting(fd.path) ? 128u : 16u)) return invalid;
@@ -10217,6 +10373,7 @@ bool ProbeLinux::syscall(Machine& machine) {
     current->hostEventRetry.reset();
     current->idleBinder.reset();
     current->waitingBinder.reset();
+    sharedStorageCall = false;
     if (enforceSeccomp(machine)) return true;
     if (number == 139) return restoreSignalContext(machine); // rt_sigreturn
     if (securityCall(machine) || socketCall(machine) || eventCall(machine) || fileCall(machine)) return true;
@@ -10414,6 +10571,16 @@ bool ProbeLinux::syscall(Machine& machine) {
             if (descriptor == descriptors().end()) { x[0] = uint64_t(-9); break; }
             return lockWholeFile(machine, descriptor->second);
         case 29: // ioctl
+            if (descriptor != descriptors().end() && descriptor->second.fuse && uint32_t(x[1]) == 0x8004e500) {
+                // FUSE_DEV_IOC_CLONE: this device becomes another way to the session of the one named.
+                uint32_t number;
+                if (!machine.readInto(x[2], {reinterpret_cast<uint8_t*>(&number), sizeof(number)})) { x[0] = uint64_t(-14); break; }
+                const auto session = descriptors().find(number);
+                if (session == descriptors().end() || !session->second.fuse) { x[0] = invalid; break; }
+                descriptor->second.fuse = session->second.fuse;
+                x[0] = 0;
+                break;
+            }
             if (descriptor != descriptors().end() && descriptor->second.apkRequest &&
                 x[1] == GuestApkInbox::resultIoctl) {
                 const auto& file = descriptor->second;

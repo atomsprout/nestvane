@@ -138,6 +138,14 @@ struct ProbeLinux {
     bool hostNetwork = false;
     // Gives the guest its Ethernet interface and lets its sockets out through the host's.
     void enableHostNetwork();
+    // Makes a Java process print the stacks of its threads into the Android log, the way SIGQUIT does:
+    // for finding what a thread that makes no progress is waiting for. `name` is its main thread's name.
+    bool requestJavaDump(std::string_view name);
+    bool javaDumpsToLog = false;
+    // Where a path leads for the calling thread and who may use each directory on the way, for a report.
+    std::string pathReport(std::string_view path) const;
+    // The contents of the guest's writable files under a directory, for a report: at most `limit` bytes of each.
+    std::string guestFiles(std::string_view directory, size_t limit) const;
     // The call that is about to wait does so for a host socket, which cannot wake it: it looks again soon.
     bool hostSocketWait = false;
     std::function<void(std::string_view)> androidLogObserver, watchdogObserver;
@@ -159,7 +167,26 @@ private:
         bool hostData = false;
         std::shared_ptr<const std::map<std::string, MountView, std::less<>>> obscuredMounts{};
         uint64_t peerGroup = 0;
+        // The peer group this mount was in before it was made a slave: it still receives what is
+        // mounted in that group, and passes nothing on.
+        uint64_t masterGroup = 0;
     };
+    // A FUSE device once opened. The one filesystem Android mounts through it is the shared storage,
+    // which its media provider serves from /data/media. Here the mount is a view of that directory, and
+    // the provider's daemon gets the request that opens the session and nothing after it: no file
+    // operation goes through the daemon, so what it would check for each app is not checked.
+    struct FuseConnection {
+        std::deque<std::vector<uint8_t>> requests;
+        std::string mountpoint;
+        bool mounted = false, unmounted = false;
+    };
+    std::map<std::string, std::weak_ptr<FuseConnection>, std::less<>> fuseMounts;
+    static constexpr std::string_view sharedStorageRoot = "/data/media";
+    // The call names a file of the shared storage. Access to those is the media provider's to grant,
+    // not a matter of the files' owners and modes: Android leaves the checks of the lower filesystem
+    // out of the mount (no default_permissions).
+    mutable bool sharedStorageCall = false;
+    uint64_t mountFuse(const std::string& path, std::string_view options);
     struct MountNamespace {
         uint64_t id = 1;
         uint64_t rootPropagation = 0;
@@ -256,7 +283,7 @@ private:
     uint64_t installSeccomp(Machine& machine, uint64_t address);
     bool enforceSeccomp(Machine& machine);
 
-    enum class Node { regular, temporary, directory, symbolicLink, input, output, error, null, entropy, kernelLog, poller, event, inotify, signal, socket, keySocket, mountNamespace, pipeRead, pipeWrite, execLabel, fsCreateLabel, socketCreateLabel, securityInfo, securityCreate, securityAccess, securityValidate, loopControl, loopDevice, timer, ptyMaster, ptySlave, ueventTrigger, kernelSetting, oomScoreAdjustment, binder, processHandle, cgroupProcs, ashmem, graphicsPipe, graphicsAddressSpace, touchDevice, bpfMap, bpfProgram, bpfBtf, pressure };
+    enum class Node { regular, temporary, directory, symbolicLink, input, output, error, null, entropy, kernelLog, poller, event, inotify, signal, socket, keySocket, mountNamespace, pipeRead, pipeWrite, execLabel, fsCreateLabel, socketCreateLabel, securityInfo, securityCreate, securityAccess, securityValidate, loopControl, loopDevice, timer, ptyMaster, ptySlave, ueventTrigger, kernelSetting, oomScoreAdjustment, binder, processHandle, cgroupProcs, ashmem, graphicsPipe, graphicsAddressSpace, touchDevice, bpfMap, bpfProgram, bpfBtf, pressure, fuse };
     struct RecordLock {
         uint64_t owner, start, end;
         int16_t type;
@@ -673,6 +700,7 @@ private:
         bool bpfFilesystemRoot = false;
         std::shared_ptr<GuestApkInbox::Request> apkRequest{};
         uint64_t apkInstaller = 0;
+        std::shared_ptr<FuseConnection> fuse{};
         std::span<const uint8_t> contents() const { return ext4File ? ext4File->bytes() : bytes; }
         uint64_t contentSize() const { return ext4File ? ext4File->size : bytes.size(); }
         static constexpr uint32_t mutableStatus = 0xc00; // O_APPEND and O_NONBLOCK
@@ -737,7 +765,7 @@ private:
     static std::string backingPath(std::string_view path, const MountNamespace& mountNamespace);
     const MountView* mountFor(std::string_view path) const;
     void setMountPropagation(MountView& mount, uint64_t propagation);
-    uint64_t bindMount(std::string_view from, const std::string& to, bool recursive);
+    uint64_t bindMount(std::string_view from, const std::string& to, bool recursive, std::string_view device = {});
     uint64_t mountFilesystem(Machine& machine);
     uint64_t mountBinder(const std::string& path, uint64_t flags, std::string_view options);
     uint64_t binderIoctl(Machine& machine, const Descriptor& fd);

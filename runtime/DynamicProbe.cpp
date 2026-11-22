@@ -284,6 +284,16 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
         }
     };
     const auto captureSnapshot = [&](steady_clock::time_point now) {
+        // NESTVANE_DUMP_JAVA=<main thread name> has that process print its threads' stacks at each snapshot.
+        if (const char* dumped = std::getenv("NESTVANE_DUMP_JAVA")) linux.requestJavaDump(dumped);
+        // NESTVANE_EXPORT_FILES=<directory> writes the guest's files under it to <NESTVANE_EXPORT_TO>, such
+        // as the stack traces that a dump leaves in /data/anr.
+        if (const char* directory = std::getenv("NESTVANE_EXPORT_FILES"), *target = std::getenv("NESTVANE_EXPORT_TO"); directory && target)
+            if (std::FILE* out = std::fopen(target, "w")) {
+                const auto text = linux.guestFiles(directory, 2 * 1024 * 1024);
+                std::fwrite(text.data(), 1, text.size(), out);
+                std::fclose(out);
+            }
         std::ostringstream snapshot;
         const auto elapsedMs = duration_cast<milliseconds>(now - start).count();
         snapshot << "Android init at " << elapsedMs << " ms, " << cpu.retired << " guest instructions, "
@@ -585,6 +595,11 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
             const auto syscallStart = timeSyscall ? steady_clock::now() : steady_clock::time_point{};
             const auto callBegan = nativeExecution ? steady_clock::now() : steady_clock::time_point{};
             const bool handled = linux.syscall(machine);
+            // NESTVANE_TRACE_DENIED=1: the calls that end in "permission denied", with where the path leads.
+            if (static const bool traced = std::getenv("NESTVANE_TRACE_DENIED"); traced && cpu.x[0] == uint64_t(-13) && linux.androidLogObserver) {
+                const auto path = pathArgument(machine, cpu.x[1]);
+                linux.androidLogObserver("native execution: denied call " + std::to_string(syscall) + " " + path + " " + linux.pathReport(path));
+            }
             if (nativeExecution) {
                 const auto spent = steady_clock::now() - callBegan;
                 syscallTime += spent;
@@ -925,8 +940,8 @@ service nestvane-trim /system/bin/sh /system/etc/nestvane/trim.sh
             if (static const char* const wanted = std::getenv("NESTVANE_LOG_MATCH"); wanted) {
                 for (std::string_view parts = wanted; !parts.empty();) {
                     const auto part = parts.substr(0, parts.find(','));
-                    if (!part.empty() && line.find(part) != std::string_view::npos) {
-                        progress(line);
+                    if (!part.empty() && message.find(part) != std::string_view::npos) {
+                        progress(message.substr(0, 256 * 1024));  // all of it: a thread dump is one message
                         return;
                     }
                     parts.remove_prefix(std::min(parts.size(), part.size() + 1));
