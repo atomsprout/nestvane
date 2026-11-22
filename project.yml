@@ -119,7 +119,8 @@ targets:
     info:
       path: generated/Info-native.plist
       properties:
-        CFBundleDisplayName: nestvane native
+        CFBundleDisplayName: Nestvane
+        CFBundleName: Nestvane
         # An .apk in Files, AirDrop or a share sheet can be opened with the app, which installs it.
         CFBundleDocumentTypes:
           - CFBundleTypeName: Android app package
@@ -141,7 +142,7 @@ targets:
         LSSupportsOpeningDocumentsInPlace: false
         # The menu of the app's icon on the home screen.
         UIApplicationShortcutItems:
-          - UIApplicationShortcutItemType: com.everettjf.nestvane.install-apk
+          - UIApplicationShortcutItemType: com.atomsprout.nestvane.install-apk
             UIApplicationShortcutItemTitle: Install APK…
             UIApplicationShortcutItemIconSymbolName: square.and.arrow.down
         NSCameraUsageDescription: Nestvane shares the rear camera with Android apps when you use their camera.
@@ -156,7 +157,8 @@ targets:
                 UISceneDelegateClassName: SceneDelegate
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.everettjf.nestvane.native
+        PRODUCT_BUNDLE_IDENTIFIER: com.atomsprout.nestvane
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: "1,2"
         CURRENT_PROJECT_VERSION: "1"
         MARKETING_VERSION: "0.1.0"

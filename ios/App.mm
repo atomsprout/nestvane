@@ -212,7 +212,7 @@ static NSString* ThermalState() {
 }
 @end
 
-static NSString* const InstallApkShortcut = @"com.everettjf.nestvane.install-apk";
+static NSString* const InstallApkShortcut = @"com.atomsprout.nestvane.install-apk";
 
 @interface ValidationViewController : UIViewController <UIDocumentPickerDelegate>
 - (void)installApkAtURL:(NSURL*)source;

@@ -64,7 +64,7 @@ import sys
 
 with open(sys.argv[1], "wb") as output:
     plistlib.dump({
-        "CFBundleIdentifier": "com.everettjf.nestvane.gfxstream",
+        "CFBundleIdentifier": "com.atomsprout.nestvane.gfxstream",
         "CFBundleName": "NestvaneGfxstream",
         "CFBundleExecutable": "NestvaneGfxstream",
         "CFBundlePackageType": "FMWK",
