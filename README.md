@@ -11,6 +11,7 @@
 
 <p align="center">
   <a href="https://atomsprout.com/nestvane/">Website</a> ·
+  <a href="https://github.com/atomsprout/nestvane/releases">Download</a> ·
   <a href="docs/README.md">Documentation</a> ·
   <a href="https://discord.gg/eGzEaP6TzR">Discord</a> ·
   <a href="https://t.me/atomsprout">Telegram</a> ·
@@ -18,7 +19,7 @@
 </p>
 
 <p align="center">
-  <img alt="Status: private testing" src="https://img.shields.io/badge/status-private%20testing-ff7a59">
+  <img alt="Status: early release" src="https://img.shields.io/badge/status-early%20release-ff7a59">
   <img alt="Android 17" src="https://img.shields.io/badge/Android-17-3fe0b0">
   <img alt="iOS 26 or later" src="https://img.shields.io/badge/iOS-26%2B-5aa9ff">
   <img alt="arm64" src="https://img.shields.io/badge/arch-arm64-9b7bff">
@@ -42,9 +43,14 @@ just-in-time compiler, or a hypervisor — are closed. Nestvane takes the remain
 translated ahead of time**, the translated code ships signed inside the app, and a **Linux kernel layer written
 for the app** gives that code the system it expects.
 
+> **With thanks to two projects.** [Twoyi](https://twoyi.app/) showed that Android translated ahead of time, with
+> no JIT, is usable on an iPhone, and Nestvane follows that idea. [Kernarium](https://github.com/imxieyi/Kernarium)
+> runs a real Linux kernel on iOS in the open, and was the system to learn from. Nestvane shares no code with
+> either and was written from nothing; [how the three compare](docs/comparison.md).
+
 ## What works today
 
-- **Android 17 boots to its launcher** in about 8–10 seconds on an iPhone 15 Pro: the real `init`, `zygote`,
+- **Android 17 boots to its launcher** in about 10 seconds, and about 17 the first time after installing: the real `init`, `zygote`,
   `system_server`, SurfaceFlinger, Launcher3, Settings and Files.
 - **APK files install and run.** Open an APK with Nestvane from another app, or choose *Install APK…*.
 - **Network.** Android apps use the iPhone's Wi-Fi or cellular connection.
@@ -86,6 +92,8 @@ Read more in the documentation:
 - [Devices](docs/devices.md) — graphics, storage, network and sound
 - [Design notes](docs/design-notes.md) — decisions, and the problems that taught the most
 - [Building](docs/building.md) and [Status](docs/status.md)
+- [Installing the release](docs/installing.md), [1.0 in numbers](docs/measurements.md), and
+  [Nestvane, Twoyi and Andarium](docs/comparison.md)
 
 ## Measured
 
@@ -95,8 +103,9 @@ On an iPhone 15 Pro unless noted. The running record, with every measurement, is
 | | |
 | --- | --- |
 | Boot to the Android launcher | about 8 s; about 10 s with the media services |
-| Memory footprint | about 2.4–2.7 GB |
-| App download | about 1 GB |
+| The same on an iPhone 17 Pro | 9.5–10.9 s; about 17 s the first time after installing |
+| Memory footprint | about 2.2–2.7 GB |
+| App download | 1.06 GB |
 | Scrolling a list | up to about 55 frames a second at 60 Hz |
 | Playing a 1280×720 H.264 video | 30 frames a second, in step with the clock |
 | Translated modules | about 1,230, in 12 frameworks |
@@ -105,8 +114,10 @@ On an iPhone 15 Pro unless noted. The running record, with every measurement, is
 ## Requirements
 
 - iOS 26 or later. Tested on iPhone 15 Pro and iPhone 17 Pro.
-- Nestvane is in private testing and is not available to download yet. Follow the links under
-  [Community](#community) for news.
+- No other phone has been tested. Android needs about 2.2–2.7 GB of memory, more than an iPhone 11 gives one app.
+- The [releases](https://github.com/atomsprout/nestvane/releases) carry an IPA with no signature. You sign it
+  with your own Apple developer identity; [docs/installing.md](docs/installing.md) says how. Nestvane is not on
+  the App Store.
 
 ## Building
 
@@ -149,6 +160,13 @@ The license covers what is in this repository. The Android system, gfxstream, AN
 contains are separate works under their own licenses.
 
 ## Acknowledgements
+
+[Twoyi](https://twoyi.app/) and [Kernarium](https://github.com/imxieyi/Kernarium) came first; what Nestvane owes
+them is in [docs/comparison.md](docs/comparison.md).
+
+Nestvane was written by coding agents directed by one person, over five days in November 2026: two days with Codex
+(GPT-6.2 Sol), which ended at a ten-minute boot on an interpreter, and two with Claude Fable 5.2, which brought it
+to where it is.
 
 Nestvane stands on the [Android Open Source Project](https://source.android.com/), on
 [gfxstream](https://android.googlesource.com/platform/hardware/google/gfxstream/) and

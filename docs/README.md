@@ -20,6 +20,9 @@ They are written for a developer who has not seen the project before.
 | [building.md](building.md) | What is needed to build the app and the order of the steps, quoted from the scripts. |
 | [design-notes.md](design-notes.md) | Decisions and pitfalls: a selection of problems met on the way, each as problem, cause and fix. |
 | [status.md](status.md) | What works, what does not, measured numbers and known limitations. |
+| [installing.md](installing.md) | How to sign the released IPA and put it on a phone. |
+| [measurements.md](measurements.md) | Version 1.0 in numbers: one run from a fresh install, and where the numbers stop. |
+| [comparison.md](comparison.md) | Nestvane next to Twoyi and Andarium, and what it owes them. |
 
 A suggested order for a first read is architecture, static rewriting, kernel layer, devices, then status.
 The building document and the design notes can be read on their own.

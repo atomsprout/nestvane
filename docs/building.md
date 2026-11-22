@@ -192,7 +192,7 @@ Usage: embed-ios-graphics.sh input.app gfxstream.dylib angle-build-directory out
 
 [`tools/embed-ios-graphics.sh`](../tools/embed-ios-graphics.sh) checks that the frameworks' minimum iOS version does not exceed the app's, wraps the gfxstream library as `NestvaneGfxstream.framework`, copies ANGLE's `libEGL` and `libGLESv2` frameworks, and signs everything with the Apple Development identity the input app was signed with. The output path must end in `.app` and must not exist.
 
-How the resulting app is installed on a device and how TestFlight builds are produced is not scripted in the repository.
+`tools/package-ipa.sh <app> <ipa>` packs the app into the unsigned IPA that a release carries. Installing on a device and producing TestFlight builds are not scripted in the repository.
 
 ## Checking the runtime on the Mac
 

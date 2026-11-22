@@ -11,6 +11,7 @@
 
 <p align="center">
   <a href="https://atomsprout.com/nestvane/">网站</a> ·
+  <a href="https://github.com/atomsprout/nestvane/releases">下载</a> ·
   <a href="docs/zh-CN/README.md">文档</a> ·
   <a href="https://discord.gg/eGzEaP6TzR">Discord</a> ·
   <a href="https://t.me/atomsprout">Telegram</a> ·
@@ -18,7 +19,7 @@
 </p>
 
 <p align="center">
-  <img alt="状态：内部测试" src="https://img.shields.io/badge/status-private%20testing-ff7a59">
+  <img alt="状态：早期版本" src="https://img.shields.io/badge/status-early%20release-ff7a59">
   <img alt="Android 17" src="https://img.shields.io/badge/Android-17-3fe0b0">
   <img alt="iOS 26 及以上" src="https://img.shields.io/badge/iOS-26%2B-5aa9ff">
   <img alt="arm64" src="https://img.shields.io/badge/arch-arm64-9b7bff">
@@ -41,9 +42,13 @@ iOS 不允许 App 创建可执行内存，所以运行另一个系统的代码�
 Nestvane 走的是剩下的那条路：**把 Android 重新构建并提前翻译**，翻译好的代码随 App 一起签名发布；再由一层
 **专为这个 App 写的 Linux 内核层**，给这些代码提供它们所期待的系统。
 
+> **感谢两个项目。** [两仪（Twoyi）](https://twoyi.app/)证明了不用 JIT、只靠提前翻译，Android 就能在 iPhone 上可用，
+> Nestvane 走的是这个思路。[Kernarium](https://github.com/imxieyi/Kernarium) 以开源的方式在 iOS 上运行真正的 Linux 内核，
+> 是可以学习的那个系统。Nestvane 没有使用它们的任何代码，是从零写的；[三者的对比见这里](docs/zh-CN/comparison.md)。
+
 ## 现在能做什么
 
-- **Android 17 启动到桌面**：iPhone 15 Pro 上约 8–10 秒。运行的是原版的 `init`、`zygote`、`system_server`、
+- **Android 17 启动到桌面**：约 10 秒，安装后的第一次约 17 秒。运行的是原版的 `init`、`zygote`、`system_server`、
   SurfaceFlinger、Launcher3、Settings 和 Files。
 - **安装并运行 APK**：从别的 App 用 Nestvane 打开 APK，或者在 Nestvane 里选 *Install APK…*。
 - **联网**：Android 应用使用 iPhone 的 Wi-Fi 或蜂窝网络。
@@ -83,6 +88,8 @@ Nestvane 走的是剩下的那条路：**把 Android 重新构建并提前翻译
 - [设备](docs/zh-CN/devices.md)——图形、存储、网络和声音
 - [设计笔记](docs/zh-CN/design-notes.md)——做过的取舍，和最有教益的那些问题
 - [构建](docs/zh-CN/building.md)与[现状](docs/zh-CN/status.md)
+- [安装发布版](docs/zh-CN/installing.md)、[数字里的 1.0](docs/zh-CN/measurements.md)、
+  [Nestvane、两仪和 Andarium](docs/zh-CN/comparison.md)
 
 ## 测量数据
 
@@ -91,8 +98,9 @@ Nestvane 走的是剩下的那条路：**把 Android 重新构建并提前翻译
 | | |
 | --- | --- |
 | 启动到 Android 桌面 | 约 8 秒；加上媒体服务后约 10 秒 |
-| 内存占用 | 约 2.4–2.7 GB |
-| App 下载大小 | 约 1 GB |
+| 同上，iPhone 17 Pro | 9.5–10.9 秒；安装后的第一次约 17 秒 |
+| 内存占用 | 约 2.2–2.7 GB |
+| App 下载大小 | 1.06 GB |
 | 滑动列表 | 60 Hz 下最高约每秒 55 帧 |
 | 播放 1280×720 的 H.264 视频 | 每秒 30 帧，与时钟同步 |
 | 翻译的模块 | 约 1230 个，分在 12 个 framework 里 |
@@ -101,7 +109,9 @@ Nestvane 走的是剩下的那条路：**把 Android 重新构建并提前翻译
 ## 运行要求
 
 - iOS 26 及以上。在 iPhone 15 Pro 和 iPhone 17 Pro 上测试过。
-- Nestvane 目前处于内部测试阶段，还不能下载。动态请关注下面[社区](#社区)里的链接。
+- 别的手机没有测过。Android 需要约 2.2–2.7 GB 内存，超过 iPhone 11 给单个 App 的上限。
+- [Releases](https://github.com/atomsprout/nestvane/releases) 里有一个不带签名的 IPA，需要用你自己的 Apple 开发者身份签名，
+  做法见 [docs/zh-CN/installing.md](docs/zh-CN/installing.md)。Nestvane 没有上架 App Store。
 
 ## 构建
 
@@ -143,6 +153,12 @@ Nestvane 以 [Apache License 2.0](LICENSE) 发布，与 Android 开源项目本�
 作品，适用它们自己的许可证。
 
 ## 致谢
+
+[两仪](https://twoyi.app/)和 [Kernarium](https://github.com/imxieyi/Kernarium) 走在前面；Nestvane 从它们那里得到了什么，
+写在 [docs/zh-CN/comparison.md](docs/zh-CN/comparison.md) 里。
+
+Nestvane 是一个人指挥编码智能体写出来的，用了 2026 年 11 月的五天：前两天用 Codex（GPT-6.2 Sol），停在靠解释器开机约十分钟；
+之后两天用 Claude Fable 5.2，做到了现在的样子。
 
 Nestvane 建立在 [Android 开源项目](https://source.android.com/)之上，图形使用
 [gfxstream](https://android.googlesource.com/platform/hardware/google/gfxstream/) 和

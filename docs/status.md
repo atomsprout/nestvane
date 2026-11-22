@@ -1,6 +1,6 @@
 # Status
 
-Nestvane is in private testing. TestFlight builds exist; the app is not on the App Store.
+Nestvane is an early release. An unsigned IPA is attached to each [release](https://github.com/atomsprout/nestvane/releases) ([installing.md](installing.md)); the app is not on the App Store.
 This document says what works, what does not, and what has been measured.
 
 Every number here comes from the lab record, [`results/G0.md`](../results/G0.md), and names the device it was measured on.
