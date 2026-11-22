@@ -889,6 +889,11 @@ service nestvane-apk-install /system/bin/sh /system/etc/nestvane/apk-ready.sh
 on property:sys.boot_completed=1
     start nestvane-trim
 
+# The guest keeps the host's time zone (NESTVANE_TIMEZONE, by way of the boot configuration): after
+# the saved properties are loaded, so that it is the host's that counts, and before anything reads it.
+on load_persist_props_action
+    setprop persist.sys.timezone ${ro.boot.nestvane.timezone}
+
 service nestvane-trim /system/bin/sh /system/etc/nestvane/trim.sh
     user root
     group root
@@ -1008,8 +1013,18 @@ service nestvane-trim /system/bin/sh /system/etc/nestvane/trim.sh
         }
         if (!databasePath.empty()) linux.mountData(databasePath);
         for (const auto& [path, file] : files) linux.mount(path, file.bytes());
-        if (const auto bootconfig = files.find("/nestvane-metadata/bootconfig"); bootconfig != files.end())
-            linux.mount("/proc/bootconfig", bootconfig->second.bytes());
+        if (const auto bootconfig = files.find("/nestvane-metadata/bootconfig"); bootconfig != files.end()) {
+            static std::string configuration;
+            const auto bytes = bootconfig->second.bytes();
+            configuration.assign(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+            const std::string_view zone = std::getenv("NESTVANE_TIMEZONE") ? std::getenv("NESTVANE_TIMEZONE") : "";
+            if (!zone.empty() && zone.size() <= 64 && std::ranges::all_of(zone, [](unsigned char c) {
+                    return std::isalnum(c) || c == '/' || c == '_' || c == '-' || c == '+'; })) {
+                if (!configuration.empty() && configuration.back() != '\n') configuration += '\n';
+                configuration += "androidboot.nestvane.timezone = \"" + std::string(zone) + "\"\n";
+            }
+            linux.mount("/proc/bootconfig", {reinterpret_cast<const uint8_t*>(configuration.data()), configuration.size()});
+        }
         if (auto profile = files.find("/nestvane-metadata/selinux-file-labels.txt"); profile != files.end()) {
             const auto bytes = profile->second.bytes();
             if (!linux.loadBootFileLabels({reinterpret_cast<const char*>(bytes.data()), bytes.size()}))

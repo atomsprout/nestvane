@@ -598,6 +598,8 @@ static NSString* const InstallApkShortcut = @"com.atomsprout.nestvane.install-ap
             const BOOL ready = [manager createDirectoryAtURL:guest withIntermediateDirectories:YES
                                                   attributes:nil error:&directoryError];
             NSURL* database = [guest URLByAppendingPathComponent:@"guest-data.sqlite3"];
+            // Android shows the time of the phone's time zone.
+            setenv("NESTVANE_TIMEZONE", NSTimeZone.localTimeZone.name.UTF8String, 1);
             NSURL* progressURL = [documents URLByAppendingPathComponent:@"boot-progress.txt"];
             const auto bootStarted = NSProcessInfo.processInfo.systemUptime;
             std::string milestones, timeline;

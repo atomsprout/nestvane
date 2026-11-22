@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- What the home screen starts with: a clock widget, and the layout that puts it there with the
+     apps the image has. The launcher's own default layout names a dialer, a browser and a camera,
+     none of which is in the image, and so left the home screen empty. There is no code: the widget
+     is its layout, two TextClock views, and the receiver is the framework's own class. The second
+     action makes the launcher take res/xml/partner_default_layout.xml as its default layout. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="dev.nestvane.home" android:versionCode="1" android:versionName="1">
+    <application android:label="@string/name" android:hasCode="false">
+        <receiver android:name="android.appwidget.AppWidgetProvider" android:label="@string/clock" android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="com.android.launcher3.action.PARTNER_CUSTOMIZATION" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/clock_widget" />
+        </receiver>
+    </application>
+</manifest>

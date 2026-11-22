@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The clock across the top of the first screen; Files and Settings at the ends of the bottom row. -->
+<favorites xmlns:launcher="http://schemas.android.com/apk/res-auto/com.android.launcher3">
+    <appwidget launcher:packageName="dev.nestvane.home" launcher:className="android.appwidget.AppWidgetProvider"
+        launcher:screen="0" launcher:x="0" launcher:y="0" launcher:spanX="5" launcher:spanY="2" />
+    <favorite launcher:container="-101" launcher:screen="0" launcher:x="0" launcher:y="0"
+        launcher:packageName="com.android.documentsui" launcher:className="com.android.documentsui.LauncherActivity" />
+    <favorite launcher:container="-101" launcher:screen="4" launcher:x="4" launcher:y="0"
+        launcher:packageName="com.android.settings" launcher:className="com.android.settings.Settings" />
+</favorites>
