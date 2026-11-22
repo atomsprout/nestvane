@@ -701,6 +701,17 @@ std::string statistics() {
         << " MiB of code tables";
     if (counters.unmapped) out << ", " << counters.unmapped << " modules could not be mapped";
     out << '\n';
+    {
+        // How much of the table of all translated code has been read: what it would cost to make
+        // its pages when they are first looked up in, instead of shipping them.
+        const auto& all = registry();
+        const size_t pages = (all.covered - all.low) * 2 / GuestSpace::page;
+        std::vector<char> state(pages);
+        size_t resident = 0;
+        if (!mincore(all.table, pages * GuestSpace::page, state.data()))
+            for (const char page : state) resident += (page & 1);
+        out << "  code table pages in memory: " << resident * GuestSpace::page / (1024 * 1024) << " MiB\n";
+    }
     // NESTVANE_NATIVE_USED=1 lists the translations that were mapped, for leaving the others out of a build.
     if (static const bool list = std::getenv("NESTVANE_NATIVE_USED"); list)
         for (const auto& loaded : registry().modules)

@@ -222,6 +222,7 @@ static NSString* const InstallApkShortcut = @"com.atomsprout.nestvane.install-ap
 @property(nonatomic, strong) GuestDisplayView* display;
 @property(nonatomic, strong) UIButton* run;
 @property(nonatomic, strong) UIButton* importApk;
+@property(nonatomic, strong) UIButton* more;
 @property(nonatomic, strong) UIButton* back;
 @property(nonatomic, strong) UIButton* home;
 @property(nonatomic, strong) UIStackView* startup;
@@ -258,8 +259,32 @@ static NSString* const InstallApkShortcut = @"com.atomsprout.nestvane.install-ap
     self.home = ToolbarButton(@"house", @"Android Home", self, @selector(guestHome));
     self.importApk = ToolbarButton(@"square.and.arrow.down", @"Install APK…", self, @selector(chooseApk));
     self.run = ToolbarButton(@"play.fill", @"Start Android", self, @selector(runOrStop));
+    // Back and Home are used all the time and sit alone in the bar. What is used now and then, and
+    // what ends the session, is one step away in a menu: stopping Android also asks first. The
+    // install button is no longer in the bar; it still says whether an installation may start.
+    self.more = ToolbarButton(@"ellipsis.circle", @"More", nil, nil);
+    self.more.showsMenuAsPrimaryAction = YES;
+    __weak ValidationViewController* menuOwner = self;
+    self.more.menu = [UIMenu menuWithChildren:@[[UIDeferredMenuElement elementWithUncachedProvider:
+        ^(void (^completion)(NSArray<UIMenuElement*>*)) {
+            ValidationViewController* owner = menuOwner;
+            if (!owner) return completion(@[]);
+            const bool running = owner->_androidStop.stop_possible() && !owner->_androidStop.stop_requested();
+            UIAction* install = [UIAction actionWithTitle:@"Install APK…"
+                                                    image:[UIImage systemImageNamed:@"square.and.arrow.down"]
+                                               identifier:nil handler:^(UIAction*) { [owner chooseApk]; }];
+            if (!owner->_apkInbox || !owner.importApk.enabled) install.attributes = UIMenuElementAttributesDisabled;
+            UIAction* power = running
+                ? [UIAction actionWithTitle:@"Stop Android…" image:[UIImage systemImageNamed:@"power"]
+                                 identifier:nil handler:^(UIAction*) { [owner confirmStop]; }]
+                : [UIAction actionWithTitle:@"Start Android" image:[UIImage systemImageNamed:@"play.fill"]
+                                 identifier:nil handler:^(UIAction*) { if (owner.run.enabled) [owner runOrStop]; }];
+            if (running) power.attributes = UIMenuElementAttributesDestructive;
+            else if (!owner.run.enabled) power.attributes = UIMenuElementAttributesDisabled;
+            completion(@[install, power]);
+        }]]];
     UIStackView* controls = [[UIStackView alloc] initWithArrangedSubviews:
-        @[self.back, self.home, self.importApk, self.run]];
+        @[self.back, self.home, self.more, self.run]];
     controls.distribution = UIStackViewDistributionFillEqually;
     controls.translatesAutoresizingMaskIntoConstraints = NO;
 
@@ -341,6 +366,19 @@ static NSString* const InstallApkShortcut = @"com.atomsprout.nestvane.install-ap
     configuration.image = [UIImage systemImageNamed:symbol];
     self.run.configuration = configuration;
     self.run.accessibilityLabel = label;
+    // While Android runs there is no button in the bar that stops it: that is in the menu.
+    self.run.hidden = [symbol isEqualToString:@"stop.fill"];
+}
+
+- (void)confirmStop {
+    UIAlertController* alert = [UIAlertController alertControllerWithTitle:@"Stop Android?"
+                                                                   message:@"Apps that are running in Android will be closed."
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Stop" style:UIAlertActionStyleDestructive handler:^(UIAlertAction*) {
+        if (self->_androidStop.stop_possible()) [self runOrStop];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)showApkStatus:(NSString*)message transient:(BOOL)transient {
