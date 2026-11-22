@@ -59,4 +59,10 @@ Each release lists the SHA-256 of its IPA. Compare it with `shasum -a 256 Nestva
 
 The app contains an Android 17 system built from the Android Open Source Project with this repository's patch,
 translated ahead of time, together with gfxstream and ANGLE. Their notices are inside the app, in `Licenses/`, and
-attached to each release as `NOTICE-AOSP.txt` and `THIRD-PARTY-NOTICES.txt`. How to build all of it yourself is in [building.md](building.md).
+attached to each release as `NOTICE-AOSP.txt` and `THIRD-PARTY-NOTICES.txt`.
+
+A few parts of that Android system, iptables and libexif among them, are under the GNU General Public License or
+the GNU Lesser General Public License. Their source is the Android Open Source Project at the tag
+`android-17.0.0_r1` with this repository's patch applied. For three years from each release, AtomSprout will also
+send a copy of that source to anyone who asks, for no more than the cost of the transfer: write to
+<atomsprout@gmail.com>. How to build all of it yourself is in [building.md](building.md).

@@ -55,4 +55,8 @@ Android 启动到了桌面（这次首次启动 15.5 秒）。改包标识符，
 ## 里面有什么
 
 App 里是用本仓库的补丁从 Android 开源项目构建并提前翻译的 Android 17 系统，以及 gfxstream 和 ANGLE。
-它们的许可声明在 App 里的 `Licenses/` 目录中，也作为 `NOTICE-AOSP.txt` 和 `THIRD-PARTY-NOTICES.txt` 附在每个 Release 上。怎样自己构建这一切，见[构建](building.md)。
+它们的许可声明在 App 里的 `Licenses/` 目录中，也作为 `NOTICE-AOSP.txt` 和 `THIRD-PARTY-NOTICES.txt` 附在每个 Release 上。
+
+这个 Android 系统里有少数组件（包括 iptables 和 libexif）使用 GNU 通用公共许可证（GPL）或 GNU 宽通用公共许可证（LGPL）。
+它们的源码就是 Android 开源项目的 `android-17.0.0_r1` 标签加上本仓库的补丁。自每个版本发布之日起三年内，任何人来信索取，
+AtomSprout 都会提供这份源码的副本，收费不超过传送的成本：请写信到 <atomsprout@gmail.com>。怎样自己构建这一切，见[构建](building.md)。

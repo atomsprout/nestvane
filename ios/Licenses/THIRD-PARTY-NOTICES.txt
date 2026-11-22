@@ -10,6 +10,14 @@ with the works listed here, which keep their own licenses.
    file NOTICE-AOSP.txt next to this one. Its source is the AOSP manifest at that tag plus that patch;
    docs/building.md in the repository says how to build it.
 
+   Source code offer. Some components of that system image are under the GNU General Public License
+   or the GNU Lesser General Public License, among them iptables and libexif. Their complete
+   corresponding source is the Android Open Source Project at the tag android-17.0.0_r1
+   (https://android.googlesource.com/platform/manifest) with the patch named above applied. For three
+   years from the date of each release, AtomSprout will also give a machine-readable copy of that
+   source to anyone who asks, for no more than the cost of the transfer. Write to
+   atomsprout@gmail.com.
+
 2. The graphics libraries on the iOS side are gfxstream and ANGLE, built from source. Their licenses,
    and those of the libraries built into them, follow. The lists of built-in libraries were read from
    the build directories and the symbols of the binaries.
