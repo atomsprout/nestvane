@@ -503,6 +503,7 @@ class Rewriter:
                 out.append("1:")
         out.append("\tbrk #0x3ff")
         # Entry stubs come after the code, so that host addresses in the table below stay in order.
+        out.append("Lguest_stubs_begin_%s:" % self.name)
         for pc, register in sorted(self.stubs.items()):
             out.append("Ls%x:" % pc)
             self.add_base(register)
@@ -531,9 +532,10 @@ class Rewriter:
         The table of host code per guest instruction is complete, with the entry stubs in place, and
         laid out so that the runtime can map its pages into the table of all translated code instead
         of copying it: that table has the entry for guest pc at 2 * pc from a page boundary, and so
-        has this one. A second table gives where each instruction's translation starts, as an offset
-        from the start of the code; it needs no pointers fixed up and is only read when a fault or
-        the end of a time slice has to be traced back to a guest instruction.
+        has this one. The same table tells where each instruction's translation starts, which the
+        runtime needs to trace a fault or the end of a time slice back to a guest instruction: except
+        for the instructions that are entered through a stub, whose starts are listed apart, as
+        instruction index and offset from the start of the code.
         """
         out, name = self.out, self.name
         # Where a jump to the program's entry point leaves native code, when the runtime asks for it.
@@ -543,13 +545,13 @@ class Rewriter:
         out.append(".section __TEXT,__const")
         out.append(".p2align 2")
         out.append("Lguest_starts_%s:" % name)
-        for pc in range(self.start, self.end, 4):
-            out.append("\t.long %s - _guest_code_%s" % (self.label(pc), name))
+        for pc in sorted(self.stubs):
+            out.append("\t.long %d, %s - _guest_code_%s" % ((pc - self.start) // 4, self.label(pc), name))
         out.append(".section __DATA,__const")
         out.append(".p2align 3")
         out.append(".globl _guest_module_%s\n_guest_module_%s:" % (name, name))
-        out.append("\t.quad 0x%x, 0x%x, 0x%x, Lguest_table_%s, Lguest_starts_%s, _guest_code_%s, Lguest_trap_%s"
-                   % (self.start, self.end, self.entry, name, name, name, name))
+        out.append("\t.quad 0x%x, 0x%x, 0x%x, Lguest_table_%s, Lguest_starts_%s, _guest_code_%s, Lguest_trap_%s, Lguest_stubs_begin_%s, %d"
+                   % (self.start, self.end, self.entry, name, name, name, name, name, len(self.stubs)))
         out.append(".p2align 14")
         if self.start * 2 % 16384:
             out.append("\t.space %d" % (self.start * 2 % 16384))

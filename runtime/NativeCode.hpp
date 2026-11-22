@@ -17,7 +17,8 @@ namespace native {
 
 struct Module {
     uint64_t key, size;    // of the ELF file: contentKey of its bytes, and its length
-    const uint64_t* info;  // text start, text end, entry, table of host code per instruction, entry stubs, their count
+    const uint64_t* info;  // text start, text end, entry, table of host code per instruction, starts of stubbed instructions,
+                           // code start, entry trap, where the stubs begin, their count
     uint64_t base;         // the load address the translation is for
     const char* name;
 };

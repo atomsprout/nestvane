@@ -74,10 +74,12 @@ constexpr int preemptionSignal = SIGUSR2;
 struct Loaded {
     const Module* module;
     const uint64_t* table;   // host code to jump to per guest instruction: its translation, or its entry stub
-    const uint32_t* starts;  // where each instruction's translation starts, from codeStart, in address order
+    const uint32_t* stubStarts;  // for instructions entered through a stub: index, and where the translation starts from codeStart
     uint64_t count;
     uint64_t codeStart;
     uint64_t trap;           // host code that leaves native execution at the module's entry point
+    uint64_t stubsBegin;     // host address where the code ends and the entry stubs begin
+    uint64_t stubCount;
     bool active = false;
 };
 
@@ -109,7 +111,8 @@ Registry& registry() {
             const auto& module = nestvane_native_modules[index];
             result.modules.push_back({&module, reinterpret_cast<const uint64_t*>(module.info[3]),
                                       reinterpret_cast<const uint32_t*>(module.info[4]),
-                                      (module.info[1] - module.info[0]) / 4, module.info[5], module.info[6]});
+                                      (module.info[1] - module.info[0]) / 4, module.info[5], module.info[6],
+                                      module.info[7], module.info[8]});
             low = std::min(low, module.info[0]);
             high = std::max(high, module.info[1]);
         }
@@ -126,9 +129,16 @@ Registry& registry() {
         // The entry for guest pc is 2 * pc from a page boundary, in this table as in each module's own.
         low &= ~uint64_t{0xffff};
         high = (high + 0xffff) & ~uint64_t{0xffff};
-        // One more page of guest addresses, for the signal return trampoline (see signalReturnPage).
-        result.signalPage = high;
-        high += 0x10000;
+        // One more page of guest addresses, for the signal return trampoline (see signalReturnPage). It
+        // is the last page below the addresses of code without a translation: `high` is where the last
+        // translation's code ends, and that file's data follows it.
+        result.signalPage = foreignLow - 0x10000;
+        if (high > result.signalPage) {
+            result.modules.clear();
+            result.failure = "the translations leave no room for the signal return page";
+            return result;
+        }
+        high = foreignLow;
         result.low = low;
         result.high = high;
         // Only address space: a module's table is mapped in when a process first maps the module, and
@@ -155,7 +165,7 @@ Registry& registry() {
             result.signalPage = 0;
         }
         result.codeStart = result.modules.front().codeStart;
-        result.codeEnd = result.modules.back().codeStart + result.modules.back().starts[result.modules.back().count - 1] + 256;
+        result.codeEnd = result.modules.back().stubsBegin;
         return result;
     }();
     return instance;
@@ -173,15 +183,26 @@ bool guestCode(uint64_t hostPc, uint64_t& guestPc, bool& atStart) {
     const auto* loaded = loadedFor(hostPc);
     // Stubs and out-of-line paths follow a module's last instruction. Nothing in them can fault, and
     // the translations are in several images, so what lies beyond is not known to be code at all.
+    if (hostPc >= loaded->stubsBegin) return false;
     const uint64_t offset = hostPc - loaded->codeStart;
-    if (offset >= uint64_t{loaded->starts[loaded->count - 1]} + 256) return false;
+    // The table has the host address per instruction, in order, except where it has an entry stub.
+    const auto start = [&](uint64_t index) -> uint64_t {
+        const uint64_t entry = loaded->table[index];
+        if (entry < loaded->stubsBegin) return entry - loaded->codeStart;
+        uint64_t first = 0, last = loaded->stubCount;
+        while (last - first > 1) {
+            const uint64_t middle = (first + last) / 2;
+            if (loaded->stubStarts[middle * 2] <= index) first = middle; else last = middle;
+        }
+        return loaded->stubStarts[first * 2 + 1];
+    };
     uint64_t low = 0, high = loaded->count;
     while (high - low > 1) {
         const uint64_t middle = (low + high) / 2;
-        if (loaded->starts[middle] <= offset) low = middle; else high = middle;
+        if (start(middle) <= offset) low = middle; else high = middle;
     }
     guestPc = loaded->module->info[0] + low * 4;
-    atStart = loaded->starts[low] == offset;
+    atStart = start(low) == offset;
     return true;
 }
 
@@ -680,6 +701,12 @@ std::string statistics() {
         << " MiB of code tables";
     if (counters.unmapped) out << ", " << counters.unmapped << " modules could not be mapped";
     out << '\n';
+    // NESTVANE_NATIVE_USED=1 lists the translations that were mapped, for leaving the others out of a build.
+    if (static const bool list = std::getenv("NESTVANE_NATIVE_USED"); list)
+        for (const auto& loaded : registry().modules)
+            if (loaded.active)
+                out << "  native module used: " << std::hex << loaded.module->key << ' ' << loaded.module->base << std::dec
+                    << ' ' << loaded.module->name << '\n';
     return out.str();
 }
 

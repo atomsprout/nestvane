@@ -333,6 +333,27 @@ def remove_absent_hardware(guest):
     config.write_text(text.replace("</config>", extra + "</config>"))
 
 
+# Modules whose apps never run here: for hardware the guest does not have, or disabled by
+# fixtures/android17-trim.sh. The compiled code of these apps is taken out; their dex files stay.
+UNUSED_COMPILED = ("com.android.bt@", "com.android.wifi@", "com.android.uwb@", "com.android.nfcservices@",
+                   "com.android.adservices@", "com.android.ondevicepersonalization@", "com.android.healthfitness@",
+                   "com.android.rkpd@", "com.android.virt@", "com.android.npumanager@",
+                   "com.android.webapp@", "com.android.uprobestats@", "com.android.profiling@")
+
+
+def remove_unused_files(guest):
+    """Takes out what only adds to the size of the image."""
+    # A second, serif family for Chinese, Japanese and Korean: the sans family stays.
+    (guest / "system/fonts/NotoSerifCJK-Regular.ttc").unlink(missing_ok=True)
+    compiled = guest / "system/framework/oat/arm64"
+    if compiled.is_dir():
+        for file in compiled.iterdir():
+            # Only apps: the system server loads the modules' service jars whether their hardware exists or not.
+            if file.name.startswith("apex@") and any(module in file.name for module in UNUSED_COMPILED) \
+                    and ("@priv-app@" in file.name or "@app@" in file.name) and file.suffix in (".odex", ".art"):
+                file.unlink()
+
+
 def write_guest_hardware_profile(guest):
     # The guest has no Bluetooth controller or location hardware bridge.
     config = guest / "system/etc/sysconfig/nestvane-hardware.xml"
@@ -392,6 +413,7 @@ def make_framework_root(base, image, guest, defer_zygote_preload, hardware_timeo
                        "install-bulk-secondary-downgraded", "bg-dexopt", "ab-ota", "inactive", "cmdline", "shared"):
             set_property(system_properties, "pm.dexopt." + reason, "verify")
         remove_absent_hardware(guest)
+        remove_unused_files(guest)
     set_property(system_properties, "dalvik.vm.usejit", "false")
     # The guest is one app's window on a phone that has a lock screen of its own.
     set_property(system_properties, "ro.lockscreen.disable.default", "true")

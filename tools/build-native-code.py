@@ -6,11 +6,16 @@ The runtime finds a module by the content key of the file a guest maps, not by i
 only have to hold the same bytes as the image the guest boots: an init root collected by
 tools/prepare-init-root.py, and unpacked APEX directories from the build.
 
-usage: build-native-code.py <output directory> <tree>... [--only <substring>]... [--ios]
+usage: build-native-code.py <output directory> <tree>... [--only <substring>]... [--ios] [--used <list>]
 Writes <output>/modules.c and the translations as dynamic libraries, <output>/lib/libnative-<n>.dylib:
 one image cannot hold them all. <output>/libraries.txt lists the libraries for the linker.
 Translations are kept between runs while the file, its address and the rewriter stay the same.
 --ios builds for iOS devices instead of this Mac, into <output>/ios.
+--addresses-only only gives the files their addresses (<output>/addresses.txt) and translates nothing.
+--used <list> leaves translations out of the libraries: <list> has the lines "native module used: <key>
+<base> <name>" that the runtime prints with NESTVANE_NATIVE_USED=1 for the translations a session mapped.
+Left out are the spare copies that are not in the list, and what is not in the list and belongs to a
+module in UNUSED_MODULES. A file without a translation still runs: it is interpreted in place.
 """
 import concurrent.futures
 import os
@@ -22,12 +27,19 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REWRITER = os.path.join(HERE, "../experiments/g0/e3/rewrite.py")
 OPTIONS = ["--table", "--chunk-shift", "20", "--reuse", "--split-index", "--final-table"]
 # Below the kernel layer's mapping arena (4 GiB and up) and above the boot image and the first stack.
-FIRST_BASE, LIMIT = 0x8000_0000, 0x1_0000_0000
+FIRST_BASE, LIMIT = 0x8000_0000, 0xFFF0_0000  # the runtime has its signal return page at 0xFFFF_0000
 KEY_BYTES = 16384
 IOS = "--ios" in sys.argv
 TARGET = (["-target", "arm64-apple-ios26.0", "-isysroot", subprocess.run(["xcrun", "--sdk", "iphoneos", "--show-sdk-path"],
            capture_output=True, text=True).stdout.strip()] if IOS else ["-arch", "arm64"])
 LIBRARIES = 12  # a fixed number, so that the app project can name them
+# Modules for hardware and services that the guest does not have. Their files stay in the image, which
+# the boot class path and the system server are built against.
+UNUSED_MODULES = ("com.android.bt", "com.android.wifi", "com.android.uwb", "com.android.nfcservices",
+                  "com.android.adservices", "com.android.ondevicepersonalization", "com.android.healthfitness",
+                  "com.android.devicelock", "com.android.rkpd", "com.android.virt", "com.android.npumanager",
+                  "com.android.neuralnetworks", "com.android.hardware.neuralnetworks", "com.android.webapp",
+                  "com.android.uprobestats", "com.android.profiling")
 # Rewritten code reaches the runtime's entries through the context: a call across images would go
 # through a linker stub, which uses registers that belong to the guest. x27 is the runtime's and is
 # loaded again when the guest is entered. The offsets are NativeContext::svcEntry and trapEntry.
@@ -88,7 +100,15 @@ def translate(job):
 
 
 def main():
-    arguments = [argument for index, argument in enumerate(sys.argv[1:], 1) if not argument.startswith("--") and sys.argv[index - 1] != "--only"]
+    arguments = [argument for index, argument in enumerate(sys.argv[1:], 1)
+                 if not argument.startswith("--") and sys.argv[index - 1] not in ("--only", "--used")]
+    used = None
+    if "--used" in sys.argv:
+        used = set()
+        for line in open(sys.argv[sys.argv.index("--used") + 1]):
+            fields = line.split()
+            if fields[:3] == ["native", "module", "used:"]:
+                used.add((int(fields[3], 16), int(fields[4], 16)))
     modules_file = os.path.join(os.path.abspath(arguments[0]), "modules.c")
     only = [sys.argv[index + 1] for index, argument in enumerate(sys.argv) if argument == "--only"]
     out, trees = os.path.abspath(arguments[0]), [os.path.abspath(tree) for tree in arguments[1:]]
@@ -125,7 +145,16 @@ def main():
                     for copy in range(last + 1))
         if last > 0 or twice:
             files[(key, last + 1)] = (path, size, "~spare of " + guest)
-    jobs, base = [], FIRST_BASE
+    # A translation is for one address, and translating everything takes a quarter of an hour. The
+    # addresses given out are kept in a file, so that taking files out of the trees or adding some
+    # leaves the others where they are: a new file gets an address after all of them.
+    address_file = os.path.join(os.path.abspath(arguments[0]), "addresses.txt")
+    addresses = {}
+    if os.path.exists(address_file):
+        for line in open(address_file):
+            key, copy, start, end = line.split()
+            addresses[(int(key, 16), int(copy))] = (int(start, 16), int(end, 16))
+    jobs, base = [], max([FIRST_BASE] + [end for _, end in addresses.values()])
     for (key, copy), (path, size, guest) in sorted(files.items(), key=lambda item: item[1][2]):
         image = path[:-4] + ".art"
         if path.endswith(".oat") and os.path.exists(image):
@@ -133,16 +162,35 @@ def main():
             # header records as oat_file_begin.
             with open(image, "rb") as file:
                 start, = struct.unpack_from("<I", file.read(36), 32)
+        elif (key, copy) in addresses:
+            start = addresses[(key, copy)][0]
         else:
             # Bionic's CFI shadow has one entry per 256 KiB, which tells whose code is there: two
             # libraries must not share one (the linker's kLibraryAlignment).
             start = base
             base = (base + size + 0x10000 + 0x3FFFF) & ~0x3FFFF
+            addresses[(key, copy)] = (start, base)
         symbol = "m%016x_%d" % (key, copy)
         jobs.append((symbol, path, start, objects, "%s %x %x" % (version, key, start), guest, key, os.path.getsize(path)))
     if base > LIMIT:
         sys.exit("the modules need 0x%x bytes of guest addresses and 0x%x are set aside" % (base - FIRST_BASE, LIMIT - FIRST_BASE))
+    with open(address_file, "w") as file:
+        for (key, copy), (start, end) in sorted(addresses.items(), key=lambda item: item[1]):
+            file.write("%016x %d %x %x\n" % (key, copy, start, end))
     print("modules=%d prelinked 0x%x-0x%x" % (len(jobs), FIRST_BASE, base), flush=True)
+    if "--addresses-only" in sys.argv:
+        return
+    if used is not None:
+        # Every file keeps its address, so a translation that is left out now needs no other to change.
+        def wanted(job):
+            if (job[6], job[2]) in used:
+                return True
+            return not job[5].startswith("~spare") and not any(
+                "/%s/" % module in job[5] or "apex@%s@" % module in job[5] or "/%s." % module in job[5] for module in UNUSED_MODULES)
+        left_out = [job for job in jobs if not wanted(job)]
+        jobs = [job for job in jobs if wanted(job)]
+        print("left out=%d of %d" % (len(left_out), len(left_out) + len(jobs)), flush=True)
+
     failed = set()
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(4, (os.cpu_count() or 8) - 2)) as pool:
         for (symbol, summary), job in zip(pool.map(translate, [job[:5] for job in jobs]), jobs):
@@ -151,7 +199,6 @@ def main():
             if summary != "kept":
                 print("%-70s base=0x%x %s" % (job[5][-70:], job[2], " ".join(summary.split()[:3])), flush=True)
     jobs = [job for job in jobs if job[0] not in failed]
-
     lines = ["#include <stdint.h>",
              "struct NativeModule { uint64_t key, size; const uint64_t* info; uint64_t base; const char* name; };"]
     lines += ["extern const uint64_t guest_module_%s[];" % job[0] for job in jobs]
