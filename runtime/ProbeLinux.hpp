@@ -1,5 +1,6 @@
 #pragma once
 
+#include "GuestBattery.hpp"
 #include "GraphicsPipe.hpp"
 #include "GuestApkInbox.hpp"
 #include "GuestCamera.hpp"
@@ -136,6 +137,10 @@ struct ProbeLinux {
     bool captureAndroidLogs = false;
     // Whether the guest reaches the network through the host's sockets. Without it there is only loopback.
     bool hostNetwork = false;
+    // Gives the guest the host's battery (runtime/GuestBattery.hpp) as a power supply of its own, and
+    // a charger beside it. Without it Android shows a battery of unknown state.
+    void enableBattery();
+    void refreshBattery();
     // Makes a host directory the guest's shared storage (see sharedHostRoot). Before mountData.
     void shareStorage(std::string hostDirectory) { sharedHostRoot = std::move(hostDirectory); }
     // Gives the guest its Ethernet interface and lets its sockets out through the host's.

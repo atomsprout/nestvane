@@ -516,6 +516,9 @@ def make_framework_root(base, image, guest, defer_zygote_preload, hardware_timeo
     # SurfaceFlinger compiles a hundred shaders ahead of use while the boot waits for it: 3.9 s on
     # an iPhone 15 Pro. Each is compiled when it is first drawn with instead.
     set_property(system_properties, "service.sf.prime_shader_cache", "0")
+    # What Settings > About phone shows as the device: the app, not the emulator image it was built from.
+    for key in ("model", "brand", "manufacturer"):
+        set_property(system_properties, f"ro.product.{key}", "Nestvane")
     set_property(system_properties, "ro.hw_timeout_multiplier", "10")
     # ART creates a code-cache memory file for every app even with JIT disabled.
     values = system_properties.read_text().rstrip("\n")

@@ -1516,10 +1516,13 @@ std::optional<ProbeLinux::Descriptor> ProbeLinux::find(std::string_view path, ui
         entry.bytes = {reinterpret_cast<const uint8_t*>(entry.snapshot->data()), entry.snapshot->size()};
         return entry;
     }
+    if (path.starts_with("/sys/class/power_supply/")) const_cast<ProbeLinux*>(this)->refreshBattery();
     if (const auto file = kernelFiles.find(path); file != kernelFiles.end()) {
         const auto& content = file->second;
         Descriptor entry{file->first, {}, flags, Node::regular};
-        if (path.starts_with("/sys/devices/virtual/block/") && path.ends_with("/loop/backing_file"))
+        // What changes while it is open is read from a copy.
+        if ((path.starts_with("/sys/devices/virtual/block/") && path.ends_with("/loop/backing_file")) ||
+            path.starts_with("/sys/class/power_supply/"))
             entry.snapshot = std::make_shared<std::string>(content);
         const auto& bytes = entry.snapshot ? *entry.snapshot : content;
         entry.bytes = {reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size()};
@@ -3245,6 +3248,30 @@ std::string ProbeLinux::pathReport(std::string_view path) const {
         if (end == std::string_view::npos) break;
     }
     return text;
+}
+
+void ProbeLinux::enableBattery() {
+    if (GuestBattery::host().level.load() < 0) return;
+    addDirectory("/sys/class/power_supply", 0555);
+    addDirectory("/sys/class/power_supply/battery", 0555);
+    addDirectory("/sys/class/power_supply/ac", 0555);
+    for (const auto& [name, value] : std::initializer_list<std::pair<const char*, const char*>>{
+             {"battery/type", "Battery\n"}, {"battery/present", "1\n"}, {"battery/health", "Good\n"},
+             {"battery/technology", "Li-ion\n"}, {"battery/voltage_now", "4000000\n"}, {"battery/temp", "250\n"},
+             {"battery/status", "Unknown\n"}, {"battery/capacity", "50\n"}, {"ac/type", "Mains\n"}, {"ac/online", "0\n"}})
+        kernelFiles.insert_or_assign(std::string("/sys/class/power_supply/") + name, value);
+    refreshBattery();
+}
+
+void ProbeLinux::refreshBattery() {
+    const auto& battery = GuestBattery::host();
+    const int level = battery.level.load(), state = battery.state.load();
+    if (level < 0) return;
+    kernelFiles["/sys/class/power_supply/battery/capacity"] = std::to_string(std::clamp(level, 0, 100)) + "\n";
+    kernelFiles["/sys/class/power_supply/battery/status"] =
+        state == GuestBattery::charging ? "Charging\n" : state == GuestBattery::full ? "Full\n" :
+        state == GuestBattery::unplugged ? "Discharging\n" : "Unknown\n";
+    kernelFiles["/sys/class/power_supply/ac/online"] = state == GuestBattery::charging || state == GuestBattery::full ? "1\n" : "0\n";
 }
 
 void ProbeLinux::enableHostNetwork() {

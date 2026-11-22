@@ -7,10 +7,12 @@
 # The home screen's first layout (fixtures/home) is only read when the launcher has none yet. A guest
 # from before that layout existed (state 2) has the launcher's empty one: it is dropped, once.
 state="$(/system/bin/cmd settings get global nestvane_trim)"
-if [ "$state" = "2" ]; then
-    /system/bin/cmd package clear --user 0 com.android.launcher3
-    /system/bin/cmd settings put global nestvane_trim 3
-elif [ "$state" != "3" ]; then
+# The device's name was taken from the image's model before that became "Nestvane" (state 3 and earlier).
+if [ "$state" = "2" ] || [ "$state" = "3" ]; then
+    [ "$state" = "2" ] && /system/bin/cmd package clear --user 0 com.android.launcher3
+    /system/bin/cmd settings put global device_name Nestvane
+    /system/bin/cmd settings put global nestvane_trim 4
+elif [ "$state" != "4" ]; then
     for package in com.android.rkpdapp com.android.federatedcompute.services \
             com.android.ondevicepersonalization.services com.android.healthconnect.controller \
             com.android.devicelockcontroller; do
@@ -21,6 +23,6 @@ elif [ "$state" != "3" ]; then
             com.android.photopicker/.PhotopickerDeviceConfigReceiver; do
         /system/bin/cmd package disable --user 0 "$component"
     done
-    /system/bin/cmd settings put global nestvane_trim 3
+    /system/bin/cmd settings put global nestvane_trim 4
 fi
 

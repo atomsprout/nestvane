@@ -34,6 +34,7 @@ targets:
       - sdk: CoreGraphics.framework
       - sdk: libsqlite3.tbd
       - sdk: libresolv.tbd
+      - sdk: QuartzCore.framework
     info:
       path: generated/Info.plist
       properties:
@@ -94,6 +95,7 @@ targets:
       - sdk: CoreGraphics.framework
       - sdk: libsqlite3.tbd
       - sdk: libresolv.tbd
+      - sdk: QuartzCore.framework
       - framework: generated/native-code/ios/lib/NestvaneCode0.framework
         embed: true
       - framework: generated/native-code/ios/lib/NestvaneCode1.framework

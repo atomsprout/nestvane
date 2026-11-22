@@ -2,6 +2,7 @@
 #import <UIKit/UIKit.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
+#include "GuestBattery.hpp"
 #include "DynamicProbe.hpp"
 #include "GfxstreamPipe.hpp"
 #include "GfxstreamSession.hpp"
@@ -214,6 +215,123 @@ static NSString* ThermalState() {
 
 static NSString* const InstallApkShortcut = @"com.atomsprout.nestvane.install-apk";
 
+// What the start screen shows above its status line: the app's icon, glowing, with sparks in the
+// icon's colours drifting up from around it. Still when the system asks for reduced motion, and
+// when the start screen is not showing.
+@interface EmblemView : UIView
+@property(nonatomic) BOOL active;
+@end
+
+@implementation EmblemView {
+    CAEmitterLayer* _sparks;
+    CALayer* _glow;
+    UIImageView* _icon;
+}
+
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (!self) return nil;
+    self.translatesAutoresizingMaskIntoConstraints = NO;
+    UIImage* dot = [[[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(24, 24)]
+        imageWithActions:^(UIGraphicsImageRendererContext* context) {
+            CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+            const CGFloat colors[] = {1, 1, 1, 1, 1, 1, 1, 0};
+            CGGradientRef gradient = CGGradientCreateWithColorComponents(space, colors, nullptr, 2);
+            CGContextDrawRadialGradient(context.CGContext, gradient, CGPointMake(12, 12), 0, CGPointMake(12, 12), 12, 0);
+            CGGradientRelease(gradient);
+            CGColorSpaceRelease(space);
+        }];
+    _sparks = [CAEmitterLayer layer];
+    _sparks.emitterShape = kCAEmitterLayerCircle;
+    _sparks.emitterMode = kCAEmitterLayerOutline;
+    _sparks.renderMode = kCAEmitterLayerAdditive;
+    NSMutableArray<CAEmitterCell*>* cells = [NSMutableArray array];
+    for (UIColor* color in @[[UIColor colorWithRed:0.25 green:0.90 blue:1.00 alpha:1], [UIColor colorWithRed:1.00 green:0.35 blue:0.85 alpha:1],
+                             [UIColor colorWithRed:1.00 green:0.62 blue:0.20 alpha:1], [UIColor colorWithRed:0.62 green:0.45 blue:1.00 alpha:1]]) {
+        CAEmitterCell* cell = [CAEmitterCell emitterCell];
+        cell.contents = (__bridge id)dot.CGImage;
+        cell.color = color.CGColor;
+        cell.birthRate = 13;
+        cell.lifetime = 2.6;
+        cell.lifetimeRange = 1.1;
+        cell.velocity = 34;
+        cell.velocityRange = 26;
+        cell.emissionRange = 2 * M_PI;
+        cell.yAcceleration = -22;
+        cell.scale = 0.26;
+        cell.scaleRange = 0.2;
+        cell.scaleSpeed = -0.05;
+        cell.alphaSpeed = -0.36;
+        [cells addObject:cell];
+    }
+    _sparks.emitterCells = cells;
+    _sparks.birthRate = 0;
+    [self.layer addSublayer:_sparks];
+    _glow = [CALayer layer];
+    _glow.backgroundColor = [UIColor colorWithRed:0.45 green:0.35 blue:1.0 alpha:1].CGColor;
+    _glow.cornerRadius = 27;
+    _glow.shadowColor = [UIColor colorWithRed:0.55 green:0.45 blue:1.0 alpha:1].CGColor;
+    _glow.shadowOffset = CGSizeZero;
+    _glow.shadowRadius = 26;
+    _glow.shadowOpacity = 0.75;
+    [self.layer addSublayer:_glow];
+    _icon = [[UIImageView alloc] initWithImage:[UIImage imageNamed:@"Emblem"]];
+    _icon.translatesAutoresizingMaskIntoConstraints = NO;
+    _icon.layer.cornerRadius = 27;
+    _icon.layer.cornerCurve = kCACornerCurveContinuous;
+    _icon.clipsToBounds = YES;
+    _icon.isAccessibilityElement = NO;
+    [self addSubview:_icon];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.heightAnchor constraintEqualToConstant:230],
+        [_icon.centerXAnchor constraintEqualToAnchor:self.centerXAnchor],
+        [_icon.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
+        [_icon.widthAnchor constraintEqualToConstant:120],
+        [_icon.heightAnchor constraintEqualToConstant:120],
+    ]];
+    return self;
+}
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    const CGPoint center = CGPointMake(CGRectGetMidX(self.bounds), CGRectGetMidY(self.bounds));
+    _sparks.frame = self.bounds;
+    _sparks.emitterPosition = center;
+    _sparks.emitterSize = CGSizeMake(66, 66);
+    _glow.frame = CGRectMake(center.x - 58, center.y - 58, 116, 116);
+}
+
+- (void)didMoveToWindow {
+    [super didMoveToWindow];
+    self.active = _active;
+}
+
+- (void)setActive:(BOOL)active {
+    _active = active;
+    const BOOL moving = active && self.window && !UIAccessibilityIsReduceMotionEnabled();
+    _sparks.birthRate = moving ? 1 : 0;
+    [_glow removeAllAnimations];
+    [_icon.layer removeAllAnimations];
+    if (!moving) return;
+    CABasicAnimation* pulse = [CABasicAnimation animationWithKeyPath:@"shadowRadius"];
+    pulse.fromValue = @18;
+    pulse.toValue = @38;
+    pulse.duration = 1.6;
+    pulse.autoreverses = YES;
+    pulse.repeatCount = HUGE_VALF;
+    pulse.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+    [_glow addAnimation:pulse forKey:@"pulse"];
+    CABasicAnimation* breathe = [CABasicAnimation animationWithKeyPath:@"transform.scale"];
+    breathe.fromValue = @0.97;
+    breathe.toValue = @1.03;
+    breathe.duration = 1.6;
+    breathe.autoreverses = YES;
+    breathe.repeatCount = HUGE_VALF;
+    breathe.timingFunction = pulse.timingFunction;
+    [_icon.layer addAnimation:breathe forKey:@"breathe"];
+}
+@end
+
 @interface ValidationViewController : UIViewController <UIDocumentPickerDelegate>
 - (void)installApkAtURL:(NSURL*)source;
 - (void)chooseApkWhenReady;
@@ -226,6 +344,7 @@ static NSString* const InstallApkShortcut = @"com.atomsprout.nestvane.install-ap
 @property(nonatomic, strong) UIButton* back;
 @property(nonatomic, strong) UIButton* home;
 @property(nonatomic, strong) UIStackView* startup;
+@property(nonatomic, strong) EmblemView* emblem;
 @property(nonatomic, strong) UILabel* apkStatus;
 @end
 
@@ -308,7 +427,9 @@ static NSString* const InstallApkShortcut = @"com.atomsprout.nestvane.install-ap
     self.details.textContainerInset = UIEdgeInsetsMake(12, 12, 12, 12);
     self.details.hidden = YES;
 
-    self.startup = [[UIStackView alloc] initWithArrangedSubviews:@[self.status, self.details]];
+    self.emblem = [EmblemView new];
+    self.emblem.active = YES;
+    self.startup = [[UIStackView alloc] initWithArrangedSubviews:@[self.emblem, self.status, self.details]];
     self.startup.axis = UILayoutConstraintAxisVertical;
     self.startup.spacing = 12;
     self.startup.translatesAutoresizingMaskIntoConstraints = NO;
@@ -528,6 +649,7 @@ static NSString* const InstallApkShortcut = @"com.atomsprout.nestvane.install-ap
     self.back.hidden = self.home.hidden = !apkInbox;
     self.back.enabled = self.home.enabled = NO;
     self.startup.hidden = NO;
+    self.emblem.active = YES;
     self.details.hidden = YES;
     self.details.text = nil;
     UIApplication.sharedApplication.idleTimerDisabled = YES;
@@ -600,6 +722,23 @@ static NSString* const InstallApkShortcut = @"com.atomsprout.nestvane.install-ap
             NSURL* database = [guest URLByAppendingPathComponent:@"guest-data.sqlite3"];
             // Android's shared storage is a folder the Files app shows: On My iPhone > Nestvane > Android.
             setenv("NESTVANE_SHARED_STORAGE", [documents URLByAppendingPathComponent:@"Android"].fileSystemRepresentation, 1);
+            // Android shows the phone's battery: its level, and whether it is charging.
+            UIDevice.currentDevice.batteryMonitoringEnabled = YES;
+            const auto reportBattery = ^{
+                auto& battery = nestvane::GuestBattery::host();
+                const float level = UIDevice.currentDevice.batteryLevel;
+                battery.level = level < 0 ? -1 : int(std::lround(level * 100));
+                switch (UIDevice.currentDevice.batteryState) {
+                    case UIDeviceBatteryStateUnplugged: battery.state = nestvane::GuestBattery::unplugged; break;
+                    case UIDeviceBatteryStateCharging: battery.state = nestvane::GuestBattery::charging; break;
+                    case UIDeviceBatteryStateFull: battery.state = nestvane::GuestBattery::full; break;
+                    default: battery.state = nestvane::GuestBattery::unknown; break;
+                }
+            };
+            reportBattery();
+            for (NSNotificationName name in @[UIDeviceBatteryLevelDidChangeNotification, UIDeviceBatteryStateDidChangeNotification])
+                [NSNotificationCenter.defaultCenter addObserverForName:name object:nil queue:NSOperationQueue.mainQueue
+                                                             usingBlock:^(NSNotification*) { reportBattery(); }];
             // Android shows the time of the phone's time zone.
             setenv("NESTVANE_TIMEZONE", NSTimeZone.localTimeZone.name.UTF8String, 1);
             NSURL* progressURL = [documents URLByAppendingPathComponent:@"boot-progress.txt"];
@@ -790,6 +929,7 @@ static NSString* const InstallApkShortcut = @"com.atomsprout.nestvane.install-ap
                     };
                     if (firstFrame) {
                         self.startup.hidden = YES;
+                        self.emblem.active = NO;
                         self.display.hidden = NO;
                         self.back.hidden = self.home.hidden = NO;
                         self.back.enabled = self.home.enabled = YES;
@@ -847,6 +987,8 @@ static NSString* const InstallApkShortcut = @"com.atomsprout.nestvane.install-ap
             self.display.hidden = YES;
             self.display.image = nil;
             self.startup.hidden = NO;
+            self.emblem.active = YES;
+    self.emblem.active = YES;
             self.details.text = apkInbox ? nil : report;
             self.details.hidden = bool(apkInbox);
             self.back.enabled = self.home.enabled = NO;
