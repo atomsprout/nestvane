@@ -1102,7 +1102,10 @@ static void FollowGuestAudio() {
                             // NESTVANE_TEST_APK=<file in Documents> installs that APK first, the way the
                             // Install APK button does, and writes the outcome to apk-result.txt.
                             // A list separated by commas installs one after the other.
+                            // NESTVANE_TEST_APK_WAIT=<seconds> waits that long first: Android tells the
+                            // launcher of a new package sooner once it has been up for a minute.
                             if (NSString* names = NSProcessInfo.processInfo.environment[@"NESTVANE_TEST_APK"]; names && apkInbox) {
+                                sleep(unsigned(NSProcessInfo.processInfo.environment[@"NESTVANE_TEST_APK_WAIT"].intValue));
                                 NSMutableString* text = [NSMutableString string];
                                 for (NSString* name in [names componentsSeparatedByString:@","]) {
                                     NSData* data = [NSData dataWithContentsOfURL:[documents URLByAppendingPathComponent:name]];
