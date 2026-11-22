@@ -773,7 +773,7 @@ size_t hostPages(size_t size) {
 
 SharedBuffer::~SharedBuffer() {
     if (mapping) munmap(mapping, reserved);
-    if (!file.empty()) {
+    if (!file.empty() && !exactFile) {
         const std::lock_guard lock(retiredLock);
         retiredFiles.push_back(std::move(file));
     }
@@ -794,7 +794,8 @@ uint8_t* SharedBuffer::pages() const {
     if (mapping || !reserved) return mapping;
     const int fd = ::open(file.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
     struct stat status{};
-    if (fd < 0 || fstat(fd, &status) || (size_t(status.st_size) < reserved && ftruncate(fd, off_t(reserved)))) {
+    // Of a file that is exactly its content the pages past the end are never touched.
+    if (fd < 0 || fstat(fd, &status) || (!exactFile && size_t(status.st_size) < reserved && ftruncate(fd, off_t(reserved)))) {
         if (fd >= 0) ::close(fd);
         throw std::bad_alloc();
     }
@@ -813,6 +814,69 @@ void SharedBuffer::attach(std::string path, size_t size) {
     length = size;
     reserved = hostPages(size);
     ++moves;
+}
+
+void SharedBuffer::attachExact(std::string path, size_t size) {
+    attach(std::move(path), size);
+    exactFile = true;
+}
+
+void SharedBuffer::truncateFile(uint64_t size) const {
+    if (exactFile) ::truncate(file.c_str(), off_t(size));
+}
+
+bool SharedBuffer::renameFile(std::string path, bool move) {
+    if (file.empty() || (move && ::rename(file.c_str(), path.c_str()))) return false;
+    file = std::move(path);
+    return true;
+}
+
+bool SharedBuffer::makeExact(std::string path, uint64_t contentSize) {
+    if (!file.empty()) {
+        if (!renameFile(std::move(path), true)) return false;
+        exactFile = true;
+        truncateFile(contentSize);
+        return true;
+    }
+    const size_t held = size();
+    const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    if (fd < 0) return false;
+    const uint8_t* from = data();
+    for (uint64_t written = 0; written < contentSize;) {
+        const auto count = ::write(fd, from + written, size_t(contentSize - written));
+        if (count <= 0) {
+            ::close(fd);
+            ::unlink(path.c_str());
+            return false;
+        }
+        written += uint64_t(count);
+    }
+    ::close(fd);
+    if (mapping) munmap(mapping, reserved);
+    mapping = nullptr;
+    bytes = {};
+    length = held;
+    reserved = hostPages(held);
+    file = std::move(path);
+    exactFile = true;
+    ++moves;
+    return true;
+}
+
+bool SharedBuffer::unback() {
+    if (file.empty()) return true;
+    void* memory = mmap(nullptr, reserved, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    if (memory == MAP_FAILED) return false;
+    struct stat status{};
+    // Only what the file has: the pages past its end cannot be read.
+    const size_t content = ::stat(file.c_str(), &status) ? 0 : std::min<size_t>(length, size_t(status.st_size));
+    if (content) std::memcpy(memory, pages(), content);
+    if (mapping) munmap(mapping, reserved);
+    mapping = static_cast<uint8_t*>(memory);
+    file.clear();
+    exactFile = false;
+    ++moves;
+    return true;
 }
 
 bool SharedBuffer::backWith(std::string path) {

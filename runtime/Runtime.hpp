@@ -78,6 +78,20 @@ public:
     // Takes a host file that holds `size` bytes of content already as the bytes.
     void attach(std::string path, size_t size);
     bool backed() const { return !file.empty(); }
+    // A host file that is the content and nothing else: exactly as long as the content, under a name
+    // of its owner's choosing, so that it is of use outside the guest. The owner says how long the
+    // content is (`truncateFile`) before it writes past the end, and removes the file itself.
+    void attachExact(std::string path, size_t size);
+    bool exact() const { return exactFile; }
+    void truncateFile(uint64_t size) const;
+    // Makes the bytes such a file, from memory or from the host file they are in.
+    bool makeExact(std::string path, uint64_t contentSize);
+    // The host file has another name now: with `move`, gives it that name.
+    bool renameFile(std::string path, bool move);
+    // The file is one of the first kind from now on.
+    void leaveExact() { exactFile = false; }
+    // Takes the bytes back into memory and lets go of the file.
+    bool unback();
     const std::string& backingFile() const { return file; }
     // The files under a directory whose buffers are gone since the last call: their owner decides
     // when the content is no longer needed and removes them.
@@ -93,6 +107,7 @@ private:
     mutable uint8_t* mapping = nullptr;
     size_t length = 0, reserved = 0;
     std::string file;
+    bool exactFile = false;
 };
 
 struct SharedFileBytes {

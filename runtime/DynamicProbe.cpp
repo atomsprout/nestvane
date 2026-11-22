@@ -839,6 +839,7 @@ DynamicReport probeInit(const std::string& directory, const std::string& databas
             constexpr auto dataProbe = "/system/bin/nestvane-guest-data";
             ProbeLinux writer(1, 0);
             for (const auto& [path, file] : files) writer.mount(path, file.bytes());
+            if (const char* shared = std::getenv("NESTVANE_SHARED_STORAGE"); shared && *shared) writer.shareStorage(shared);
             writer.mountData(databasePath);
             const auto dataImage = loadDynamicELF(files.at(dataProbe).bytes(), files.at(interpreter).bytes(), dataProbe, interpreter);
             storage = runProbe(dataImage, writer, ProbeKind::data);
@@ -1011,6 +1012,8 @@ service nestvane-trim /system/bin/sh /system/etc/nestvane/trim.sh
             // Second-stage init expects first-stage init to have mounted the metadata partition.
             linux.addBootTmpfs("/metadata", 0755, 0, 6);
         }
+        // NESTVANE_SHARED_STORAGE=<host directory> is the guest's shared storage, file for file.
+        if (const char* shared = std::getenv("NESTVANE_SHARED_STORAGE"); shared && *shared) linux.shareStorage(shared);
         if (!databasePath.empty()) linux.mountData(databasePath);
         for (const auto& [path, file] : files) linux.mount(path, file.bytes());
         if (const auto bootconfig = files.find("/nestvane-metadata/bootconfig"); bootconfig != files.end()) {

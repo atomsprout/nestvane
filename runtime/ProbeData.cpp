@@ -3,6 +3,8 @@
 #include <sqlite3.h>
 
 #include <dirent.h>
+#include <fcntl.h>
+#include <filesystem>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -14,6 +16,10 @@ namespace nestvane {
 namespace {
 
 constexpr std::string_view root = "/data";
+
+bool inside(std::string_view path, std::string_view parent) {
+    return path.size() > parent.size() && path.starts_with(parent) && path[parent.size()] == '/';
+}
 constexpr uint64_t pageMask = pageSize - 1;
 
 bool childPath(std::string_view path) {
@@ -95,6 +101,16 @@ void ProbeLinux::mountData(const std::string& databasePath) {
     // What an earlier guest in this process left to remove is settled below, against the records.
     if (!filesDirectory.empty()) SharedBuffer::takeRetired(filesDirectory + "/");
     std::set<std::string> externalNames;
+    // The shared storage is what its host directory has. Without the directory this is the first
+    // time, and what the database has of the shared storage moves there.
+    struct stat hostStatus{};
+    const bool sharedFresh = !sharedHostRoot.empty() && ::stat(sharedHostRoot.c_str(), &hostStatus) != 0;
+    if (sharedFresh) {
+        std::error_code ignored;
+        std::filesystem::create_directories(sharedHostRoot, ignored);
+    }
+    // A record of the shared storage whose file or directory the host no longer has is passed over.
+    const auto shared = [&](std::string_view path) { return !sharedHostRoot.empty() && inside(path, sharedGuestRoot); };
     auto version = prepare(raw, "SELECT generation FROM state WHERE singleton=1");
     auto records = prepare(raw, "SELECT path,kind,mode,uid,gid,inode,bytes,label FROM entries ORDER BY path");
     if (!version || !records || sqlite3_step(version.get()) != SQLITE_ROW)
@@ -118,6 +134,9 @@ void ProbeLinux::mountData(const std::string& databasePath) {
         const auto uid = sqlite3_column_int64(row, 3), gid = sqlite3_column_int64(row, 4);
         const auto inode = sqlite3_column_int64(row, 5);
         const auto bytes = columnBytes(row, 6), label = columnBytes(row, 7);
+        if (shared(path) && !loadedDirectories.contains(path.substr(0, path.rfind('/')))) continue;
+        if (shared(path) && kind == 0 && !sharedFresh &&
+            (::stat(sharedHost(path).c_str(), &hostStatus) || !S_ISDIR(hostStatus.st_mode))) continue;
         if (++count > maxDataRecords || (path != root && !childPath(path)) || (path == root && kind != 0) ||
             mode < 0 || mode > 07777 || uid < 0 || uid > UINT32_MAX || gid < 0 || gid > UINT32_MAX ||
             label.size() > 4096 ||
@@ -128,6 +147,7 @@ void ProbeLinux::mountData(const std::string& databasePath) {
             if (context.empty() && path == root) context = loadedDirectories.at("/data").securityContext;
             loadedDirectories.insert_or_assign(std::string(path),
                 Directory{uint32_t(mode), uint32_t(uid), uint32_t(gid), std::string(context)});
+            if (const auto host = sharedHost(path); !host.empty()) ::mkdir(host.c_str(), 0755);
         } else if (kind == 1 && inode >= 65536 && inode < INT64_MAX - 4096 && bytes.size() <= maxDataFileBytes &&
                    inodes.insert(inode).second) {
             const auto allocation = (bytes.size() + pageMask) & ~pageMask;
@@ -147,7 +167,9 @@ void ProbeLinux::mountData(const std::string& databasePath) {
                                                         std::vector<uint8_t>(label.begin(), label.end()));
             // A large file that an earlier version kept in the database moves out of it.
             dataFilesDirectory = filesDirectory;
-            if (!filesDirectory.empty() && bytes.size() >= externalFileBytes &&
+            if (shared(path)) {
+                file->storage->pages.makeExact(sharedHost(path), bytes.size());
+            } else if (!filesDirectory.empty() && bytes.size() >= externalFileBytes &&
                 file->storage->pages.backWith(externalFile(uint64_t(inode)))) {
                 externalNames.insert(std::to_string(inode));
                 compactData = true;
@@ -172,7 +194,31 @@ void ProbeLinux::mountData(const std::string& databasePath) {
             file->persistent = true;
             file->storage->size = size;
             file->storage->pages.attach(filesDirectory + "/" + std::to_string(inode), allocation);
-            externalNames.insert(std::to_string(inode));
+            if (!shared(path) || !file->storage->pages.makeExact(sharedHost(path), size))
+                externalNames.insert(std::to_string(inode));
+            if (!label.empty()) file->attributes.emplace("security.selinux",
+                                                        std::vector<uint8_t>(label.begin(), label.end()));
+            loadedFiles.emplace(path, std::move(file));
+            nextPersistentInode = std::max(nextPersistentInode, uint64_t(inode) + 1);
+        } else if (kind == 4 && shared(path) && bytes.empty() && inode >= 65536 && inode < INT64_MAX - 4096 &&
+                   !inodes.contains(inode)) {
+            // A file of the shared storage: the host file has the content and says how long it is.
+            const auto host = sharedHost(path);
+            if (::stat(host.c_str(), &hostStatus) || !S_ISREG(hostStatus.st_mode) ||
+                uint64_t(hostStatus.st_size) > maxDataFileBytes) continue;
+            const uint64_t size = uint64_t(hostStatus.st_size);
+            const auto allocation = (size + pageMask) & ~pageMask;
+            if (bytesTotal + allocation > maxWritableBytes) continue;
+            bytesTotal += allocation;
+            inodes.insert(inode);
+            auto file = std::make_shared<WritableFile>();
+            file->inode = inode;
+            file->mode = mode;
+            file->uid = uid;
+            file->gid = gid;
+            file->persistent = true;
+            file->storage->size = size;
+            file->storage->pages.attachExact(host, allocation);
             if (!label.empty()) file->attributes.emplace("security.selinux",
                                                         std::vector<uint8_t>(label.begin(), label.end()));
             loadedFiles.emplace(path, std::move(file));
@@ -181,7 +227,8 @@ void ProbeLinux::mountData(const std::string& databasePath) {
                    bytes.find('\0') == std::string_view::npos && label.find('\0') == std::string_view::npos) {
             loadedLinks.emplace(path, Link{std::string(bytes), std::string(label)});
         } else {
-            throw std::runtime_error("invalid guest data record");
+            throw std::runtime_error("invalid guest data record: " + std::string(path) + ", kind " + std::to_string(kind) +
+                                     ", " + std::to_string(bytes.size()) + " bytes");
         }
     }
     records.reset();
@@ -192,6 +239,7 @@ void ProbeLinux::mountData(const std::string& databasePath) {
         const auto path = columnBytes(markers.get(), 0);
         const auto node = loadedDirectories.find(path);
         const auto value = sqlite3_column_int64(markers.get(), 1);
+        if (node == loadedDirectories.end() && shared(path)) continue;
         if (node == loadedDirectories.end() || sqlite3_column_type(markers.get(), 1) != SQLITE_INTEGER ||
             value < 0 || value > UINT8_MAX)
             throw std::runtime_error("invalid guest restorecon progress");
@@ -212,6 +260,7 @@ void ProbeLinux::mountData(const std::string& databasePath) {
         } else if (const auto directory = loadedDirectories.find(path); directory != loadedDirectories.end()) {
             inodeAttributes = &directory->second.userAttributes;
         }
+        if (!inodeAttributes && shared(path)) continue;
         if (!inodeAttributes || !name.starts_with("user.") || name.size() <= 5 ||
             name.size() > 255 || name.find('\0') != std::string_view::npos ||
             name == "user.restorecon_in_progress" || value.size() > Directory::maxUserAttributeValue ||
@@ -236,7 +285,7 @@ void ProbeLinux::mountData(const std::string& databasePath) {
             (defaults ? dir->second.defaultAcl : dir->second.accessAcl) = std::move(*decoded);
         } else if (const auto file = loadedFiles.find(path); !defaults && file != loadedFiles.end()) {
             file->second->accessAcl = std::move(*decoded);
-        } else {
+        } else if (!shared(path)) {
             throw std::runtime_error("ACL for missing or incompatible guest inode");
         }
     }
@@ -258,13 +307,58 @@ void ProbeLinux::mountData(const std::string& databasePath) {
             dir->second.times = times;
         else if (const auto file = loadedFiles.find(path); file != loadedFiles.end())
             file->second->times = times;
-        else
+        else if (!shared(path))
             throw std::runtime_error("timestamp for missing guest inode");
     }
     inodeTimes.reset();
     if (result != SQLITE_DONE || !execute(raw, "COMMIT") || directories.contains("/data") ||
         current->mountNamespace->mounts.contains("/data"))
         throw std::runtime_error("cannot mount guest data database");
+    // What the host directory has that no record names was put there from outside: it belongs to
+    // whoever owns the directory it is in. Names that begin with a dot are the host's own.
+    if (const auto top = loadedDirectories.find(sharedGuestRoot); !sharedHostRoot.empty() && top != loadedDirectories.end()) {
+        std::error_code failed;
+        for (auto entry = std::filesystem::recursive_directory_iterator(
+                 sharedHostRoot, std::filesystem::directory_options::skip_permission_denied, failed);
+             !failed && entry != std::filesystem::recursive_directory_iterator(); entry.increment(failed)) {
+            const auto guest = std::string(sharedGuestRoot) + entry->path().string().substr(sharedHostRoot.size());
+            const bool directory = entry->is_directory(failed), regular = !directory && entry->is_regular_file(failed);
+            const bool known = loadedDirectories.contains(guest) || loadedFiles.contains(guest) || loadedLinks.contains(guest);
+            const auto owner = loadedDirectories.find(guest.substr(0, guest.rfind('/')));
+            if (known) continue;
+            if (entry->path().filename().string().starts_with(".") || !childPath(guest) || owner == loadedDirectories.end() ||
+                ++count > maxDataRecords || (!directory && !regular)) {
+                if (directory) entry.disable_recursion_pending();
+                continue;
+            }
+            const auto& parent = owner->second;
+            if (directory) {
+                loadedDirectories.emplace(guest, Directory{parent.mode, parent.uid, parent.gid, parent.securityContext});
+                continue;
+            }
+            const uint64_t size = entry->file_size(failed);
+            const auto allocation = (size + pageMask) & ~pageMask;
+            if (failed || size > maxDataFileBytes || bytesTotal + allocation > maxWritableBytes) {
+                failed.clear();
+                continue;
+            }
+            bytesTotal += allocation;
+            auto file = std::make_shared<WritableFile>();
+            file->inode = nextPersistentInode++;
+            file->mode = 0660;
+            file->uid = parent.uid;
+            file->gid = parent.gid;
+            file->persistent = true;
+            file->storage->size = size;
+            file->storage->pages.attachExact(entry->path().string(), allocation);
+            if (::stat(entry->path().c_str(), &hostStatus) == 0)
+                file->times = {hostStatus.st_atimespec.tv_sec, hostStatus.st_atimespec.tv_nsec, hostStatus.st_mtimespec.tv_sec,
+                               hostStatus.st_mtimespec.tv_nsec, hostStatus.st_ctimespec.tv_sec, hostStatus.st_ctimespec.tv_nsec};
+            const auto& context = parent.securityContext;
+            if (!context.empty()) file->attributes["security.selinux"].assign(context.c_str(), context.c_str() + context.size() + 1);
+            loadedFiles.emplace(guest, std::move(file));
+        }
+    }
     // Host files that no record names were written after the last sync, or belong to files deleted since.
     if (!filesDirectory.empty()) {
         if (DIR* listing = opendir(filesDirectory.c_str())) {
@@ -386,11 +480,13 @@ bool ProbeLinux::syncData() {
             const auto label = attribute == file->attributes.end() ? std::span<const uint8_t>{} :
                                std::span<const uint8_t>(attribute->second);
             const uint64_t size = file->storage->size;
-            const bool external = file->storage->pages.backed();
+            const bool exact = file->storage->pages.exact();
+            const bool external = file->storage->pages.backed() && !exact;
             if (external) externalFiles.insert(file->storage->pages.backingFile());
-            const auto content = external ? std::span(reinterpret_cast<const uint8_t*>(&size), sizeof(size)) :
+            const auto content = exact ? std::span<const uint8_t>{} :
+                                 external ? std::span(reinterpret_cast<const uint8_t*>(&size), sizeof(size)) :
                                  std::span<const uint8_t>(file->storage->pages).first(size);
-            if (!row(path, external ? 3 : 1, file->mode, file->uid, file->gid, file->inode, content, label) ||
+            if (!row(path, exact ? 4 : external ? 3 : 1, file->mode, file->uid, file->gid, file->inode, content, label) ||
                 !writeTimes(path, file->times) || !writeAcl(path, false, file->accessAcl) ||
                 !writeAttributes(fileAttributes.get(), path, file->userAttributes)) return false;
         }

@@ -1,5 +1,9 @@
 #include "ProbeLinux.hpp"
 #include "NativeCode.hpp"
+#include <fcntl.h>
+#include <filesystem>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <sys/mman.h>
 
 #include "BpfProgram.hpp"
@@ -1642,6 +1646,7 @@ uint64_t ProbeLinux::resize(const WritableFile& file, uint64_t size) {
     const auto zeroTo = size < file.storage->size ? pages : std::min<uint64_t>(size, before);
     if (zeroFrom < zeroTo) std::fill(file.storage->pages.begin() + zeroFrom, file.storage->pages.begin() + zeroTo, 0);
     file.storage->size = size;
+    file.storage->pages.truncateFile(size);
     return 0;
 }
 
@@ -1959,12 +1964,16 @@ uint64_t ProbeLinux::renameFile(Machine& machine) {
     if (!canAccessParent(source, true) || !canAccessParent(destination, true)) return uint64_t(-13);
     if (directory) {
         const auto result = renameDirectory(source, destination, flags != 0);
-        if (!result) fileMoved(source, destination, true);
+        if (!result) {
+            fileMoved(source, destination, true);
+            sharedMoved(source, destination);
+        }
         return result;
     }
     if (directories.contains(destination)) return uint64_t(-21);
     if (const auto existing = find(destination, 0); existing && !existing->temporary) return uint64_t(-30);
     if (flags && (writableFiles.contains(destination) || links.contains(destination))) return uint64_t(-17);
+    sharedFileRemoved(destination);
     writableFiles.erase(destination);
     links.erase(destination);
     const auto move = [&](auto& items, auto item) {
@@ -1975,6 +1984,7 @@ uint64_t ProbeLinux::renameFile(Machine& machine) {
     if (file != writableFiles.end()) move(writableFiles, file);
     else move(links, link);
     fileMoved(source, destination, false);
+    sharedMoved(source, destination);
     return 0;
 }
 
@@ -2048,6 +2058,7 @@ uint64_t ProbeLinux::open(const Machine& machine, const std::string& path, uint3
         file->times[1] = file->times[3];
         if (const auto context = newFileContext(pathname); !context.empty())
             file->attributes["security.selinux"].assign(context.c_str(), context.c_str() + context.size() + 1);
+        if (persistent) sharedFileCreated(pathname, *file);
         writableFiles.emplace(pathname, std::move(file));
         fileEvent(pathname, fileCreated);
         entry = find(pathname, flags);
@@ -4618,9 +4629,16 @@ bool ProbeLinux::fileCall(Machine& machine) {
                     } else {
                         x[0] = directories.erase(backing) ? 0 : uint64_t(-2);
                     }
-                    if (!x[0]) fileEvent(backing, fileDeleted, true);
+                    if (!x[0]) {
+                        fileEvent(backing, fileDeleted, true);
+                        if (const auto host = sharedHost(backing); !host.empty()) {
+                            std::error_code ignored;
+                            std::filesystem::remove_all(host, ignored);  // with what the host put there that the guest never saw
+                        }
+                    }
                 } else if ((links.contains(backing) || (entry && entry->temporary)) && writablePath(path)) {
                     if (!canAccessParent(backing, true)) { x[0] = uint64_t(-13); break; }
+                    sharedFileRemoved(backing);
                     writableFiles.erase(backing);
                     links.erase(backing);
                     fileEvent(backing, fileDeleted);
@@ -4674,6 +4692,7 @@ bool ProbeLinux::fileCall(Machine& machine) {
                     directory.accessAcl = inheritAcl(parentMetadata, directory.mode);
                     if (parentMetadata) directory.defaultAcl = parentMetadata->defaultAcl;
                     directories.emplace(backing, std::move(directory));
+                    if (const auto host = sharedHost(backing); !host.empty()) ::mkdir(host.c_str(), 0755);
                     if (const auto* view = mountFor(path); view && view->device == "cgroup2") {
                         cgroupFiles.emplace(backing + std::string(cgroupProcs),
                                             std::make_shared<Directory>(Directory{0644, userId(), gid}));
@@ -7475,6 +7494,70 @@ void ProbeLinux::fileEvent(std::string_view path, uint32_t mask, bool directory,
         }
     }
     if (notify) wakePollers();
+}
+
+std::string ProbeLinux::sharedHost(std::string_view backing) const {
+    if (sharedHostRoot.empty()) return {};
+    if (backing == sharedGuestRoot) return sharedHostRoot;
+    return inside(backing, sharedGuestRoot) ? sharedHostRoot + std::string(backing.substr(sharedGuestRoot.size())) : std::string{};
+}
+
+void ProbeLinux::sharedFileCreated(const std::string& backing, WritableFile& file) {
+    const auto host = sharedHost(backing);
+    if (host.empty()) return;
+    const int fd = ::open(host.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    if (fd < 0) return;  // it stays a file of the database, and moves here when the data is next mounted
+    ::close(fd);
+    file.storage->pages.attachExact(host, 0);
+}
+
+void ProbeLinux::sharedFileRemoved(const std::string& backing) {
+    const auto found = writableFiles.find(backing);
+    if (found == writableFiles.end() || !found->second->storage->pages.exact()) return;
+    auto& storage = *found->second->storage;
+    const std::string host = storage.pages.backingFile();
+    // Whoever still has the file open or mapped keeps its content, in memory.
+    if (found->second.use_count() > 1 || found->second->storage.use_count() > 1) {
+        storage.pages.unback();
+        if (storage.placedMoves != storage.pages.moves) storage.replace();
+    }
+    ::unlink(host.c_str());
+}
+
+void ProbeLinux::sharedMoved(const std::string& source, const std::string& destination) {
+    const auto from = sharedHost(source), to = sharedHost(destination);
+    if (from.empty() && to.empty()) return;
+    const auto each = [&](auto& nodes, const auto& visit) {
+        if (const auto root = nodes.find(destination); root != nodes.end()) visit(root->first, root->second);
+        for (auto it = nodes.lower_bound(destination + "/"); it != nodes.end() && inside(it->first, destination); ++it)
+            visit(it->first, it->second);
+    };
+    const auto placedAgain = [](SharedFileBytes& storage) {
+        if (storage.placedMoves != storage.pages.moves) storage.replace();
+    };
+    if (!from.empty() && !to.empty()) {
+        ::rename(from.c_str(), to.c_str());
+        each(writableFiles, [&](const std::string& path, const std::shared_ptr<WritableFile>& file) {
+            if (file->storage->pages.exact()) file->storage->pages.renameFile(sharedHost(path), false);
+        });
+    } else if (!to.empty()) {
+        each(directories, [&](const std::string& path, const Directory&) { ::mkdir(sharedHost(path).c_str(), 0755); });
+        each(writableFiles, [&](const std::string& path, const std::shared_ptr<WritableFile>& file) {
+            if (!file->persistent) return;
+            file->storage->pages.makeExact(sharedHost(path), file->storage->size);
+            placedAgain(*file->storage);
+        });
+    } else {
+        each(writableFiles, [&](const std::string&, const std::shared_ptr<WritableFile>& file) {
+            auto& pages = file->storage->pages;
+            if (!pages.exact()) return;
+            if (!dataFilesDirectory.empty() && pages.renameFile(externalFile(file->inode), true)) pages.leaveExact();
+            else pages.unback();
+            placedAgain(*file->storage);
+        });
+        std::error_code ignored;
+        std::filesystem::remove_all(from, ignored);
+    }
 }
 
 void ProbeLinux::fileMoved(std::string_view source, std::string_view destination, bool directory) {

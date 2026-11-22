@@ -136,6 +136,8 @@ struct ProbeLinux {
     bool captureAndroidLogs = false;
     // Whether the guest reaches the network through the host's sockets. Without it there is only loopback.
     bool hostNetwork = false;
+    // Makes a host directory the guest's shared storage (see sharedHostRoot). Before mountData.
+    void shareStorage(std::string hostDirectory) { sharedHostRoot = std::move(hostDirectory); }
     // Gives the guest its Ethernet interface and lets its sockets out through the host's.
     void enableHostNetwork();
     // Makes a Java process print the stacks of its threads into the Android log, the way SIGQUIT does:
@@ -755,6 +757,19 @@ private:
     std::string dataFilesDirectory;
     static constexpr uint64_t externalFileBytes = 1024 * 1024;
     std::string externalFile(uint64_t inode) const { return dataFilesDirectory + "/" + std::to_string(inode); }
+    // A host directory that is the guest's shared storage (/data/media/0, which apps see as
+    // /storage/emulated/0): every file and directory there is one of the host's, under its own name
+    // and exactly as long, so that the host's other apps can use them and put files there. The
+    // database keeps only who owns each. What the host has when the data is mounted is what the
+    // guest gets: files added from outside appear, files removed are gone. Set before mountData.
+    std::string sharedHostRoot;
+    static constexpr std::string_view sharedGuestRoot = "/data/media/0";
+    // The host path of a guest path in the shared storage, or nothing.
+    std::string sharedHost(std::string_view backing) const;
+    void sharedFileCreated(const std::string& backing, WritableFile& file);
+    void sharedFileRemoved(const std::string& backing);
+    // After a file or a directory tree moved: the host's files follow, into the shared storage, out of it, or within.
+    void sharedMoved(const std::string& source, const std::string& destination);
     // The database still has the content of files that have moved out of it: it is packed after the next sync.
     bool compactData = false;
     int64_t dataGeneration = 0;

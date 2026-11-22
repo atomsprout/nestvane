@@ -3,6 +3,7 @@
 #include "BpfProgram.hpp"
 #include "GfxstreamPipe.hpp"
 #include "ProbeLinux.hpp"
+#include <fstream>
 #include <algorithm>
 #include <array>
 #include <cassert>
@@ -7365,6 +7366,60 @@ int main() {
         }
         constexpr auto atCwd = uint32_t(-100);
         constexpr auto firstPath = base + 0x280, secondPath = base + 0x300, payload = base + 0x380;
+
+        {
+            // The shared storage is a host directory: its files are the host's, under their own names
+            // and exactly as long, and what the host adds or removes is there or gone at the next mount.
+            const auto databasePath = (cleanup.directory / "shared.sqlite3").string();
+            const auto hostRoot = cleanup.directory / "shared";
+            const auto text = [](const fs::path& path) {
+                std::ifstream in(path, std::ios::binary);
+                return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+            };
+            {
+                ProbeLinux guest(1, 0);
+                guest.shareStorage(hostRoot.string());
+                guest.mountData(databasePath);
+                for (const char* directory : {"/data/media", "/data/media/0", "/data/media/0/Notes"}) {
+                    put(firstPath, directory);
+                    assert(invoke(guest, 34, {atCwd, firstPath, 0770}) == 0);
+                }
+                put(firstPath, "/data/media/0/Notes/a.txt");
+                put(secondPath, "/data/media/0/b.txt");
+                assert(machine.store64(payload, 0x0a6f6c6c6568));  // "hello\n"
+                const auto file = invoke(guest, 56, {atCwd, firstPath, 0xc2, 0600});
+                assert(file < 256 && invoke(guest, 64, {file, payload, 6}) == 6);
+                assert(text(hostRoot / "Notes/a.txt") == "hello\n");
+                assert(invoke(guest, 276, {atCwd, firstPath, atCwd, secondPath, 0}) == 0);
+                assert(!fs::exists(hostRoot / "Notes/a.txt") && text(hostRoot / "b.txt") == "hello\n");
+                assert(invoke(guest, 64, {file, payload, 6}) == 6 && text(hostRoot / "b.txt") == "hello\nhello\n");
+                assert(invoke(guest, 57, {file}) == 0 && guest.syncData());
+            }
+            std::ofstream(hostRoot / "Notes/from-host.txt") << "hi";
+            fs::create_directory(hostRoot / "Added");
+            std::ofstream(hostRoot / "Added/deep.txt") << "deep";
+            {
+                ProbeLinux guest(1, 0);
+                guest.shareStorage(hostRoot.string());
+                guest.mountData(databasePath);
+                assert(invoke(guest, 56, {atCwd, secondPath, 0}) < 256);
+                put(firstPath, "/data/media/0/Added/deep.txt");
+                auto file = invoke(guest, 56, {atCwd, firstPath, 0});
+                assert(file < 256 && invoke(guest, 63, {file, payload, 8}) == 4);
+                put(firstPath, "/data/media/0/Notes/from-host.txt");
+                file = invoke(guest, 56, {atCwd, firstPath, 0});
+                assert(file < 256 && invoke(guest, 63, {file, payload, 8}) == 2 && invoke(guest, 57, {file}) == 0);
+                assert(invoke(guest, 35, {atCwd, firstPath, 0}) == 0 && !fs::exists(hostRoot / "Notes/from-host.txt"));
+                assert(guest.syncData());
+            }
+            fs::remove(hostRoot / "b.txt");
+            {
+                ProbeLinux guest(1, 0);
+                guest.shareStorage(hostRoot.string());
+                guest.mountData(databasePath);
+                assert(invoke(guest, 56, {atCwd, secondPath, 0}) == uint64_t(-2));
+            }
+        }
 
         {
             // A large file is kept in a host file beside the database: it comes back with what was
