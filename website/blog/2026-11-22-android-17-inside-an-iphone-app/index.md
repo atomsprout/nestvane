@@ -3,6 +3,7 @@ slug: android-17-inside-an-iphone-app
 title: "I don't know Android's internals. Could an AI still run Android 17 inside an iPhone app?"
 description: How Nestvane was built in four days by one person directing coding agents, what it measures, and what it cannot do yet.
 date: 2026-11-22
+image: ./cover.png
 authors:
   - name: AtomSprout
     url: https://github.com/atomsprout
