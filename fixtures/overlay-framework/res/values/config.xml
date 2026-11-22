@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The boot does not wait for SystemUI to draw the wallpaper before it starts the launcher. -->
+    <bool name="config_checkWallpaperAtBoot">false</bool>
+</resources>

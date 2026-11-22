@@ -395,6 +395,9 @@ def make_framework_root(base, image, guest, defer_zygote_preload, hardware_timeo
     set_property(system_properties, "dalvik.vm.usejit", "false")
     # The guest is one app's window on a phone that has a lock screen of its own.
     set_property(system_properties, "ro.lockscreen.disable.default", "true")
+    # SurfaceFlinger compiles a hundred shaders ahead of use while the boot waits for it: 3.9 s on
+    # an iPhone 15 Pro. Each is compiled when it is first drawn with instead.
+    set_property(system_properties, "service.sf.prime_shader_cache", "0")
     set_property(system_properties, "ro.hw_timeout_multiplier", "10")
     # ART creates a code-cache memory file for every app even with JIT disabled.
     values = system_properties.read_text().rstrip("\n")

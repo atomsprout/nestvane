@@ -1,0 +1,29 @@
+iPhone 15 Pro, iOS 26.2, relaunches after the first boot of this build: launcher displayed at 7410, 7182, 7110 and 7293 ms.
+
+iOS device 26.2 | process 3769 | thermal nominal → nominal
+Android Launcher displayed after 7297 ms
+ActivityTaskManager: Displayed com.android.launcher3/.uioverrides.QuickstepLauncher for user 0: +1s349ms
+  peak iOS process RSS bytes: 3927293952
+  iOS physical footprint bytes: 2246513000
+  peak iOS physical footprint bytes: 2248741224
+  iOS process memory limit remaining bytes: 4195937944
+  iOS memory bytes: internal 2072248320, compressed 26427392, external 1830010880, reusable 98304, resident 3902357504
+
+[2522 ms] Zygote: end preload
+[2644 ms] SystemServer: Entered the Android system server!
+[4030 ms] ActivityManager: Start proc 439:com.android.systemui/u0a8 for bound-service {com.android.systemui/com.android.systemui.wallpapers.ImageWallp
+[4164 ms] ActivityManager: Start proc 455:com.android.networkstack.process/1073 for added application com.android.networkstack.process
+[4174 ms] ActivityManager: Start proc 458:com.android.settings/1000 for top-activity {com.android.settings/com.android.settings.FallbackHome}
+[4568 ms] ActivityTaskManager: Displayed com.android.settings/.FallbackHome for user 0: +450ms
+[4854 ms] ActivityManager: Start proc 528:com.android.permissioncontroller/u0a17 for broadcast {com.android.permissioncontroller/com.android.permissio
+[4912 ms] ActivityManager: Start proc 541:com.android.launcher3/u0a7 for bound-service {com.android.launcher3/com.android.quickstep.TouchInteractionSe
+[5963 ms] BootAnimation: BootAnimationStopTiming start time: 324382072ms
+[6091 ms] ActivityManager: Start proc 597:com.android.inputmethod.latin/u0a5 for bound-service {com.android.inputmethod.latin/com.android.inputmethod.
+[6249 ms] ActivityManager: Start proc 615:android.ext.services/u0a20 for on-hold
+[6622 ms] ActivityManager: Start proc 669:com.android.devicelockcontroller/u0a26 for bound-service {com.android.devicelockcontroller/com.android.devic
+[6661 ms] ActivityManager: Start proc 677:android.process.media/u0a1 for content provider {com.android.providers.downloads/com.android.providers.downl
+[6727 ms] ActivityManager: Start proc 686:com.android.keychain/1000 for bound-service {com.android.keychain/com.android.keychain.KeyChainService}
+[7156 ms] ActivityManager: Start proc 732:com.android.packageinstaller/u0a3 for broadcast {com.android.packageinstaller/com.android.packageinstaller.c
+[7314 ms] ActivityManager: Start proc 746:com.android.providers.media.module/u0a29 for broadcast {com.android.providers.media.module/com.android.provi
+[7521 ms] ActivityManager: Start proc 769:com.atomsprout.scriptwidget/u0a32 for broadcast {com.atomsprout.scriptwidget/com.everettjf.scriptwidget.widg
+[8392 ms] ActivityTaskManager: Displayed com.android.launcher3/.uioverrides.QuickstepLauncher for user 0: +1s184ms
