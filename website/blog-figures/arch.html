@@ -1,0 +1,25 @@
+<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="base.css">
+<style>
+body { width: 1200px; }
+.cols { display: grid; grid-template-columns: 1fr 1.25fr; gap: 26px; }
+.col { background: #fff; border: 1px solid #f3e3c3; border-radius: 16px; padding: 22px; }
+.col h2 { font-size: 22px; margin-bottom: 16px; color: #7a6a55; font-weight: 600; }
+.b { border-radius: 12px; padding: 14px 16px; font-size: 18px; line-height: 1.4; margin-bottom: 6px; }
+.b b { display: block; font-size: 21px; }
+.arrow { text-align: center; font-size: 20px; color: #c9b48a; margin-bottom: 6px; }
+.y { background: #fff3d6; } .o { background: #ffe1cc; } .g { background: #eef1f3; } .n { background: #e9f2ff; }
+.two { display: grid; grid-template-columns: 1.3fr 1fr; gap: 8px; }
+</style>
+<div class="pad"><h1>How Nestvane runs Android</h1><p class="sub">iOS lets no app create machine code while it runs, so all translation happens when the app is built</p>
+<div class="cols">
+<div class="col"><h2>At build time, on a computer</h2>
+<div class="b y"><b>Android 17, rebuilt</b>the compiler leaves five registers unused</div><div class="arrow">↓</div>
+<div class="b y"><b>About 1,230 modules</b>system libraries, the runtime, precompiled app code</div><div class="arrow">↓</div>
+<div class="b o"><b>Static rewriting</b>ordinary instructions copied; system calls and indirect branches go to the runtime</div><div class="arrow">↓</div>
+<div class="b o" style="margin-bottom:0"><b>12 frameworks</b>signed with the app</div></div>
+<div class="col"><h2>At run time, in an app on an iPhone</h2>
+<div class="b n"><b>Android 17 and its apps</b>the stock init, Zygote, system_server, launcher, Settings</div><div class="arrow">↓</div>
+<div class="two"><div class="b o"><b>Translated code</b>runs directly on the processor</div><div class="b g"><b>Interpreter</b>native libraries inside APKs</div></div><div class="arrow">↓ system calls</div>
+<div class="b y"><b>A Linux kernel layer written for the app</b>processes, memory, files, Binder, signals, sockets</div><div class="arrow">↓</div>
+<div class="b g" style="margin-bottom:0"><b>iOS</b>Metal for drawing, the Files app, network, sound, touch</div></div>
+</div></div>

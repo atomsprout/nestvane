@@ -1,0 +1,18 @@
+<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="base.css">
+<style>
+body { width: 1200px; }
+.bar { display: grid; grid-template-columns: 350px 1fr 130px; align-items: center; gap: 0 18px; margin-bottom: 16px; }
+.name { font-size: 19px; text-align: right; line-height: 1.35; } .name small { display: block; color: #8a7a66; font-size: 15px; }
+.track { height: 40px; background: #fff3d6; border-radius: 8px; }
+.fill { height: 100%; border-radius: 8px; background: #d9480f; }
+.fill.g { background: #9aa0a6; }
+.val { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
+</style>
+<div class="pad"><h1>Time to the Android home screen</h1><p class="sub">Bar lengths are on a logarithmic scale</p>
+<div class="bar"><div class="name">Interpreter only<small>iPhone 15 Pro, first version</small></div><div class="track"><div class="fill g" style="width:100%"></div></div><div class="val">606 s</div></div>
+<div class="bar"><div class="name">Native code, first full boot<small>iPhone 11</small></div><div class="track"><div class="fill" style="width:73.4%"></div></div><div class="val">110 s</div></div>
+<div class="bar"><div class="name">The missing lmkd added<small>iPhone 11</small></div><div class="track"><div class="fill" style="width:55%"></div></div><div class="val">34 s</div></div>
+<div class="bar"><div class="name">On an iPhone 15 Pro<small>first milestone</small></div><div class="track"><div class="fill" style="width:37.4%"></div></div><div class="val">11 s</div></div>
+<div class="bar"><div class="name">Wasted work removed<small>iPhone 15 Pro</small></div><div class="track"><div class="fill" style="width:29.2%"></div></div><div class="val">6.5 s</div></div>
+<div class="bar"><div class="name">With media services and more apps<small>the release, iPhone 15 Pro and 17 Pro</small></div><div class="track"><div class="fill" style="width:36%"></div></div><div class="val">about 10 s</div></div>
+<p class="note">From the lab record, results/G0.md. The first start after installing takes about 17 seconds and is not shown.</p></div>

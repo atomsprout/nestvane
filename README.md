@@ -101,6 +101,7 @@ Read more in the documentation:
 - [Building](docs/building.md) and [Status](docs/status.md)
 - [Installing the release](docs/installing.md), [1.0 in numbers](docs/measurements.md), and
   [Nestvane, Twoyi and Andarium](docs/comparison.md)
+- [How it was built in four days](https://atomsprout.com/nestvane/blog/android-17-inside-an-iphone-app/), on the blog
 
 ## Measured
 
@@ -150,7 +151,7 @@ tools/         building the guest image and the translated code; validation
 fixtures/      guest-side scripts, resource overlays and small test apps
 results/       the lab record: what was measured, on which device
 docs/          documentation, in English and 简体中文
-website/       the website (Docusaurus); its pages come from docs/
+website/       the website and its blog (Docusaurus, in English); its documents come from docs/
 ```
 
 ## Community

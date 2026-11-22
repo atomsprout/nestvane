@@ -31,11 +31,8 @@ const config = {
 
   i18n: {
     defaultLocale: 'en',
-    locales: ['en', 'zh-Hans'],
-    localeConfigs: {
-      en: {label: 'English'},
-      'zh-Hans': {label: '简体中文', htmlLang: 'zh-CN'},
-    },
+    // The site is in English. The repository's README and documents also exist in Chinese.
+    locales: ['en'],
   },
 
   themes: ['@docusaurus/theme-mermaid'],
@@ -48,7 +45,14 @@ const config = {
         docs: {
           sidebarPath: './sidebars.js',
         },
-        blog: false,
+        blog: {
+          blogTitle: 'Nestvane blog',
+          blogDescription: 'Notes on how Nestvane was built and what was measured.',
+          blogSidebarTitle: 'Posts',
+          showReadingTime: true,
+          onUntruncatedBlogPosts: 'throw',
+          onInlineAuthors: 'ignore',
+        },
         theme: {
           customCss: './src/css/custom.css',
         },
@@ -75,7 +79,7 @@ const config = {
           {type: 'docSidebar', sidebarId: 'docs', position: 'left', label: 'Documentation'},
           {to: '/docs/installing/', label: 'Install', position: 'left'},
           {to: '/docs/status/', label: 'Status', position: 'left'},
-          {type: 'localeDropdown', position: 'right'},
+          {to: '/blog/', label: 'Blog', position: 'left'},
           {href: 'https://github.com/atomsprout/nestvane/releases', label: 'Download', position: 'right'},
           {href: 'https://github.com/atomsprout/nestvane', label: 'GitHub', position: 'right'},
         ],
@@ -88,6 +92,7 @@ const config = {
             items: [
               {label: 'Documentation', to: '/docs/'},
               {label: 'Install the release', to: '/docs/installing/'},
+              {label: 'Blog', to: '/blog/'},
               {label: 'Privacy policy', href: 'pathname:///nestvane/#privacy'},
             ],
           },

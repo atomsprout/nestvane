@@ -1,0 +1,15 @@
+<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="base.css">
+<style>
+body { width: 1200px; }
+pre { background: #2b2622; color: #f6eedd; border-radius: 14px; padding: 26px 30px; font: 21px/1.7 "SF Mono", Menlo, monospace; }
+.c { color: #b9a98c; } .k { color: #ffb454; }
+table { border-collapse: collapse; width: 100%; margin-bottom: 24px; font-size: 20px; }
+td, th { border-bottom: 1px solid #f0e0bf; padding: 11px 14px; text-align: left; } th { color: #7a6a55; font-weight: 600; }
+td:first-child { font: 600 20px "SF Mono", Menlo, monospace; color: #d9480f; width: 130px; }
+</style>
+<div class="pad"><h1>Five registers kept free, and one indirect branch</h1><p class="sub">Android's code does not touch these five, so the rewritten code has somewhere to keep its own state</p>
+<table><tr><th>Register</th><th>Used for</th></tr><tr><td>x25</td><td>The context of the current guest thread</td></tr><tr><td>x26</td><td>The jump table: where the translated code for a guest address is</td></tr><tr><td>x27</td><td>The chunk table of the address space</td></tr><tr><td>x28</td><td>Scratch</td></tr><tr><td>x18</td><td>Reserved by iOS; the guest may not use it</td></tr></table>
+<pre><span class="c">// one original instruction: br x9 (branch to the address in x9)</span>
+<span class="k">add</span> x28, x26, x9, lsl #1   <span class="c">// find the target's slot in the jump table</span>
+<span class="k">ldr</span> x28, [x28]             <span class="c">// load the address of its translated code</span>
+<span class="k">br</span>  x28                    <span class="c">// go there</span></pre></div>

@@ -97,6 +97,7 @@ Nestvane 走的是剩下的那条路：**把 Android 重新构建并提前翻译
 - [构建](docs/zh-CN/building.md)与[现状](docs/zh-CN/status.md)
 - [安装发布版](docs/zh-CN/installing.md)、[数字里的 1.0](docs/zh-CN/measurements.md)、
   [Nestvane、两仪和 Andarium](docs/zh-CN/comparison.md)
+- [四天是怎么做出来的](https://atomsprout.com/nestvane/blog/android-17-inside-an-iphone-app/)（博客，英文）
 
 ## 测量数据
 
@@ -142,7 +143,7 @@ tools/         构建客体镜像和翻译后的代码；验证
 fixtures/      客体里的脚本、资源覆盖包和几个小测试应用
 results/       实验记录：测了什么、在哪台设备上
 docs/          文档，English 与简体中文
-website/       网站（Docusaurus），页面内容取自 docs/
+website/       网站和博客（Docusaurus，英文），文档内容取自 docs/
 ```
 
 ## 社区

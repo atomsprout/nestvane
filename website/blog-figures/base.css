@@ -1,0 +1,6 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, "Helvetica Neue", "PingFang SC", sans-serif; background: #fffdf8; color: #2a2118; -webkit-font-smoothing: antialiased; }
+.pad { padding: 44px 52px; }
+h1 { font-size: 34px; font-weight: 700; margin-bottom: 8px; }
+.sub { font-size: 20px; color: #7a6a55; margin-bottom: 30px; }
+.note { font-size: 17px; color: #8a7a66; margin-top: 22px; }

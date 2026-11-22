@@ -2,7 +2,6 @@ import React, {useState} from 'react';
 import Layout from '@theme/Layout';
 import Link from '@docusaurus/Link';
 import useBaseUrl from '@docusaurus/useBaseUrl';
-import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import {content} from '../home-content';
 import styles from './index.module.css';
 
@@ -48,8 +47,7 @@ function Video({label, alt, watch}) {
 }
 
 export default function Home() {
-  const {i18n} = useDocusaurusContext();
-  const text = content[i18n.currentLocale] ?? content.en;
+  const text = content.en;
   const icon = useBaseUrl('img/nestvane-icon.png');
   const diagram = useBaseUrl('img/architecture.svg');
   return (
