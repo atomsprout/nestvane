@@ -1027,6 +1027,11 @@ service nestvane-trim /system/bin/sh /system/etc/nestvane/trim.sh
                 if (!configuration.empty() && configuration.back() != '\n') configuration += '\n';
                 configuration += "androidboot.nestvane.timezone = \"" + std::string(zone) + "\"\n";
             }
+            // NESTVANE_DISPLAY_HZ is the rate the guest's display composer ticks at.
+            if (const int hertz = std::atoi(std::getenv("NESTVANE_DISPLAY_HZ") ? std::getenv("NESTVANE_DISPLAY_HZ") : ""); hertz >= 10 && hertz <= 240) {
+                if (!configuration.empty() && configuration.back() != '\n') configuration += '\n';
+                configuration += "androidboot.qemu.vsync = \"" + std::to_string(hertz) + "\"\n";
+            }
             linux.mount("/proc/bootconfig", {reinterpret_cast<const uint8_t*>(configuration.data()), configuration.size()});
         }
         if (auto profile = files.find("/nestvane-metadata/selinux-file-labels.txt"); profile != files.end()) {

@@ -150,6 +150,8 @@ targets:
         # The app's Documents folder shows in the Files app: Documents/Android is the guest's shared storage.
         LSSupportsOpeningDocumentsInPlace: true
         UIFileSharingEnabled: true
+        # Without this an iPhone shows the app at 60 frames a second at most, whatever its screen can do.
+        CADisableMinimumFrameDurationOnPhone: true
         # The menu of the app's icon on the home screen.
         UIApplicationShortcutItems:
           - UIApplicationShortcutItemType: com.atomsprout.nestvane.install-apk

@@ -78,6 +78,19 @@ std::jthread StartDisplayReader(const nestvane::GfxstreamSession& renderer, Disp
     if (!renderer.hasDisplayReadback()) return {};
     return std::jthread([&renderer, &launcherDrawn, size, captureContent, present](std::stop_token stop) mutable {
         bool reportLauncher = true;
+        // How often the display is looked at for a new frame: NESTVANE_DISPLAY_HZ, the rate the guest
+        // composes at. NESTVANE_DISPLAY_RATE=1 writes what came of it to display-rate.txt each second:
+        // the frames the guest composed and the frames that were shown.
+        const int hertz = std::clamp(std::atoi(getenv("NESTVANE_DISPLAY_HZ") ?: "30"), 10, 240);
+        const auto period = std::chrono::microseconds(1'000'000 / hertz);
+        const bool reportRate = getenv("NESTVANE_DISPLAY_RATE") != nullptr;
+        NSURL* rateURL = [[NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject
+            URLByAppendingPathComponent:@"display-rate.txt"];
+        NSMutableString* rates = [NSMutableString string];
+        auto rateStarted = std::chrono::steady_clock::now();
+        uint64_t rateFirstFrame = 0;
+        unsigned shown = 0;
+        auto next = std::chrono::steady_clock::now();
         const auto capacity = std::max(displayPixelBudget, size_t(size.width) * size.height) * 4;
         std::unique_ptr<uint8_t[]> pixels;
         const auto slot = dispatch_semaphore_create(1);
@@ -96,6 +109,8 @@ std::jthread StartDisplayReader(const nestvane::GfxstreamSession& renderer, Disp
                         ? GuestDisplayImage(pixels, capacity, dimensions[0], dimensions[1])
                         : nil;
                     if (image) {
+                        if (!rateFirstFrame) rateFirstFrame = frame;
+                        ++shown;
                         lastFrame = frame;
                         const auto bytes = size_t(dimensions[0]) * dimensions[1] * 4;
                         const bool nonuniform = (captureContent || wantLauncher) &&
@@ -113,7 +128,17 @@ std::jthread StartDisplayReader(const nestvane::GfxstreamSession& renderer, Disp
                     }
                 }
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(33));
+            if (const auto now = std::chrono::steady_clock::now(); reportRate && now - rateStarted >= std::chrono::seconds(1)) {
+                const double seconds = std::chrono::duration<double>(now - rateStarted).count();
+                [rates appendFormat:@"%dx%d at %d Hz: composed %.0f, shown %.0f frames per second\n", size.width, size.height, hertz,
+                    rateFirstFrame ? double(lastFrame - rateFirstFrame + 1) / seconds : 0.0, shown / seconds];
+                [rates writeToURL:rateURL atomically:YES encoding:NSUTF8StringEncoding error:nil];
+                rateStarted = now;
+                rateFirstFrame = 0;
+                shown = 0;
+            }
+            next = std::max(next + period, std::chrono::steady_clock::now());
+            std::this_thread::sleep_until(next);
         }
     });
 }
@@ -738,6 +763,11 @@ static NSString* const InstallApkShortcut = @"com.atomsprout.nestvane.install-ap
                     [outcome writeToURL:checkURL atomically:YES encoding:NSUTF8StringEncoding error:nil];
                 }] resume];
             });
+            // Android composes 60 times a second, unless NESTVANE_DISPLAY_HZ says otherwise. A screen that
+            // can show 120 gains nothing from asking for it yet: on an iPhone 17 Pro the guest gets about 50
+            // frames a second composed while a list scrolls, at 60 and at 120 alike (results/G0.md).
+            if (!getenv("NESTVANE_DISPLAY_HZ"))
+                setenv("NESTVANE_DISPLAY_HZ", @(std::min<NSInteger>(UIScreen.mainScreen.maximumFramesPerSecond, 60)).stringValue.UTF8String, 1);
             // Android shows the phone's battery: its level, and whether it is charging.
             UIDevice.currentDevice.batteryMonitoringEnabled = YES;
             const auto reportBattery = ^{
