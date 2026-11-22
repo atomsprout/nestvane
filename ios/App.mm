@@ -357,6 +357,120 @@ static NSString* const InstallApkShortcut = @"com.atomsprout.nestvane.install-ap
 }
 @end
 
+// The app's settings: what it is and which version, where Android's shared files are, and where to
+// find the people who make it. Reached from the More menu.
+@interface SettingsViewController : UITableViewController
+@end
+
+@implementation SettingsViewController {
+    NSArray<NSDictionary*>* _sections;
+}
+
+- (instancetype)init {
+    return [super initWithStyle:UITableViewStyleInsetGrouped];
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"Settings";
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone
+                                                                                           target:self action:@selector(close)];
+    NSURL* storage = [[NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject
+        URLByAppendingPathComponent:@"Android"];
+    NSString* files = [@"shareddocuments://" stringByAppendingString:
+        [storage.path stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLPathAllowedCharacterSet]];
+    NSString* rate = [NSString stringWithFormat:@"%s frames per second", getenv("NESTVANE_DISPLAY_HZ") ?: "60"];
+    const auto row = [](NSString* symbol, NSString* title, NSString* detail, NSString* url) {
+        return @{@"symbol": symbol, @"title": title, @"detail": detail ?: @"", @"url": url ?: @""};
+    };
+    _sections = @[
+        @{@"title": @"Android", @"footer": @"Files you put into the Android folder appear in Android the next time it starts.",
+          @"rows": @[row(@"cpu", @"Android version", @"17", nil), row(@"display", @"Display", rate, nil),
+                     row(@"folder", @"Shared files", @"Open in Files", files)]},
+        @{@"title": @"Community", @"footer": @"",
+          @"rows": @[row(@"globe", @"Website", @"atomsprout.com/nestvane", @"https://atomsprout.com/nestvane/"),
+                     row(@"bubble.left.and.bubble.right", @"Discord", @"Join the server", @"https://discord.gg/eGzEaP6TzR"),
+                     row(@"paperplane", @"Telegram", @"t.me/atomsprout", @"https://t.me/atomsprout"),
+                     row(@"envelope", @"Email support", @"atomsprout@gmail.com", @"mailto:atomsprout@gmail.com?subject=Nestvane%20support")]},
+        @{@"title": @"About", @"footer": @"Android is a trademark of Google LLC. Nestvane is not affiliated with or endorsed by Google.",
+          @"rows": @[row(@"hand.raised", @"Privacy policy", nil, @"https://atomsprout.com/nestvane/#privacy")]},
+    ];
+    UIImageView* icon = [[UIImageView alloc] initWithImage:[UIImage imageNamed:@"Emblem"]];
+    icon.layer.cornerRadius = 20;
+    icon.layer.cornerCurve = kCACornerCurveContinuous;
+    icon.clipsToBounds = YES;
+    icon.isAccessibilityElement = NO;
+    UILabel* name = [UILabel new];
+    name.text = @"Nestvane";
+    name.font = [UIFont systemFontOfSize:28 weight:UIFontWeightBold];
+    name.adjustsFontForContentSizeCategory = YES;
+    UILabel* version = [UILabel new];
+    NSDictionary* info = NSBundle.mainBundle.infoDictionary;
+    version.text = [NSString stringWithFormat:@"Version %@ (%@)", info[@"CFBundleShortVersionString"], info[@"CFBundleVersion"]];
+    version.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+    version.textColor = UIColor.secondaryLabelColor;
+    version.adjustsFontForContentSizeCategory = YES;
+    UILabel* line = [UILabel new];
+    line.text = @"Android, running inside an app on your iPhone.";
+    line.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+    line.textColor = UIColor.secondaryLabelColor;
+    line.textAlignment = NSTextAlignmentCenter;
+    line.numberOfLines = 0;
+    line.adjustsFontForContentSizeCategory = YES;
+    UIStackView* header = [[UIStackView alloc] initWithArrangedSubviews:@[icon, name, version, line]];
+    header.axis = UILayoutConstraintAxisVertical;
+    header.alignment = UIStackViewAlignmentCenter;
+    header.spacing = 6;
+    [header setCustomSpacing:14 afterView:icon];
+    header.layoutMargins = UIEdgeInsetsMake(24, 24, 12, 24);
+    header.layoutMarginsRelativeArrangement = YES;
+    [NSLayoutConstraint activateConstraints:@[[icon.widthAnchor constraintEqualToConstant:88], [icon.heightAnchor constraintEqualToConstant:88]]];
+    header.frame = CGRectMake(0, 0, 320, [header systemLayoutSizeFittingSize:CGSizeMake(320, 0)
+        withHorizontalFittingPriority:UILayoutPriorityRequired verticalFittingPriority:UILayoutPriorityFittingSizeLevel].height);
+    self.tableView.tableHeaderView = header;
+}
+
+- (void)close {
+    [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView*)tableView { return NSInteger(_sections.count); }
+- (NSInteger)tableView:(UITableView*)tableView numberOfRowsInSection:(NSInteger)section {
+    return NSInteger([_sections[section][@"rows"] count]);
+}
+- (NSString*)tableView:(UITableView*)tableView titleForHeaderInSection:(NSInteger)section { return _sections[section][@"title"]; }
+- (NSString*)tableView:(UITableView*)tableView titleForFooterInSection:(NSInteger)section {
+    NSString* footer = _sections[section][@"footer"];
+    return footer.length ? footer : nil;
+}
+
+- (UITableViewCell*)tableView:(UITableView*)tableView cellForRowAtIndexPath:(NSIndexPath*)indexPath {
+    UITableViewCell* cell = [tableView dequeueReusableCellWithIdentifier:@"row"]
+        ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"row"];
+    NSDictionary* row = _sections[indexPath.section][@"rows"][indexPath.row];
+    UIListContentConfiguration* content = UIListContentConfiguration.valueCellConfiguration;
+    content.image = [UIImage systemImageNamed:row[@"symbol"]];
+    content.text = row[@"title"];
+    content.secondaryText = row[@"detail"];
+    cell.contentConfiguration = content;
+    const BOOL opens = [row[@"url"] length] > 0;
+    cell.selectionStyle = opens ? UITableViewCellSelectionStyleDefault : UITableViewCellSelectionStyleNone;
+    cell.accessoryView = opens ? [[UIImageView alloc] initWithImage:
+        [UIImage systemImageNamed:@"arrow.up.right" withConfiguration:
+            [UIImageSymbolConfiguration configurationWithPointSize:13 weight:UIImageSymbolWeightSemibold]]] : nil;
+    cell.accessoryView.tintColor = UIColor.tertiaryLabelColor;
+    cell.accessibilityTraits = opens ? UIAccessibilityTraitLink : UIAccessibilityTraitStaticText;
+    return cell;
+}
+
+- (void)tableView:(UITableView*)tableView didSelectRowAtIndexPath:(NSIndexPath*)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    NSString* address = _sections[indexPath.section][@"rows"][indexPath.row][@"url"];
+    if (NSURL* url = address.length ? [NSURL URLWithString:address] : nil)
+        [UIApplication.sharedApplication openURL:url options:@{} completionHandler:nil];
+}
+@end
+
 @interface ValidationViewController : UIViewController <UIDocumentPickerDelegate>
 - (void)installApkAtURL:(NSURL*)source;
 - (void)chooseApkWhenReady;
@@ -425,7 +539,13 @@ static NSString* const InstallApkShortcut = @"com.atomsprout.nestvane.install-ap
                                  identifier:nil handler:^(UIAction*) { if (owner.run.enabled) [owner runOrStop]; }];
             if (running) power.attributes = UIMenuElementAttributesDestructive;
             else if (!owner.run.enabled) power.attributes = UIMenuElementAttributesDisabled;
-            completion(@[install, power]);
+            UIAction* settings = [UIAction actionWithTitle:@"Settings" image:[UIImage systemImageNamed:@"gearshape"]
+                                                identifier:nil handler:^(UIAction*) {
+                UINavigationController* sheet = [[UINavigationController alloc] initWithRootViewController:[SettingsViewController new]];
+                sheet.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+                [owner presentViewController:sheet animated:YES completion:nil];
+            }];
+            completion(@[install, settings, power]);
         }]]];
     UIStackView* controls = [[UIStackView alloc] initWithArrangedSubviews:
         @[self.back, self.home, self.more, self.run]];
@@ -452,6 +572,29 @@ static NSString* const InstallApkShortcut = @"com.atomsprout.nestvane.install-ap
     self.details.textContainerInset = UIEdgeInsetsMake(12, 12, 12, 12);
     self.details.hidden = YES;
 
+    // NESTVANE_TEST_SCREEN=start or =settings saves what the app itself draws, which the frames of
+    // Android's display do not show: the start screen, or the settings sheet, as app-screen.png.
+    if (NSString* wanted = NSProcessInfo.processInfo.environment[@"NESTVANE_TEST_SCREEN"]) {
+        __weak ValidationViewController* shown = self;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+            ValidationViewController* owner = shown;
+            UIWindow* window = owner.view.window;
+            if (!window) return;
+            const auto save = ^{
+                UIImage* image = [[[UIGraphicsImageRenderer alloc] initWithBounds:window.bounds]
+                    imageWithActions:^(UIGraphicsImageRendererContext*) { [window drawViewHierarchyInRect:window.bounds afterScreenUpdates:YES]; }];
+                NSURL* documents = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
+                [UIImagePNGRepresentation(image) writeToURL:[documents URLByAppendingPathComponent:@"app-screen.png"] atomically:YES];
+            };
+            if (![wanted isEqualToString:@"settings"]) return save();
+            UINavigationController* sheet = [[UINavigationController alloc] initWithRootViewController:[SettingsViewController new]];
+            sheet.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+            sheet.modalPresentationStyle = UIModalPresentationFullScreen;
+            [owner presentViewController:sheet animated:NO completion:^{
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), save);
+            }];
+        });
+    }
     self.emblem = [EmblemView new];
     self.emblem.active = YES;
     self.startup = [[UIStackView alloc] initWithArrangedSubviews:@[self.emblem, self.status, self.details]];
