@@ -722,6 +722,22 @@ static NSString* const InstallApkShortcut = @"com.atomsprout.nestvane.install-ap
             NSURL* database = [guest URLByAppendingPathComponent:@"guest-data.sqlite3"];
             // Android's shared storage is a folder the Files app shows: On My iPhone > Nestvane > Android.
             setenv("NESTVANE_SHARED_STORAGE", [documents URLByAppendingPathComponent:@"Android"].fileSystemRepresentation, 1);
+            // One request through the system's own loader, to Apple's connectivity check: on phones where
+            // each app has to be allowed onto the network, this is what makes the system ask. Android's
+            // sockets alone do not, and are refused until the user has answered. The outcome is kept for
+            // finding out why Android has no network (network-check.txt).
+            static dispatch_once_t networkAsked;
+            dispatch_once(&networkAsked, ^{
+                NSURL* checkURL = [documents URLByAppendingPathComponent:@"network-check.txt"];
+                NSMutableURLRequest* request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"https://captive.apple.com/hotspot-detect.html"]
+                                                                       cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:15];
+                request.HTTPMethod = @"HEAD";
+                [[NSURLSession.sharedSession dataTaskWithRequest:request completionHandler:^(NSData*, NSURLResponse* response, NSError* error) {
+                    NSString* outcome = error ? [NSString stringWithFormat:@"error %ld %@: %@\n", long(error.code), error.domain, error.localizedDescription]
+                        : [NSString stringWithFormat:@"status %ld\n", long(static_cast<NSHTTPURLResponse*>(response).statusCode)];
+                    [outcome writeToURL:checkURL atomically:YES encoding:NSUTF8StringEncoding error:nil];
+                }] resume];
+            });
             // Android shows the phone's battery: its level, and whether it is charging.
             UIDevice.currentDevice.batteryMonitoringEnabled = YES;
             const auto reportBattery = ^{

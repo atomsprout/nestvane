@@ -252,6 +252,19 @@ def set_property(path, key, value):
     path.write_text("\n".join(lines + [f"{key}={value}"]) + "\n")
 
 
+def replace_build_names(guest, build_id, release):
+    """Every partition's properties may name the build: the one read last is what counts."""
+    values = {"ro.build.display.id": build_id, "ro.build.description": f"nestvane {release} {build_id}".replace("  ", " "),
+              "ro.build.user": "nestvane", "ro.build.host": "nestvane"}
+    for path in [guest / "system/build.prop", *sorted(guest.glob("*/etc/build.prop")), *sorted(guest.glob("*/build.prop"))]:
+        if not path.is_file():
+            continue
+        text = path.read_text()
+        for key, value in values.items():
+            if value and (path == guest / "system/build.prop" or f"\n{key}=" in "\n" + text):
+                set_property(path, key, value)
+
+
 def add_low_memory_killer(adb, guest):
     """lmkd, which the init root has a service entry for but not the program.
 
@@ -519,6 +532,12 @@ def make_framework_root(base, image, guest, defer_zygote_preload, hardware_timeo
     # What Settings > About phone shows as the device: the app, not the emulator image it was built from.
     for key in ("model", "brand", "manufacturer"):
         set_property(system_properties, f"ro.product.{key}", "Nestvane")
+    # The build number that page shows is the build's id alone, as on a released device, instead of the
+    # development build's description with the name of whoever built it. The fingerprints keep theirs:
+    # the package manager takes a changed fingerprint for a system update.
+    properties = dict(line.split("=", 1) for line in system_properties.read_text().splitlines() if "=" in line)
+    build_id = properties.get("ro.build.id", "")
+    replace_build_names(guest, build_id, properties.get("ro.build.version.release", ""))
     set_property(system_properties, "ro.hw_timeout_multiplier", "10")
     # ART creates a code-cache memory file for every app even with JIT disabled.
     values = system_properties.read_text().rstrip("\n")

@@ -5127,6 +5127,9 @@ bool ProbeLinux::fileCall(Machine& machine) {
                 if (!x[0]) fileEvent(entry.path, fileAttributes, true);
                 break;
             }
+            // The resolver gives each socket it probes routes with to the app it asks for, so that the
+            // traffic counts as the app's. Nothing here counts traffic by owner: root may, and that is all.
+            if (x[8] == 55 && entry.socket) { x[0] = userId() == 0 ? 0 : uint64_t(-1); break; }
             const auto& file = entry.temporary;
             if (!file) { x[0] = uint64_t(-30); break; }
             if (userId() != 0 && userId() != file->uid) { x[0] = uint64_t(-1); break; }
