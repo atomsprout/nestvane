@@ -7598,7 +7598,7 @@ int main() {
         assert(std::memcmp(machine.read(base + 0x480, sizeof(rootLabel), 4), rootLabel, sizeof(rootLabel)) == 0);
         assert(invoke(writer, 43, {firstPath, base + 0x450}) == 0);
         const auto quotaBlocks = load(base + 0x460);
-        assert(quotaBlocks == (128 * 1024 * 1024) / pageSize);
+        assert(quotaBlocks == (2048ULL * 1024 * 1024) / pageSize);  // ProbeLinux::maxWritableBytes
         assert(load(base + 0x468) == quotaBlocks && load(base + 0x470) == quotaBlocks);
         constexpr auto markerName = base + 0x530, markerValue = base + 0x590;
         put(markerName, "user.restorecon_in_progress");
