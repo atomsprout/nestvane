@@ -1,31 +1,34 @@
-/* Colours follow the app icon: violet first, on a warm paper background in light mode. */
+/* Neutral surfaces, with one green accent. The violet belongs to the app icon and stays there. */
 :root {
-  --ifm-color-primary: #6b4fe0;
-  --ifm-color-primary-dark: #5837dc;
-  --ifm-color-primary-darker: #4f2dd6;
-  --ifm-color-primary-darkest: #3f20b5;
-  --ifm-color-primary-light: #7e67e4;
-  --ifm-color-primary-lighter: #8873e6;
-  --ifm-color-primary-lightest: #a797ed;
-  --ifm-background-color: #faf7f2;
+  --ifm-color-primary: #0f7f66;
+  --ifm-color-primary-dark: #0d725c;
+  --ifm-color-primary-darker: #0c6c57;
+  --ifm-color-primary-darkest: #0a5947;
+  --ifm-color-primary-light: #118c70;
+  --ifm-color-primary-lighter: #129275;
+  --ifm-color-primary-lightest: #15a886;
+  --ifm-background-color: #fafaf8;
   --ifm-code-font-size: 92%;
-  --nv-hero-glow: rgba(126, 103, 228, 0.22);
-  --nv-chip: rgba(107, 79, 224, 0.14);
+  --nv-hero-glow: rgba(0, 0, 0, 0.035);
+  --nv-chip: rgba(15, 127, 102, 0.12);
 }
 [data-theme='dark'] {
-  --ifm-color-primary: #a797ed;
-  --ifm-color-primary-dark: #8f7be8;
-  --ifm-color-primary-darker: #836de6;
-  --ifm-color-primary-darkest: #5f44dd;
-  --ifm-color-primary-light: #bfb3f2;
-  --ifm-color-primary-lighter: #cbc1f4;
-  --ifm-color-primary-lightest: #efecfc;
-  --ifm-background-color: #0b0a10;
-  --ifm-background-surface-color: #15131d;
-  --nv-hero-glow: rgba(126, 103, 228, 0.3);
-  --nv-chip: rgba(167, 151, 237, 0.18);
+  --ifm-color-primary: #4fd1ae;
+  --ifm-color-primary-dark: #37cba4;
+  --ifm-color-primary-darker: #32c29c;
+  --ifm-color-primary-darkest: #29a080;
+  --ifm-color-primary-light: #67d7b8;
+  --ifm-color-primary-lighter: #73dabd;
+  --ifm-color-primary-lightest: #99e5d0;
+  --ifm-background-color: #141516;
+  --ifm-background-surface-color: #1c1d1f;
+  --ifm-color-emphasis-100: #1a1b1d;
+  --nv-hero-glow: rgba(255, 255, 255, 0.04);
+  --nv-chip: rgba(79, 209, 174, 0.14);
 }
-[data-theme='dark'] .navbar { background: #100e17; }
+[data-theme='dark'] .navbar { background: #18191b; }
+[data-theme='dark'] .footer--dark { --ifm-footer-background-color: #101112; }
+.footer--dark { --ifm-footer-background-color: #1c1d1f; }
 .navbar__logo img { border-radius: 7px; }
 /* Wide tables in the documents scroll inside themselves on a phone. */
 .markdown table { display: block; overflow-x: auto; }
