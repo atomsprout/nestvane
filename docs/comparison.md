@@ -58,3 +58,7 @@ Nestvane was written by coding agents directed by one person, over five days in 
 used Codex with GPT-6.2 Sol and ended with Android reaching its launcher in about ten minutes, on an interpreter.
 The next two used Claude Fable 5.2: a review of that design, the reserved-register rebuild, the rewriter, and the
 work recorded in [`results/G0.md`](../results/G0.md) that brought the boot to about 10 seconds.
+
+The author has written software for Windows, iOS and macOS for many years and knows very little about Android.
+The project began after seeing the two similar projects, as a way to find out how far an AI coding agent could get
+on a problem like this one. The author's conclusion is that Claude Fable 5.2 is very capable.

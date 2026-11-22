@@ -56,5 +56,5 @@
 .plain { padding-left: 1.2rem; max-width: 50rem; margin-bottom: 1.5rem; }
 .plain li { margin-bottom: 0.5rem; }
 
-.prose { max-width: 50rem; }
+.prose > * { max-width: 50rem; }
 .prose h3 { margin-top: 1.5rem; }

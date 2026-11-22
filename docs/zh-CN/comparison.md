@@ -50,3 +50,6 @@ arm64，客体程序由线程化解释器执行。**Andarium** 是它的 Android
 Nestvane 是一个人指挥编码智能体写出来的，用了 2026 年 11 月的五天。前两天用的是 Codex（GPT-6.2 Sol），结果是 Android 能到桌面，
 但靠解释器要约十分钟。之后两天用的是 Claude Fable 5.2：复盘原来的设计、保留寄存器重编 AOSP、写改写器，以及
 [`results/G0.md`](../../results/G0.md) 里记录的那些把开机降到约 10 秒的工作。
+
+作者是多年的 Windows、iOS 和 macOS 程序员，对 Android 了解得非常少。看到那两个同类项目之后，作者想知道 AI 编码智能体在这样的
+问题上能做到什么程度，这是做这个项目的主要原因。作者的结论是：Claude Fable 5.2 的能力非常强。

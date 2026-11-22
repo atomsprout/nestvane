@@ -83,6 +83,12 @@ export const content = {
     thanksTitle: 'With thanks to two similar projects',
     thanks: 'Twoyi showed that Android translated ahead of time, with no JIT, is usable on an iPhone, and Nestvane follows that idea. Kernarium runs a real Linux kernel on iOS in the open, and was the system to learn from. Nestvane shares no code with either and was written from nothing.',
     thanksLink: 'How the three compare',
+    aboutTitle: 'About the author, and why this exists',
+    about: [
+      'The author has written software for Windows, iOS and macOS for many years, and knows very little about Android.',
+      'Nestvane began after seeing similar projects, as a way to find out how far an AI coding agent could get on a problem like this one. The author directed the work and tested it on phones; the agents wrote the code. Two days with Codex (GPT-6.2 Sol) ended at a ten-minute boot on an interpreter. Two more with Claude Fable 5.2 brought it to what is described on this page.',
+      'The author’s conclusion is that Claude Fable 5.2 is very capable. The record of what was tried, measured and given up is in the repository.',
+    ],
     communityTitle: 'Community and support',
     communityIntro: 'Follow progress, and report what works and what does not.',
     channels: [
@@ -172,6 +178,12 @@ export const content = {
     thanksTitle: '感谢两个同类项目',
     thanks: '两仪（Twoyi）证明了不用 JIT、只靠提前翻译，Android 就能在 iPhone 上可用，Nestvane 走的是这个思路。Kernarium 以开源的方式在 iOS 上运行真正的 Linux 内核，是可以学习的那个系统。Nestvane 没有使用它们的任何代码，是从零写的。',
     thanksLink: '三者的对比',
+    aboutTitle: '关于作者，以及为什么做这个项目',
+    about: [
+      '作者是多年的 Windows、iOS 和 macOS 程序员，对 Android 了解得非常少。',
+      '看到同类项目之后，作者想知道 AI 编码智能体在这样的问题上能做到什么程度，于是有了 Nestvane。作者负责指挥和在手机上测试，代码由智能体编写。前两天用 Codex（GPT-6.2 Sol），停在靠解释器开机约十分钟；之后两天用 Claude Fable 5.2，做到了本页描述的样子。',
+      '作者的结论是：Claude Fable 5.2 的能力非常强。试过什么、测到什么、放弃了什么，都记录在仓库里。',
+    ],
     communityTitle: '社区与支持',
     communityIntro: '关注进展，告诉我们哪些能用、哪些不能用。',
     channels: [
