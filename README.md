@@ -118,8 +118,10 @@ On an iPhone 15 Pro unless noted. The running record, with every measurement, is
 - The [releases](https://github.com/atomsprout/nestvane/releases) carry an IPA with no signature. You sign it
   with your own Apple developer identity; [docs/installing.md](docs/installing.md) says how, and which
   sideloading tools there are. Nestvane is not on the App Store.
-- **A paid Apple developer account is needed.** The app must be signed with the Extended Virtual Addressing
-  capability, which a free Apple ID does not get; without it Android takes more than five minutes to start.
+- **A paid Apple Developer Program membership (US$99 a year) is needed.** The app must be signed with two
+  capabilities, Extended Virtual Addressing and Increased Memory Limit. A free Apple ID does not get the first;
+  without it Android takes more than five minutes to start. A way for people without a developer account to run
+  Nestvane does not exist yet.
 
 ## Building
 

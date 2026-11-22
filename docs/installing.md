@@ -13,7 +13,8 @@ You sign it with your own Apple developer identity first. This page says how, an
   capabilities: **Extended Virtual Addressing** and **Increased Memory Limit**. Without the first the app has about
   7 GiB of address space instead of about 53 GiB, which is not enough for it.
 
-**A free Apple ID is not enough.** Extended Virtual Addressing is given to paid developer accounts only, and without
+**You need a paid Apple Developer Program membership (US$99 a year). A free Apple ID is not enough.** Extended
+Virtual Addressing is given to paid developer accounts only, and without
 it Nestvane cannot reserve the address space its translated code needs, so it falls back to interpreting every
 instruction. We tried it: signed without the two capabilities, on an iPhone 15 Pro, Android had not reached its home
 screen after five minutes, against about 10 seconds with them. An app signed with a free Apple ID also stops working

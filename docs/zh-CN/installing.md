@@ -13,7 +13,7 @@
   **Extended Virtual Addressing** 和 **Increased Memory Limit**。没有前一项，App 的地址空间只有约 7 GiB，
   而不是约 53 GiB，不够用。
 
-**免费的 Apple ID 不够用。** Extended Virtual Addressing 只提供给付费的开发者账号。没有它，Nestvane 预留不出翻译后的代码所需的地址空间，
+**需要付费的 Apple Developer Program 会员（每年 99 美元），免费的 Apple ID 不够用。** Extended Virtual Addressing 只提供给付费的开发者账号。没有它，Nestvane 预留不出翻译后的代码所需的地址空间，
 只能退回逐条解释执行。我们试过：在 iPhone 15 Pro 上不带这两项能力签名，Android 五分钟后仍没有到桌面，而带上它们时约 10 秒。
 用免费 Apple ID 签名的 App 还会在 7 天后失效。
 
