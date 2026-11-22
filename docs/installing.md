@@ -13,8 +13,26 @@ You sign it with your own Apple developer identity first. This page says how, an
   capabilities: **Extended Virtual Addressing** and **Increased Memory Limit**. Without the first the app has about
   7 GiB of address space instead of about 53 GiB, which is not enough for it.
 
-Whether a free Apple ID can sign with these two capabilities has not been tried. Everything here was done with a paid
-developer account.
+**A free Apple ID is not enough.** Extended Virtual Addressing is given to paid developer accounts only, and without
+it Nestvane cannot reserve the address space its translated code needs, so it falls back to interpreting every
+instruction. We tried it: signed without the two capabilities, on an iPhone 15 Pro, Android had not reached its home
+screen after five minutes, against about 10 seconds with them. An app signed with a free Apple ID also stops working
+after 7 days.
+
+## Ways to install
+
+There is no App Store version. The IPA is sideloaded: signed with your own Apple developer account, then installed.
+
+| Way | Runs on | What we know |
+| --- | --- | --- |
+| Xcode's tools on the command line, [below](#signing-and-installing) | macOS | The way this page was tested. You make the App ID with both capabilities yourself. |
+| [Impactor](https://github.com/claration/Impactor) | macOS, Linux, Windows | Open source. Its page says it can request the increased memory limit; it does not mention extended virtual addressing. Not tried with Nestvane. |
+| [Sideloadly](https://sideloadly.io/) | macOS, Windows | Signs with a free or a paid account. Not tried with Nestvane. |
+| [AltStore](https://altstore.io/) and [SideStore](https://sidestore.io/) | on the phone, set up from a computer | Not tried with Nestvane. |
+
+Whichever you use, the test is the same: with a paid account and both capabilities on the App ID, Android reaches
+its home screen in about 10 to 20 seconds. If the start screen stays for minutes, the app was signed without
+Extended Virtual Addressing. Tell us which tools work for you.
 
 ## Signing and installing
 

@@ -116,8 +116,10 @@ On an iPhone 15 Pro unless noted. The running record, with every measurement, is
 - iOS 26 or later. Tested on iPhone 15 Pro and iPhone 17 Pro.
 - No other phone has been tested. Android needs about 2.2–2.7 GB of memory, more than an iPhone 11 gives one app.
 - The [releases](https://github.com/atomsprout/nestvane/releases) carry an IPA with no signature. You sign it
-  with your own Apple developer identity; [docs/installing.md](docs/installing.md) says how. Nestvane is not on
-  the App Store.
+  with your own Apple developer identity; [docs/installing.md](docs/installing.md) says how, and which
+  sideloading tools there are. Nestvane is not on the App Store.
+- **A paid Apple developer account is needed.** The app must be signed with the Extended Virtual Addressing
+  capability, which a free Apple ID does not get; without it Android takes more than five minutes to start.
 
 ## Building
 

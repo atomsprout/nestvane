@@ -80,7 +80,8 @@ earlier stage and DuckDuckGo showed no window within 25 seconds; neither has bee
 ## What has not been measured
 
 - Sound by ear, and video above 720p.
-- Whether the IPA can be signed with a free Apple ID.
+- Sideloading tools. Signed without the two capabilities, as a free Apple ID would sign it, Android had not reached
+  its home screen after five minutes on an iPhone 15 Pro.
 - Long sessions: battery use, heat over an hour, memory over a day.
 - Devices with less than 8 GB of memory. An iPhone 11 allows one app about 2.3 GB, which is less than Android needs.
 - Opening several apps in one session from the test harness; each app above was opened after its own start.

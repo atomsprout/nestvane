@@ -13,7 +13,23 @@
   **Extended Virtual Addressing** 和 **Increased Memory Limit**。没有前一项，App 的地址空间只有约 7 GiB，
   而不是约 53 GiB，不够用。
 
-免费的 Apple ID 能不能用这两项能力签名，没有试过。这里的一切都是用付费的开发者账号做的。
+**免费的 Apple ID 不够用。** Extended Virtual Addressing 只提供给付费的开发者账号。没有它，Nestvane 预留不出翻译后的代码所需的地址空间，
+只能退回逐条解释执行。我们试过：在 iPhone 15 Pro 上不带这两项能力签名，Android 五分钟后仍没有到桌面，而带上它们时约 10 秒。
+用免费 Apple ID 签名的 App 还会在 7 天后失效。
+
+## 安装的几种方式
+
+没有 App Store 版本。IPA 要靠侧载：用你自己的 Apple 开发者账号签名，再安装。
+
+| 方式 | 运行在 | 我们知道的 |
+| --- | --- | --- |
+| 命令行里用 Xcode 的工具，[见下文](#签名与安装) | macOS | 本页就是这样测的。带两项能力的 App ID 要你自己创建。 |
+| [Impactor](https://github.com/claration/Impactor) | macOS、Linux、Windows | 开源。它的页面说可以申请“提高内存上限”，没有提到扩展虚拟寻址。没有用 Nestvane 试过。 |
+| [Sideloadly](https://sideloadly.io/) | macOS、Windows | 支持免费和付费账号签名。没有用 Nestvane 试过。 |
+| [AltStore](https://altstore.io/) 和 [SideStore](https://sidestore.io/) | 在手机上，需用电脑完成初始设置 | 没有用 Nestvane 试过。 |
+
+不管用哪一种，判断标准都一样：用付费账号并且 App ID 带上两项能力时，Android 大约 10–20 秒到桌面。如果启动画面停留好几分钟，
+说明签名时没有带上 Extended Virtual Addressing。哪些工具对你有效，请告诉我们。
 
 ## 签名与安装
 

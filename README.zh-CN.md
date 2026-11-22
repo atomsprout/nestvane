@@ -111,7 +111,9 @@ Nestvane 走的是剩下的那条路：**把 Android 重新构建并提前翻译
 - iOS 26 及以上。在 iPhone 15 Pro 和 iPhone 17 Pro 上测试过。
 - 别的手机没有测过。Android 需要约 2.2–2.7 GB 内存，超过 iPhone 11 给单个 App 的上限。
 - [Releases](https://github.com/atomsprout/nestvane/releases) 里有一个不带签名的 IPA，需要用你自己的 Apple 开发者身份签名，
-  做法见 [docs/zh-CN/installing.md](docs/zh-CN/installing.md)。Nestvane 没有上架 App Store。
+  做法和可用的侧载工具见 [docs/zh-CN/installing.md](docs/zh-CN/installing.md)。Nestvane 没有上架 App Store。
+- **需要付费的 Apple 开发者账号。** App 签名时必须带上 Extended Virtual Addressing 能力，免费的 Apple ID 拿不到；
+  没有它，Android 启动要五分钟以上。
 
 ## 构建
 
