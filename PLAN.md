@@ -14,7 +14,7 @@
 
 ## Apache-2.0 发布路线
 
-首版选择 **Nestvane 自有代码采用 Apache-2.0，随包分发的第三方组件保留各自许可**。MIT 和 Apache-2.0 都可用于自有代码。选择 Apache-2.0 是因为它明确授予贡献者可授予的相关专利权，并便于沿用 AOSP 中采用同一许可的代码。当前仓库尚未声明项目许可证。确认首方代码、文档和素材的授权来源后，再正式添加根目录 `LICENSE`。按发布构建的实际内容列出第三方版本、来源、许可和适用的通知。保留上游版权和 SPDX 标识，包括补丁携带的上游代码。Apache-2.0 标签只用于有权按该许可发布的文件。[Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0)
+首版选择 **Nestvane 自有代码采用 Apache-2.0，随包分发的第三方组件保留各自许可**。MIT 和 Apache-2.0 都可用于自有代码。选择 Apache-2.0 是因为它明确授予贡献者可授予的相关专利权，并便于沿用 AOSP 中采用同一许可的代码。根目录的 `LICENSE`（Apache-2.0）和 `NOTICE` 已于 2026-11-22 加入。按发布构建的实际内容列出第三方版本、来源、许可和适用的通知。保留上游版权和 SPDX 标识，包括补丁携带的上游代码。Apache-2.0 标签只用于有权按该许可发布的文件。[Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0)
 
 - **宿主运行时**沿用自有 ARM64 执行器、Linux ABI 和 iOS 桥接。参考 Kernarium 的架构及对照数据，避免把 GPL 运行时或原生 Linux 内核链接进首版 App。Kernarium 的 Linux 内核为 GPL-2.0-only，并与宿主代码组成同一二进制文件。更换链接方式本身无法解决由此产生的许可问题。[Kernarium 许可说明](https://github.com/imxieyi/Kernarium/blob/main/LICENSES/README.md) · [ASF 兼容性说明](https://www.apache.org/licenses/GPL-compatibility.html)
 - **Android 17 发布镜像**由固定的 AOSP 源码版本自建，记录 Repo manifest 和产物校验值。保留实际打包模块的许可与适用通知，包含 APEX、原生库和生成的预编译产物。现有 SDK `default` 镜像用于内部验证。不能仅凭 `default` 名称推定整包的再分发权限。第三方验收 APK 单独导入。图形框架及其传递依赖按实际发布二进制核对许可和通知。[AOSP 许可说明](https://source.android.com/docs/setup/contribute/licenses) · [Android SDK 条款](https://developer.android.com/studio/terms)
