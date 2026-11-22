@@ -61,7 +61,9 @@ const config = {
     ({
       image: 'img/nestvane-icon-512.png',
       colorMode: {
-        respectPrefersColorScheme: true,
+        // The site opens light and sunny whatever the system is set to; the switch stays.
+        defaultMode: 'light',
+        respectPrefersColorScheme: false,
       },
       navbar: {
         title: 'Nestvane',
@@ -79,7 +81,7 @@ const config = {
         ],
       },
       footer: {
-        style: 'dark',
+        style: 'light',
         links: [
           {
             title: 'Nestvane',

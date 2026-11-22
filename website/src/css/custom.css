@@ -1,34 +1,42 @@
-/* Neutral surfaces, with one green accent. The violet belongs to the app icon and stays there. */
+/* A sunny look: warm white surfaces and one orange accent. The site opens in the light theme.
+   The violet belongs to the app icon and stays there. */
 :root {
-  --ifm-color-primary: #0f7f66;
-  --ifm-color-primary-dark: #0d725c;
-  --ifm-color-primary-darker: #0c6c57;
-  --ifm-color-primary-darkest: #0a5947;
-  --ifm-color-primary-light: #118c70;
-  --ifm-color-primary-lighter: #129275;
-  --ifm-color-primary-lightest: #15a886;
-  --ifm-background-color: #fafaf8;
+  --ifm-color-primary: #d9480f;
+  --ifm-color-primary-dark: #c3410e;
+  --ifm-color-primary-darker: #b83d0d;
+  --ifm-color-primary-darkest: #98320b;
+  --ifm-color-primary-light: #ee5216;
+  --ifm-color-primary-lighter: #f05c24;
+  --ifm-color-primary-lightest: #f37d50;
+  --ifm-background-color: #fffdf8;
+  --ifm-background-surface-color: #ffffff;
+  --ifm-navbar-background-color: #fffdf8;
   --ifm-code-font-size: 92%;
-  --nv-hero-glow: rgba(0, 0, 0, 0.035);
-  --nv-chip: rgba(15, 127, 102, 0.12);
+  --nv-hero: linear-gradient(180deg, #ffe9b8 0%, #fff3d6 38%, #fffdf8 100%);
+  --nv-alt: #fff6e3;
+  --nv-chip: #ffffff;
+  --nv-chip-text: #b83d0d;
+  --nv-card-border: #f3e3c3;
 }
 [data-theme='dark'] {
-  --ifm-color-primary: #4fd1ae;
-  --ifm-color-primary-dark: #37cba4;
-  --ifm-color-primary-darker: #32c29c;
-  --ifm-color-primary-darkest: #29a080;
-  --ifm-color-primary-light: #67d7b8;
-  --ifm-color-primary-lighter: #73dabd;
-  --ifm-color-primary-lightest: #99e5d0;
-  --ifm-background-color: #141516;
-  --ifm-background-surface-color: #1c1d1f;
-  --ifm-color-emphasis-100: #1a1b1d;
-  --nv-hero-glow: rgba(255, 255, 255, 0.04);
-  --nv-chip: rgba(79, 209, 174, 0.14);
+  --ifm-color-primary: #ffb454;
+  --ifm-color-primary-dark: #ffa533;
+  --ifm-color-primary-darker: #ff9d22;
+  --ifm-color-primary-darkest: #f08400;
+  --ifm-color-primary-light: #ffc375;
+  --ifm-color-primary-lighter: #ffcb86;
+  --ifm-color-primary-lightest: #ffe1b8;
+  --ifm-background-color: #1b1b1d;
+  --ifm-background-surface-color: #242526;
+  --ifm-navbar-background-color: #1f1f21;
+  --nv-hero: linear-gradient(180deg, #2a2620 0%, #1b1b1d 100%);
+  --nv-alt: #202022;
+  --nv-chip: #2e2b26;
+  --nv-chip-text: #ffc375;
+  --nv-card-border: #34353a;
 }
-[data-theme='dark'] .navbar { background: #18191b; }
-[data-theme='dark'] .footer--dark { --ifm-footer-background-color: #101112; }
-.footer--dark { --ifm-footer-background-color: #1c1d1f; }
+.footer { --ifm-footer-background-color: #fff3d6; }
+[data-theme='dark'] .footer { --ifm-footer-background-color: #151516; }
 .navbar__logo img { border-radius: 7px; }
 /* Wide tables in the documents scroll inside themselves on a phone. */
 .markdown table { display: block; overflow-x: auto; }
