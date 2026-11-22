@@ -54,6 +54,7 @@ void nestvane_native_exit();
 void nestvane_native_svc();
 void nestvane_native_trap();
 void nestvane_native_signal_return();
+void nestvane_native_stray();
 }
 
 static_assert(offsetof(NativeContext, sp) == 248 && offsetof(NativeContext, q) == 256 && offsetof(NativeContext, nzcv) == 768);
@@ -66,21 +67,29 @@ static_assert(offsetof(NativeContext, signalReturn) == 880);  // NativeEntry.S
 namespace nestvane::native {
 namespace {
 
-constexpr int leftBySyscall = 1, leftByFault = 2, leftByPreemption = 3, leftByTrap = 4;
+constexpr int leftBySyscall = 1, leftByFault = 2, leftByPreemption = 3, leftByTrap = 4, leftByStray = 5;
 constexpr uint64_t sliceNanoseconds = 1'000'000;
 constexpr int preemptionSignal = SIGUSR2;
 
 // The parts of a module's info block (experiments/g0/e3/rewrite.py --final-table).
 struct Loaded {
     const Module* module;
-    const uint64_t* table;   // host code to jump to per guest instruction: its translation, or its entry stub
-    const uint32_t* stubStarts;  // for instructions entered through a stub: index, and where the translation starts from codeStart
+    const uint16_t* lengths; // per guest instruction, how many host instructions its translation has
+    const uint32_t* marks;   // where the translation of every 64th instruction starts, from codeStart
     uint64_t count;
     uint64_t codeStart;
     uint64_t trap;           // host code that leaves native execution at the module's entry point
     uint64_t stubsBegin;     // host address where the code ends and the entry stubs begin
     uint64_t stubCount;
+    const uint32_t* stubs;   // for instructions entered through a stub: index, and where the stub is from codeStart
     bool active = false;
+
+    // Where the translation of an instruction starts, from codeStart.
+    uint64_t start(uint64_t index) const {
+        uint64_t offset = marks[index / 64];
+        for (uint64_t each = index & ~uint64_t{63}; each < index; ++each) offset += uint64_t{lengths[each]} * 4;
+        return offset;
+    }
 };
 
 struct Registry {
@@ -95,6 +104,10 @@ struct Registry {
     bool wanted = false;
     const char* failure = nullptr;
     uint64_t signalPage = 0;                                   // guest address of the signal return trampoline's page
+    std::vector<size_t> byGuest;                               // modules in the order of their guest addresses
+    std::vector<bool> made;                                    // per page of the table: its entries exist
+    int tableFile = -1;                                        // what the table's pages are kept in
+    uint64_t madePages = 0;
 };
 
 Registry& registry() {
@@ -109,10 +122,10 @@ Registry& registry() {
         uint64_t low = UINT64_MAX, high = 0;
         for (int index = 0; index < nestvane_native_module_count; ++index) {
             const auto& module = nestvane_native_modules[index];
-            result.modules.push_back({&module, reinterpret_cast<const uint64_t*>(module.info[3]),
+            result.modules.push_back({&module, reinterpret_cast<const uint16_t*>(module.info[3]),
                                       reinterpret_cast<const uint32_t*>(module.info[4]),
                                       (module.info[1] - module.info[0]) / 4, module.info[5], module.info[6],
-                                      module.info[7], module.info[8]});
+                                      module.info[7], module.info[8], reinterpret_cast<const uint32_t*>(module.info[9])});
             low = std::min(low, module.info[0]);
             high = std::max(high, module.info[1]);
         }
@@ -122,6 +135,11 @@ Registry& registry() {
             result.byKey[result.modules[index].module->key].push_back(index);
             result.byModule[result.modules[index].module] = index;
         }
+        result.byGuest.resize(result.modules.size());
+        for (size_t index = 0; index < result.byGuest.size(); ++index) result.byGuest[index] = index;
+        std::sort(result.byGuest.begin(), result.byGuest.end(), [&](size_t a, size_t b) {
+            return result.modules[a].module->info[0] < result.modules[b].module->info[0];
+        });
         for (auto& [key, copies] : result.byKey)
             std::sort(copies.begin(), copies.end(), [&](size_t a, size_t b) {
                 return result.modules[a].module->base < result.modules[b].module->base;
@@ -143,24 +161,28 @@ Registry& registry() {
         result.high = high;
         // Only address space: a module's table is mapped in when a process first maps the module, and
         // a look-up anywhere else faults, which sends the guest's jump to the interpreter.
-        // The table also spans the addresses of code without a translation, if there is room for it.
+        // The table also spans the addresses of code without a translation. Its pages are made when
+        // they are first looked up in (see makePage), and they are pages of a file: the system can
+        // write them out and take them back, which it cannot do with memory that has no file.
         result.covered = std::max(high, foreignHigh);
-        result.table = static_cast<uint64_t*>(mmap(nullptr, (result.covered - low) * 2, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0));
-        if (result.table == MAP_FAILED) {
-            result.covered = high;
-            result.table = static_cast<uint64_t*>(mmap(nullptr, (high - low) * 2, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0));
-        }
-        if (result.table == MAP_FAILED) {
+        const size_t bytes = (result.covered - low) * 2;
+        std::string path = std::string(std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp") + "/nestvane-code-table.XXXXXX";
+        result.tableFile = mkstemp(path.data());
+        if (result.tableFile >= 0) unlink(path.c_str());
+        if (result.tableFile < 0 || ftruncate(result.tableFile, off_t(bytes)) ||
+            (result.table = static_cast<uint64_t*>(mmap(nullptr, bytes, PROT_NONE, MAP_SHARED, result.tableFile, 0))) == MAP_FAILED) {
             result.modules.clear();
-            result.failure = "no address space for the table of translated code";
+            result.failure = "no file or no address space for the table of translated code";
             return result;
         }
+        result.made.assign(bytes / GuestSpace::page, false);
         // The trampoline's entries: whichever of its instructions a handler returns to, native code
         // leaves there and the interpreter runs the trampoline.
         uint64_t* entries = result.table + (result.signalPage - low) / 4;
         if (mmap(entries, GuestSpace::page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0) != MAP_FAILED) {
             entries[1] = reinterpret_cast<uint64_t>(&nestvane_native_signal_return);
             result.traps.insert(entries[1]);
+            result.made[(result.signalPage - low) * 2 / GuestSpace::page] = true;
         } else {
             result.signalPage = 0;
         }
@@ -185,24 +207,16 @@ bool guestCode(uint64_t hostPc, uint64_t& guestPc, bool& atStart) {
     // the translations are in several images, so what lies beyond is not known to be code at all.
     if (hostPc >= loaded->stubsBegin) return false;
     const uint64_t offset = hostPc - loaded->codeStart;
-    // The table has the host address per instruction, in order, except where it has an entry stub.
-    const auto start = [&](uint64_t index) -> uint64_t {
-        const uint64_t entry = loaded->table[index];
-        if (entry < loaded->stubsBegin) return entry - loaded->codeStart;
-        uint64_t first = 0, last = loaded->stubCount;
-        while (last - first > 1) {
-            const uint64_t middle = (first + last) / 2;
-            if (loaded->stubStarts[middle * 2] <= index) first = middle; else last = middle;
-        }
-        return loaded->stubStarts[first * 2 + 1];
-    };
-    uint64_t low = 0, high = loaded->count;
+    // The last mark at or before the offset, and from there by the lengths.
+    uint64_t low = 0, high = (loaded->count + 63) / 64;
     while (high - low > 1) {
         const uint64_t middle = (low + high) / 2;
-        if (start(middle) <= offset) low = middle; else high = middle;
+        if (loaded->marks[middle] <= offset) low = middle; else high = middle;
     }
-    guestPc = loaded->module->info[0] + low * 4;
-    atStart = start(low) == offset;
+    uint64_t index = low * 64, begins = loaded->marks[low];
+    while (index + 1 < loaded->count && begins + uint64_t{loaded->lengths[index]} * 4 <= offset) begins += uint64_t{loaded->lengths[index++]} * 4;
+    guestPc = loaded->module->info[0] + index * 4;
+    atStart = begins == offset;
     return true;
 }
 
@@ -387,29 +401,59 @@ const Module* mappedCode(std::span<const uint8_t> file, uint64_t address, uint64
     return nullptr;
 }
 
+namespace {
+
+// Makes the page of the table that has the entry for guest pc, if a module that is in use has code
+// there. The entries are written to the file first and the page is made readable after, so that
+// another host thread never reads a page that is half made. Called on the main loop's thread only.
+bool makePage(uint64_t pc) {
+    auto& all = registry();
+    if (pc < all.low || pc >= all.covered) return false;
+    const size_t page = (pc - all.low) * 2 / GuestSpace::page;
+    if (all.made[page]) return true;
+    const auto next = std::upper_bound(all.byGuest.begin(), all.byGuest.end(), pc, [&](uint64_t address, size_t index) {
+        return address < all.modules[index].module->info[0];
+    });
+    if (next == all.byGuest.begin()) return false;
+    const Loaded& loaded = all.modules[*std::prev(next)];
+    if (!loaded.active || pc >= loaded.module->info[1]) return false;
+    constexpr size_t entries = GuestSpace::page / 8;
+    static uint64_t* const buffer = new uint64_t[entries];
+    const uint64_t first = all.low + page * (GuestSpace::page / 2), base = loaded.module->info[0];
+    // What is no instruction of the module leaves native code when it is jumped to.
+    std::fill_n(buffer, entries, reinterpret_cast<uint64_t>(&nestvane_native_stray));
+    const uint64_t from = std::max(first, base), to = std::min(first + GuestSpace::page / 2, loaded.module->info[1]);
+    uint64_t index = (from - base) / 4, offset = loaded.start(index);
+    for (uint64_t address = from; address < to; address += 4, ++index) {
+        buffer[(address - first) / 4] = loaded.codeStart + offset;
+        offset += uint64_t{loaded.lengths[index]} * 4;
+    }
+    // Instructions that are entered through a stub.
+    uint64_t low = 0, high = loaded.stubCount;
+    const uint64_t firstIndex = (from - base) / 4, endIndex = (to - base) / 4;
+    while (low < high) {
+        const uint64_t middle = (low + high) / 2;
+        if (loaded.stubs[middle * 2] < firstIndex) low = middle + 1; else high = middle;
+    }
+    for (; low < loaded.stubCount && loaded.stubs[low * 2] < endIndex; ++low)
+        buffer[(base + uint64_t{loaded.stubs[low * 2]} * 4 - first) / 4] = loaded.codeStart + loaded.stubs[low * 2 + 1];
+    if (loaded.trap && all.traps.contains(loaded.trap) && loaded.module->info[2] >= from && loaded.module->info[2] < to)
+        buffer[(loaded.module->info[2] - first) / 4] = loaded.trap;
+    const off_t position = off_t(page * GuestSpace::page);
+    if (pwrite(all.tableFile, buffer, GuestSpace::page, position) != ssize_t(GuestSpace::page) ||
+        mprotect(reinterpret_cast<uint8_t*>(all.table) + position, GuestSpace::page, PROT_READ)) return false;
+    all.made[page] = true;
+    ++all.madePages;
+    return true;
+}
+
+} // namespace
+
 bool activate(const Module& module) {
     auto& all = registry();
     const auto found = all.byModule.find(&module);
     if (found == all.byModule.end()) return false;
-    auto& loaded = all.modules[found->second];
-    if (loaded.active) return true;
-    const uint64_t began = mach_absolute_time();
-    // The module's table is laid out to match: whole pages of it become pages of the table, shared
-    // with the program file until something writes to them.
-    constexpr uint64_t pageMask = GuestSpace::page - 1;
-    const uint64_t front = reinterpret_cast<uint64_t>(loaded.table) & pageMask;
-    const uint64_t length = (front + loaded.count * 8 + pageMask) & ~pageMask;
-    vm_address_t target = reinterpret_cast<vm_address_t>(all.table + (module.info[0] - all.low) / 4) - front;
-    vm_prot_t current, maximum;
-    if ((target & pageMask) ||
-        vm_remap(mach_task_self(), &target, length, 0, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE, mach_task_self(),
-                 reinterpret_cast<vm_address_t>(loaded.table) - front, TRUE, &current, &maximum, VM_INHERIT_COPY) != KERN_SUCCESS) {
-        ++counters.unmapped;
-        return false;
-    }
-    loaded.active = true;
-    counters.activationTime += mach_absolute_time() - began;
-    counters.tableBytes += length;
+    all.modules[found->second].active = true;
     return true;
 }
 
@@ -417,13 +461,10 @@ void trap(uint64_t pc) {
     auto& all = registry();
     for (auto& loaded : all.modules) {
         if (!loaded.active || loaded.module->info[2] != pc || !loaded.trap) continue;
-        uint64_t* entry = all.table + (pc - all.low) / 4;
-        if (*entry == loaded.trap) return;
-        void* page = reinterpret_cast<void*>(reinterpret_cast<uint64_t>(entry) & ~(GuestSpace::page - 1));
-        mprotect(page, GuestSpace::page, PROT_READ | PROT_WRITE);
-        *entry = loaded.trap;
-        mprotect(page, GuestSpace::page, PROT_READ);
-        all.traps.insert(loaded.trap);
+        if (!all.traps.insert(loaded.trap).second) return;
+        // A page that exists already gets the entry now; one that is made later gets it then.
+        const size_t page = (pc - all.low) * 2 / GuestSpace::page;
+        if (all.made[page]) pwrite(all.tableFile, &loaded.trap, 8, off_t((pc - all.low) * 2));
         return;
     }
 }
@@ -436,9 +477,9 @@ bool load(Machine& machine, NativeContext& context) {
     auto& all = registry();
     auto& cpu = machine.cpu;
     auto& space = *machine.space;
-    if (cpu.pc < all.low || cpu.pc >= all.high || cpu.pc % 4) return false;
+    if (cpu.pc < all.low || cpu.pc >= all.high || cpu.pc % 4 || !makePage(cpu.pc)) return false;
     const uint64_t entry = all.table[(cpu.pc - all.low) / 4];
-    if (!entry || all.traps.contains(entry)) return false;
+    if (!entry || entry == reinterpret_cast<uint64_t>(&nestvane_native_stray) || all.traps.contains(entry)) return false;
     std::memcpy(context.x, cpu.x.data(), sizeof(context.x));
     std::memcpy(context.q, cpu.v.data(), sizeof(context.q));
     const uint64_t stack = machine.dataAddress(cpu.sp);
@@ -522,9 +563,21 @@ Exit settle(Machine& machine, const Result& result) {
         cpu.pc = result.preemptedPc;
         return Exit::preempted;
     }
+    if (result.reason == leftByStray) {
+        // A jump into a module, to what is no instruction of it.
+        ++counters.lost;
+        machine.fault(cpu.pc, cpu.pc);
+        return Exit::lost;
+    }
     if (result.faultPc >= all.codeStart && result.faultPc < all.codeEnd && guestCode(result.faultPc, guestPc, atStart)) {
         cpu.pc = guestPc;
         lastFault = result.faultAddress;
+        // A look-up in a page of the table that had not been made yet: now it is, if a module has code there.
+        const uint64_t tableStart = reinterpret_cast<uint64_t>(all.table);
+        if (result.faultAddress >= tableStart && result.faultAddress < tableStart + (all.covered - all.low) * 2) {
+            const uint64_t target = all.low + (result.faultAddress - tableStart) / 2;
+            if (!all.made[(target - all.low) * 2 / GuestSpace::page] && makePage(target)) return Exit::retry;
+        }
         // Mapped memory that nothing has written yet has no host pages. The interpreter reads it as
         // zeros without giving it any, so native code would fault there again and again.
         uint64_t address = 0;
@@ -697,21 +750,9 @@ std::string statistics() {
     static const mach_timebase_info_data_t base = [] { mach_timebase_info_data_t value; mach_timebase_info(&value); return value; }();
     const auto milliseconds = [&](uint64_t time) { return time * base.numer / base.denom / 1'000'000; };
     out << "  native execution time: " << milliseconds(counters.nativeTime) << " ms in guest code, "
-        << milliseconds(counters.activationTime) << " ms mapping " << counters.tableBytes / (1024 * 1024)
-        << " MiB of code tables";
+        << registry().madePages * GuestSpace::page / (1024 * 1024) << " MiB of code table made";
     if (counters.unmapped) out << ", " << counters.unmapped << " modules could not be mapped";
     out << '\n';
-    {
-        // How much of the table of all translated code has been read: what it would cost to make
-        // its pages when they are first looked up in, instead of shipping them.
-        const auto& all = registry();
-        const size_t pages = (all.covered - all.low) * 2 / GuestSpace::page;
-        std::vector<char> state(pages);
-        size_t resident = 0;
-        if (!mincore(all.table, pages * GuestSpace::page, state.data()))
-            for (const char page : state) resident += (page & 1);
-        out << "  code table pages in memory: " << resident * GuestSpace::page / (1024 * 1024) << " MiB\n";
-    }
     // NESTVANE_NATIVE_USED=1 lists the translations that were mapped, for leaving the others out of a build.
     if (static const bool list = std::getenv("NESTVANE_NATIVE_USED"); list)
         for (const auto& loaded : registry().modules)

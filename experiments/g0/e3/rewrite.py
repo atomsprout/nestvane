@@ -529,13 +529,11 @@ class Rewriter:
     def finish_mapped(self):
         """--final-table: what runtime/NativeCode.cpp links against.
 
-        The table of host code per guest instruction is complete, with the entry stubs in place, and
-        laid out so that the runtime can map its pages into the table of all translated code instead
-        of copying it: that table has the entry for guest pc at 2 * pc from a page boundary, and so
-        has this one. The same table tells where each instruction's translation starts, which the
-        runtime needs to trace a fault or the end of a time slice back to a guest instruction: except
-        for the instructions that are entered through a stub, whose starts are listed apart, as
-        instruction index and offset from the start of the code.
+        The runtime makes the table of host code per guest instruction itself, a page at a time when
+        a page is first looked up in, from what is here: how long each instruction's translation is,
+        in host instructions; where the translation of every 64th instruction starts, from the start
+        of the code; and for the instructions that are entered through a stub, their index and where
+        the stub is. A length takes two bytes where a table entry takes eight.
         """
         out, name = self.out, self.name
         # Where a jump to the program's entry point leaves native code, when the runtime asks for it.
@@ -544,21 +542,21 @@ class Rewriter:
         self.emit("b _guest_trap")
         out.append(".section __TEXT,__const")
         out.append(".p2align 2")
-        out.append("Lguest_starts_%s:" % name)
+        out.append("Lguest_marks_%s:" % name)
+        for pc in range(self.start, self.end, 4 * 64):
+            out.append("\t.long %s - _guest_code_%s" % (self.label(pc), name))
+        out.append("Lguest_stubs_%s:" % name)
         for pc in sorted(self.stubs):
-            out.append("\t.long %d, %s - _guest_code_%s" % ((pc - self.start) // 4, self.label(pc), name))
+            out.append("\t.long %d, Ls%x - _guest_code_%s" % ((pc - self.start) // 4, pc, name))
+        out.append("Lguest_lengths_%s:" % name)
+        for pc in range(self.start, self.end, 4):
+            following = self.label(pc + 4) if pc + 4 < self.end else "Lguest_stubs_begin_%s" % name
+            out.append("\t.short (%s - %s) / 4" % (following, self.label(pc)))
         out.append(".section __DATA,__const")
         out.append(".p2align 3")
         out.append(".globl _guest_module_%s\n_guest_module_%s:" % (name, name))
-        out.append("\t.quad 0x%x, 0x%x, 0x%x, Lguest_table_%s, Lguest_starts_%s, _guest_code_%s, Lguest_trap_%s, Lguest_stubs_begin_%s, %d"
-                   % (self.start, self.end, self.entry, name, name, name, name, name, len(self.stubs)))
-        out.append(".p2align 14")
-        if self.start * 2 % 16384:
-            out.append("\t.space %d" % (self.start * 2 % 16384))
-        out.append("Lguest_table_%s:" % name)
-        for pc in range(self.start, self.end, 4):
-            out.append("\t.quad " + ("Ls%x" % pc if pc in self.stubs else self.label(pc)))
-        out.append(".p2align 14")
+        out.append("\t.quad 0x%x, 0x%x, 0x%x, Lguest_lengths_%s, Lguest_marks_%s, _guest_code_%s, Lguest_trap_%s, Lguest_stubs_begin_%s, %d, Lguest_stubs_%s"
+                   % (self.start, self.end, self.entry, name, name, name, name, name, len(self.stubs), name))
         return "\n".join(out) + "\n"
 
 

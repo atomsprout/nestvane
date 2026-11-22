@@ -135,6 +135,14 @@ _nestvane_native_trap:
 
 	b _nestvane_native_exit
 
+// What the table of translated code holds for an address in a module that is no instruction: a jump
+// there leaves native code, and the kernel layer makes it the guest's fault.
+.globl _nestvane_native_stray
+_nestvane_native_stray:
+	SAVE_GUEST
+	mov w0, #5
+	b _nestvane_native_exit
+
 // What the table of translated code holds for the kernel layer's signal return trampoline, which is
 // no translated code: a handler that returns to it leaves native code there.
 .globl _nestvane_native_signal_return

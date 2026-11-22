@@ -92,29 +92,29 @@ targets:
       - sdk: CoreVideo.framework
       - sdk: CoreGraphics.framework
       - sdk: libsqlite3.tbd
-      - framework: generated/native-code/ios/lib/libnative-0.dylib
+      - framework: generated/native-code/ios/lib/NestvaneCode0.framework
         embed: true
-      - framework: generated/native-code/ios/lib/libnative-1.dylib
+      - framework: generated/native-code/ios/lib/NestvaneCode1.framework
         embed: true
-      - framework: generated/native-code/ios/lib/libnative-2.dylib
+      - framework: generated/native-code/ios/lib/NestvaneCode2.framework
         embed: true
-      - framework: generated/native-code/ios/lib/libnative-3.dylib
+      - framework: generated/native-code/ios/lib/NestvaneCode3.framework
         embed: true
-      - framework: generated/native-code/ios/lib/libnative-4.dylib
+      - framework: generated/native-code/ios/lib/NestvaneCode4.framework
         embed: true
-      - framework: generated/native-code/ios/lib/libnative-5.dylib
+      - framework: generated/native-code/ios/lib/NestvaneCode5.framework
         embed: true
-      - framework: generated/native-code/ios/lib/libnative-6.dylib
+      - framework: generated/native-code/ios/lib/NestvaneCode6.framework
         embed: true
-      - framework: generated/native-code/ios/lib/libnative-7.dylib
+      - framework: generated/native-code/ios/lib/NestvaneCode7.framework
         embed: true
-      - framework: generated/native-code/ios/lib/libnative-8.dylib
+      - framework: generated/native-code/ios/lib/NestvaneCode8.framework
         embed: true
-      - framework: generated/native-code/ios/lib/libnative-9.dylib
+      - framework: generated/native-code/ios/lib/NestvaneCode9.framework
         embed: true
-      - framework: generated/native-code/ios/lib/libnative-10.dylib
+      - framework: generated/native-code/ios/lib/NestvaneCode10.framework
         embed: true
-      - framework: generated/native-code/ios/lib/libnative-11.dylib
+      - framework: generated/native-code/ios/lib/NestvaneCode11.framework
         embed: true
     info:
       path: generated/Info-native.plist
@@ -165,6 +165,7 @@ targets:
         HEADER_SEARCH_PATHS: "$(SRCROOT)/runtime"
         GCC_PREPROCESSOR_DEFINITIONS: "$(inherited) NESTVANE_PAGE_SIZE=16384 NESTVANE_NATIVE_DEFAULT=1"
         LIBRARY_SEARCH_PATHS: "$(SRCROOT)/generated/native-code/ios/lib"
+        FRAMEWORK_SEARCH_PATHS: "$(SRCROOT)/generated/native-code/ios/lib"
         # The table of translated code and the guests' address spaces need more address space than
         # an app gets by default.
         CODE_SIGN_ENTITLEMENTS: ios/Native.entitlements

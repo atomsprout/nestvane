@@ -8,7 +8,8 @@ tools/prepare-init-root.py, and unpacked APEX directories from the build.
 
 usage: build-native-code.py <output directory> <tree>... [--only <substring>]... [--ios] [--used <list>]
 Writes <output>/modules.c and the translations as dynamic libraries, <output>/lib/libnative-<n>.dylib:
-one image cannot hold them all. <output>/libraries.txt lists the libraries for the linker.
+one image cannot hold them all. <output>/libraries.txt lists the libraries for the linker. For iOS
+they are frameworks, <output>/ios/lib/NestvaneCode<n>.framework.
 Translations are kept between runs while the file, its address and the rewriter stay the same.
 --ios builds for iOS devices instead of this Mac, into <output>/ios.
 --addresses-only only gives the files their addresses (<output>/addresses.txt) and translates nothing.
@@ -19,6 +20,8 @@ module in UNUSED_MODULES. A file without a translation still runs: it is interpr
 """
 import concurrent.futures
 import os
+import plistlib
+import shutil
 import struct
 import subprocess
 import sys
@@ -215,23 +218,40 @@ def main():
     svc = os.path.join(objects, "svc.o")
     subprocess.run(["clang", *TARGET, "-x", "assembler", "-c", "-", "-o", svc], input=SVC, text=True, check=True)
 
+    # An iOS app may not carry bare dynamic libraries: there each one is a framework.
+    def product(index):
+        if not IOS:
+            return os.path.join(libraries, "libnative-%d.dylib" % index), "@rpath/libnative-%d.dylib" % index
+        name = "NestvaneCode%d" % index
+        return os.path.join(libraries, name + ".framework", name), "@rpath/%s.framework/%s" % (name, name)
+
     def link(item):
         index, symbols = item
-        library, listing = os.path.join(libraries, "libnative-%d.dylib" % index), os.path.join(out, "objects-%d.txt" % index)
+        (library, install_name), listing = product(index), os.path.join(out, "objects-%d.txt" % index)
         content = "".join(os.path.join(objects, symbol + ".o") + "\n" for symbol in symbols)
         if os.path.exists(library) and os.path.exists(listing) and open(listing).read() == content and \
                 all(os.path.getmtime(os.path.join(objects, symbol + ".o")) < os.path.getmtime(library) for symbol in symbols):
             return
         open(listing, "w").write(content)
-        result = subprocess.run(["clang", *TARGET, "-dynamiclib", "-o", library, "-install_name", "@rpath/" + os.path.basename(library),
+        os.makedirs(os.path.dirname(library), exist_ok=True)
+        if IOS:
+            name = os.path.basename(library)
+            with open(os.path.join(os.path.dirname(library), "Info.plist"), "wb") as file:
+                plistlib.dump({"CFBundleIdentifier": "com.atomsprout.nestvane.code%d" % index, "CFBundleName": name,
+                               "CFBundleExecutable": name, "CFBundlePackageType": "FMWK", "CFBundleVersion": "1",
+                               "CFBundleShortVersionString": "0.1", "CFBundleSupportedPlatforms": ["iPhoneOS"],
+                               "MinimumOSVersion": "26.0"}, file)
+        result = subprocess.run(["clang", *TARGET, "-dynamiclib", "-o", library, "-install_name", install_name,
                                  "-Wl,-filelist," + listing, svc], capture_output=True, text=True)
         if result.returncode:
             sys.exit("linking %s failed: %s" % (library, result.stderr[-2000:]))
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
         list(pool.map(link, enumerate(groups)))
+    wanted_names = {os.path.basename(os.path.dirname(product(index)[0]) if IOS else product(index)[0]) for index in range(len(groups))}
     for name in os.listdir(libraries):
-        if name not in {"libnative-%d.dylib" % index for index in range(len(groups))}:
-            os.remove(os.path.join(libraries, name))
+        if name not in wanted_names:
+            path = os.path.join(libraries, name)
+            shutil.rmtree(path) if os.path.isdir(path) else os.remove(path)
     open(os.path.join(out, "libraries.txt"), "w").write("".join("-lnative-%d\n" % index for index in range(len(groups))))
     print("translated=%d failed=%d libraries=%d" % (len(jobs), len(failed), len(groups)))
 
