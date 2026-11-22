@@ -1,0 +1,48 @@
+name: Deploy site to GitHub Pages
+
+# Publishes the static site in pages/ (served at https://atomsprout.com/nestvane/).
+# There is no build step: the folder is uploaded as it is.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "pages/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time. A deployment in progress is allowed to finish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # The repository is private for now and GitHub Pages is not enabled, so this job is
+    # skipped until the repository is public. After making it public, enable Pages in
+    # Settings -> Pages with "GitHub Actions" as the source, then run this workflow.
+    if: github.event.repository.private == false
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload the site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: pages
+
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

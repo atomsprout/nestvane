@@ -1,70 +1,146 @@
-# nestvane
+<p align="center">
+  <img src="docs/images/icon.png" width="120" height="120" alt="Nestvane icon">
+</p>
 
-目标是在普通 iPhone 上无宿主 JIT、本地运行 Android 17。首版在 iPhone 14 验收 Android 桌面、APK 安装与运行，以及 Android 应用访问 iPhone 摄像头。
+<h1 align="center">Nestvane</h1>
 
-- [实施计划](PLAN.md) 包含首个真机原型、阶段验收和性能继续条件。
-- [AOT 设计记录](AOT.md) 包含出发点、nestvane 第一版的执行路径和验证方法。
+<p align="center">
+  <strong>Android 17, running inside an app on an iPhone.</strong><br>
+  No JIT, no jailbreak, no hypervisor.
+</p>
 
-## P1 可行性原型
+<p align="center">
+  <a href="https://atomsprout.com/nestvane/">Website</a> ·
+  <a href="docs/README.md">Documentation</a> ·
+  <a href="https://discord.gg/eGzEaP6TzR">Discord</a> ·
+  <a href="https://t.me/atomsprout">Telegram</a> ·
+  <a href="README.zh-CN.md">简体中文</a>
+</p>
 
-[真机验证结果](results/P1.md) 包含 iPhone 11、模拟器和 ARM64 Linux 的实测记录。
+<p align="center">
+  <img alt="Status: private testing" src="https://img.shields.io/badge/status-private%20testing-ff7a59">
+  <img alt="Android 17" src="https://img.shields.io/badge/Android-17-3fe0b0">
+  <img alt="iOS 26 or later" src="https://img.shields.io/badge/iOS-26%2B-5aa9ff">
+  <img alt="arm64" src="https://img.shields.io/badge/arch-arm64-9b7bff">
+</p>
 
-在 macOS 上安装 Xcode、XcodeGen 和 LLD，然后运行：
+<p align="center">
+  <img src="docs/images/app-start.png" width="190" alt="Nestvane's start screen with the words Starting Android">
+  <img src="docs/images/android-home.jpg" width="190" alt="The Android home screen inside Nestvane, with a clock, Files and Settings">
+  <img src="docs/images/android-wikipedia.png" width="190" alt="The Wikipedia app for Android showing its front page inside Nestvane">
+  <img src="docs/images/app-settings.png" width="190" alt="Nestvane's settings screen">
+</p>
+
+---
+
+Nestvane starts a full Android 17 system, built from the Android Open Source Project, inside an ordinary iOS
+app. You install Android apps from APK files, use them with touch, and keep their data between launches.
+
+iOS does not let an app create executable memory, so the usual ways to run another system's code — a
+just-in-time compiler, or a hypervisor — are closed. Nestvane takes the remaining road: **Android is rebuilt and
+translated ahead of time**, the translated code ships signed inside the app, and a **Linux kernel layer written
+for the app** gives that code the system it expects.
+
+## What works today
+
+- **Android 17 boots to its launcher** in about 8–10 seconds on an iPhone 15 Pro: the real `init`, `zygote`,
+  `system_server`, SurfaceFlinger, Launcher3, Settings and Files.
+- **APK files install and run.** Open an APK with Nestvane from another app, or choose *Install APK…*.
+- **Network.** Android apps use the iPhone's Wi-Fi or cellular connection.
+- **Shared files.** Android's shared storage is a real folder in the Files app
+  (*On My iPhone → Nestvane → Android*).
+- **Home-screen widgets**, the phone's battery level and time zone, touch input.
+- **Graphics on the GPU** through gfxstream and ANGLE on Metal, at 60 Hz.
+
+## What does not work yet
+
+- **Audio and video playback.** The codecs are in place and start; playback does not progress and no sound comes
+  out yet.
+- **Google apps and Play services.** This is AOSP. Apps that need them will not run.
+- **Apps with heavy native code are slow**: an app's own native libraries are interpreted.
+- IPv6, and live updates of the shared folder (changes made from iOS appear when Android next starts).
+
+[docs/status.md](docs/status.md) has the full list with the measurements behind it.
+
+## How it works
+
+<p align="center">
+  <img src="docs/images/architecture.svg" alt="Nestvane architecture: Android apps on Android 17 user space, running as ahead-of-time translated code or in an interpreter, on a Linux kernel layer inside the app, with bridges to the iPhone for graphics, storage, network, sound and input" width="100%">
+</p>
+
+| Piece | What it does | Where |
+| --- | --- | --- |
+| **Rebuilt AOSP** | Android compiled with registers `x18` and `x25`–`x28` kept free, so translated code has room for its own state | [`experiments/aosp/patch.py`](experiments/aosp/patch.py) |
+| **Static rewriter** | Turns every guest ARM64 ELF into Mach-O code at a fixed guest address. Ordinary instructions run as they are; system calls and indirect branches leave through the runtime | [`experiments/g0/e3/rewrite.py`](experiments/g0/e3/rewrite.py), [`tools/build-native-code.py`](tools/build-native-code.py) |
+| **Linux kernel layer** | The kernel Android sees, in user space: tasks, system calls, files and mounts, Binder, signals, sockets, SELinux tables, seccomp | [`runtime/ProbeLinux.cpp`](runtime/ProbeLinux.cpp), [`runtime/ProbeBinder.cpp`](runtime/ProbeBinder.cpp) |
+| **Interpreter** | Runs ARM64 code that has no translation, such as the native libraries inside APKs | [`runtime/AArch64.cpp`](runtime/AArch64.cpp) |
+| **Bridges to the phone** | Graphics, storage, network, sound, battery, time zone and touch | [`ios/`](ios), [`runtime/HostSocket.hpp`](runtime/HostSocket.hpp), [`runtime/ProbeData.cpp`](runtime/ProbeData.cpp) |
+
+Read more in the documentation:
+
+- [Architecture](docs/architecture.md) — the whole system in one read
+- [Static rewriting](docs/static-rewriting.md) — from ELF to code iOS will run
+- [The kernel layer](docs/kernel-layer.md) — a Linux kernel in user space
+- [Devices](docs/devices.md) — graphics, storage, network and sound
+- [Design notes](docs/design-notes.md) — decisions, and the problems that taught the most
+- [Building](docs/building.md) and [Status](docs/status.md)
+
+## Measured
+
+On an iPhone 15 Pro unless noted. The running record, with every measurement, is [`results/G0.md`](results/G0.md)
+(in Chinese).
+
+| | |
+| --- | --- |
+| Boot to the Android launcher | about 8 s; about 10 s with the media services |
+| Memory footprint | about 2.4–2.7 GB |
+| App download | about 1 GB |
+| Scrolling a list | up to about 55 frames a second at 60 Hz |
+| Translated modules | about 1,230, in 12 frameworks |
+| Open-source apps installed from APK | 15 |
+
+## Requirements
+
+- iOS 26 or later. Tested on iPhone 15 Pro and iPhone 17 Pro.
+- Nestvane is in private testing and is not available to download yet. Follow the links under
+  [Community](#community) for news.
+
+## Building
+
+Building Nestvane needs a Mac with Xcode and XcodeGen, the Android SDK build tools, and an AOSP build made with
+the project's patch on a Linux machine. [docs/building.md](docs/building.md) walks through the steps and says
+which parts depend on things outside this repository.
 
 ```sh
-tools/validate-host.sh
-tools/prepare-ios.sh
-open nestvane.xcodeproj
+tools/validate-host.sh        # the host test suite: run it before every commit
 ```
 
-用生成的 `nestvane` scheme 在 iPhone 或模拟器上运行。真机需要通过 Xcode 选择自己的开发签名团队。App 启动后会执行测试，并将报告写入 App 容器的 `Documents/validation.txt`。
+## Repository layout
 
-独立 Linux 对照需要本机 `qemu-system-aarch64` 和可供 QEMU virt 启动的 ARM64 Linux 内核。把内核绝对路径交给 `tools/validate-linux.sh`。
-
-## Android 17 动态 ELF 探针
-
-[P2 真机结果](results/P2-linker.md) 记录了 iPhone 11 上的 Android 17 动态链接验证。测试程序使用原版链接器加载 Bionic，调用 `strlen` 和 `write` 后正常退出。
-
-在单独目录备好同一 ARM64 Android 17 构建的 `linker64`、`libc.so` 和 `libdl.so`。运行 `tools/probe-dynamic.sh /absolute/path/to/android17-runtime` 在 Mac 上验证。再运行 `tools/prepare-ios.sh`，即可用 Xcode 构建包含该探针的 iOS 版本。
-
-## Android 17 第二阶段 init 和属性探针
-
-[属性验证](results/P2-properties.md) 记录了原版 `init` 生成属性区和独立 Bionic 客体读取属性。[线程验证](results/P2-threads.md) 记录了真机上的属性服务线程和 Unix socket 请求往返。[启动脚本验证](results/P2-early-init.md) 记录了原版 init 执行到 early-init 的真机进度。[服务启动记录](results/P2-services.md) 包含 vendor 子上下文和 ueventd 的真机结果。[Runtime APEX 探针](results/P2-apex.md) 记录了原版 apexd 在 iPhone 11 上启动、识别原版包和补齐 loop 接口前的位置。[Runtime APEX 激活结果](results/P2-apex-activation.md) 记录了同一只读载荷在 iPhone 11 上挂载，以及独立 Bionic 进程读取其中的 linker64。[链接器配置验证](results/P2-linkerconfig.md) 记录了原版 linkerconfig 在真机生成系统和 Runtime APEX 命名空间配置。[设备冷启动验证](results/P2-coldboot.md) 记录了原版 ueventd 在真机接收客体设备事件并完成 coldboot。[early-fs 验证](results/P2-early-fs.md) 记录了原版系统 BoringSSL 自检通过后进入 early-fs。[vold 启动验证](results/P2-vold.md) 记录了原版存储服务的启动。[Binder 验证](results/P2-binder.md) 记录了真机上的 binderfs 挂载、原版 servicemanager 的上下文管理器注册和 vold 的握手，以及客体间的传输测试。[vold RPC 验证](results/P2-vold-rpc.md) 记录了原版 vdc 在真机查找 vold 并完成两个 checkpoint RPC。[持久化 /data](results/P2-data.md) 记录了 iPhone App 终止重启及覆盖安装后的客体文件读回。
-
-在相同 ARM64 API 37 SDK 模拟器上启用 `adb root`，把对应的模拟器序列号交给采集工具。用 `--readelf` 可以指定 LLVM 工具的路径。
-
-```sh
-tools/prepare-init-root.py emulator-5580
-tools/probe-init.sh
-tools/prepare-ios.sh
+```
+runtime/       the kernel layer, the interpreter, and the entry to translated code
+ios/           the iOS app: display, touch, audio, settings
+experiments/   the AOSP patch and the static rewriter
+tools/         building the guest image and the translated code; validation
+fixtures/      guest-side scripts, resource overlays and small test apps
+results/       the lab record: what was measured, on which device
+docs/          documentation, in English and 简体中文
+pages/         the website
 ```
 
-采集目录包含原版 init、依赖库、属性上下文、build.prop、各分区的 init 启动脚本、ueventd 配置、apexd 的链接依赖、Runtime APEX、解释器与 Bionic 的链接、链接器命名空间输入，以及从参考内核查询的启动策略数据。已有早期版本的目录可先移到别处，再重新采集。生成的 iOS 项目从 `generated/android17-init-root` 打包参考文件和自制属性读取器。
+## Community
 
-系统 ART、`odrefresh` 和 `dex2oat64` 的真机进度见 [系统 ART 验证](results/P2-system-art.md)。可选的 `--small-art-heap` 将采集镜像的编译器堆范围设为 16–96 MiB，便于验证受限设备的启动路径。
+- Website: <https://atomsprout.com/nestvane/>
+- Discord: <https://discord.gg/eGzEaP6TzR>
+- Telegram: <https://t.me/atomsprout>
+- Email: <atomsprout@gmail.com>
 
-原版 Zygote 的离线诊断可用同版参考模拟器生成独立客体目录。此配置使用预编译 ART 启动镜像、关闭客体 ART JIT，并跳过网络启动，适合检查 ART 和框架引导。实测见 [启动记录](results/P2-network.md)。
+Reports of apps that work, and of apps that do not, are the most useful thing you can send.
 
-```sh
-tools/prepare-boot-image.py emulator-5580 --root generated/android17-init-root \
-  --output generated/android17-framework-diagnostic --framework-diagnostic
-tools/probe-init.sh generated/android17-framework-diagnostic generated/framework-diagnostic.sqlite3
-```
+## Acknowledgements
 
-如需验收 APK 安装和启动，先生成项目自有的计数器 APK，再构建包含框架应用和 APK 的客体目录。客体在完成启动后使用原版 `cmd` 安装并启动计数器。报告分别记录安装进程、启动命令和 Activity 创建结果。
+Nestvane stands on the [Android Open Source Project](https://source.android.com/), on
+[gfxstream](https://android.googlesource.com/platform/hardware/google/gfxstream/) and
+[ANGLE](https://chromium.googlesource.com/angle/angle) for graphics, and on SQLite for its data.
 
-```sh
-tools/build-smoke-apk.sh
-tools/prepare-boot-image.py emulator-5580 --root generated/android17-init-root \
-  --output generated/android17-framework-smoke --framework-diagnostic --framework-apps \
-  --smoke-apk generated/android17-smoke.apk
-tools/prepare-property-reader.sh generated/android17-framework-smoke
-```
-
-可在上述镜像构建命令中加入 `--compiler-filter speed --precompile-framework-code`，在参考模拟器上同时预编译系统服务和 SystemUI。系统服务和 SystemUI 的产物合计约 146 MB。
-
-使用带图形后端的 Mac 探针运行该目录，或把它作为 `generated/android17-init-root` 构建 iPhone App。[本地图形后端验证](results/P2-network.md)
-
-## Android 17 原版 ART 探针
-
-`tools/prepare-art-root.py` 从 ARM64 API 37 SDK 模拟器生成本地资源目录，`--d8` 指定 Android Build Tools 的 D8 路径。`tools/probe-dynamic.sh --art` 运行 Mac 探针。有该资源目录时，iOS 验证构建也会运行它。进度见 [ART 验证](results/P2-art.md)。
+Android is a trademark of Google LLC. Nestvane is not affiliated with or endorsed by Google.
