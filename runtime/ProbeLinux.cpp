@@ -416,6 +416,9 @@ ProbeLinux::ProbeLinux(uint64_t pid, uint64_t uid, uint64_t memoryLimit)
     current->process = std::make_shared<Process>();
     current->process->id = pid;
     nativeMemory = pageSize == GuestSpace::page && (std::getenv("NESTVANE_NATIVE_MEMORY") || native::enabled());
+    // With native execution, what is interpreted is an app's own library in a process whose other
+    // threads are native: a turn of a few thousand instructions would be spent on switching.
+    if (native::enabled()) sliceLength = 32768;
     processes.emplace(pid, current->process.get());
     current->process->userIds.fill(uint32_t(uid));
     current->process->groupIds.fill(uint32_t(uid));
@@ -5686,7 +5689,7 @@ bool ProbeLinux::switchThread(Machine& machine, std::chrono::steady_clock::time_
                 machine.cpu.retired = retired;
                 if (exited) threads.erase(previous);
             }
-            sliceEnd = machine.cpu.retired + 4096;
+            sliceEnd = machine.cpu.retired + sliceLength;
             if (!current->pendingSignals.empty()) deliverPendingCaughtSignal(machine);
             return true;
         }

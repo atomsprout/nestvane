@@ -86,6 +86,8 @@ struct ProbeLinux {
     std::chrono::steady_clock::time_point lastTimerScan{};
     std::chrono::steady_clock::duration idleTime{};
     uint64_t idleWaits = 0, threadSwitches = 0;
+    // A thread's turn, in interpreted instructions. A turn of native code is one time slice and counts as this many.
+    uint64_t sliceLength = 4096;
     std::optional<std::pair<std::string_view, uint64_t>> guestCodeFile(const uint8_t* instruction) const;
     std::string guestCodeFileName(std::string_view backingPath) const;
     void setBootContext(std::string context);

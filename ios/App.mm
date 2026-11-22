@@ -212,7 +212,11 @@ static NSString* ThermalState() {
 }
 @end
 
+static NSString* const InstallApkShortcut = @"com.everettjf.nestvane.install-apk";
+
 @interface ValidationViewController : UIViewController <UIDocumentPickerDelegate>
+- (void)installApkAtURL:(NSURL*)source;
+- (void)chooseApkWhenReady;
 @property(nonatomic, strong) UILabel* status;
 @property(nonatomic, strong) UITextView* details;
 @property(nonatomic, strong) GuestDisplayView* display;
@@ -226,6 +230,8 @@ static NSString* ThermalState() {
 
 @implementation ValidationViewController {
     std::shared_ptr<nestvane::GuestApkInbox> _apkInbox;
+    NSURL* _pendingApk;   // handed over before Android was started
+    BOOL _pendingPicker;  // the quick action came before Android was started
     std::stop_source _androidStop;
     BOOL _started;
     NSUInteger _apkStatusGeneration;
@@ -338,6 +344,7 @@ static NSString* ThermalState() {
 }
 
 - (void)showApkStatus:(NSString*)message transient:(BOOL)transient {
+    NSLog(@"APK: %@", message);
     const auto generation = ++_apkStatusGeneration;
     self.apkStatus.text = message;
     self.apkStatus.hidden = NO;
@@ -369,15 +376,37 @@ static NSString* ThermalState() {
 - (void)chooseApk {
     if (!_apkInbox || !self.importApk.enabled) return;
     UIDocumentPickerViewController* picker = [[UIDocumentPickerViewController alloc]
-        initForOpeningContentTypes:@[UTTypeData] asCopy:YES];
+        initForOpeningContentTypes:@[UTTypeData] asCopy:YES];  // not every provider tags .apk files with a type
     picker.delegate = self;
     [self presentViewController:picker animated:YES completion:nil];
 }
 
 - (void)documentPicker:(UIDocumentPickerViewController*)controller didPickDocumentsAtURLs:(NSArray<NSURL*>*)urls {
+    if (NSURL* source = urls.firstObject) [self installApkAtURL:source];
+}
+
+// The home screen's quick action: the picker, as soon as there is something to present it from.
+- (void)chooseApkWhenReady {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (self.presentedViewController) return;
+        if (!self->_apkInbox) self->_pendingPicker = YES;
+        else [self chooseApk];
+    });
+}
+
+// Installs an APK from the picker, or one that another app handed over ("Open in", AirDrop, a quick
+// action). Android picks it up when it has booted, so this can come before the launcher is there.
+- (void)installApkAtURL:(NSURL*)source {
     const auto inbox = _apkInbox;
-    NSURL* source = urls.firstObject;
-    if (!inbox || !source) return;
+    if (!inbox) {
+        // Android is started when the view appears, and a file can arrive before that.
+        _pendingApk = source;
+        return;
+    }
+    if (!self.importApk.enabled) {
+        [self showApkStatus:@"Another APK is still being installed." transient:YES];
+        return;
+    }
     if ([source.pathExtension caseInsensitiveCompare:@"apk"] != NSOrderedSame) {
         [self showApkStatus:@"Choose an .apk file." transient:YES];
         return;
@@ -398,24 +427,26 @@ static NSString* ThermalState() {
             });
         };
         const BOOL access = [source startAccessingSecurityScopedResource];
-        NSNumber* size = nil;
-        NSNumber* regular = nil;
-        const BOOL readable = [source getResourceValue:&regular forKey:NSURLIsRegularFileKey error:nil] &&
-            [source getResourceValue:&size forKey:NSURLFileSizeKey error:nil] && regular.boolValue;
-        if (!readable || !size.unsignedLongLongValue || size.unsignedLongLongValue > Inbox::maxBytes) {
-            if (access) [source stopAccessingSecurityScopedResource];
-            report(@"Choose an APK file up to 64 MiB.");
-            return;
-        }
-        NSData* data = [NSData dataWithContentsOfURL:source options:NSDataReadingMappedIfSafe error:nil];
-        if (!data || data.length != size.unsignedLongLongValue) {
+        // Read first and judge by what was read: a file another app hands over does not always
+        // answer questions about its attributes.
+        NSError* readError = nil;
+        NSData* data = [NSData dataWithContentsOfURL:source options:NSDataReadingMappedIfSafe error:&readError];
+        if (!data.length) {
+            NSLog(@"APK: unreadable: %@", readError);
             if (access) [source stopAccessingSecurityScopedResource];
             report(@"Couldn’t read the selected APK.");
+            return;
+        }
+        if (data.length > Inbox::maxBytes) {
+            if (access) [source stopAccessingSecurityScopedResource];
+            report(@"Choose an APK file up to 64 MiB.");
             return;
         }
         const auto* bytes = static_cast<const uint8_t*>(data.bytes);
         std::vector<uint8_t> file(bytes, bytes + data.length);
         if (access) [source stopAccessingSecurityScopedResource];
+        // A file another app handed over was copied into this app's inbox directory for it.
+        if ([source.path containsString:@"/Documents/Inbox/"]) [NSFileManager.defaultManager removeItemAtURL:source error:nil];
         if (!inbox->submit(std::move(file), [report](Inbox::Result result) {
             switch (result) {
                 case Inbox::Result::installed: report(@"APK installed. Open it from the Android launcher."); break;
@@ -443,6 +474,14 @@ static NSString* ThermalState() {
     }
     self.importApk.hidden = !apkInbox;
     self.importApk.enabled = bool(apkInbox);
+    if (apkInbox && (_pendingApk || _pendingPicker)) {
+        NSURL* pending = std::exchange(_pendingApk, nil);
+        const BOOL picker = std::exchange(_pendingPicker, NO);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (pending) [self installApkAtURL:pending];
+            else if (picker) [self chooseApk];
+        });
+    }
     self.apkStatus.hidden = YES;
     auto touch = std::make_shared<nestvane::GuestTouch>();
     [self.display setTouchDevice:touch];
@@ -489,6 +528,9 @@ static NSString* ThermalState() {
 #endif
         NSURL* documents = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory
                                                                inDomains:NSUserDomainMask].firstObject;
+        // Where this directory is on the device, for a test that hands the app a file by its URL.
+        [documents.path writeToURL:[documents URLByAppendingPathComponent:@"documents-path.txt"] atomically:YES
+                          encoding:NSUTF8StringEncoding error:nil];
         NSURL* outputURL = [documents URLByAppendingPathComponent:@"validation.txt"];
         const auto exportReport = [&](NSURL* destination, const std::string& output) {
             NSString* report = [NSString stringWithFormat:@"%@ %@ | process %d | thermal %@ → %@\n%@",
@@ -621,10 +663,22 @@ static NSString* ThermalState() {
                                 NSArray<NSString*>* fields = [tap componentsSeparatedByString:@":"];
                                 if (fields.count != 4) continue;
                                 const int32_t x = axis * fields[0].intValue / 1000, y = axis * fields[1].intValue / 1000;
-                                const bool pressed = device->submit(x, y, true);
-                                usleep(useconds_t(fields[2].intValue) * 1000);
-                                const bool released = device->submit(x, y, false);
-                                NSLog(@"test tap %d at %d,%d: down %d up %d", number, x, y, pressed, released);
+                                if ([fields[0] isEqualToString:@"back"]) {
+                                    // "back:0:0:wait" presses Android's Back key instead.
+                                    device->press(nestvane::GuestTouch::Key::back);
+                                } else if ([fields[0] isEqualToString:@"up"]) {
+                                    // "up:0:0:wait" scrolls: a slow drag up the middle of the screen.
+                                    for (int step = 0; step <= 20; ++step) {
+                                        device->submit(axis / 2, axis * (140 - step * 4) / 200, true);
+                                        usleep(30000);
+                                    }
+                                    usleep(200000);
+                                    device->submit(axis / 2, axis * 60 / 200, false);
+                                } else {
+                                    device->submit(x, y, true);
+                                    usleep(useconds_t(fields[2].intValue) * 1000);
+                                    device->submit(x, y, false);
+                                }
                                 sleep(unsigned(fields[3].intValue));
                                 save([NSString stringWithFormat:@"touch-tap-%d.png", number++]);
                             }
@@ -772,6 +826,27 @@ static NSString* ThermalState() {
     self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene*)scene];
     self.window.rootViewController = [ValidationViewController new];
     [self.window makeKeyAndVisible];
+    [self scene:scene openURLContexts:options.URLContexts];
+    if ([options.shortcutItem.type isEqualToString:InstallApkShortcut])
+        [(ValidationViewController*)self.window.rootViewController chooseApkWhenReady];
+}
+
+// An .apk opened with this app from Files, AirDrop or another app's share sheet.
+- (void)scene:(UIScene*)scene openURLContexts:(NSSet<UIOpenURLContext*>*)contexts {
+    for (UIOpenURLContext* context in contexts) {
+        NSLog(@"APK: asked to open %@", context.URL.lastPathComponent);
+        if (!context.URL.isFileURL) continue;
+        [(ValidationViewController*)self.window.rootViewController installApkAtURL:context.URL];
+        break;
+    }
+}
+
+// "Install APK" in the menu of the app's icon on the home screen.
+- (void)windowScene:(UIWindowScene*)scene performActionForShortcutItem:(UIApplicationShortcutItem*)item
+  completionHandler:(void (^)(BOOL))completion {
+    const BOOL known = [item.type isEqualToString:InstallApkShortcut];
+    if (known) [(ValidationViewController*)self.window.rootViewController chooseApkWhenReady];
+    completion(known);
 }
 @end
 

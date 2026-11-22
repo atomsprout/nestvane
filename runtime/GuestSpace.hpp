@@ -75,20 +75,27 @@ public:
     bool copyOut(void* to, uint64_t address, uint64_t length);
 
     // Where translated code is mapped as it was translated for, so that it can run natively.
-    void addCode(uint64_t start, uint64_t end) { if (!interpreted_) code_.push_back({start, end}); }
+    void addCode(uint64_t start, uint64_t end) { if (!interpreted_) { code_.push_back({start, end}); lastGap_ = {}; } }
     // For a process that has code without a translation: none of its code runs natively any more.
-    void dropCode() { interpreted_ = true; code_.clear(); lastCode_ = {}; }
+    void dropCode() { interpreted_ = true; code_.clear(); lastCode_ = {}; lastGap_ = {}; }
     bool interpreted() const { return interpreted_; }
     // The dynamic linker's code: the kernel layer tells its address space reservations by it.
     void setLinker(uint64_t start, uint64_t end) { linker_ = {start, end - start}; }
     bool inLinker(uint64_t pc) const { return pc - linker_.start < linker_.length; }
     bool hasCode(uint64_t pc) const {
         if (pc - lastCode_.start < lastCode_.length) return true;
-        for (const auto& range : code_)
+        // Code without a translation is interpreted one instruction after another, and each one asks.
+        if (pc - lastGap_.start < lastGap_.length) return false;
+        uint64_t below = 0, above = UINT64_MAX;
+        for (const auto& range : code_) {
             if (pc >= range.start && pc < range.end) {
                 lastCode_ = {range.start, range.end - range.start};
                 return true;
             }
+            if (range.end <= pc) below = std::max(below, range.end);
+            else above = std::min(above, range.start);
+        }
+        lastGap_ = {below, above - below};
         return false;
     }
     // The records the dynamic linker reads to load translated files where they were translated for
@@ -130,7 +137,7 @@ private:
     std::vector<Run> runs_;
     struct CodeRange { uint64_t start, end; };
     std::vector<CodeRange> code_;
-    mutable struct { uint64_t start = 0, length = 0; } lastCode_;
+    mutable struct { uint64_t start = 0, length = 0; } lastCode_, lastGap_;
     bool interpreted_ = false;
     struct { uint64_t start = 0, length = 0; } linker_;
     uint64_t reserved_ = 0;

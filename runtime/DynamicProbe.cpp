@@ -89,6 +89,7 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
     bool reachedExecutable = false;
     const bool nativeExecution = native::enabled();
     bool interpretNext = false;
+    bool afterNative = false;
     uint64_t nativeFaults = 0;
     using namespace std::chrono;
     // Where the host thread's time goes besides guest code: in system calls, and in the scheduler,
@@ -343,9 +344,13 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
             }
             if (now >= nextSnapshot) captureSnapshot(now);
         }
-        const auto scheduleBegan = nativeExecution ? steady_clock::now() : steady_clock::time_point{};
+        // Timed after a stretch of native code only: after each interpreted instruction, reading the
+        // clock twice would cost more than the instruction.
+        const bool timeSchedule = nativeExecution && afterNative;
+        afterNative = false;
+        const auto scheduleBegan = timeSchedule ? steady_clock::now() : steady_clock::time_point{};
         const bool scheduled = linux.schedule(machine, scheduleDeadline, stop);
-        if (nativeExecution) scheduleTime += steady_clock::now() - scheduleBegan;
+        if (timeSchedule) scheduleTime += steady_clock::now() - scheduleBegan;
         if (!scheduled) {
             const auto now = steady_clock::now();
             if (now >= nextSnapshot && now < deadline && !stop.stop_requested()) {
@@ -377,6 +382,7 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
             interpretNext = false;
         } else if (nativeExecution && linux.nativeAt(machine) && !(init && linux.hasChildEntryAt(cpu.pc))) {
             const auto left = native::run(machine);
+            afterNative = true;
             if (left == native::Exit::fault && !(++nativeFaults & 0xffff)) {
                 // A sample of what native code could not do itself, for finding memory it cannot reach.
                 std::ostringstream sample;
@@ -401,7 +407,7 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
             switch (left) {
                 case native::Exit::preempted:
                     // The scheduler counts instructions: a slice of native code counts as one of its own.
-                    cpu.retired += 4096;
+                    cpu.retired += linux.sliceLength;
                     break;
                 case native::Exit::lost:
                 case native::Exit::retry:
@@ -413,6 +419,29 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
                     break;
             }
             continue;
+        }
+        if (nativeExecution && machine.space && !machine.space->interpreted()) {
+            // In a process that runs natively, what comes here is a library without a translation, or
+            // one instruction that native code left to the interpreter. The library is run in a loop
+            // of its own up to the next thing the code around this loop looks after: a system call,
+            // the end of the thread's turn, translated code, a fault.
+            bool ran = false;
+            for (;;) {
+                const auto* code = machine.readInstruction(cpu.pc);
+                if (!code) break;
+                std::memcpy(&word, code, sizeof(word));
+                auto& decoded = decodedWords[((word ^ (word >> 16)) * 0x9e3779b9U) >> 21];
+                if (decoded.word != word) {
+                    decoded.word = word;
+                    decoded.instruction = decode(word);
+                }
+                if (decoded.instruction.op == Op::unsupported || decoded.instruction.op == Op::svc) break;
+                executeDecoded(machine, decoded.instruction);
+                ran = true;
+                if (cpu.stop != Stop::running || !(cpu.retired & 4095) || !linux.hasSliceBudget(cpu.retired, 1) ||
+                    machine.space->hasCode(cpu.pc)) break;
+            }
+            if (ran) continue;
         }
         const auto* bytes = machine.readInstruction(cpu.pc);
         if (!bytes) {

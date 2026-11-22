@@ -86,6 +86,26 @@ iOS「文件」导入与客体安装助手已经实现。用户选择的 APK 以
 
 不裁的部分：包管理、Activity 和窗口管理、输入、存储、权限、设置存储、输入法、WebView。第三方应用依赖它们。
 
+### 第 1 步的清单（2026-11-21，按 iPhone 15 Pro 上的开机日志和 Settings 的实测）
+
+开机后被广播或绑定拉起、在这个场景里用不上的应用进程：`com.android.rkpdapp`（远程密钥配置）、`.adservices`、`com.android.federatedcompute.services`、`com.android.ondevicepersonalization.services`、`com.android.healthconnect.controller`、`com.android.devicelockcontroller`、`com.android.photopicker`、`com.android.shell` 的堆转储接收器、`com.android.keychain`。九个进程，每个 0.2–0.4 GiB 常驻。
+
+用不上的守护进程和启动脚本：`adbd`（每隔几秒重试启动 `mdnsd`）、`update_engine`、`gsid`、`snapuserd`、`uncrypt`、`recovery-*`、`tradeinmode`、`profcollectd`、`simpleperf`、`heapprofd`、`traced_perf`、`perfetto`、`incidentd`、`dumpstate`、`llkd`、`storaged`、`bootstat`、`logcatd`、`dmesgd`、`wifi`、`usbd`、`virtual_camera`。另有一个客户端每秒等一次不存在的 `android.hardware.media.c2` 软件编解码服务，要么补上服务，要么去掉等待方。
+
+Settings 实测：首页、Network & internet、Apps、Display 都能打开，子页面 0.15–0.35 秒显示。Storage 崩溃（`Volume external_primary not found`）：客体没有共享存储卷，Files 的“Can't load content”是同一个原因。
+
+Settings 里去掉的入口（用特性声明和资源覆盖关掉，不改代码）：SIM 卡和移动网络、热点和共享、蓝牙和已连接设备、电池、锁屏和生物识别、安全与紧急情况、系统更新、多用户、备份。保留：应用（卸载、权限、默认应用）、通知、显示（深色、字号）、声音、存储、无障碍、语言和输入法、日期和时间、关于。
+
+要补而不是裁的核心功能：共享存储卷（`/storage/emulated/0`，Files、Storage 页和应用存文件都靠它）。
+
+### 用户安装的应用（同一天实测）
+
+装 APK 的三个入口：App 里的“Install APK…”按钮，主屏幕长按图标的“Install APK…”快捷操作，以及在“文件”、隔空投送或分享菜单里用本 App 打开 `.apk`。
+
+iOS 不允许运行设备上生成的代码，用户装的应用因此有两个固定的限制：DEX 由 ART 的解释器执行（解释器本身是原生的）；应用自带的原生库没有翻译，由运行时的解释器执行，约每秒四千万条指令，而且和界面线程共用一个宿主线程。ScriptWidget 1.1.1 的界面流畅可用，它的小组件预览靠自带库里的 QuickJS 解析 2.8 MB 的脚本，第一个预览约 2 分钟出来。
+
+按收益排的三条路：多核调度（第 3 步，自带库的线程不再和界面抢一个核）；解释器提速（访存直接走地址空间的偏移表、按块预解码）；对随 App 打包的已知应用，让改写器支持占用 x25–x28 的代码，把它们的库也翻译成原生。
+
 ## 首个开发批次
 
 按依赖切成三个可独立验收的改动。
