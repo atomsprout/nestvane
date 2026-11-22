@@ -1,6 +1,6 @@
 # Status
 
-Nestvane is an early release. An unsigned IPA is attached to each [release](https://github.com/atomsprout/nestvane/releases) ([installing.md](installing.md)); the app is not on the App Store.
+Nestvane is an early release, and for now only developers can run it: the IPA must be signed with a paid Apple Developer Program membership and sideloaded. An unsigned IPA is attached to each [release](https://github.com/atomsprout/nestvane/releases) ([installing.md](installing.md)); the app is not on the App Store.
 This document says what works, what does not, and what has been measured.
 
 Every number here comes from the lab record, [`results/G0.md`](../results/G0.md), and names the device it was measured on.

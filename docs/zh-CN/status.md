@@ -1,6 +1,6 @@
 # 现状
 
-Nestvane 是早期版本。每个 [Release](https://github.com/atomsprout/nestvane/releases) 附带一个不带签名的 IPA（见[安装](installing.md)）；App 尚未上架 App Store。
+Nestvane 是早期版本，目前只有开发者能运行：IPA 必须用付费的 Apple Developer Program 会员签名后侧载。每个 [Release](https://github.com/atomsprout/nestvane/releases) 附带一个不带签名的 IPA（见[安装](installing.md)）；App 尚未上架 App Store。
 这篇文档说明哪些能用、哪些不能用，以及测过哪些数字。
 
 这里的每个数字都来自实验记录 [`results/G0.md`](../../results/G0.md)，并注明测量所用的设备。

@@ -46,6 +46,8 @@ Nestvane 走的是剩下的那条路：**把 Android 重新构建并提前翻译
 > Nestvane 走的是这个思路。[Kernarium](https://github.com/imxieyi/Kernarium) 以开源的方式在 iOS 上运行真正的 Linux 内核，
 > 是可以学习的那个系统。Nestvane 没有使用它们的任何代码，是从零写的；[三者的对比见这里](docs/zh-CN/comparison.md)。
 
+> **目前 Nestvane 只有开发者能用。** 唯一的办法是用付费的 Apple Developer Program 会员（每年 99 美元）给 IPA 签名，再侧载安装。没有 App Store 版本，也没有 TestFlight 版本；没有开发者账号的普通用户现在还用不了。见 [docs/zh-CN/installing.md](docs/zh-CN/installing.md)。
+
 ## 现在能做什么
 
 - **Android 17 启动到桌面**：约 10 秒，安装后的第一次约 17 秒。运行的是原版的 `init`、`zygote`、`system_server`、

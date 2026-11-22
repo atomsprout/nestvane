@@ -1,5 +1,7 @@
 # Installing the release
 
+**For now Nestvane is for developers only.** The only way to run it is to sign the IPA with a paid Apple Developer Program membership (US$99 a year) and sideload it. There is no App Store or TestFlight version, and people without a developer account cannot use it yet.
+
 Each [release](https://github.com/atomsprout/nestvane/releases) carries `Nestvane-<version>.ipa`.
 The IPA has no signature and no provisioning profile in it: iOS will not install it as it is.
 You sign it with your own Apple developer identity first. This page says how, and what was and was not tried.

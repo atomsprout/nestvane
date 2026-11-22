@@ -1,5 +1,7 @@
 # 安装发布版
 
+**目前 Nestvane 只有开发者能用。** 唯一的办法是用付费的 Apple Developer Program 会员（每年 99 美元）给 IPA 签名，再侧载安装。没有 App Store 版本，也没有 TestFlight 版本；没有开发者账号的普通用户现在还用不了。
+
 每个 [Release](https://github.com/atomsprout/nestvane/releases) 里都有 `Nestvane-<版本>.ipa`。
 这个 IPA 里没有签名，也没有描述文件，iOS 不会直接安装它。
 你要先用自己的 Apple 开发者身份给它签名。本页说明做法，以及哪些试过、哪些没试过。

@@ -48,6 +48,8 @@ for the app** gives that code the system it expects.
 > runs a real Linux kernel on iOS in the open, and was the system to learn from. Nestvane shares no code with
 > either and was written from nothing; [how the three compare](docs/comparison.md).
 
+> **For now Nestvane is for developers only.** The only way to run it is to sign the IPA with a paid Apple Developer Program membership (US$99 a year) and sideload it. There is no App Store or TestFlight version, and people without a developer account cannot use it yet. See [docs/installing.md](docs/installing.md).
+
 ## What works today
 
 - **Android 17 boots to its launcher** in about 10 seconds, and about 17 the first time after installing: the real `init`, `zygote`,
