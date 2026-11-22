@@ -1,0 +1,31 @@
+/* Colours follow the app icon: violet first, on a warm paper background in light mode. */
+:root {
+  --ifm-color-primary: #6b4fe0;
+  --ifm-color-primary-dark: #5837dc;
+  --ifm-color-primary-darker: #4f2dd6;
+  --ifm-color-primary-darkest: #3f20b5;
+  --ifm-color-primary-light: #7e67e4;
+  --ifm-color-primary-lighter: #8873e6;
+  --ifm-color-primary-lightest: #a797ed;
+  --ifm-background-color: #faf7f2;
+  --ifm-code-font-size: 92%;
+  --nv-hero-glow: rgba(126, 103, 228, 0.22);
+  --nv-chip: rgba(107, 79, 224, 0.14);
+}
+[data-theme='dark'] {
+  --ifm-color-primary: #a797ed;
+  --ifm-color-primary-dark: #8f7be8;
+  --ifm-color-primary-darker: #836de6;
+  --ifm-color-primary-darkest: #5f44dd;
+  --ifm-color-primary-light: #bfb3f2;
+  --ifm-color-primary-lighter: #cbc1f4;
+  --ifm-color-primary-lightest: #efecfc;
+  --ifm-background-color: #0b0a10;
+  --ifm-background-surface-color: #15131d;
+  --nv-hero-glow: rgba(126, 103, 228, 0.3);
+  --nv-chip: rgba(167, 151, 237, 0.18);
+}
+[data-theme='dark'] .navbar { background: #100e17; }
+.navbar__logo img { border-radius: 7px; }
+/* Wide tables in the documents scroll inside themselves on a phone. */
+.markdown table { display: block; overflow-x: auto; }

@@ -139,7 +139,7 @@ tools/         building the guest image and the translated code; validation
 fixtures/      guest-side scripts, resource overlays and small test apps
 results/       the lab record: what was measured, on which device
 docs/          documentation, in English and 简体中文
-pages/         the website
+website/       the website (Docusaurus); its pages come from docs/
 ```
 
 ## Community

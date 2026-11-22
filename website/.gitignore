@@ -1,0 +1,6 @@
+node_modules/
+build/
+.docusaurus/
+# Copied from ../docs by scripts/sync-docs.mjs.
+/docs/
+/i18n/zh-Hans/docusaurus-plugin-content-docs/current/

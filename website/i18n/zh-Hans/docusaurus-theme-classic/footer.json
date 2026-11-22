@@ -1,0 +1,15 @@
+{
+  "link.title.Nestvane": {"message": "Nestvane"},
+  "link.title.Community": {"message": "社区"},
+  "link.title.Source": {"message": "源码"},
+  "link.item.label.Documentation": {"message": "文档"},
+  "link.item.label.Install the release": {"message": "安装发布版"},
+  "link.item.label.Privacy policy": {"message": "隐私政策"},
+  "link.item.label.Discord": {"message": "Discord"},
+  "link.item.label.Telegram": {"message": "Telegram"},
+  "link.item.label.Email": {"message": "邮箱"},
+  "link.item.label.GitHub": {"message": "GitHub"},
+  "link.item.label.Releases": {"message": "发布版"},
+  "link.item.label.Apache License 2.0": {"message": "Apache License 2.0"},
+  "copyright": {"message": "Nestvane 由 AtomSprout 制作。Android 是 Google LLC 的商标。Nestvane 与 Google 没有隶属关系，也未获其认可。"}
+}

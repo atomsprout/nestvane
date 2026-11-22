@@ -133,7 +133,7 @@ tools/         构建客体镜像和翻译后的代码；验证
 fixtures/      客体里的脚本、资源覆盖包和几个小测试应用
 results/       实验记录：测了什么、在哪台设备上
 docs/          文档，English 与简体中文
-pages/         网站
+website/       网站（Docusaurus），页面内容取自 docs/
 ```
 
 ## 社区

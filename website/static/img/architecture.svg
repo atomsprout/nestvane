@@ -1,0 +1,191 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 860" role="img" aria-labelledby="t d" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <title id="t">Nestvane architecture</title>
+  <desc id="d">Android apps run on Android 17 user space. Its code runs either as code translated ahead of time or in an interpreter. Both sit on a Linux kernel layer inside the app, which reaches the iPhone through bridges for graphics, storage, network, sound and input. A build-time pipeline turns the rebuilt AOSP into signed translated code.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#12131a"/>
+      <stop offset="1" stop-color="#0b0c11"/>
+    </linearGradient>
+    <linearGradient id="apps" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ff5fd2"/>
+      <stop offset="1" stop-color="#ff8a5c"/>
+    </linearGradient>
+    <linearGradient id="android" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#9b7bff"/>
+      <stop offset="1" stop-color="#6f8cff"/>
+    </linearGradient>
+    <linearGradient id="native" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#34d6f4"/>
+      <stop offset="1" stop-color="#3fe0b0"/>
+    </linearGradient>
+    <linearGradient id="interp" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ffb347"/>
+      <stop offset="1" stop-color="#ff7a59"/>
+    </linearGradient>
+    <linearGradient id="kernel" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#3fe0b0"/>
+      <stop offset="1" stop-color="#8be35a"/>
+    </linearGradient>
+    <linearGradient id="host" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#5aa9ff"/>
+      <stop offset="1" stop-color="#7c8cff"/>
+    </linearGradient>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 10 5 0 10z" fill="#8f96a8"/>
+    </marker>
+    <style>
+      .title { font-size: 26px; font-weight: 700; fill: #f4f5f8; }
+      .sub { font-size: 14px; fill: #a3a9b8; }
+      .band { font-size: 12px; font-weight: 700; letter-spacing: 1.6px; fill: #0b0c11; }
+      .head { font-size: 17px; font-weight: 700; fill: #f4f5f8; }
+      .body { font-size: 13px; fill: #c3c8d4; }
+      .chip { font-size: 12.5px; font-weight: 600; fill: #e9ebf1; }
+      .side { font-size: 12px; font-weight: 700; letter-spacing: 1.6px; fill: #8f96a8; }
+      .card { fill: #181a23; stroke: #2a2d3a; stroke-width: 1; }
+      .pill { fill: #232634; stroke: #343849; stroke-width: 1; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="860" rx="24" fill="url(#bg)"/>
+  <text x="48" y="58" class="title">How Nestvane runs Android inside an iOS app</text>
+  <text x="48" y="84" class="sub">iOS lets an app create no executable memory, so nothing is compiled on the phone: Android is translated ahead of time.</text>
+
+  <!-- build-time column -->
+  <text x="48" y="132" class="side">BUILD TIME</text>
+  <rect x="48" y="146" width="212" height="94" rx="14" class="card"/>
+  <rect x="48" y="146" width="6" height="94" rx="3" fill="url(#android)"/>
+  <text x="70" y="176" class="head">AOSP, rebuilt</text>
+  <text x="70" y="198" class="body">Android 17 compiled with</text>
+  <text x="70" y="216" class="body">x18, x25–x28 kept free</text>
+
+  <rect x="48" y="286" width="212" height="112" rx="14" class="card"/>
+  <rect x="48" y="286" width="6" height="112" rx="3" fill="url(#native)"/>
+  <text x="70" y="316" class="head">Static rewriter</text>
+  <text x="70" y="338" class="body">every ARM64 ELF becomes</text>
+  <text x="70" y="356" class="body">Mach-O code at a fixed</text>
+  <text x="70" y="374" class="body">guest address</text>
+
+  <rect x="48" y="444" width="212" height="94" rx="14" class="card"/>
+  <rect x="48" y="444" width="6" height="94" rx="3" fill="url(#native)"/>
+  <text x="70" y="474" class="head">Signed frameworks</text>
+  <text x="70" y="496" class="body">about 1,230 modules in</text>
+  <text x="70" y="514" class="body">12 frameworks of the app</text>
+
+  <path d="M154 240v40" stroke="#8f96a8" stroke-width="1.6" fill="none" marker-end="url(#arrow)"/>
+  <path d="M154 398v40" stroke="#8f96a8" stroke-width="1.6" fill="none" marker-end="url(#arrow)"/>
+  <path d="M260 491h34c14 0 20-8 20-22v-58c0-12 6-18 18-18" stroke="#8f96a8" stroke-width="1.6" fill="none" marker-end="url(#arrow)"/>
+
+  <!-- run-time stack -->
+  <text x="336" y="132" class="side">ON THE PHONE</text>
+
+  <!-- apps -->
+  <rect x="336" y="146" width="816" height="70" rx="14" class="card"/>
+  <rect x="336" y="146" width="816" height="26" rx="13" fill="url(#apps)"/>
+  <text x="356" y="164" class="band">ANDROID APPS</text>
+  <g>
+    <rect x="356" y="182" width="104" height="24" rx="12" class="pill"/><text x="408" y="198.500" text-anchor="middle" class="chip">Launcher</text>
+    <rect x="470" y="182" width="96" height="24" rx="12" class="pill"/><text x="518" y="198.500" text-anchor="middle" class="chip">Settings</text>
+    <rect x="576" y="182" width="74" height="24" rx="12" class="pill"/><text x="613" y="198.500" text-anchor="middle" class="chip">Files</text>
+    <rect x="660" y="182" width="170" height="24" rx="12" class="pill"/><text x="745" y="198.500" text-anchor="middle" class="chip">apps you install (APK)</text>
+    <rect x="840" y="182" width="90" height="24" rx="12" class="pill"/><text x="885" y="198.500" text-anchor="middle" class="chip">widgets</text>
+  </g>
+
+  <!-- android userspace -->
+  <rect x="336" y="232" width="816" height="96" rx="14" class="card"/>
+  <rect x="336" y="232" width="816" height="26" rx="13" fill="url(#android)"/>
+  <text x="356" y="250" class="band">ANDROID 17 USER SPACE · THE REAL THING</text>
+  <g>
+    <rect x="356" y="270" width="60" height="24" rx="12" class="pill"/><text x="386" y="286.500" text-anchor="middle" class="chip">init</text>
+    <rect x="426" y="270" width="126" height="24" rx="12" class="pill"/><text x="489" y="286.500" text-anchor="middle" class="chip">zygote and ART</text>
+    <rect x="562" y="270" width="132" height="24" rx="12" class="pill"/><text x="628" y="286.500" text-anchor="middle" class="chip">system_server</text>
+    <rect x="704" y="270" width="132" height="24" rx="12" class="pill"/><text x="770" y="286.500" text-anchor="middle" class="chip">SurfaceFlinger</text>
+    <rect x="846" y="270" width="136" height="24" rx="12" class="pill"/><text x="914" y="286.500" text-anchor="middle" class="chip">Binder services</text>
+    <rect x="992" y="270" width="140" height="24" rx="12" class="pill"/><text x="1062" y="286.500" text-anchor="middle" class="chip">vold, netd, media</text>
+  </g>
+  <text x="356" y="314" class="body">Unmodified in behaviour: it boots, installs packages and draws as on a device.</text>
+
+  <!-- execution -->
+  <rect x="336" y="344" width="500" height="118" rx="14" class="card"/>
+  <rect x="336" y="344" width="500" height="26" rx="13" fill="url(#native)"/>
+  <text x="356" y="362" class="band">TRANSLATED CODE · RUNS NATIVELY</text>
+  <text x="356" y="394" class="head">Ordinary instructions run as they are</text>
+  <text x="356" y="416" class="body">System calls and indirect branches leave through the runtime:</text>
+  <text x="356" y="434" class="body">x25 context · x26 code table · x27 memory table · x28 scratch</text>
+  <text x="356" y="452" class="body">All of Android's own code: the system, the framework, ART.</text>
+
+  <rect x="852" y="344" width="300" height="118" rx="14" class="card"/>
+  <rect x="852" y="344" width="300" height="26" rx="13" fill="url(#interp)"/>
+  <text x="872" y="362" class="band">INTERPRETER</text>
+  <text x="872" y="394" class="head">For code with no translation</text>
+  <text x="872" y="416" class="body">Native libraries inside APKs,</text>
+  <text x="872" y="434" class="body">and code after a fault.</text>
+  <text x="872" y="452" class="body">Correct, and much slower.</text>
+
+  <path d="M586 328v10" stroke="#8f96a8" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <path d="M1002 328v10" stroke="#8f96a8" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <path d="M586 462v10" stroke="#8f96a8" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <path d="M1002 462v10" stroke="#8f96a8" stroke-width="1.6" marker-end="url(#arrow)"/>
+
+  <!-- kernel layer -->
+  <rect x="336" y="478" width="816" height="128" rx="14" class="card"/>
+  <rect x="336" y="478" width="816" height="26" rx="13" fill="url(#kernel)"/>
+  <text x="356" y="496" class="band">LINUX KERNEL LAYER · WRITTEN FOR THE APP, IN USER SPACE</text>
+  <g>
+    <rect x="356" y="516" width="118" height="24" rx="12" class="pill"/><text x="415" y="532.500" text-anchor="middle" class="chip">system calls</text>
+    <rect x="484" y="516" width="150" height="24" rx="12" class="pill"/><text x="559" y="532.500" text-anchor="middle" class="chip">tasks and scheduler</text>
+    <rect x="644" y="516" width="150" height="24" rx="12" class="pill"/><text x="719" y="532.500" text-anchor="middle" class="chip">files and mounts</text>
+    <rect x="804" y="516" width="76" height="24" rx="12" class="pill"/><text x="842" y="532.500" text-anchor="middle" class="chip">Binder</text>
+    <rect x="890" y="516" width="242" height="24" rx="12" class="pill"/><text x="1011" y="532.500" text-anchor="middle" class="chip">signals, futex, epoll, timers</text>
+    <rect x="356" y="550" width="170" height="24" rx="12" class="pill"/><text x="441" y="566.500" text-anchor="middle" class="chip">sockets and netlink</text>
+    <rect x="536" y="550" width="150" height="24" rx="12" class="pill"/><text x="611" y="566.500" text-anchor="middle" class="chip">SELinux tables</text>
+    <rect x="696" y="550" width="96" height="24" rx="12" class="pill"/><text x="744" y="566.500" text-anchor="middle" class="chip">seccomp</text>
+    <rect x="802" y="550" width="150" height="24" rx="12" class="pill"/><text x="877" y="566.500" text-anchor="middle" class="chip">device nodes</text>
+    <rect x="962" y="550" width="170" height="24" rx="12" class="pill"/><text x="1047" y="566.500" text-anchor="middle" class="chip">ext4, tmpfs, /data</text>
+  </g>
+  <text x="356" y="594" class="body">One process of iOS holds every Android process. This is the kernel they see.</text>
+
+  <!-- host bridges -->
+  <path d="M744 606v10" stroke="#8f96a8" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <rect x="336" y="622" width="816" height="126" rx="14" class="card"/>
+  <rect x="336" y="622" width="816" height="26" rx="13" fill="url(#host)"/>
+  <text x="356" y="640" class="band">BRIDGES TO THE IPHONE</text>
+  <g>
+    <rect x="356" y="660" width="150" height="74" rx="12" class="pill"/>
+    <text x="372" y="684" class="chip">Graphics</text>
+    <text x="372" y="704" class="body">gfxstream, ANGLE,</text>
+    <text x="372" y="722" class="body">Metal · 60 Hz</text>
+
+    <rect x="516" y="660" width="170" height="74" rx="12" class="pill"/>
+    <text x="532" y="684" class="chip">Storage</text>
+    <text x="532" y="704" class="body">snapshot + host files,</text>
+    <text x="532" y="722" class="body">a folder in Files</text>
+
+    <rect x="696" y="660" width="140" height="74" rx="12" class="pill"/>
+    <text x="712" y="684" class="chip">Network</text>
+    <text x="712" y="704" class="body">guest sockets on</text>
+    <text x="712" y="722" class="body">host sockets</text>
+
+    <rect x="846" y="660" width="130" height="74" rx="12" class="pill"/>
+    <text x="862" y="684" class="chip">Sound</text>
+    <text x="862" y="704" class="body">PCM device to</text>
+    <text x="862" y="722" class="body">an audio unit</text>
+
+    <rect x="986" y="660" width="146" height="74" rx="12" class="pill"/>
+    <text x="1002" y="684" class="chip">Touch, battery,</text>
+    <text x="1002" y="704" class="chip">time zone</text>
+    <text x="1002" y="722" class="body">from UIKit</text>
+  </g>
+
+  <!-- iOS -->
+  <rect x="336" y="764" width="816" height="48" rx="14" fill="#232634" stroke="#343849"/>
+  <text x="744" y="794" text-anchor="middle" class="head">iOS app sandbox · no JIT, no jailbreak, no hypervisor</text>
+
+  <text x="48" y="590" class="side">WHY AHEAD OF TIME</text>
+  <text x="48" y="612" class="body">An iOS app may run only</text>
+  <text x="48" y="630" class="body">code that was signed with</text>
+  <text x="48" y="648" class="body">it. A just-in-time compiler</text>
+  <text x="48" y="666" class="body">is not possible, so the</text>
+  <text x="48" y="684" class="body">translation happens on the</text>
+  <text x="48" y="702" class="body">build machine and ships</text>
+  <text x="48" y="720" class="body">inside the app.</text>
+</svg>
