@@ -156,7 +156,7 @@ This matters for more than fidelity: an early version of the dynamic linker patc
 | `/dev/fuse` | The simplified FUSE session described above. |
 | `/dev/goldfish_pipe_dprctd`, `/dev/goldfish_address_space` | The emulator's graphics pipe and shared graphics memory. |
 | `/dev/input/event0` | Touch and keys. |
-| `/dev/snd/pcmC0D0p` | One sound playback device. |
+| `/dev/snd/controlC0`, `/dev/snd/pcmC0D0p` | A sound card: a control device with no controls and one playback device. |
 
 Device nodes are created by Android's `ueventd` in response to the kernel object events the layer sends, as on a real device.
 

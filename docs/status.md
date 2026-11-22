@@ -26,10 +26,11 @@ Unless noted, the build is a development-signed Release build.
 - **Shared storage.** The folder `Documents/Android` is Android's shared storage and is visible in the iOS Files app. A file put there from iOS appears in Android's Files app after Android is restarted.
 - **Persistence.** Installed apps, home-screen widgets and files under `/data` are still there after Android is restarted.
 - **Battery level and time zone** of the phone are shown by Android.
+- **Video and sound.** Android's `MediaPlayer` plays a 1280×720 H.264 video with AAC sound: the position advances one second a second, about 30 frames a second are composed (the video has 30), and the sound reaches the phone's output at the level it has in the file. NewPipe opens, lists videos and plays a YouTube live stream with sound. Measured on the samples that arrive at the phone's output; how it sounds has not been judged by ear, and resolutions above 720p have not been measured.
 
 ## What does not work yet
 
-- **Audio and video playback.** The software codecs are present and start, and the media services run. A test video is prepared (1280×720, 20 seconds), the AAC decoder starts, the AVC decoder is created, and then the playback position stays at zero. The cause is not known. No sound has been heard from the sound device.
+- **Hardware video decoding, recording and the microphone.** Video is decoded by Android's software codecs, which costs processor time that a hardware decoder would not. There is no sound input and no camera recording.
 - **Google apps and Play services.** The system is AOSP. Apps that need Google's services will not run.
 - **IPv6.** The guest network is IPv4 only.
 - **Live changes to the shared folder from iOS.** They show up only after Android restarts.
@@ -113,7 +114,7 @@ From the record, on an iPhone 15 Pro. "Opens" means the app reached a usable scr
 | K-9 Mail, KeePassDX, F-Droid | Open to their first screens. |
 | Wikipedia | Opens and loads its front page over the network. |
 | ScriptWidget | Opens; widgets render, slowly. |
-| NewPipe | Opened to its main screen in one test; in a later test it stayed on its start screen for more than a minute. Not investigated. |
+| NewPipe | Opens in about 2 seconds, lists videos with their pictures, and plays a YouTube live stream with sound at about 30 frames a second. |
 | AntennaPod | Crashed at start before shared storage existed. Not tested again since. |
 | DuckDuckGo | Its process started and loaded its native libraries; no window within 25 seconds. Not confirmed since. |
 
@@ -126,4 +127,4 @@ From the record, on an iPhone 15 Pro. "Opens" means the app reached a usable scr
 - **One scheduler thread.** System calls of all guest processes run one at a time.
 - **Android thinks it is an emulator.** Settings titles the device page "About emulated device".
 - **The `Documents` folder** also holds diagnostic text files and screenshots written by the app, which show up in the Files app.
-- **Not verified:** F-Droid and NewPipe fetching content, large downloads, long-lived connections, unmounting the shared storage, the quick action on the app's home-screen icon being tapped on a phone, and fault recovery under a distribution signature (it was measured with a development signature).
+- **Not verified:** F-Droid fetching content, large downloads, long-lived connections, unmounting the shared storage, the quick action on the app's home-screen icon being tapped on a phone, and fault recovery under a distribution signature (it was measured with a development signature).

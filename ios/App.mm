@@ -23,6 +23,9 @@
 #include <sys/resource.h>
 #include <vector>
 
+// Where the output of Android's sound stands, in words, for the rate report (NESTVANE_DISPLAY_RATE).
+static NSString* GuestAudioOutputState = @"not started";
+
 namespace {
 constexpr uint32_t defaultGuestWidth = 640;
 constexpr uint32_t defaultGuestHeight = 960;
@@ -135,10 +138,13 @@ std::jthread StartDisplayReader(const nestvane::GfxstreamSession& renderer, Disp
                 const double seconds = std::chrono::duration<double>(now - rateStarted).count();
                 static uint64_t soundBefore = 0;
                 auto& sound = nestvane::GuestAudio::host();
-                const uint64_t soundNow = sound.taken.load();
-                [rates appendFormat:@"%dx%d at %d Hz: composed %.0f, shown %.0f frames per second; sound %llu bytes, peak %u\n", size.width, size.height, hertz,
-                    rateFirstFrame ? double(lastFrame - rateFirstFrame + 1) / seconds : 0.0, shown / seconds, soundNow - soundBefore, sound.peak.exchange(0)];
+                static uint64_t playedBefore = 0;
+                const uint64_t soundNow = sound.taken.load(), playedNow = sound.played.load();
+                [rates appendFormat:@"%dx%d at %d Hz: composed %.0f, shown %.0f frames per second; sound %.0f bytes a second taken, %.0f played by Android, peak %u (%@, %zu bytes waiting)\n", size.width, size.height, hertz,
+                    rateFirstFrame ? double(lastFrame - rateFirstFrame + 1) / seconds : 0.0, shown / seconds, double(soundNow - soundBefore) / seconds, double(playedNow - playedBefore) / seconds,
+                    sound.peak.exchange(0), GuestAudioOutputState, sound.buffered()];
                 soundBefore = soundNow;
+                playedBefore = playedNow;
                 [rates writeToURL:rateURL atomically:YES encoding:NSUTF8StringEncoding error:nil];
                 rateStarted = now;
                 rateFirstFrame = 0;
@@ -259,13 +265,25 @@ static OSStatus RenderGuestAudio(void*, AudioUnitRenderActionFlags*, const Audio
     return noErr;
 }
 
-// Follows the guest's format: started when the guest first sets one, and again when it changes.
+// Follows the guest's playing: started when the guest plays, in the format it set, and again when that changes.
 static void FollowGuestAudio() {
     static AudioUnit unit = nullptr;
     static uint64_t playing = 0;
+    static uint64_t played = 0;
+    static CFAbsoluteTime heard = 0;
     auto& audio = nestvane::GuestAudio::host();
     const uint64_t generation = audio.generation.load();
-    if (generation == playing) return;
+    const CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    if (const uint64_t count = audio.played.load(); count != played) {
+        played = count;
+        heard = now;
+    }
+    // Android keeps its sound device only while something plays. Three seconds after the last of it the
+    // phone's output is given back, so that other apps' sound can go on, and taken again when Android plays.
+    const bool wanted = now - heard < 3;
+    if (generation == playing && wanted == (unit != nullptr)) return;
+    static CFAbsoluteTime retry = 0;  // an output that would not start is tried again two seconds later
+    if (generation == playing && wanted && now < retry) return;
     playing = generation;
     audio.consumer = false;
     if (unit) {
@@ -273,14 +291,30 @@ static void FollowGuestAudio() {
         AudioUnitUninitialize(unit);
         AudioComponentInstanceDispose(unit);
         unit = nullptr;
+        if (!wanted) {
+            [AVAudioSession.sharedInstance setActive:NO withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation error:nil];
+            GuestAudioOutputState = @"idle";
+        }
     }
+    if (!wanted) return;
+    retry = now + 2;
     const uint32_t bits = audio.bits.load(), channels = audio.channels.load(), rate = audio.rate.load();
     if (!rate || !channels) return;
-    [AVAudioSession.sharedInstance setCategory:AVAudioSessionCategoryPlayback error:nil];
-    [AVAudioSession.sharedInstance setActive:YES error:nil];
+    // Each step that can refuse, by name, for the rate report (NESTVANE_DISPLAY_RATE).
+    const auto step = [](const char* name, OSStatus status) {
+        if (status != noErr) GuestAudioOutputState = [NSString stringWithFormat:@"%s failed with %d", name, int(status)];
+        return status == noErr;
+    };
+    NSError* error = nil;
+    if (![AVAudioSession.sharedInstance setCategory:AVAudioSessionCategoryPlayback error:&error] ||
+        ![AVAudioSession.sharedInstance setActive:YES error:&error]) {
+        GuestAudioOutputState = [NSString stringWithFormat:@"audio session: %@", error.localizedDescription];
+        return;
+    }
     AudioComponentDescription description{kAudioUnitType_Output, kAudioUnitSubType_RemoteIO, kAudioUnitManufacturer_Apple, 0, 0};
     AudioComponent component = AudioComponentFindNext(nullptr, &description);
-    if (!component || AudioComponentInstanceNew(component, &unit) != noErr) return;
+    if (!component) { GuestAudioOutputState = @"no output unit"; return; }
+    if (!step("creating the output unit", AudioComponentInstanceNew(component, &unit))) { unit = nullptr; return; }
     AudioStreamBasicDescription format{};
     format.mSampleRate = rate;
     format.mFormatID = kAudioFormatLinearPCM;
@@ -291,13 +325,14 @@ static void FollowGuestAudio() {
     format.mBytesPerPacket = format.mBytesPerFrame;
     format.mFramesPerPacket = 1;
     AURenderCallbackStruct callback{RenderGuestAudio, nullptr};
-    if (AudioUnitSetProperty(unit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, 0, &format, sizeof(format)) != noErr ||
-        AudioUnitSetProperty(unit, kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Input, 0, &callback, sizeof(callback)) != noErr ||
-        AudioUnitInitialize(unit) != noErr || AudioOutputUnitStart(unit) != noErr) {
+    if (!step("setting the format", AudioUnitSetProperty(unit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, 0, &format, sizeof(format))) ||
+        !step("setting the callback", AudioUnitSetProperty(unit, kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Input, 0, &callback, sizeof(callback))) ||
+        !step("initializing", AudioUnitInitialize(unit)) || !step("starting", AudioOutputUnitStart(unit))) {
         AudioComponentInstanceDispose(unit);
         unit = nullptr;
         return;
     }
+    GuestAudioOutputState = [NSString stringWithFormat:@"playing %u Hz, %u channels, %u bits", rate, channels, bits];
     audio.consumer = true;
 }
 

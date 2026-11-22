@@ -614,6 +614,10 @@ def make_framework_root(base, image, guest, defer_zygote_preload, hardware_timeo
     build_id = properties.get("ro.build.id", "")
     replace_build_names(guest, build_id, properties.get("ro.build.version.release", ""))
     set_property(system_properties, "ro.hw_timeout_multiplier", "10")
+    # Android plays media at full level: how loud it is belongs to the phone's own volume buttons, which the
+    # guest never sees. Android's default is a third of the way up.
+    set_property(system_properties, "ro.config.media_vol_steps", "15")
+    set_property(system_properties, "ro.config.media_vol_default", "15")
     # ART creates a code-cache memory file for every app even with JIT disabled.
     values = system_properties.read_text().rstrip("\n")
     cache = "dalvik.vm.jitmaxsize=8m"

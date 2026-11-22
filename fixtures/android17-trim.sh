@@ -8,11 +8,14 @@
 # from before that layout existed (state 2) has the launcher's empty one: it is dropped, once.
 state="$(/system/bin/cmd settings get global nestvane_trim)"
 # The device's name was taken from the image's model before that became "Nestvane" (state 3 and earlier).
-if [ "$state" = "2" ] || [ "$state" = "3" ]; then
+# Media played a third of the way up before the image made full level the default (state 4 and earlier):
+# a guest that has started before keeps the level it stored, so it is set once.
+if [ "$state" = "2" ] || [ "$state" = "3" ] || [ "$state" = "4" ]; then
     [ "$state" = "2" ] && /system/bin/cmd package clear --user 0 com.android.launcher3
-    /system/bin/cmd settings put global device_name Nestvane
-    /system/bin/cmd settings put global nestvane_trim 4
-elif [ "$state" != "4" ]; then
+    [ "$state" != "4" ] && /system/bin/cmd settings put global device_name Nestvane
+    /system/bin/cmd media_session volume --stream 3 --set 15
+    /system/bin/cmd settings put global nestvane_trim 5
+elif [ "$state" != "5" ]; then
     for package in com.android.rkpdapp com.android.federatedcompute.services \
             com.android.ondevicepersonalization.services com.android.healthconnect.controller \
             com.android.devicelockcontroller; do
@@ -23,6 +26,6 @@ elif [ "$state" != "4" ]; then
             com.android.photopicker/.PhotopickerDeviceConfigReceiver; do
         /system/bin/cmd package disable --user 0 "$component"
     done
-    /system/bin/cmd settings put global nestvane_trim 4
+    /system/bin/cmd settings put global nestvane_trim 5
 fi
 

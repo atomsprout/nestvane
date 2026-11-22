@@ -156,7 +156,7 @@ seccomp 过滤器是忠实实现的，因为 Android 会给 zygote 的子进程�
 | `/dev/fuse` | 上文所述的简化 FUSE 会话。 |
 | `/dev/goldfish_pipe_dprctd`、`/dev/goldfish_address_space` | 模拟器的图形管道和共享显存。 |
 | `/dev/input/event0` | 触摸和按键。 |
-| `/dev/snd/pcmC0D0p` | 一个声音播放设备。 |
+| `/dev/snd/controlC0`、`/dev/snd/pcmC0D0p` | 一块声卡：一个没有控件的控制设备和一个播放设备。 |
 
 设备节点由 Android 的 `ueventd` 根据内核层发出的内核对象事件创建，与真实设备上一样。
 

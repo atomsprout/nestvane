@@ -52,11 +52,12 @@ for the app** gives that code the system it expects.
   (*On My iPhone → Nestvane → Android*).
 - **Home-screen widgets**, the phone's battery level and time zone, touch input.
 - **Graphics on the GPU** through gfxstream and ANGLE on Metal, at 60 Hz.
+- **Video and sound.** Android's software decoders play a 720p video at its 30 frames a second, and the sound
+  comes out of the phone. NewPipe plays a YouTube stream.
 
 ## What does not work yet
 
-- **Audio and video playback.** The codecs are in place and start; playback does not progress and no sound comes
-  out yet.
+- **Hardware video decoding, recording and the microphone.** Video is decoded in software; nothing records.
 - **Google apps and Play services.** This is AOSP. Apps that need them will not run.
 - **Apps with heavy native code are slow**: an app's own native libraries are interpreted.
 - IPv6, and live updates of the shared folder (changes made from iOS appear when Android next starts).
@@ -97,6 +98,7 @@ On an iPhone 15 Pro unless noted. The running record, with every measurement, is
 | Memory footprint | about 2.4–2.7 GB |
 | App download | about 1 GB |
 | Scrolling a list | up to about 55 frames a second at 60 Hz |
+| Playing a 1280×720 H.264 video | 30 frames a second, in step with the clock |
 | Translated modules | about 1,230, in 12 frameworks |
 | Open-source apps installed from APK | 15 |
 

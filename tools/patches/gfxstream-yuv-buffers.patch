@@ -1,0 +1,47 @@
+--- a/host/frame_buffer.cpp
++++ b/host/frame_buffer.cpp
+@@ -2675,20 +2675,25 @@
+     if (!pixels || x < 0 || y < 0 || width <= 0 || height <= 0) return false;
+     const auto format = GetGfxstreamFormat(m_features, pixelsFormat, pixelsType);
+     if (!format) return false;
+-    const auto bytesPerPixel = GetBpp(*format);
+-    if (!bytesPerPixel || uint64_t(width) * height > pixelsSize / *bytesPerPixel) return false;
+ 
+     AutoLock mutex(m_lock);
+     auto colorBuffer = std::dynamic_pointer_cast<ColorBuffer>(findColorBuffer(handle));
+     if (!colorBuffer || uint64_t(x) + width > colorBuffer->getWidth() ||
+         uint64_t(y) + height > colorBuffer->getHeight()) return false;
+ 
+-    // A YUV upload can read a different layout than the guest's GL format.
+-    // The legacy YUV operations carry their own layout information.
+-    if (!readback) {
+-        if (IsYuvFormat(colorBuffer->getFormat())) return false;
++    if (IsYuvFormat(colorBuffer->getFormat())) {
++        // A YUV buffer is laid out by its own format, whatever GL format the guest names, and is written whole:
++        // a full-size plane, then two half-size ones or one of pairs, each row padded to at most 16 bytes.
++        if (readback || x || y || uint32_t(width) != colorBuffer->getWidth() ||
++            uint32_t(height) != colorBuffer->getHeight()) return false;
++        const uint64_t row = (uint64_t(width) + 15) & ~uint64_t(15), halfRow = (row / 2 + 15) & ~uint64_t(15);
++        if (row * height + 2 * halfRow * ((uint64_t(height) + 1) / 2) > pixelsSize) return false;
+         return colorBuffer->updateFromBytes(x, y, width, height, *format, pixels);
+     }
++
++    const auto bytesPerPixel = GetBpp(*format);
++    if (!bytesPerPixel || uint64_t(width) * height > pixelsSize / *bytesPerPixel) return false;
++    if (!readback) return colorBuffer->updateFromBytes(x, y, width, height, *format, pixels);
+     colorBuffer->readToBytes(x, y, width, height, *format, pixels, pixelsSize);
+     return true;
+ }
+--- a/host/virtio_gpu_gfxstream_renderer.cpp
++++ b/host/virtio_gpu_gfxstream_renderer.cpp
+@@ -354,7 +354,9 @@
+     if (!width || !height || width > 4096 || height > 4096) return -22;
+     const auto fence = +[](void*, stream_renderer_fence*) {};
+     // The legacy Goldfish transport has no /dev/dri render node.
+-    constexpr char features[] = "RefCountPipe:enabled,VirtioGpuNativeSync:disabled";
++    // YuvCache: the guest's gralloc reads a YUV buffer back before a software decoder writes into it, and stops
++    // the process when the host cannot do that.
++    constexpr char features[] = "RefCountPipe:enabled,VirtioGpuNativeSync:disabled,YuvCache:enabled";
+     stream_renderer_param parameters[] = {
+         {STREAM_RENDERER_PARAM_RENDERER_FEATURES, reinterpret_cast<uintptr_t>(features)},
+         {STREAM_RENDERER_PARAM_USER_DATA, 0},

@@ -21,6 +21,8 @@ struct GuestAudio {
     std::atomic<bool> consumer{false};
     // For a report: the bytes the host has taken out, and the loudest 16-bit sample among them.
     std::atomic<uint64_t> taken{0};
+    // And the bytes the guest has played, whether or not anybody took them.
+    std::atomic<uint64_t> played{0};
     std::atomic<uint32_t> peak{0};
 
     void configure(uint32_t newRate, uint32_t newChannels, uint32_t newBits) {
@@ -29,7 +31,12 @@ struct GuestAudio {
         channels = newChannels;
         bits = newBits;
         // A fifth of a second: enough to ride out the guest being late, short enough not to lag.
-        ring.assign(std::max<size_t>(size_t(newRate) * newChannels * (newBits / 8) / 5, 16384), 0);
+        const size_t frame = size_t(newChannels) * (newBits / 8);
+        ring.assign(std::max<size_t>(size_t(newRate) * frame / 5, 16384), 0);
+        // What the output keeps in hand before it starts taking: about 43 ms, two of its own requests. The
+        // guest's audio service fills the card by its own timing, a buffer at a time and never early.
+        cushion = std::min<size_t>(size_t(newRate) * frame * 43 / 1000 / frame * frame, ring.size() / 4);
+        primed = false;
         head = filled = 0;
         ++generation;
     }
@@ -50,6 +57,9 @@ struct GuestAudio {
     }
     size_t read(uint8_t* out, size_t count) {
         const std::lock_guard guard(lock);
+        // Nothing is taken until the cushion is there, and again after the sound ran out.
+        if (!primed && filled < cushion) return 0;
+        primed = filled != 0;
         count = std::min(count, filled);
         if (!count) return 0;
         const size_t first = std::min(count, ring.size() - head);
@@ -73,6 +83,11 @@ struct GuestAudio {
         const std::lock_guard guard(lock);
         return filled;
     }
+    // What the guest's card holds, as the guest sees it: what waits beyond the cushion.
+    size_t pending() {
+        const std::lock_guard guard(lock);
+        return filled > cushion ? filled - cushion : 0;
+    }
     static GuestAudio& host() {
         static GuestAudio audio;
         return audio;
@@ -81,7 +96,8 @@ struct GuestAudio {
 private:
     std::mutex lock;
     std::vector<uint8_t> ring;
-    size_t head = 0, filled = 0;
+    size_t head = 0, filled = 0, cushion = 0;
+    bool primed = false;
 };
 
 } // namespace nestvane

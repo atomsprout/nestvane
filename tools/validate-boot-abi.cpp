@@ -7422,6 +7422,50 @@ int main() {
         }
 
         {
+            // The sound card: a control device with no controls, and a playback device whose buffer is as
+            // long as it tells the guest. It takes what there is room for, and from a caller that will
+            // not wait it refuses the rest; nobody takes the sound here, so the clock plays it.
+            ProbeLinux guest(1, 0);
+            guest.enableSound();
+            constexpr auto parameters = base + 0x400, transfer = base + 0x700;
+            const auto word = [&](uint64_t address) {
+                uint64_t value = 0;
+                assert(machine.load64(address, value));
+                return value;
+            };
+            put(firstPath, "/dev/snd/controlC0");
+            const auto control = invoke(guest, 56, {atCwd, firstPath, 2});
+            assert(control < 256 && machine.store64(parameters + 8, ~0ULL));
+            assert(invoke(guest, 29, {control, 0xc0505510, parameters}) == 0 && word(parameters + 8) == 0);
+            put(firstPath, "/dev/snd/pcmC0D0p");
+            const auto card = invoke(guest, 56, {atCwd, firstPath, 2 | 0x800});
+            assert(card < 256);
+            for (unsigned at = 0; at < 608; at += 8) assert(machine.store64(parameters + at, 0));
+            assert(machine.store64(parameters + 32, 4ULL << 32));               // formats: signed 16 bits
+            assert(machine.store64(parameters + 284, 2 | 2ULL << 32));          // channels
+            assert(machine.store64(parameters + 296, 48000 | 48000ULL << 32));  // rate
+            assert(machine.store64(parameters + 320, 544 | 0xffffffffULL << 32));  // period, at least
+            assert(machine.store64(parameters + 344, 4 | 4ULL << 32));          // periods
+            assert(invoke(guest, 29, {card, 0xc2604111, parameters}) == 0);
+            assert(word(parameters + 320) == (544 | 544ULL << 32));              // the period it settled on
+            assert(word(parameters + 368) == (2176 | 2176ULL << 32));            // and the buffer: four of them
+            assert(uint32_t(word(parameters + 260)) == 16);                      // bits in a sample
+            // Android's audio service polls for room, then writes what it has.
+            assert(machine.store64(base + 0x7c0, card | 4ULL << 32));
+            assert(invoke(guest, 73, {base + 0x7c0, 1, 0, 0}) == 1 && (word(base + 0x7c0) >> 48 & 4));
+            assert(machine.store64(transfer, 0) && machine.store64(transfer + 8, payload) && machine.store64(transfer + 16, 2000));
+            assert(invoke(guest, 29, {card, 0x40184150, transfer}) == 0 && word(transfer) == 2000);
+            assert(machine.store64(transfer + 16, 2000));
+            assert(invoke(guest, 29, {card, 0x40184150, transfer}) == 0 && word(transfer) >= 176 && word(transfer) < 400);
+            assert(invoke(guest, 29, {card, 0x80084121, base + 0x7c8}) == 0);
+            assert(word(base + 0x7c8) > 1800 && word(base + 0x7c8) <= 2176);     // what the card has yet to play
+            assert(machine.store64(transfer + 16, 2176));
+            const auto refused = invoke(guest, 29, {card, 0x40184150, transfer});
+            assert(refused == uint64_t(-11) || (refused == 0 && word(transfer) < 400));
+            assert(invoke(guest, 57, {card}) == 0 && invoke(guest, 57, {control}) == 0);
+        }
+
+        {
             // A large file is kept in a host file beside the database: it comes back with what was
             // last written, also after the last sync, and its host file goes when the file does.
             const auto databasePath = (cleanup.directory / "large-data.sqlite3").string();

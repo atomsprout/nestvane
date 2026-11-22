@@ -97,15 +97,25 @@ Verified: Wikipedia loads its front page. Not tested: large downloads and long-l
 
 ## Sound
 
-The kernel layer provides one playback device, `/dev/snd/pcmC0D0p`, of the kind Android's audio service plays through. It implements setting the stream's parameters, writing samples, and reporting the play position.
-What the guest writes goes into a ring buffer of a fifth of a second ([`runtime/GuestAudio.hpp`](../runtime/GuestAudio.hpp)).
-On the host side the app runs an audio output unit in the guest's sample format, takes samples from the buffer, and plays silence when there are none.
-If nothing takes the samples out, the device lets the guest play at the pace of the clock, into nothing.
+The kernel layer provides a sound card of the kind Android's audio service plays through: a control device, `/dev/snd/controlC0`, with no controls, and one playback device, `/dev/snd/pcmC0D0p`. The audio service will not use a playback device whose card has no control device to open.
+The playback device answers the stream's parameters with what it settled on, takes samples, can be polled for room, and reports the play position.
+Its buffer is as long as it tells the guest, four periods, and it takes as much of a write as there is room for. This matters: the audio service fills the card by its own timing and fills in silence whenever the card has room and it has nothing to write. A card that swallowed more than it said, or that made a long write wait, had silence filled in five times a second and real sound thrown away to make up for it.
 
-**Current state: no sound has been heard.**
-In testing, Android's audio service opened the device and set its parameters and then wrote nothing.
-The mixer control device (`controlC0`) is not implemented.
-The software codecs are present and start, but playback does not progress, with or without the sound device, and the cause is not known. See [status.md](status.md).
+What the guest writes goes into a ring buffer ([`runtime/GuestAudio.hpp`](../runtime/GuestAudio.hpp)).
+On the host side the app runs an audio output unit in the guest's sample format. It starts taking samples once about 43 ms of them are there, and keeps that much in hand so that a late write from the guest is not heard.
+Three seconds after Android last played anything the app gives the phone's audio output back, so that other apps' sound can go on; it takes it again when Android plays.
+If nothing takes the samples out, the card plays at the pace of the clock, into nothing.
+
+Android's media volume is at its highest step in the image, so that the phone's own volume buttons decide how loud it is.
+
+**Current state.** Measured on an iPhone 15 Pro with a 1280×720 H.264 video with AAC sound: Android plays 48,000 frames a second into the card, the phone's output takes them at the same rate, and the loudest sample is what it is in the file. After the first seconds of a stream the audio service fills in no more silence.
+Measured on the samples; the sound has not been judged by ear.
+There is no sound input.
+
+### Video
+
+Video is decoded by Android's software codecs (`media.swcodec`), into buffers of the graphics allocator, which are YUV buffers on the host's GPU.
+Two things in the host's renderer had to be there for that: the guest reads such a buffer back before a decoder writes into it and stops the process when the host cannot (the `YuvCache` feature), and the guest's writes into YUV buffers have to reach the host through the same path as its other buffers ([`tools/patches/gfxstream-yuv-buffers.patch`](../tools/patches/gfxstream-yuv-buffers.patch)).
 
 ## Battery, time zone and touch
 

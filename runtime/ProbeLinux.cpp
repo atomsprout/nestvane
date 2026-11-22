@@ -1603,7 +1603,8 @@ std::optional<ProbeLinux::Descriptor> ProbeLinux::find(std::string_view path, ui
         if (static const bool traced = std::getenv("NESTVANE_SOUND_TRACE"); traced && androidLogObserver)
             androidLogObserver("native execution: sound open " + std::string(path));
     }
-    if (path == "/dev/snd/pcmC0D0p" && directoryExists("/dev/snd")) return Descriptor{std::string(path), {}, flags, Node::sound};
+    if ((path == "/dev/snd/pcmC0D0p" || path == "/dev/snd/controlC0") && directoryExists("/dev/snd"))
+        return Descriptor{std::string(path), {}, flags, Node::sound};
     if (path.starts_with("/dev/dma_heap/system") && directoryExists("/dev/dma_heap"))
         return Descriptor{std::string(path), {}, flags, Node::dmaHeap};
     if (path == "/dev/fuse") {
@@ -3295,7 +3296,25 @@ uint64_t ProbeLinux::allocateDmaBuffer(Machine& machine) {
     return machine.write(x[2], {reinterpret_cast<const uint8_t*>(&request), sizeof(request)}) ? 0 : uint64_t(-14);
 }
 
-std::optional<uint64_t> ProbeLinux::soundIoctl(Machine& machine) {
+// The frames the guest has written that the card has not played yet. With the phone's output taking the
+// sound, that is what waits for it beyond the cushion it keeps (runtime/GuestAudio.hpp); with nobody
+// taking it, the sound is played by the clock, into nothing.
+uint64_t ProbeLinux::soundPending() {
+    auto& audio = GuestAudio::host();
+    if (audio.consumer.load() && audio.rate.load()) return audio.pending() / std::max<uint32_t>(soundFrameBytes, 1);
+    const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - soundClockStart).count();
+    const uint64_t played = soundClockFrames + uint64_t(std::max<int64_t>(elapsed, 0)) * soundRate / 1'000'000;
+    return played >= soundFrames ? 0 : soundFrames - played;
+}
+
+// The card's buffer is as long as the guest was told, like a real card's: Android's audio service works
+// out when to write, and when to fill in silence, from how full it is.
+uint64_t ProbeLinux::soundRoom() {
+    const uint64_t pending = soundPending();
+    return pending >= soundBufferFrames ? 0 : soundBufferFrames - pending;
+}
+
+std::optional<uint64_t> ProbeLinux::soundIoctl(Machine& machine, bool nonblocking) {
     auto& x = machine.cpu.x;
     auto& audio = GuestAudio::host();
     const auto frameBytes = std::max<uint32_t>(soundFrameBytes, 1);
@@ -3312,6 +3331,26 @@ std::optional<uint64_t> ProbeLinux::soundIoctl(Machine& machine) {
         }
     }
     switch (uint32_t(x[1])) {
+        // The card's control device: a card with a name and no controls. Android's audio service will not use a
+        // playback device whose card has no mixer to open.
+        case 0x80045500: // SNDRV_CTL_IOCTL_PVERSION: 2.0.7
+        {
+            const uint32_t version = 0x20007;
+            return machine.write(x[2], {reinterpret_cast<const uint8_t*>(&version), sizeof(version)}) ? 0 : uint64_t(-14);
+        }
+        case 0x81785501: { // SNDRV_CTL_IOCTL_CARD_INFO
+            std::array<uint8_t, 376> card{};
+            const auto name = [&](size_t offset, std::string_view text) { std::copy(text.begin(), text.end(), card.begin() + offset); };
+            name(8, "Nestvane");     // id
+            name(24, "nestvane");    // driver
+            name(40, "Nestvane");    // name
+            name(72, "Nestvane sound");  // long name
+            return machine.write(x[2], card) ? 0 : uint64_t(-14);
+        }
+        case 0xc0505510: { // SNDRV_CTL_IOCTL_ELEM_LIST: none used, none there
+            const std::array<uint32_t, 2> none{};
+            return machine.write(x[2] + 8, {reinterpret_cast<const uint8_t*>(none.data()), sizeof(none)}) ? 0 : uint64_t(-14);
+        }
         case 0x81204101: { // SNDRV_PCM_IOCTL_INFO: card 0, device 0, playback
             const std::array<uint8_t, 288> info{};
             return machine.write(x[2], info) ? 0 : uint64_t(-14);
@@ -3321,7 +3360,6 @@ std::optional<uint64_t> ProbeLinux::soundIoctl(Machine& machine) {
             if (!machine.readInto(x[2], {reinterpret_cast<uint8_t*>(parameters.data()), sizeof(parameters)})) return uint64_t(-14);
             // The intervals begin after the flags and eight masks; each is a minimum, a maximum and flags.
             const auto interval = [&](unsigned index) { return parameters[65 + index * 3]; };
-            const uint32_t bits = interval(0), channels = interval(2), rate = interval(3);
             if (static const bool traced = std::getenv("NESTVANE_SOUND_TRACE"); traced && androidLogObserver) {
                 std::string line = "native execution: sound parameters";
                 for (unsigned index = 0; index < 12; ++index)
@@ -3329,35 +3367,80 @@ std::optional<uint64_t> ProbeLinux::soundIoctl(Machine& machine) {
                 line += " masks " + std::to_string(parameters[1]) + " " + std::to_string(parameters[9]) + " " + std::to_string(parameters[17]);
                 androidLogObserver(line);
             }
-            if ((bits != 16 && bits != 32) || !channels || channels > 8 || rate < 8000 || rate > 192000) return invalid;
+            // The sample format comes as a set of formats: signed 16 bits (2) or signed 32 bits (10), little-endian.
+            const uint32_t formats = parameters[9];
+            const uint32_t format = formats & (1u << 2) ? 2 : formats & (1u << 10) ? 10 : 0;
+            const uint32_t bits = format == 2 ? 16 : 32, channels = interval(2), rate = interval(3);
+            if (!format || !channels || channels > 8 || rate < 8000 || rate > 192000) return invalid;
+            const uint32_t period = std::clamp<uint32_t>(interval(5), 64, 1 << 16), periods = std::clamp<uint32_t>(interval(7), 2, 64);
+            // The answer is what the device settled on: every interval one whole number, each set one member.
+            const auto settle = [&](unsigned index, uint64_t value) {
+                parameters[65 + index * 3] = parameters[66 + index * 3] = uint32_t(value);
+                parameters[67 + index * 3] = 4;  // an integer
+            };
+            const auto only = [&](unsigned mask, uint32_t member) {
+                std::fill_n(parameters.begin() + 1 + mask * 8, 8, 0);
+                parameters[1 + mask * 8] = 1u << member;
+            };
+            only(0, 3);  // read and write calls, interleaved
+            only(1, format);
+            only(2, 0);
+            const uint64_t frame = uint64_t(channels) * bits / 8, buffer = uint64_t(period) * periods;
+            settle(0, bits);
+            settle(1, frame * 8);
+            settle(2, channels);
+            settle(3, rate);
+            settle(4, uint64_t(period) * 1'000'000 / rate);
+            settle(5, period);
+            settle(6, period * frame);
+            settle(7, periods);
+            settle(8, buffer * 1'000'000 / rate);
+            settle(9, buffer);
+            settle(10, buffer * frame);
+            settle(11, 0);
+            parameters[131] = bits;  // significant bits
+            parameters[132] = rate;  // the rate as a fraction
+            parameters[133] = 1;
+            if (!machine.write(x[2], {reinterpret_cast<const uint8_t*>(parameters.data()), sizeof(parameters)})) return uint64_t(-14);
             soundFrameBytes = channels * bits / 8;
+            soundBufferFrames = buffer;
+            soundAvailableMinimum = period;
             soundRate = rate;
-            soundFrames = 0;
-            soundDeadline = {};
+            soundFrames = soundClockFrames = 0;
+            soundClockStart = std::chrono::steady_clock::now();
             audio.configure(rate, channels, bits);
+            return 0;
+        }
+        case 0xc0884113: { // SNDRV_PCM_IOCTL_SW_PARAMS: how much room there must be before a wait for room ends
+            uint64_t minimum;
+            if (!machine.readInto(x[2] + 16, {reinterpret_cast<uint8_t*>(&minimum), sizeof(minimum)})) return uint64_t(-14);
+            soundAvailableMinimum = uint32_t(std::clamp<uint64_t>(minimum, 1, soundBufferFrames));
             return 0;
         }
         case 0x40184150: { // SNDRV_PCM_IOCTL_WRITEI_FRAMES
             std::array<uint64_t, 3> transfer;
             if (!machine.readInto(x[2], {reinterpret_cast<uint8_t*>(transfer.data()), sizeof(transfer)})) return uint64_t(-14);
-            const uint64_t frames = transfer[2];
-            if (frames > (1 << 20) / frameBytes) return invalid;
+            if (transfer[2] > (1 << 20) / frameBytes) return invalid;
+            // As much as there is room for, as a real card takes it: Android's audio service writes whatever it
+            // has whenever the card has any room, and counts on the rest being refused, not waited for. A wait
+            // for the whole of a long write would let the card run empty while what comes next piles up.
+            const uint64_t frames = std::min<uint64_t>(transfer[2], soundRoom());
+            if (!frames && transfer[2]) {
+                if (nonblocking) return uint64_t(-11);
+                return std::nullopt;
+            }
             const size_t bytes = size_t(frames) * frameBytes;
-            const auto now = std::chrono::steady_clock::now();
             if (audio.consumer.load() && audio.rate.load()) {
-                // The host's output sets the pace: there is room when it has played what came before.
-                if (audio.space() < bytes) return std::nullopt;
-                std::vector<uint8_t> scratch;
-                const auto* samples = machine.read(transfer[1], bytes, 1, scratch);
-                if (!samples) return uint64_t(-14);
-                audio.write(samples, bytes);
-            } else {
-                // Nobody listens: the sound takes as long as it would take to play.
-                if (now < soundDeadline) return std::nullopt;
-                soundDeadline = std::max(now - std::chrono::milliseconds(100), soundDeadline) +
-                                std::chrono::microseconds(frames * 1'000'000 / std::max<uint32_t>(soundRate, 1));
+                std::vector<uint8_t> samples(bytes);
+                if (!machine.readInto(transfer[1], samples)) return uint64_t(-14);
+                audio.write(samples.data(), bytes);
+            } else if (!soundPending()) {
+                // Nothing was playing: the clock that plays into nothing starts again from here.
+                soundClockStart = std::chrono::steady_clock::now();
+                soundClockFrames = soundFrames;
             }
             soundFrames += frames;
+            audio.played += bytes;
             transfer[0] = frames;
             return machine.write(x[2], {reinterpret_cast<const uint8_t*>(transfer.data()), sizeof(transfer)}) ? 0 : uint64_t(-14);
         }
@@ -3365,18 +3448,16 @@ std::optional<uint64_t> ProbeLinux::soundIoctl(Machine& machine) {
             std::array<uint64_t, 17> pointers;
             if (!machine.readInto(x[2], {reinterpret_cast<uint8_t*>(pointers.data()), sizeof(pointers)})) return uint64_t(-14);
             const auto now = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-            const uint64_t waiting = audio.consumer.load() ? audio.buffered() / frameBytes : 0;
             pointers[1] = 3;  // SNDRV_PCM_STATE_RUNNING
-            pointers[2] = soundFrames - std::min(soundFrames, waiting);
+            pointers[2] = soundFrames - std::min(soundFrames, soundPending());
             pointers[3] = uint64_t(now / 1'000'000'000);
             pointers[4] = uint64_t(now % 1'000'000'000);
             pointers[9] = soundFrames;
+            pointers[10] = soundAvailableMinimum;
             return machine.write(x[2], {reinterpret_cast<const uint8_t*>(pointers.data()), sizeof(pointers)}) ? 0 : uint64_t(-14);
         }
-        case 0x80084121: { // SNDRV_PCM_IOCTL_DELAY
-            const int64_t waiting = audio.consumer.load() ? int64_t(audio.buffered() / frameBytes) : 0;
-            return machine.store64(x[2], uint64_t(waiting)) ? 0 : uint64_t(-14);
-        }
+        case 0x80084121: // SNDRV_PCM_IOCTL_DELAY
+            return machine.store64(x[2], soundPending()) ? 0 : uint64_t(-14);
         default: // parameters that need no answer, and prepare, start, drop, drain
             return 0;
     }
@@ -7934,6 +8015,11 @@ bool ProbeLinux::poll(Machine& machine) {
         } else if (const auto& touch = descriptor->second.touch) {
             watchesHostEvents = true;
             entry.returned = touch->ready() ? entry.events & 1 : 0;
+        } else if (descriptor->second.node == Node::sound) {
+            // The playback device takes more when there is the room its user asked to wait for; the card's control device
+            // never has anything to report.
+            watchesHostEvents = true;
+            entry.returned = descriptor->second.path.ends_with("p") && soundRoom() >= soundAvailableMinimum ? entry.events & 0x104 : 0;
         } else if (descriptor->second.pty) {
             const auto events = ptyPoll(descriptor->second);
             entry.returned = (events & entry.events) | (events & 16);
@@ -10876,7 +10962,7 @@ bool ProbeLinux::syscall(Machine& machine) {
                 break;
             }
             if (descriptor != descriptors().end() && descriptor->second.node == Node::sound) {
-                const auto answer = soundIoctl(machine);
+                const auto answer = soundIoctl(machine, descriptor->second.flags & 0x800);
                 if (!answer) return waitForHostEvents();
                 x[0] = *answer;
                 break;
@@ -11085,6 +11171,16 @@ bool ProbeLinux::syscall(Machine& machine) {
                 if (!fd.temporary && fd.node != Node::directory) { x[0] = uint64_t(-25); break; }
                 if (x[1] == 0x40086602) { x[0] = uint64_t(-95); break; }
                 x[0] = writeGuest(machine, x[2], uint32_t{0}) ? 0 : uint64_t(-14);
+                break;
+            }
+            if (x[1] == 0x801c581f || x[1] == 0x401c5820) { // FS_IOC_FSGETXATTR / FS_IOC_FSSETXATTR
+                // vold gives each app's directory in shared storage a project id for disk quotas. There are
+                // no quotas here: every file is in project 0, and naming another one is accepted and forgotten.
+                const auto& fd = descriptor->second;
+                if (fd.pathOnly()) { x[0] = uint64_t(-9); break; }
+                if (!fd.temporary && fd.node != Node::directory) { x[0] = uint64_t(-25); break; }
+                const std::array<uint8_t, 28> attributes{};
+                x[0] = x[1] == 0x401c5820 || machine.write(x[2], attributes) ? 0 : uint64_t(-14);
                 break;
             }
             if (x[1] == 0x541b && (descriptor->second.temporary ||
