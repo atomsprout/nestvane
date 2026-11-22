@@ -1,12 +1,12 @@
 # Nestvane、两仪和 Andarium
 
-在 Nestvane 之前，已经有两个项目把 Android 跑进了 iPhone 的 App 里，Nestvane 受益于这两个项目。
+在 Nestvane 之前，已经有两个同类项目把 Android 跑进了 iPhone 的 App 里，Nestvane 受益于它们。
 本页说明它们各是什么、Nestvane 和它们是什么关系、三者有什么不同。
 
-关于另外两个项目的说法，来自它们自己的页面（2026 年 11 月 22 日读到的内容），以及我们自己的一次测量（已标明）。
+关于这两个同类项目的说法，来自它们自己的页面（2026 年 11 月 22 日读到的内容），以及我们自己的一次测量（已标明）。
 它们的作者比本页更了解自己的项目，欢迎指正。
 
-## 这两个项目
+## 两个同类项目
 
 **[两仪（Twoyi）](https://twoyi.app/)** 在 iPhone、iPad 或 Android 手机上运行一个独立的 Android 系统。
 它的网站说 iOS 版不需要越狱、不用 JIT，Android 的代码“在构建两仪时被提前翻译成原生 ARM64 指令”，运行 Android 13，

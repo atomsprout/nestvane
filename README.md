@@ -43,7 +43,7 @@ just-in-time compiler, or a hypervisor — are closed. Nestvane takes the remain
 translated ahead of time**, the translated code ships signed inside the app, and a **Linux kernel layer written
 for the app** gives that code the system it expects.
 
-> **With thanks to two projects.** [Twoyi](https://twoyi.app/) showed that Android translated ahead of time, with
+> **With thanks to two similar projects.** [Twoyi](https://twoyi.app/) showed that Android translated ahead of time, with
 > no JIT, is usable on an iPhone, and Nestvane follows that idea. [Kernarium](https://github.com/imxieyi/Kernarium)
 > runs a real Linux kernel on iOS in the open, and was the system to learn from. Nestvane shares no code with
 > either and was written from nothing; [how the three compare](docs/comparison.md).

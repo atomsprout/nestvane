@@ -1,12 +1,12 @@
 # Nestvane, Twoyi and Andarium
 
-Two projects ran Android inside an iPhone app before Nestvane did, and Nestvane owes both of them.
+Two similar projects ran Android inside an iPhone app before Nestvane did, and Nestvane owes both of them.
 This page says what each is, how Nestvane relates to them, and how they differ.
 
 What is said about the other two comes from their own pages as read on 22 November 2026, and from one measurement
 of ours that is marked as such. Their authors know their projects better than this page does; corrections are welcome.
 
-## The two projects
+## The two similar projects
 
 **[Twoyi](https://twoyi.app/)** (两仪) runs a separate Android system on an iPhone, an iPad or an Android phone.
 Its site says the iOS version needs no jailbreak and no JIT, that Android's code is "translated ahead of time into

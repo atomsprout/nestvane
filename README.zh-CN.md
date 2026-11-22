@@ -42,7 +42,7 @@ iOS 不允许 App 创建可执行内存，所以运行另一个系统的代码�
 Nestvane 走的是剩下的那条路：**把 Android 重新构建并提前翻译**，翻译好的代码随 App 一起签名发布；再由一层
 **专为这个 App 写的 Linux 内核层**，给这些代码提供它们所期待的系统。
 
-> **感谢两个项目。** [两仪（Twoyi）](https://twoyi.app/)证明了不用 JIT、只靠提前翻译，Android 就能在 iPhone 上可用，
+> **感谢两个同类项目。** [两仪（Twoyi）](https://twoyi.app/)证明了不用 JIT、只靠提前翻译，Android 就能在 iPhone 上可用，
 > Nestvane 走的是这个思路。[Kernarium](https://github.com/imxieyi/Kernarium) 以开源的方式在 iOS 上运行真正的 Linux 内核，
 > 是可以学习的那个系统。Nestvane 没有使用它们的任何代码，是从零写的；[三者的对比见这里](docs/zh-CN/comparison.md)。
 
