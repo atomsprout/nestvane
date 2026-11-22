@@ -865,6 +865,7 @@ DynamicReport probeInit(const std::string& directory, const std::string& databas
         // NESTVANE_NO_NETWORK=1 leaves the guest with its loopback only.
         if (!std::getenv("NESTVANE_NO_NETWORK")) linux.enableHostNetwork();
         linux.enableBattery();
+        if (!std::getenv("NESTVANE_NO_SOUND")) linux.enableSound();
         const bool expectSmoke = files.contains("/system/etc/nestvane/smoke.apk");
         if (apkInbox || expectSmoke) {
             for (const auto input : {GuestApkInbox::installer, std::string_view("/system/bin/cmd"),

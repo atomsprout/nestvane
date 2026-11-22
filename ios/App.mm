@@ -2,6 +2,9 @@
 #import <UIKit/UIKit.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
+#import <AVFAudio/AVFAudio.h>
+#import <AudioToolbox/AudioToolbox.h>
+#include "GuestAudio.hpp"
 #include "GuestBattery.hpp"
 #include "DynamicProbe.hpp"
 #include "GfxstreamPipe.hpp"
@@ -130,8 +133,12 @@ std::jthread StartDisplayReader(const nestvane::GfxstreamSession& renderer, Disp
             }
             if (const auto now = std::chrono::steady_clock::now(); reportRate && now - rateStarted >= std::chrono::seconds(1)) {
                 const double seconds = std::chrono::duration<double>(now - rateStarted).count();
-                [rates appendFormat:@"%dx%d at %d Hz: composed %.0f, shown %.0f frames per second\n", size.width, size.height, hertz,
-                    rateFirstFrame ? double(lastFrame - rateFirstFrame + 1) / seconds : 0.0, shown / seconds];
+                static uint64_t soundBefore = 0;
+                auto& sound = nestvane::GuestAudio::host();
+                const uint64_t soundNow = sound.taken.load();
+                [rates appendFormat:@"%dx%d at %d Hz: composed %.0f, shown %.0f frames per second; sound %llu bytes, peak %u\n", size.width, size.height, hertz,
+                    rateFirstFrame ? double(lastFrame - rateFirstFrame + 1) / seconds : 0.0, shown / seconds, soundNow - soundBefore, sound.peak.exchange(0)];
+                soundBefore = soundNow;
                 [rates writeToURL:rateURL atomically:YES encoding:NSUTF8StringEncoding error:nil];
                 rateStarted = now;
                 rateFirstFrame = 0;
@@ -239,6 +246,60 @@ static NSString* ThermalState() {
 @end
 
 static NSString* const InstallApkShortcut = @"com.atomsprout.nestvane.install-apk";
+
+// Android's sound, played by the phone: an output unit takes what the guest's sound device wrote
+// (runtime/GuestAudio.hpp), in the format the guest plays in, and plays silence when there is nothing.
+static OSStatus RenderGuestAudio(void*, AudioUnitRenderActionFlags*, const AudioTimeStamp*, UInt32, UInt32, AudioBufferList* output) {
+    for (UInt32 index = 0; index < output->mNumberBuffers; ++index) {
+        auto* bytes = static_cast<uint8_t*>(output->mBuffers[index].mData);
+        const size_t wanted = output->mBuffers[index].mDataByteSize;
+        const size_t got = index ? 0 : nestvane::GuestAudio::host().read(bytes, wanted);
+        std::memset(bytes + got, 0, wanted - got);
+    }
+    return noErr;
+}
+
+// Follows the guest's format: started when the guest first sets one, and again when it changes.
+static void FollowGuestAudio() {
+    static AudioUnit unit = nullptr;
+    static uint64_t playing = 0;
+    auto& audio = nestvane::GuestAudio::host();
+    const uint64_t generation = audio.generation.load();
+    if (generation == playing) return;
+    playing = generation;
+    audio.consumer = false;
+    if (unit) {
+        AudioOutputUnitStop(unit);
+        AudioUnitUninitialize(unit);
+        AudioComponentInstanceDispose(unit);
+        unit = nullptr;
+    }
+    const uint32_t bits = audio.bits.load(), channels = audio.channels.load(), rate = audio.rate.load();
+    if (!rate || !channels) return;
+    [AVAudioSession.sharedInstance setCategory:AVAudioSessionCategoryPlayback error:nil];
+    [AVAudioSession.sharedInstance setActive:YES error:nil];
+    AudioComponentDescription description{kAudioUnitType_Output, kAudioUnitSubType_RemoteIO, kAudioUnitManufacturer_Apple, 0, 0};
+    AudioComponent component = AudioComponentFindNext(nullptr, &description);
+    if (!component || AudioComponentInstanceNew(component, &unit) != noErr) return;
+    AudioStreamBasicDescription format{};
+    format.mSampleRate = rate;
+    format.mFormatID = kAudioFormatLinearPCM;
+    format.mFormatFlags = kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked;
+    format.mChannelsPerFrame = channels;
+    format.mBitsPerChannel = bits;
+    format.mBytesPerFrame = channels * bits / 8;
+    format.mBytesPerPacket = format.mBytesPerFrame;
+    format.mFramesPerPacket = 1;
+    AURenderCallbackStruct callback{RenderGuestAudio, nullptr};
+    if (AudioUnitSetProperty(unit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, 0, &format, sizeof(format)) != noErr ||
+        AudioUnitSetProperty(unit, kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Input, 0, &callback, sizeof(callback)) != noErr ||
+        AudioUnitInitialize(unit) != noErr || AudioOutputUnitStart(unit) != noErr) {
+        AudioComponentInstanceDispose(unit);
+        unit = nullptr;
+        return;
+    }
+    audio.consumer = true;
+}
 
 // What the start screen shows above its status line: the app's icon, glowing, with sparks in the
 // icon's colours drifting up from around it. Still when the system asks for reduced motion, and
@@ -911,6 +972,15 @@ static NSString* const InstallApkShortcut = @"com.atomsprout.nestvane.install-ap
             // frames a second composed while a list scrolls, at 60 and at 120 alike (results/G0.md).
             if (!getenv("NESTVANE_DISPLAY_HZ"))
                 setenv("NESTVANE_DISPLAY_HZ", @(std::min<NSInteger>(UIScreen.mainScreen.maximumFramesPerSecond, 60)).stringValue.UTF8String, 1);
+            // Android's sound comes out of the phone.
+            static dispatch_source_t audioWatch;
+            static dispatch_once_t audioWatched;
+            dispatch_once(&audioWatched, ^{
+                audioWatch = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+                dispatch_source_set_timer(audioWatch, DISPATCH_TIME_NOW, NSEC_PER_SEC / 4, NSEC_PER_SEC / 20);
+                dispatch_source_set_event_handler(audioWatch, ^{ FollowGuestAudio(); });
+                dispatch_resume(audioWatch);
+            });
             // Android shows the phone's battery: its level, and whether it is charging.
             UIDevice.currentDevice.batteryMonitoringEnabled = YES;
             const auto reportBattery = ^{

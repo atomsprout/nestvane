@@ -312,42 +312,116 @@ MEDIA_SERVER_FINDS = ("audioserver_service", "mediaextractor_service", "mediadrm
                       "media_native_packages_service", "network_management_service", "netd_service", "dnsresolver_service")
 
 
-def allow_media_server(guest):
-    """The policy rows for the media server's domain, which the captured policy has none of.
+def allow_domain_like(guest, domain, template, exec_type, programs, services=None):
+    """The policy rows for a domain the captured policy has none of, made from another domain's.
 
-    The rows were captured for the domains of the processes the root had then. These are the audio
-    server's, a daemon with much the same rights, with the media server's own services to add and
-    the ones it looks up to find. They are not read from the reference's policy.
+    The rows were captured for the domains of the processes the root had then. A daemon added later
+    gets the rows of a daemon with much the same rights (`template`); `services` gives the rights on
+    service types that differ, and "*" there stands for every type. They are not read from the
+    reference's policy.
     """
+    services = services or {}
     metadata = guest / "nestvane-metadata"
     transitions = metadata / "selinux-process-transition.txt"
-    if "/system/bin/mediaserver " not in transitions.read_text():
-        with transitions.open("a") as file:
-            file.write("/system/bin/mediaserver u:r:init:s0 u:object_r:mediaserver_exec:s0 2 u:r:mediaserver:s0\n")
+    for program in programs:
+        if f"{program} " not in transitions.read_text():
+            with transitions.open("a") as file:
+                file.write(f"{program} u:r:init:s0 u:object_r:{exec_type}:s0 2 u:r:{domain}:s0\n")
+    ours, theirs = f"u:r:{domain}:s0", f"u:r:{template}:s0"
     for name in ("selinux-service-access.txt", "selinux-hwservice-access.txt", "selinux-property-access.txt",
                  "selinux-fscreate-access.txt", "selinux-keystore-access.txt", "selinux-keystore-key-access.txt"):
         path = metadata / name
         lines = path.read_text().splitlines()
-        if any(line.startswith("u:r:mediaserver:s0 ") for line in lines):
+        if any(line.startswith(ours + " ") for line in lines):
             continue
         added = []
         for line in lines:
             fields = line.split(" ")
-            if fields[0] == "u:r:audioserver:s0":
-                fields[0] = "u:r:mediaserver:s0"
-                if fields[1] == "u:r:audioserver:s0":
-                    fields[1] = "u:r:mediaserver:s0"
+            if fields[0] == theirs:
+                fields[0] = ours
+                if fields[1] == theirs:
+                    fields[1] = ours
                 kind = fields[1].removeprefix("u:object_r:").removesuffix(":s0")
-                if name == "selinux-service-access.txt":
-                    if kind == "mediaserver_service":
-                        fields[2] = "3"
-                    elif kind in MEDIA_SERVER_FINDS:
-                        fields[2] = "2"
+                if name in ("selinux-service-access.txt", "selinux-hwservice-access.txt") and fields[1].startswith("u:object_r:"):
+                    fields[2] = services.get(kind, services.get("*", fields[2]))
                 added.append(" ".join(fields))
-            elif fields[1] == "u:r:audioserver:s0":
-                fields[1] = "u:r:mediaserver:s0"
+            elif fields[1] == theirs:
+                fields[1] = ours
                 added.append(" ".join(fields))
         path.write_text("\n".join(lines + added) + "\n")
+
+
+def allow_media_server(guest):
+    """The media server's domain: the audio server's rows, and every service to add or find. Naming the
+    ones it needs one by one left out the graphics mapper, without which it stops when a video starts."""
+    # Two services it would ask for are not in the root: refused, it goes on without them at once; allowed, it waits for them.
+    allow_domain_like(guest, "mediaserver", "audioserver", "mediaserver_exec", ["/system/bin/mediaserver"],
+                      {"*": "3", "mediacodeclist_generator_service": "0", "hal_omx_hwservice": "0"})
+
+
+MEDIA_HELPER_FILES = ("system/bin/mediaextractor", "system/bin/mediametrics", "system/lib64/libmediaextractorservice.so",
+                      "system/lib64/libmediametricsservice.so", "system/lib64/android.media.codec-aconfig-cc.so",
+                      "system/lib64/libavservices_minijail.so", "system/lib64/libminijail.so")
+
+
+def add_media_helpers(guest, full):
+    """The two services the media server asks for when something is played: the extractor, which
+    reads the file formats in a sandbox of its own, and the metrics service. Without the extractor the
+    player waits for it and gives up."""
+    for path in MEDIA_HELPER_FILES:
+        shutil.copyfile(full / path, guest / path)
+    for program in ("mediaextractor", "mediametrics"):
+        (guest / "system/bin" / program).chmod(0o755)
+    policies = guest / "system/etc/seccomp_policy"
+    policies.mkdir(parents=True, exist_ok=True)
+    for policy in (full / "system/etc/seccomp_policy").iterdir():
+        shutil.copyfile(policy, policies / policy.name)
+    allow_domain_like(guest, "mediaextractor", "audioserver", "mediaextractor_exec", ["/system/bin/mediaextractor"], {"*": "3"})
+    allow_domain_like(guest, "mediametrics", "audioserver", "mediametrics_exec", ["/system/bin/mediametrics"], {"*": "3"})
+
+
+SOFTWARE_CODECS = "system/nestvane-swcodec"
+SOFTWARE_CODECS_RC = """# The software codecs of the com.android.media.swcodec module. The root has the module's files
+# unpacked (tools/prepare-boot-image.py) and not the module, so they are put where the module would be
+# mounted, after the modules are, and the loader gets the configuration the module carries.
+on post-fs-data
+    mkdir /apex/com.android.media.swcodec 0755 root root
+    mount none /system/nestvane-swcodec /apex/com.android.media.swcodec bind rec
+    mkdir /linkerconfig/com.android.media.swcodec 0755 root root
+    copy /system/nestvane-swcodec/etc/ld.config.txt /linkerconfig/com.android.media.swcodec/ld.config.txt
+    chmod 644 /linkerconfig/com.android.media.swcodec/ld.config.txt
+
+service media.swcodec /apex/com.android.media.swcodec/bin/mediaswcodec
+    class main
+    user mediacodec
+    group camera drmrpc mediadrm
+"""
+
+
+def add_software_codecs(guest, module, declaration):
+    """Audio and video codecs: the media.swcodec service and its libraries, from the unpacked module.
+
+    All of them: the service stops with an error when one of the codecs it knows of is not there.
+    """
+    target = guest / SOFTWARE_CODECS
+    if target.exists():
+        shutil.rmtree(target)
+    shutil.copytree(module, target, ignore=lambda directory, names: [
+        name for name in names if re.fullmatch(r".*\.32rc|mediaswcodec\.rc", name)])
+    (target / "bin/mediaswcodec").chmod(0o755)
+    # The module's own loader configuration is from before the platform's libraries were spread over
+    # modules: the platform namespace also finds what the platform's libraries need from those.
+    configuration = target / "etc/ld.config.txt"
+    extra = "".join(f"namespace.platform.search.paths += /apex/{module}/${{LIB}}\nnamespace.platform.permitted.paths += /apex/{module}/${{LIB}}\n"
+                    for module in ("com.android.i18n", "com.android.art", "com.android.os.statsd", "com.android.media",
+                                   "com.android.tethering", "com.android.conscrypt", "com.android.configinfrastructure"))
+    # The graphics buffer mapper is a vendor library in the hw directory, by its file name.
+    extra += "namespace.sphal.search.paths += /vendor/${LIB}/hw\n"
+    configuration.write_text(configuration.read_text() + "\n" + extra)
+    (guest / "system/etc/init/nestvane-swcodec.rc").write_text(SOFTWARE_CODECS_RC)
+    shutil.copyfile(declaration, guest / "system/etc/vintf/manifest/manifest_media_c2_software.xml")
+    allow_domain_like(guest, "mediaswcodec", "audioserver", "mediaswcodec_exec",
+                      ["/apex/com.android.media.swcodec/bin/mediaswcodec", f"/{SOFTWARE_CODECS}/bin/mediaswcodec"], {"*": "3"})
 
 
 def add_media_server(adb, guest):
@@ -424,9 +498,10 @@ ABSENT_FEATURES = ("android.hardware.wifi", "android.hardware.wifi.direct", "and
 def remove_absent_hardware(guest):
     for name in ABSENT_HARDWARE:
         (guest / "vendor/etc/vintf/manifest" / name).unlink(missing_ok=True)
-    # The software codecs' service, of the com.android.media.swcodec module, which the root has not:
-    # whoever lists the codecs would wait for it for ever.
-    (guest / "system/etc/vintf/manifest/manifest_media_c2_software.xml").unlink(missing_ok=True)
+    # The software codecs' service is declared only together with its files (add_software_codecs):
+    # whoever lists the codecs waits for ever for a service that is declared and never comes.
+    if not (guest / SOFTWARE_CODECS).is_dir():
+        (guest / "system/etc/vintf/manifest/manifest_media_c2_software.xml").unlink(missing_ok=True)
     config = guest / "system/etc/sysconfig/nestvane-hardware.xml"
     text = config.read_text()
     extra = "".join(f'    <unavailable-feature name="{name}" />\n' for name in ABSENT_FEATURES if f'"{name}"' not in text)

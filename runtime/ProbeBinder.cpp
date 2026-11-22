@@ -16,6 +16,7 @@ constexpr uint32_t acceptNodeFiles = 0x100, sendSecurityContext = 0x1000;
 constexpr uint32_t binderFile = 0x66642a85, closeOnExec = 0x80000;
 constexpr uint32_t binderObject = 0x73622a85, binderHandle = 0x73682a85;
 constexpr uint32_t binderBuffer = 0x70742a85, hasParent = 1;
+constexpr uint32_t binderFileArray = 0x66646185;
 constexpr uint32_t brIncrefs = 0x80107207, brAcquire = 0x80107208;
 constexpr uint32_t brRelease = 0x80107209, brDecrefs = 0x8010720a;
 constexpr uint32_t brDeadBinder = 0x8008720f, brClearDeath = 0x80087210;
@@ -483,6 +484,29 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
             previousEnd = offset + sizeof buffer;
             continue;
         }
+        if (object.type == binderFileArray) {
+            // An array of descriptors inside one of the buffers sent before it: how HIDL passes the
+            // descriptors of a native handle, such as the shared memory of an audio stream's queues.
+            struct FileArray {
+                uint32_t type, padding;
+                uint64_t count, parent, parentOffset;
+            } array;
+            if (!scatterGather || !acceptsFiles || sizeof(array) > transaction.dataSize - offset) return fail(brFailedReply);
+            std::memcpy(&array, bytes + offset, sizeof array);
+            const auto parent = std::ranges::find_if(buffers, [&](const BufferTranslation& buffer) { return buffer.objectIndex == array.parent; });
+            if (parent == buffers.end() || array.count > 64 || array.parentOffset > parent->object.length ||
+                array.count * sizeof(uint32_t) > parent->object.length - array.parentOffset) return fail(brFailedReply);
+            for (uint64_t item = 0; item < array.count; ++item) {
+                const size_t place = parent->extraOffset + array.parentOffset + item * sizeof(uint32_t);
+                uint32_t number;
+                std::memcpy(&number, extra.data() + place, sizeof number);
+                const auto file = descriptors().find(number);
+                if (file == descriptors().end() || file->second.binder) return fail(brFailedReply);
+                files.push_back({extraOffset + place, std::make_shared<Descriptor>(file->second), true});
+            }
+            previousEnd = offset + sizeof array;
+            continue;
+        }
         if (object.type == binderFile) {
             const auto file = descriptors().find(uint32_t(object.value));
             // A Binder connection belongs to its opener and can own pending packets itself.
@@ -760,7 +784,7 @@ uint64_t ProbeLinux::binderWriteRead(Machine& machine, const Descriptor& fd) {
             descriptors().emplace(fileNumbers[i], std::move(file));
             auto* field = connection.mapped->pages.data() + offset + next.files[i].offset;
             const uint64_t value = fileNumbers[i];
-            std::memcpy(field, &value, sizeof(value));
+            std::memcpy(field, &value, next.files[i].narrow ? sizeof(uint32_t) : sizeof(value));
         }
         connection.allocations.at(offset).delivered = true;
     }

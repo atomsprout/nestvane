@@ -1599,6 +1599,13 @@ std::optional<ProbeLinux::Descriptor> ProbeLinux::find(std::string_view path, ui
     if (path == graphicsDevice && (graphicsPipeFactory || camera || current->process->context == sensorsHalContext))
         return Descriptor{std::string(path), {}, flags, Node::graphicsPipe};
     if (path == "/dev/null") return Descriptor{std::string(path), {}, flags, Node::null};
+    if (path.starts_with("/dev/snd/")) {
+        if (static const bool traced = std::getenv("NESTVANE_SOUND_TRACE"); traced && androidLogObserver)
+            androidLogObserver("native execution: sound open " + std::string(path));
+    }
+    if (path == "/dev/snd/pcmC0D0p" && directoryExists("/dev/snd")) return Descriptor{std::string(path), {}, flags, Node::sound};
+    if (path.starts_with("/dev/dma_heap/system") && directoryExists("/dev/dma_heap"))
+        return Descriptor{std::string(path), {}, flags, Node::dmaHeap};
     if (path == "/dev/fuse") {
         Descriptor entry{std::string(path), {}, flags, Node::fuse};
         entry.fuse = std::make_shared<FuseConnection>();
@@ -3248,6 +3255,131 @@ std::string ProbeLinux::pathReport(std::string_view path) const {
         if (end == std::string_view::npos) break;
     }
     return text;
+}
+
+void ProbeLinux::enableSound() {
+    addDirectory("/dev/snd", 0755);
+    addDirectory("/dev/dma_heap", 0755);
+}
+
+uint64_t ProbeLinux::allocateDmaBuffer(Machine& machine) {
+    auto& x = machine.cpu.x;
+    struct Allocation {
+        uint64_t length;
+        uint32_t fd, fdFlags;
+        uint64_t heapFlags;
+    } request;
+    static_assert(sizeof(Allocation) == 24);
+    if (!machine.readInto(x[2], {reinterpret_cast<uint8_t*>(&request), sizeof(request)})) return uint64_t(-14);
+    if (!request.length || request.heapFlags || (request.fdFlags & ~0x80003U)) return invalid;
+    const auto fd = freeDescriptor();
+    if (fd == descriptorCapacity) return uint64_t(-24);
+    std::erase_if(memoryFiles, [](const auto& file) { return file.expired(); });
+    if (memoryFiles.size() >= resourceObjectCapacity) return uint64_t(-23);
+    auto file = std::make_shared<WritableFile>();
+    file->inode = nextInode++;
+    file->mode = 0666;
+    file->uid = userId();
+    file->gid = groupId();
+    file->memoryFile = true;
+    memoryFiles.push_back(file->storage);
+    if (const auto status = resize(*file, request.length)) {
+        memoryFiles.pop_back();
+        return status;
+    }
+    file->seals = sealSeal | sealShrink | sealGrow;
+    Descriptor entry{"/dmabuf:", {}, (request.fdFlags & 0x80000U) | 2U, Node::temporary};
+    entry.temporary = std::move(file);
+    descriptors().emplace(fd, std::move(entry));
+    request.fd = fd;
+    return machine.write(x[2], {reinterpret_cast<const uint8_t*>(&request), sizeof(request)}) ? 0 : uint64_t(-14);
+}
+
+std::optional<uint64_t> ProbeLinux::soundIoctl(Machine& machine) {
+    auto& x = machine.cpu.x;
+    auto& audio = GuestAudio::host();
+    const auto frameBytes = std::max<uint32_t>(soundFrameBytes, 1);
+    // NESTVANE_SOUND_TRACE=1: what the guest asks of its sound device, in the Android log.
+    if (static const bool traced = std::getenv("NESTVANE_SOUND_TRACE"); traced && androidLogObserver) {
+        static uint32_t last = 0;
+        static uint64_t repeats = 0;
+        if (uint32_t(x[1]) != last || ++repeats % 200 == 0) {
+            char line[160];
+            std::snprintf(line, sizeof(line), "native execution: sound ioctl %#x, %llu frames so far, consumer %d, buffered %zu",
+                          uint32_t(x[1]), static_cast<unsigned long long>(soundFrames), int(audio.consumer.load()), audio.buffered());
+            androidLogObserver(line);
+            last = uint32_t(x[1]);
+        }
+    }
+    switch (uint32_t(x[1])) {
+        case 0x81204101: { // SNDRV_PCM_IOCTL_INFO: card 0, device 0, playback
+            const std::array<uint8_t, 288> info{};
+            return machine.write(x[2], info) ? 0 : uint64_t(-14);
+        }
+        case 0xc2604111: { // SNDRV_PCM_IOCTL_HW_PARAMS: whatever is asked for is what there is
+            std::array<uint32_t, 152> parameters;
+            if (!machine.readInto(x[2], {reinterpret_cast<uint8_t*>(parameters.data()), sizeof(parameters)})) return uint64_t(-14);
+            // The intervals begin after the flags and eight masks; each is a minimum, a maximum and flags.
+            const auto interval = [&](unsigned index) { return parameters[65 + index * 3]; };
+            const uint32_t bits = interval(0), channels = interval(2), rate = interval(3);
+            if (static const bool traced = std::getenv("NESTVANE_SOUND_TRACE"); traced && androidLogObserver) {
+                std::string line = "native execution: sound parameters";
+                for (unsigned index = 0; index < 12; ++index)
+                    line += " " + std::to_string(interval(index)) + "-" + std::to_string(parameters[66 + index * 3]);
+                line += " masks " + std::to_string(parameters[1]) + " " + std::to_string(parameters[9]) + " " + std::to_string(parameters[17]);
+                androidLogObserver(line);
+            }
+            if ((bits != 16 && bits != 32) || !channels || channels > 8 || rate < 8000 || rate > 192000) return invalid;
+            soundFrameBytes = channels * bits / 8;
+            soundRate = rate;
+            soundFrames = 0;
+            soundDeadline = {};
+            audio.configure(rate, channels, bits);
+            return 0;
+        }
+        case 0x40184150: { // SNDRV_PCM_IOCTL_WRITEI_FRAMES
+            std::array<uint64_t, 3> transfer;
+            if (!machine.readInto(x[2], {reinterpret_cast<uint8_t*>(transfer.data()), sizeof(transfer)})) return uint64_t(-14);
+            const uint64_t frames = transfer[2];
+            if (frames > (1 << 20) / frameBytes) return invalid;
+            const size_t bytes = size_t(frames) * frameBytes;
+            const auto now = std::chrono::steady_clock::now();
+            if (audio.consumer.load() && audio.rate.load()) {
+                // The host's output sets the pace: there is room when it has played what came before.
+                if (audio.space() < bytes) return std::nullopt;
+                std::vector<uint8_t> scratch;
+                const auto* samples = machine.read(transfer[1], bytes, 1, scratch);
+                if (!samples) return uint64_t(-14);
+                audio.write(samples, bytes);
+            } else {
+                // Nobody listens: the sound takes as long as it would take to play.
+                if (now < soundDeadline) return std::nullopt;
+                soundDeadline = std::max(now - std::chrono::milliseconds(100), soundDeadline) +
+                                std::chrono::microseconds(frames * 1'000'000 / std::max<uint32_t>(soundRate, 1));
+            }
+            soundFrames += frames;
+            transfer[0] = frames;
+            return machine.write(x[2], {reinterpret_cast<const uint8_t*>(transfer.data()), sizeof(transfer)}) ? 0 : uint64_t(-14);
+        }
+        case 0xc0884123: { // SNDRV_PCM_IOCTL_SYNC_PTR: running, and how far the playing has come
+            std::array<uint64_t, 17> pointers;
+            if (!machine.readInto(x[2], {reinterpret_cast<uint8_t*>(pointers.data()), sizeof(pointers)})) return uint64_t(-14);
+            const auto now = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+            const uint64_t waiting = audio.consumer.load() ? audio.buffered() / frameBytes : 0;
+            pointers[1] = 3;  // SNDRV_PCM_STATE_RUNNING
+            pointers[2] = soundFrames - std::min(soundFrames, waiting);
+            pointers[3] = uint64_t(now / 1'000'000'000);
+            pointers[4] = uint64_t(now % 1'000'000'000);
+            pointers[9] = soundFrames;
+            return machine.write(x[2], {reinterpret_cast<const uint8_t*>(pointers.data()), sizeof(pointers)}) ? 0 : uint64_t(-14);
+        }
+        case 0x80084121: { // SNDRV_PCM_IOCTL_DELAY
+            const int64_t waiting = audio.consumer.load() ? int64_t(audio.buffered() / frameBytes) : 0;
+            return machine.store64(x[2], uint64_t(waiting)) ? 0 : uint64_t(-14);
+        }
+        default: // parameters that need no answer, and prepare, start, drop, drain
+            return 0;
+    }
 }
 
 void ProbeLinux::enableBattery() {
@@ -8035,6 +8167,11 @@ std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedPr
         const auto leader = threads.find(process.id);
         const bool launcherThread = (tid == process.id || name == "RenderThread") &&
             leader != threads.end() && threadName(leader->second) == "droid.launcher3";
+        // NESTVANE_TASK_MATCH=<part of a program's path> lists that program's threads and no others.
+        static const char* const matched = std::getenv("NESTVANE_TASK_MATCH");
+        if (matched) {
+            if (process.executable.find(matched) == std::string::npos) continue;
+        } else
         if (thread.wait != Wait::suspended && process.id != observedProcess && !launcherThread &&
             process.executable != "/system/bin/bootanimation" &&
             process.executable != "/system/bin/surfaceflinger" &&
@@ -8602,6 +8739,19 @@ uint64_t ProbeLinux::installSeccomp(Machine& machine, uint64_t address) {
                 break;
             case 0x06: // RET K
                 break;
+            case 0x00: case 0x01: case 0x07: case 0x87: // LD/LDX IMM, TAX, TXA
+            case 0x04: case 0x14: case 0x24: case 0x44: case 0x54: case 0xa4: case 0x84: // ADD, SUB, MUL, OR, AND, XOR K; NEG
+            case 0x0c: case 0x1c: case 0x2c: case 0x4c: case 0x5c: case 0xac: // the same with X
+                break;
+            case 0x64: case 0x74: // LSH, RSH K
+                if (value >= 32) return invalid;
+                break;
+            case 0x60: case 0x61: case 0x02: case 0x03: // LD/LDX MEM, ST, STX
+                if (value >= 16) return invalid;
+                break;
+            case 0x1d: case 0x2d: case 0x3d: case 0x4d: // JEQ, JGT, JGE, JSET X
+                if (yes >= remaining || no >= remaining) return invalid;
+                break;
             default: return invalid;
         }
     }
@@ -8620,7 +8770,8 @@ bool ProbeLinux::enforceSeccomp(Machine& machine) {
     constexpr uint32_t allow = 0x7fff0000;
     uint32_t result = allow;
     for (auto filter = current->seccomp; filter; filter = filter->previous) {
-        uint32_t accumulator = 0;
+        uint32_t accumulator = 0, index = 0;
+        std::array<uint32_t, 16> scratch{};
         for (size_t pc = 0; pc < filter->program.size(); ++pc) {
             const auto& [code, yes, no, value] = filter->program[pc];
             if (code == 0x06) {
@@ -8639,6 +8790,33 @@ bool ProbeLinux::enforceSeccomp(Machine& machine) {
                 case 0x25: pc += accumulator > value ? yes : no; break;
                 case 0x35: pc += accumulator >= value ? yes : no; break;
                 case 0x45: pc += (accumulator & value) ? yes : no; break;
+                case 0x1d: pc += accumulator == index ? yes : no; break;
+                case 0x2d: pc += accumulator > index ? yes : no; break;
+                case 0x3d: pc += accumulator >= index ? yes : no; break;
+                case 0x4d: pc += (accumulator & index) ? yes : no; break;
+                case 0x00: accumulator = value; break;
+                case 0x01: index = value; break;
+                case 0x07: index = accumulator; break;
+                case 0x87: accumulator = index; break;
+                case 0x60: accumulator = scratch[value]; break;
+                case 0x61: index = scratch[value]; break;
+                case 0x02: scratch[value] = accumulator; break;
+                case 0x03: scratch[value] = index; break;
+                case 0x04: accumulator += value; break;
+                case 0x14: accumulator -= value; break;
+                case 0x24: accumulator *= value; break;
+                case 0x44: accumulator |= value; break;
+                case 0x54: accumulator &= value; break;
+                case 0xa4: accumulator ^= value; break;
+                case 0x64: accumulator <<= value; break;
+                case 0x74: accumulator >>= value; break;
+                case 0x84: accumulator = 0 - accumulator; break;
+                case 0x0c: accumulator += index; break;
+                case 0x1c: accumulator -= index; break;
+                case 0x2c: accumulator *= index; break;
+                case 0x4c: accumulator |= index; break;
+                case 0x5c: accumulator &= index; break;
+                case 0xac: accumulator ^= index; break;
             }
         }
     }
@@ -10687,6 +10865,22 @@ bool ProbeLinux::syscall(Machine& machine) {
             if (descriptor == descriptors().end()) { x[0] = uint64_t(-9); break; }
             return lockWholeFile(machine, descriptor->second);
         case 29: // ioctl
+            if (descriptor != descriptors().end() && descriptor->second.node == Node::dmaHeap) {
+                x[0] = uint32_t(x[1]) == 0xc0184800 ? allocateDmaBuffer(machine) : uint64_t(-25);
+                break;
+            }
+            // DMA_BUF_IOCTL_SYNC and the naming of a buffer: nothing to do for memory that is only memory.
+            if (descriptor != descriptors().end() && descriptor->second.temporary && descriptor->second.temporary->memoryFile &&
+                (uint32_t(x[1]) & 0xff00) == 0x6200) {
+                x[0] = 0;
+                break;
+            }
+            if (descriptor != descriptors().end() && descriptor->second.node == Node::sound) {
+                const auto answer = soundIoctl(machine);
+                if (!answer) return waitForHostEvents();
+                x[0] = *answer;
+                break;
+            }
             if (descriptor != descriptors().end() && descriptor->second.fuse && uint32_t(x[1]) == 0x8004e500) {
                 // FUSE_DEV_IOC_CLONE: this device becomes another way to the session of the one named.
                 uint32_t number;
@@ -11744,11 +11938,21 @@ bool ProbeLinux::syscall(Machine& machine) {
         case 233: { // madvise
             const auto advice = int32_t(x[2]);
             if (advice < 0) { x[0] = invalid; break; }
-            if (advice > 4 && advice != 8 && advice != 10 && advice != 11 && advice != 18 && advice != 19) return false;
+            if (advice > 4 && advice != 8 && advice != 9 && advice != 10 && advice != 11 && advice != 18 && advice != 19) return false;
             if (x[0] % pageSize || x[1] > maxReservation) { x[0] = invalid; break; }
             const auto length = pageAlignedLength(x[1]);
             if (x[0] > UINT64_MAX - length || !fullyMapped(machine, x[0], x[0] + length)) {
                 x[0] = noMemory;
+                break;
+            }
+            if (advice == 9) { // MADV_REMOVE: the range of a shared memory file reads as zero afterwards.
+                static const std::vector<uint8_t> zeros(64 * 1024);
+                for (uint64_t done = 0; done < length;) {
+                    const auto count = std::min<uint64_t>(length - done, zeros.size());
+                    machine.write(x[0] + done, std::span(zeros).first(count));  // what cannot be written stays
+                    done += count;
+                }
+                x[0] = 0;
                 break;
             }
             if (advice == 8) { // MADV_FREE: private anonymous pages are eligible for lazy reclaim.
@@ -11878,6 +12082,8 @@ bool ProbeLinux::syscall(Machine& machine) {
         case 167: { // Guest process controls.
             auto& process = *current->process;
             if (x[0] == 21) { x[0] = current->seccomp ? 2 : 0; break; } // PR_GET_SECCOMP
+            // PR_PAC_SET/GET_ENABLED_KEYS: there is no pointer authentication here, as on a kernel without it.
+            if (x[0] == 60 || x[0] == 61) { x[0] = invalid; break; }
             if (x[0] == 22) { x[0] = x[1] == 2 ? installSeccomp(machine, x[2]) : invalid; break; }
             if (x[0] == 38 || x[0] == 39) { // PR_SET/GET_NO_NEW_PRIVS
                 const bool set = x[0] == 38;

@@ -1600,6 +1600,19 @@ bool values(CPU& cpu, uint32_t word) {
         put(cpu, rd, coherentCache);
     } else if ((word & 0xffffffe0) == 0xd53b00e0) {
         put(cpu, rd, 16); // DCZID_EL0.DZP. This profile does not offer DC ZVA.
+    } else if ((word & 0xffffffe0) == 0xd53be040 || (word & 0xffffffe0) == 0xd53be020) {
+        // MRS <Xt>, CNTVCT_EL0 or CNTPCT_EL0: the host's counter, which is what translated code reads.
+#if defined(__aarch64__)
+        put(cpu, rd, __builtin_arm_rsr64("CNTVCT_EL0"));
+#else
+        return false;
+#endif
+    } else if ((word & 0xffffffe0) == 0xd53be000) { // MRS <Xt>, CNTFRQ_EL0.
+#if defined(__aarch64__)
+        put(cpu, rd, __builtin_arm_rsr64("CNTFRQ_EL0"));
+#else
+        return false;
+#endif
     } else if ((word & 0xffffffe0) == 0xd53b4200) { // MRS <Xt>, NZCV.
         put(cpu, rd, uint64_t(cpu.nzcv) << 28);
     } else if ((word & 0xffffffe0) == 0xd51b4200) { // MSR NZCV, <Xt>.
@@ -1651,6 +1664,16 @@ bool executeStartupInstruction(Machine& machine, uint32_t word) {
                 cpu.pc = next;
                 ++cpu.retired;
                 return true;
+            }
+            if ((word & 0xffffffe0) == 0xd50b7420) { // DC ZVA
+                // Translated code sees the host's DCZID_EL0 and zeroes memory this way; when it has to be
+                // carried on here after a fault, the block is the host's: 64 bytes.
+                const auto address = reg(cpu, word & 31) & ~uint64_t{63};
+                static constexpr std::array<uint8_t, 64> zeros{};
+                if (!machine.write(address, zeros))
+                    machine.fault(cpu.pc, address);
+                handled = true;
+                break;
             }
             if ((word & 0xffffffe0) == 0xd50b7a20) { // DC CVAC
                 const auto address = reg(cpu, word & 31);

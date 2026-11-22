@@ -1,5 +1,6 @@
 #pragma once
 
+#include "GuestAudio.hpp"
 #include "GuestBattery.hpp"
 #include "GraphicsPipe.hpp"
 #include "GuestApkInbox.hpp"
@@ -137,6 +138,16 @@ struct ProbeLinux {
     bool captureAndroidLogs = false;
     // Whether the guest reaches the network through the host's sockets. Without it there is only loopback.
     bool hostNetwork = false;
+    // The guest's sound card: one playback device, /dev/snd/pcmC0D0p, of the kind Android's audio
+    // service plays through. What is played goes to runtime/GuestAudio.hpp. Nothing or a wait.
+    void enableSound();
+    std::optional<uint64_t> soundIoctl(Machine& machine);
+    // /dev/dma_heap/system, where the codecs get the memory of their buffers: each allocation is a
+    // file of memory, like memfd_create's, that can be mapped and passed between processes.
+    uint64_t allocateDmaBuffer(Machine& machine);
+    uint32_t soundFrameBytes = 4, soundRate = 48000;
+    uint64_t soundFrames = 0;
+    std::chrono::steady_clock::time_point soundDeadline{};
     // Gives the guest the host's battery (runtime/GuestBattery.hpp) as a power supply of its own, and
     // a charger beside it. Without it Android shows a battery of unknown state.
     void enableBattery();
@@ -290,7 +301,7 @@ private:
     uint64_t installSeccomp(Machine& machine, uint64_t address);
     bool enforceSeccomp(Machine& machine);
 
-    enum class Node { regular, temporary, directory, symbolicLink, input, output, error, null, entropy, kernelLog, poller, event, inotify, signal, socket, keySocket, mountNamespace, pipeRead, pipeWrite, execLabel, fsCreateLabel, socketCreateLabel, securityInfo, securityCreate, securityAccess, securityValidate, loopControl, loopDevice, timer, ptyMaster, ptySlave, ueventTrigger, kernelSetting, oomScoreAdjustment, binder, processHandle, cgroupProcs, ashmem, graphicsPipe, graphicsAddressSpace, touchDevice, bpfMap, bpfProgram, bpfBtf, pressure, fuse };
+    enum class Node { regular, temporary, directory, symbolicLink, input, output, error, null, entropy, kernelLog, poller, event, inotify, signal, socket, keySocket, mountNamespace, pipeRead, pipeWrite, execLabel, fsCreateLabel, socketCreateLabel, securityInfo, securityCreate, securityAccess, securityValidate, loopControl, loopDevice, timer, ptyMaster, ptySlave, ueventTrigger, kernelSetting, oomScoreAdjustment, binder, processHandle, cgroupProcs, ashmem, graphicsPipe, graphicsAddressSpace, touchDevice, bpfMap, bpfProgram, bpfBtf, pressure, fuse, sound, dmaHeap };
     struct RecordLock {
         uint64_t owner, start, end;
         int16_t type;
@@ -619,6 +630,8 @@ private:
     struct BinderFileTransfer {
         size_t offset;
         std::shared_ptr<Descriptor> file;
+        // One of an array of descriptors inside a buffer: a 32-bit number, where a file object has 64 bits.
+        bool narrow = false;
     };
     struct BinderPacket {
         uint32_t command;
