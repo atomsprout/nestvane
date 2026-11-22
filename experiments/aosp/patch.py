@@ -259,15 +259,6 @@ edit("device/generic/goldfish/64bitonly/product/sdk_phone16k_arm64.mk", [(
     "\nPRODUCT_NAME := sdk_phone16k_arm64\n")],
     "Nestvane: compile everything ahead of time")
 
-# The apps carry their texts in some eighty languages, which is a large part of the image. English
-# and Chinese stay. The line comes after the products it inherits from, so that it replaces their list.
-edit("device/generic/goldfish/64bitonly/product/sdk_phone16k_arm64.mk", [(
-    "\nPRODUCT_BRAND := Android\n",
-    "\n# Nestvane: the image keeps the texts of these languages only.\n"
-    "PRODUCT_LOCALES := en_US zh_CN zh_TW\n"
-    "\nPRODUCT_BRAND := Android\n")],
-    "Nestvane: the image keeps the texts")
-
 # So is the copy that the federated compute library builds, through the flex delegate.
 edit("external/tensorflow/Android.bp", [(
     '        "-DTF_ANDROID_ENABLE_LOGSINK",\n',
