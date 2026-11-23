@@ -98,7 +98,7 @@ Nestvane 走的是剩下的那条路：**把 Android 重新构建并提前翻译
 - [设备](docs/zh-CN/devices.md)——图形、存储、网络和声音
 - [设计笔记](docs/zh-CN/design-notes.md)——做过的取舍，和最有教益的那些问题
 - [构建](docs/zh-CN/building.md)与[现状](docs/zh-CN/status.md)
-- [安装发布版](docs/zh-CN/installing.md)、[数字里的 1.0](docs/zh-CN/measurements.md)、
+- [安装发布版](docs/zh-CN/installing.md)、[数字里的 Nestvane](docs/zh-CN/measurements.md)、
   [Nestvane、两仪和 Andarium](docs/zh-CN/comparison.md)
 - [四天是怎么做出来的](https://atomsprout.com/nestvane/blog/android-17-inside-an-iphone-app/)（博客，英文）
 
@@ -110,9 +110,9 @@ Nestvane 走的是剩下的那条路：**把 Android 重新构建并提前翻译
 | --- | --- |
 | 启动到 Android 桌面 | 约 8 秒；加上媒体服务后约 10 秒 |
 | 同上，iPhone 17 Pro | 9.5–10.9 秒；安装后的第一次约 17 秒 |
-| 内存占用 | 约 2.2–2.7 GB |
-| App 下载大小 | 1.06 GB |
-| 滑动列表 | 60 Hz 下最高约每秒 55 帧 |
+| 内存占用 | 约 2.4–2.6 GB |
+| App 下载大小 | 1.07 GB |
+| 手指持续拖动列表 | 每秒 58–60 帧；打开 120 Hz 后合成 113–121 帧、显示 85–120 帧 |
 | 播放 1280×720 的 H.264 视频 | 每秒 30 帧，与时钟同步 |
 | 翻译的模块 | 约 1230 个，分在 12 个 framework 里 |
 | 用 APK 装上的开源应用 | 15 个 |
@@ -120,7 +120,7 @@ Nestvane 走的是剩下的那条路：**把 Android 重新构建并提前翻译
 ## 运行要求
 
 - iOS 26 及以上。在 iPhone 15 Pro 和 iPhone 17 Pro 上测试过。
-- 别的手机没有测过。Android 需要约 2.2–2.7 GB 内存，超过 iPhone 11 给单个 App 的上限。
+- 别的手机没有测过。Android 需要约 2.4–2.6 GB 内存，超过 iPhone 11 给单个 App 的上限。
 - [Releases](https://github.com/atomsprout/nestvane/releases) 里有一个不带签名的 IPA，需要用你自己的 Apple 开发者身份签名，
   做法和可用的侧载工具见 [docs/zh-CN/installing.md](docs/zh-CN/installing.md)。Nestvane 没有上架 App Store。
 - **需要付费的 Apple Developer Program 会员（每年 99 美元）。** App 签名时必须带上两项能力：Extended Virtual Addressing
