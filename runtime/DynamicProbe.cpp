@@ -676,7 +676,8 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
             const auto process = linux.processId(), thread = linux.threadId();
             if (init && linux.deliverIllegalInstruction(machine)) {
                 std::ostringstream message;
-                message << "native execution: no such instruction in the interpreter, SIGILL to PID=" << process
+                message << ((word & 0xffe0001f) == 0xd4200000 || (word & 0xffe0001f) == 0xd4400000 ? "native execution: breakpoint instruction, SIGTRAP to PID="
+                                                               : "native execution: no such instruction in the interpreter, SIGILL to PID=") << process
                         << " TID=" << thread << std::hex << " PC=0x" << pc << " word=0x" << word << std::dec;
                 if (illegalInstructions++ < 32) report << "  " << message.str() << '\n';
                 if (linux.androidLogObserver) linux.androidLogObserver(message.str());

@@ -8657,11 +8657,16 @@ bool ProbeLinux::deliverMemoryFault(Machine& machine) {
 }
 
 bool ProbeLinux::deliverIllegalInstruction(Machine& machine) {
-    constexpr uint32_t sigIll = 4;
     if (current->process->id == pid) return false;
+    // BRK is not an instruction that is missing: it is a breakpoint, and Linux answers it with SIGTRAP.
+    // Programs use it to end themselves where they must never arrive.
+    uint32_t word = 0;
+    const bool breakpoint = machine.readInto(machine.cpu.pc, {reinterpret_cast<uint8_t*>(&word), sizeof(word)}) &&
+        ((word & 0xffe0001f) == 0xd4200000 || (word & 0xffe0001f) == 0xd4400000);  // BRK, HLT
+    const uint32_t sigIll = breakpoint ? 5 : 4;
     SignalFrame::Info info{};
     info.number = sigIll;
-    info.code = 1; // ILL_ILLOPC
+    info.code = 1; // ILL_ILLOPC, or TRAP_BRKPT
     info.address = machine.cpu.pc;
     if (installSignalFrame(machine, sigIll, std::bit_cast<SignalWords>(info), machine.cpu.pc)) return true;
     finishProcess(*current->process, sigIll, true);

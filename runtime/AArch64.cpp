@@ -267,6 +267,46 @@ bool memory(Machine& machine, uint32_t word) {
         }
         return true;
     }
+    // The atomic instructions of ARMv8.1. Each is one read and one write here; nothing else runs
+    // between them on this thread.
+    if ((word & 0x3fa07c00) == 0x08a07c00) { // CAS and its acquire and release forms
+        const unsigned rs = (word >> 16) & 31;
+        uint64_t held = 0;
+        if (base % size) { machine.fault(cpu.pc, base); return true; }
+        if (!machine.readInto(base, {reinterpret_cast<uint8_t*>(&held), size})) { machine.fault(cpu.pc, base); return true; }
+        const uint64_t all = size == 8 ? UINT64_MAX : (uint64_t{1} << (size * 8)) - 1;
+        if (held == (reg(cpu, rs) & all)) {
+            const uint64_t replacement = reg(cpu, rt);
+            if (!machine.write(base, {reinterpret_cast<const uint8_t*>(&replacement), size})) { machine.fault(cpu.pc, base); return true; }
+        }
+        put(cpu, rs, held, size == 8 ? 64 : 32);
+        return true;
+    }
+    if ((word & 0x3f200c00) == 0x38200000 && ((word >> 12) & 15) <= 8) { // LDADD, LDCLR, LDEOR, LDSET, the four extremes, SWP
+        const unsigned rs = (word >> 16) & 31, operation = (word >> 12) & 15, laneBits = size * 8;
+        uint64_t held = 0;
+        if (base % size) { machine.fault(cpu.pc, base); return true; }
+        if (!machine.readInto(base, {reinterpret_cast<uint8_t*>(&held), size})) { machine.fault(cpu.pc, base); return true; }
+        const uint64_t all = size == 8 ? UINT64_MAX : (uint64_t{1} << laneBits) - 1;
+        const uint64_t operand = reg(cpu, rs) & all;
+        const int64_t signedHeld = int64_t(sx(held, laneBits)), signedOperand = int64_t(sx(operand, laneBits));
+        uint64_t stored;
+        switch (operation) {
+            case 0: stored = held + operand; break;
+            case 1: stored = held & ~operand; break;
+            case 2: stored = held ^ operand; break;
+            case 3: stored = held | operand; break;
+            case 4: stored = signedHeld > signedOperand ? held : operand; break;
+            case 5: stored = signedHeld < signedOperand ? held : operand; break;
+            case 6: stored = held > operand ? held : operand; break;
+            case 7: stored = held < operand ? held : operand; break;
+            default: stored = operand; break;
+        }
+        stored &= all;
+        if (!machine.write(base, {reinterpret_cast<const uint8_t*>(&stored), size})) { machine.fault(cpu.pc, base); return true; }
+        if (rt != 31) put(cpu, rt, held, size == 8 ? 64 : 32);
+        return true;
+    }
     // The second register field of a store-exclusive should be all ones, and Go's assembler leaves it zero.
     if ((word & 0x3fe00000) == 0x08000000) {
         const unsigned rs = (word >> 16) & 31;
@@ -485,6 +525,161 @@ bool moreVector(CPU& cpu, uint32_t word, std::array<uint8_t, 16>& result) {
         return saturating ? saturate(shifted, bits, toUnsigned) : uint64_t(shifted);
     };
 
+    const auto load8 = [](const std::array<uint8_t, 16>& vector) { return vld1q_u8(vector.data()); };
+    const auto load32 = [](const std::array<uint8_t, 16>& vector) { return vreinterpretq_u32_u8(vld1q_u8(vector.data())); };
+    const auto rotateRight = [](uint64_t value, unsigned count) { return count ? (value >> count) | (value << (64 - count)) : value; };
+    // AES and SHA-1 are run by the processor's own instructions: every iPhone that runs this has them.
+    if (const auto aes = word & 0xfffffc00; aes == 0x4e284800 || aes == 0x4e285800 || aes == 0x4e286800 || aes == 0x4e287800) {
+        uint8x16_t value;
+        switch (aes) {
+            case 0x4e284800: value = vaeseq_u8(load8(cpu.v[rd]), load8(first)); break;
+            case 0x4e285800: value = vaesdq_u8(load8(cpu.v[rd]), load8(first)); break;
+            case 0x4e286800: value = vaesmcq_u8(load8(first)); break;
+            default: value = vaesimcq_u8(load8(first)); break;
+        }
+        vst1q_u8(result.data(), value);
+        return true;
+    }
+    if (const auto sha1 = word & 0xffe0fc00; sha1 == 0x5e000000 || sha1 == 0x5e001000 || sha1 == 0x5e002000 || sha1 == 0x5e003000) {
+        const uint32_t e = uint32_t(lane(first, 0, 4));
+        uint32x4_t value;
+        switch (sha1) {
+            case 0x5e000000: value = vsha1cq_u32(load32(cpu.v[rd]), e, load32(second)); break;
+            case 0x5e001000: value = vsha1pq_u32(load32(cpu.v[rd]), e, load32(second)); break;
+            case 0x5e002000: value = vsha1mq_u32(load32(cpu.v[rd]), e, load32(second)); break;
+            default: value = vsha1su0q_u32(load32(cpu.v[rd]), load32(first), load32(second)); break;
+        }
+        vst1q_u8(result.data(), vreinterpretq_u8_u32(value));
+        return true;
+    }
+    if ((word & 0xfffffc00) == 0x5e280800) { // SHA1H
+        setLane(result, 0, 4, vsha1h_u32(uint32_t(lane(first, 0, 4))));
+        return true;
+    }
+    if ((word & 0xfffffc00) == 0x5e281800) { // SHA1SU1
+        vst1q_u8(result.data(), vreinterpretq_u8_u32(vsha1su1q_u32(load32(cpu.v[rd]), load32(first))));
+        return true;
+    }
+    // SHA-512 and SHA-3 are worked out here: the iPhone XS and XR do not have the instructions.
+    if (const auto sha512 = word & 0xffe0fc00; sha512 == 0xce608000 || sha512 == 0xce608400 || sha512 == 0xce608800) {
+        const uint64_t w0 = lane(cpu.v[rd], 0, 8), w1 = lane(cpu.v[rd], 1, 8);
+        const uint64_t x0 = lane(first, 0, 8), x1 = lane(first, 1, 8), y0 = lane(second, 0, 8), y1 = lane(second, 1, 8);
+        uint64_t low, high;
+        if (sha512 == 0xce608000) { // SHA512H
+            const auto sigma = [&](uint64_t v) { return rotateRight(v, 14) ^ rotateRight(v, 18) ^ rotateRight(v, 41); };
+            high = ((y1 & x0) ^ (~y1 & x1)) + sigma(y1) + w1;
+            const uint64_t sum = high + y0;
+            low = ((sum & y1) ^ (~sum & x0)) + sigma(sum) + w0;
+        } else if (sha512 == 0xce608400) { // SHA512H2
+            const auto sigma = [&](uint64_t v) { return rotateRight(v, 28) ^ rotateRight(v, 34) ^ rotateRight(v, 39); };
+            high = ((x0 & y1) ^ (x0 & y0) ^ (y1 & y0)) + sigma(y0) + w1;
+            low = ((high & y0) ^ (high & y1) ^ (y1 & y0)) + sigma(high) + w0;
+        } else { // SHA512SU1
+            const auto sigma = [&](uint64_t v) { return rotateRight(v, 19) ^ rotateRight(v, 61) ^ (v >> 6); };
+            high = w1 + sigma(x1) + y1;
+            low = w0 + sigma(x0) + y0;
+        }
+        setLane(result, 0, 8, low);
+        setLane(result, 1, 8, high);
+        return true;
+    }
+    if ((word & 0xfffffc00) == 0xcec08000) { // SHA512SU0
+        const auto sigma = [&](uint64_t v) { return rotateRight(v, 1) ^ rotateRight(v, 8) ^ (v >> 7); };
+        const uint64_t w0 = lane(cpu.v[rd], 0, 8), w1 = lane(cpu.v[rd], 1, 8);
+        setLane(result, 0, 8, w0 + sigma(w1));
+        setLane(result, 1, 8, w1 + sigma(lane(first, 0, 8)));
+        return true;
+    }
+    if ((word & 0xffe08000) == 0xce000000 || (word & 0xffe08000) == 0xce200000) { // EOR3, BCAX
+        const auto& third = cpu.v[(word >> 10) & 31];
+        const bool clear = word & 0x00200000;
+        for (unsigned i = 0; i < 16; ++i) result[i] = first[i] ^ (clear ? second[i] & ~third[i] : second[i] ^ third[i]);
+        return true;
+    }
+    if ((word & 0xffe0fc00) == 0xce608c00) { // RAX1
+        for (unsigned i = 0; i < 2; ++i) setLane(result, i, 8, lane(first, i, 8) ^ rotateRight(lane(second, i, 8), 63));
+        return true;
+    }
+    if ((word & 0xffe00000) == 0xce800000) { // XAR
+        for (unsigned i = 0; i < 2; ++i) setLane(result, i, 8, rotateRight(lane(first, i, 8) ^ lane(second, i, 8), (word >> 10) & 63));
+        return true;
+    }
+    if ((word & 0xdf80fc00) == 0x5f005400 || (word & 0xdf80cc00) == 0x5f000400 || (word & 0xff80fc00) == 0x7f004400) {
+        // Shifts of one D register by a number: SHL and SLI, the right shifts with and without rounding
+        // and adding, and SRI.
+        const unsigned immediate = (word >> 16) & 127;
+        if (immediate < 64) return false;
+        const unsigned opcode = (word >> 11) & 31;
+        const uint64_t value = lane(first, 0, 8), before = lane(cpu.v[rd], 0, 8);
+        uint64_t out;
+        if (opcode == 0x0a) { // SHL, SLI
+            const unsigned left = immediate - 64;
+            out = isUnsigned ? (before & ((uint64_t{1} << left) - 1)) | (value << left) : value << left;
+        } else if (opcode == 0x08) { // SRI
+            const unsigned right = 128 - immediate;
+            out = right == 64 ? before : (before & ~(UINT64_MAX >> right)) | (value >> right);
+        } else { // SSHR, SSRA, SRSHR, SRSRA and the unsigned ones
+            const unsigned right = 128 - immediate;
+            const bool accumulate = opcode & 2, round = opcode & 4;
+            const Wide wide = isUnsigned ? Wide(value) : Wide(int64_t(value));
+            const Wide shifted = (wide + (round ? Wide(1) << (right - 1) : 0)) >> right;
+            out = uint64_t(shifted) + (accumulate ? before : 0);
+        }
+        setLane(result, 0, 8, out);
+        return true;
+    }
+    if ((word & 0xbf00d400) == 0x2f00d000) { // SQRDMLAH, SQRDMLSH by one element of the second operand.
+        if (size != 2 && size != 4) return false;
+        const bool subtract = word & 0x2000;
+        const unsigned index = size == 2 ? ((word >> 9) & 4) | ((word >> 20) & 3) : ((word >> 10) & 2) | ((word >> 21) & 1);
+        const auto& element = cpu.v[size == 2 ? rm & 15 : rm];
+        const Wide multiplier = get(element, index, size, true);
+        for (unsigned i = 0; i < width / size; ++i) {
+            const Wide accumulator = get(cpu.v[rd], i, size, true) << bits;
+            const Wide product = 2 * get(first, i, size, true) * multiplier;
+            const Wide sum = (subtract ? accumulator - product : accumulator + product) + (Wide(1) << (bits - 1));
+            setLane(result, i, size, saturate(sum >> bits, bits, false));
+        }
+        return true;
+    }
+    if ((word & 0xbfa0fc00) == 0x2e20d400) { // FADDP of whole vectors: neighbours added, first operand's then the second's.
+        const bool wide = word & 0x400000;
+        if (wide && width == 8) return false;
+        const unsigned laneSize = wide ? 8 : 4, count = width / laneSize;
+        const auto value = [&](const std::array<uint8_t, 16>& vector, unsigned index) {
+            return wide ? std::bit_cast<double>(lane(vector, index, 8)) : double(std::bit_cast<float>(uint32_t(lane(vector, index, 4))));
+        };
+        for (unsigned i = 0; i < count; ++i) {
+            const auto& from = i < count / 2 ? first : second;
+            const unsigned at = (i % (count / 2)) * 2;
+            if (wide) setLane(result, i, 8, std::bit_cast<uint64_t>(value(from, at) + value(from, at + 1)));
+            else setLane(result, i, 4, std::bit_cast<uint32_t>(float(std::bit_cast<float>(uint32_t(lane(from, at, 4))) +
+                                                                     std::bit_cast<float>(uint32_t(lane(from, at + 1, 4))))));
+        }
+        return true;
+    }
+    if ((word & 0xdf20fc00) == 0x5e204400) { // SSHL, USHL of one D register by a signed count.
+        if (size != 8) return false;
+        const Wide value = isUnsigned ? Wide(lane(first, 0, 8)) : Wide(int64_t(lane(first, 0, 8)));
+        setLane(result, 0, 8, shiftBy(value, int8_t(second[0]), false, false, isUnsigned));
+        return true;
+    }
+    if ((word & 0xbffffc00) == 0x2e605800) { // RBIT: the bits of each byte in the opposite order.
+        for (unsigned i = 0; i < width; ++i) {
+            uint8_t byte = first[i], reversed = 0;
+            for (unsigned bit = 0; bit < 8; ++bit, byte >>= 1) reversed = uint8_t(reversed << 1 | (byte & 1));
+            result[i] = reversed;
+        }
+        return true;
+    }
+    if ((word & 0xbffffc00) == 0x0e217800) { // FCVTL, FCVTL2 from half precision.
+        const unsigned start = width == 16 ? 4 : 0;
+        for (unsigned i = 0; i < 4; ++i) {
+            const float value = float(std::bit_cast<_Float16>(uint16_t(lane(first, start + i, 2))));
+            setLane(result, i, 4, std::bit_cast<uint32_t>(value));
+        }
+        return true;
+    }
     if ((word & 0xff20fc00) == 0x5e208400 || (word & 0xff20fc00) == 0x7e208400) { // ADD, SUB of two D registers.
         if (size != 8) return false;
         const uint64_t a = lane(first, 0, 8), b = lane(second, 0, 8);
@@ -1386,6 +1581,9 @@ bool floatInstruction(CPU& cpu, uint32_t word) {
         store(std::trunc(get(rn)));
     } else if ((word & 0xffbffc00) == 0x1e264000) { // FRINTA.
         store(std::round(get(rn)));
+    } else if ((word & 0xffbffc00) == 0x1e274000 || (word & 0xffbffc00) == 0x1e27c000) {
+        // FRINTX and FRINTI round the way the control register says, which is to the nearest, halves to even.
+        store(roundToNearestEven(cpu, get(rn)));
     } else if (unary == 0x1e220000 || unary == 0x1e230000 ||
                (word & 0x7fbe0000) == 0x1e020000) { // SCVTF / UCVTF, including fixed point.
         const bool fixedPoint = !(word & 0x200000);
@@ -1407,9 +1605,10 @@ bool floatInstruction(CPU& cpu, uint32_t word) {
         const auto integer = std::isnan(value) ? 0 : value >= bound ? sign - 1 :
             value <= -bound ? sign : uint64_t(int64_t(value));
         put(cpu, rd, integer, bits);
-    } else if (unary == 0x1e290000 || unary == 0x1e390000 || unary == 0x1e250000) { // FCVTPU / FCVTZU / FCVTAU.
+    } else if (unary == 0x1e290000 || unary == 0x1e390000 || unary == 0x1e250000 || unary == 0x1e310000) { // FCVTPU / FCVTZU / FCVTAU / FCVTMU.
         const Float input = integerInput();
-        const Float value = unary == 0x1e290000 ? std::ceil(input) : unary == 0x1e250000 ? std::round(input) : input;
+        const Float value = unary == 0x1e290000 ? std::ceil(input) : unary == 0x1e250000 ? std::round(input) :
+                            unary == 0x1e310000 ? std::floor(input) : input;
         const Float bound = std::ldexp(Float{1}, bits);
         put(cpu, rd, !(value > 0) ? 0 : value >= bound ? mask(bits) : uint64_t(value), bits);
     } else if ((word & 0xff800000) == 0x1f000000) { // FMADD / FMSUB / FNMADD / FNMSUB.
@@ -1915,6 +2114,15 @@ bool executeStartupInstruction(Machine& machine, uint32_t word) {
             const bool dit = (word & 0xfffff0ff) == 0xd503405f;
             // The identification registers read as Linux lets a program read them when it offers
             // nothing beyond the base: zero. What the guest is told it may use is in AT_HWCAP.
+            if ((word & 0xffffffe0) == 0xd53b42a0) { // MRS of DIT: never set
+                put(cpu, word & 31, 0, 64);
+                handled = true;
+                break;
+            }
+            if ((word & 0xffffffe0) == 0xd51b42a0) { // MSR to DIT
+                handled = true;
+                break;
+            }
             if ((word & 0xfffff000) == 0xd5380000) {
                 put(cpu, word & 31, 0, 64);
                 handled = true;

@@ -75,6 +75,42 @@ int main() {
         assert(lane32(2, 1) == element32(2) && lane32(2, 2) == 0 && machine.cpu.v[3][0] == 0xee);
         run(0x4d40c140); // ld1r {v0.16b}, [x10]
         assert(machine.cpu.v[0][15] == data[0] && machine.cpu.v[1][0] == 0xee);
+        // The atomic instructions of ARMv8.1, on a word of memory at x10.
+        const auto word32 = [&]() { uint32_t value; assert(machine.readInto(base, {reinterpret_cast<uint8_t*>(&value), 4})); return value; };
+        const auto poke32 = [&](uint32_t value) { assert(machine.write(base, {reinterpret_cast<const uint8_t*>(&value), 4})); };
+        const auto atomic = [&](uint32_t word, uint64_t x1, uint64_t x2) {
+            machine.cpu.x[1] = x1;
+            machine.cpu.x[2] = x2;
+            run(word);
+        };
+        poke32(5); atomic(0x88a17d42, 5, 9);            // cas w1, w2, [x10]: equal, so stored
+        assert(word32() == 9 && machine.cpu.x[1] == 5);
+        atomic(0x88a17d42, 0xffffffff00000007, 1);       // not equal: memory stays, w1 gets what is there
+        assert(word32() == 9 && machine.cpu.x[1] == 9);
+        poke32(40); atomic(0xb8210142, 2, 0);            // ldadd w1, w2, [x10]
+        assert(word32() == 42 && machine.cpu.x[2] == 40);
+        poke32(0xff); atomic(0xb8211142, 0x0f, 0);       // ldclr
+        assert(word32() == 0xf0 && machine.cpu.x[2] == 0xff);
+        poke32(0xf0); atomic(0xb8212142, 0xff, 0);       // ldeor
+        assert(word32() == 0x0f);
+        poke32(0x10); atomic(0xb8213142, 0x01, 0);       // ldset
+        assert(word32() == 0x11);
+        poke32(uint32_t(-5)); atomic(0xb8214142, 3, 0);  // ldsmax: 3 is more than -5
+        assert(word32() == 3 && machine.cpu.x[2] == uint32_t(-5));
+        poke32(uint32_t(-5)); atomic(0xb8215142, 3, 0);  // ldsmin
+        assert(word32() == uint32_t(-5));
+        poke32(uint32_t(-5)); atomic(0xb8216142, 3, 0);  // ldumax: as unsigned, -5 is the larger
+        assert(word32() == uint32_t(-5));
+        poke32(uint32_t(-5)); atomic(0xb8217142, 3, 0);  // ldumin
+        assert(word32() == 3);
+        poke32(77); atomic(0xb8218142, 99, 0);           // swp
+        assert(word32() == 99 && machine.cpu.x[2] == 77);
+        poke32(0x11223344); atomic(0x38213142, 0x80, 0); // ldsetb: one byte only
+        assert(word32() == 0x112233c4 && machine.cpu.x[2] == 0x44);
+        poke32(1); atomic(0xb8e1015f, 1, 0);             // ldaddal w1, wzr, [x10]: the old value is dropped
+        assert(word32() == 2);
+        for (unsigned i = 0; i < 64; ++i) data[i] = uint8_t(0x11 * (i % 15 + 1) + i);
+        assert(machine.write(base, std::span(data).first(64)));
         // SRI: Go's ChaCha8 rotates with SHL and SRI.
         const auto set32 = [&](unsigned vector, uint32_t value) {
             for (unsigned index = 0; index < 4; ++index) std::memcpy(machine.cpu.v[vector].data() + index * 4, &value, 4);
