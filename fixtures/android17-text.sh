@@ -48,8 +48,6 @@ while true; do
         ;;
     text)
         now=$(/system/bin/toybox date +%s)000
-        # The tool prints a SecurityException after the row is in: the provider then tries to change
-        # an app-op as the phone UID, which nothing here lets it do. The message is stored all the same.
         content insert --uri content://sms/inbox \
             --bind address:s:"$sender" --bind body:s:"$text" --bind date:l:"$now" \
             --bind read:i:0 --bind seen:i:0 --bind type:i:1 > /dev/null 2>&1

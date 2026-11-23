@@ -977,8 +977,10 @@ service nestvane-trim /system/bin/sh /system/etc/nestvane/trim.sh
                 smokeActivityOpened = true;
             if (!progress) return;
             // NESTVANE_LOG_ALL=1 passes every line on, for finding what a boot waits for.
-            if (static const bool all = std::getenv("NESTVANE_LOG_ALL"); all) {
-                progress(message.substr(0, message.find('\n')));
+            // NESTVANE_LOG_ALL=full keeps the lines after the first too: the stack under an exception.
+            if (static const char* const all = std::getenv("NESTVANE_LOG_ALL"); all) {
+                static const bool whole = std::string_view(all) == "full";
+                progress(whole ? message.substr(0, 256 * 1024) : message.substr(0, message.find('\n')));
                 return;
             }
             // NESTVANE_LOG_MATCH=<part>,<part>... passes on the lines that have one of the parts, when

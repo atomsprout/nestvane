@@ -27,4 +27,5 @@ if [[ -f "$root/system/bin/cmd" ]]; then
     cp fixtures/android17-text.sh "$root/system/etc/nestvane/text.sh"
     cp fixtures/android17-sms.sh "$root/system/etc/nestvane/sms.sh"
     tools/build-sms-broadcast.sh "$root"
+    tools/build-phone-permissions.sh "$root"
 fi

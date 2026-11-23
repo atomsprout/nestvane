@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A package without code that brings one permission to the phone UID. The SMS provider runs as
+     that UID and, on every write, gives the default SMS app back whatever exclusive app-op it has
+     lost. On a phone the telephony app, which shares the UID, holds the permission that takes; this
+     image has no telephony app, so each write ended in a SecurityException. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.atomsprout.nestvane.phonepermissions"
+    android:sharedUserId="android.uid.phone"
+    android:versionCode="1"
+    android:versionName="1">
+    <uses-permission android:name="android.permission.MANAGE_APP_OPS_MODES" />
+    <application android:hasCode="false" android:label="Nestvane phone permissions" />
+</manifest>
