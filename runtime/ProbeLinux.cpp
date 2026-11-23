@@ -12013,8 +12013,13 @@ bool ProbeLinux::syscall(Machine& machine) {
             break;
         }
         case 226: // mprotect
-            x[0] = protect(machine, x[0], x[1], x[2], memoryLimit,
-                           current->process->mdwe & mdweRefuseExecGain, anonymousBudget);
+            // A process that asked for memory never to gain execute permission (PR_SET_MDWE) is not
+            // held to it here. Zygote asks for every app, and Android lifts it for an app whose own
+            // libraries are laid out for 4 KiB pages: the linker reads such a library into memory
+            // it then has to make executable. Here every app is loaded that way when it has to be
+            // (bionic.linker.16kb.app_compat.enabled), and zygote does not know. Guest code that
+            // gains execute permission is interpreted, never run by the processor directly.
+            x[0] = protect(machine, x[0], x[1], x[2], memoryLimit, false, anonymousBudget);
             break;
         case 227: { // msync
             const auto length = x[1] <= maxReservation ? pageAlignedLength(x[1]) : UINT64_MAX;

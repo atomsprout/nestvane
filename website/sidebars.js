@@ -18,7 +18,7 @@ const sidebars = {
       type: 'category',
       label: 'The project',
       collapsed: false,
-      items: ['status', 'measurements', 'comparison'],
+      items: ['status', 'measurements', 'compatibility', 'comparison'],
     },
   ],
 };

@@ -11,6 +11,8 @@
 # "rate", frames a second: the most frames a second apps are to draw, which the app lowers while
 # the phone is hot. The display keeps its rate; Android draws every second or fourth frame. 0 puts
 # back what the system image sets.
+#
+# "launch", package name: opens that app, as tapping its icon does. The app's tests use it.
 
 # Android's content tool, without its wrapper script: the guest root has no app_process link.
 content() {
@@ -19,6 +21,10 @@ content() {
 
 # The provider drops what an app that is not the default SMS app writes, unless this is allowed.
 /system/bin/cmd appops set com.android.shell WRITE_SMS allow
+
+# The emulator's system image has USB debugging on. Nothing can reach it here, and its daemon
+# reconnects to the framework every five seconds for as long as it is on.
+/system/bin/cmd settings put global adb_enabled 0 > /dev/null 2>&1
 
 while true; do
     { IFS= read -r kind && IFS= read -r sender && IFS= read -r text; } < /dev/nestvane-text || exit 1
@@ -29,6 +35,16 @@ while true; do
         else
             /system/bin/cmd settings delete system peak_refresh_rate > /dev/null 2>&1
         fi
+        ;;
+    launch)
+        activity=$(/system/bin/cmd package resolve-activity --brief -c android.intent.category.LAUNCHER "$sender" 2> /dev/null | /system/bin/toybox tail -n 1)
+        /system/bin/toybox log -t Nestvane "launch $sender: $activity"
+        case "$activity" in
+        # With the action and the category of a launcher's tap: a start by name alone is refused
+        # for an activity whose filter it does not match.
+        */*) /system/bin/cmd activity start-activity -a android.intent.action.MAIN \
+                 -c android.intent.category.LAUNCHER -n "$activity" > /dev/null 2>&1 ;;
+        esac
         ;;
     text)
         now=$(/system/bin/toybox date +%s)000

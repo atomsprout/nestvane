@@ -1571,7 +1571,13 @@ static void FollowGuestAudio() {
                                 NSArray<NSString*>* fields = [tap componentsSeparatedByString:@":"];
                                 if (fields.count != 4) continue;
                                 const int32_t x = axis * fields[0].intValue / 1000, y = axis * fields[1].intValue / 1000;
-                                if ([fields[0] isEqualToString:@"back"]) {
+                                if ([fields[0] isEqualToString:@"launch"]) {
+                                    // "launch:<package>:0:wait" opens that app without finding its icon.
+                                    if (apkInbox) apkInbox->submitLaunch(fields[1].UTF8String);
+                                } else if ([fields[0] isEqualToString:@"home"]) {
+                                    // "home:0:0:wait" presses Android's Home key.
+                                    device->press(nestvane::GuestTouch::Key::home);
+                                } else if ([fields[0] isEqualToString:@"back"]) {
                                     // "back:0:0:wait" presses Android's Back key instead.
                                     device->press(nestvane::GuestTouch::Key::back);
                                 } else if ([fields[0] isEqualToString:@"up"]) {

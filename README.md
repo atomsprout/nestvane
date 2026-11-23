@@ -104,7 +104,7 @@ Read more in the documentation:
 - [Devices](docs/devices.md) — graphics, storage, network and sound
 - [Design notes](docs/design-notes.md) — decisions, and the problems that taught the most
 - [Building](docs/building.md) and [Status](docs/status.md)
-- [Installing the release](docs/installing.md), [Nestvane in numbers](docs/measurements.md), and
+- [Installing the release](docs/installing.md), [Nestvane in numbers](docs/measurements.md), [apps that were tried](docs/compatibility.md), and
   [Nestvane, Twoyi and Andarium](docs/comparison.md)
 - [How it was built in four days](https://atomsprout.com/nestvane/blog/android-17-inside-an-iphone-app/), on the blog
 

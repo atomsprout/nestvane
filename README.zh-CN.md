@@ -98,7 +98,7 @@ Nestvane 走的是剩下的那条路：**把 Android 重新构建并提前翻译
 - [设备](docs/zh-CN/devices.md)——图形、存储、网络和声音
 - [设计笔记](docs/zh-CN/design-notes.md)——做过的取舍，和最有教益的那些问题
 - [构建](docs/zh-CN/building.md)与[现状](docs/zh-CN/status.md)
-- [安装发布版](docs/zh-CN/installing.md)、[数字里的 Nestvane](docs/zh-CN/measurements.md)、
+- [安装发布版](docs/zh-CN/installing.md)、[数字里的 Nestvane](docs/zh-CN/measurements.md)、[试过的应用](docs/zh-CN/compatibility.md)、
   [Nestvane、两仪和 Andarium](docs/zh-CN/comparison.md)
 - [四天是怎么做出来的](https://atomsprout.com/nestvane/blog/android-17-inside-an-iphone-app/)（博客，英文）
 

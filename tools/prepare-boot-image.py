@@ -621,6 +621,11 @@ def make_framework_root(base, image, guest, defer_zygote_preload, hardware_timeo
     set_property(system_properties, "dalvik.vm.usejit", "false")
     # The guest is one app's window on a phone that has a lock screen of its own.
     set_property(system_properties, "ro.lockscreen.disable.default", "true")
+    # The guest's pages are the iPhone's, 16 KiB. Most apps' own libraries are still laid out for
+    # 4 KiB pages, and the linker refuses them unless it is told to load them the compatible way.
+    set_property(system_properties, "bionic.linker.16kb.app_compat.enabled", "true")
+    # Nothing can reach the guest's adbd, and left on it reconnects to the framework every five seconds.
+    set_property(system_properties, "persist.sys.usb.config", "none")
     # SurfaceFlinger compiles a hundred shaders ahead of use while the boot waits for it: 3.9 s on
     # an iPhone 15 Pro. Each is compiled when it is first drawn with instead.
     set_property(system_properties, "service.sf.prime_shader_cache", "0")

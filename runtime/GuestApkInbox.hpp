@@ -71,6 +71,7 @@ public:
     // it received. Nothing is sent anywhere: the guest has no phone process and no radio.
     // "rate", frames a second, nothing: the most frames a second apps are to draw, lowered while
     // the phone is hot; 0 lifts it again.
+    // "launch", package name, nothing: opens that app, as tapping its icon does. For tests.
     static constexpr std::string_view textDevice = "/dev/nestvane-text";
     static constexpr std::string_view textReader = "/system/bin/sh";
     bool submitText(std::string_view sender, std::string_view text) {
@@ -98,6 +99,15 @@ public:
         if (broadcasts.empty()) return false;
         message = std::move(broadcasts.front());
         broadcasts.erase(broadcasts.begin());
+        return true;
+    }
+    bool submitLaunch(std::string_view package) {
+        std::lock_guard lock(mutex);
+        if (stopped || texts.size() >= 16 || package.empty() || package.size() > 200) return false;
+        for (const char c : package)
+            if (!(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z') && !(c >= '0' && c <= '9') && c != '.' && c != '_') return false;
+        const auto message = "launch\n" + std::string(package) + "\n\n";
+        texts.emplace_back(message.begin(), message.end());
         return true;
     }
     bool submitDisplayRate(int framesPerSecond) {
