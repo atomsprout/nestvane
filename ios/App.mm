@@ -204,6 +204,52 @@ static NSInteger GuestDisplayRate() {
     return std::min<NSInteger>(screen, [NSUserDefaults.standardUserDefaults boolForKey:Display120HzKey] ? 120 : 60);
 }
 
+// The update notice. Once a day the app asks GitHub for the tag of the latest release and remembers it;
+// when that is a later version than this one, the start screen says so and Settings links to it. The
+// app installs nothing itself. "Check for updates" in Settings turns the question off.
+// NESTVANE_TEST_UPDATE=<version> asks at once and compares as if the app were that version.
+static NSString* const UpdateCheckKey = @"UpdateCheck";
+static NSString* const UpdateLatestKey = @"UpdateLatestVersion";
+static NSString* const UpdateAskedKey = @"UpdateAskedAt";
+static NSString* const UpdateReleaseAddress = @"https://github.com/atomsprout/nestvane/releases/latest";
+static NSString* AvailableUpdate() {
+    NSUserDefaults* defaults = NSUserDefaults.standardUserDefaults;
+    NSString* latest = [defaults stringForKey:UpdateLatestKey];
+    NSString* current = NSProcessInfo.processInfo.environment[@"NESTVANE_TEST_UPDATE"]
+        ?: NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"];
+    if (![defaults boolForKey:UpdateCheckKey] || !latest.length || !current.length) return nil;
+    return [latest compare:current options:NSNumericSearch] == NSOrderedDescending ? latest : nil;
+}
+static void AskForUpdate(void (^found)(NSString* version)) {
+    NSUserDefaults* defaults = NSUserDefaults.standardUserDefaults;
+    [defaults registerDefaults:@{UpdateCheckKey: @YES}];
+    const BOOL test = NSProcessInfo.processInfo.environment[@"NESTVANE_TEST_UPDATE"] != nil;
+    const NSTimeInterval now = NSDate.date.timeIntervalSince1970, asked = [defaults doubleForKey:UpdateAskedKey];
+    if (![defaults boolForKey:UpdateCheckKey]) return;
+    if (!test && asked > 0 && now - asked < 24 * 3600 && now >= asked) {
+        if (NSString* version = AvailableUpdate()) found(version);
+        return;
+    }
+    NSMutableURLRequest* request = [NSMutableURLRequest requestWithURL:
+        [NSURL URLWithString:@"https://api.github.com/repos/atomsprout/nestvane/releases/latest"]
+        cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:15];
+    [request setValue:@"application/vnd.github+json" forHTTPHeaderField:@"Accept"];
+    [[NSURLSession.sharedSession dataTaskWithRequest:request completionHandler:^(NSData* data, NSURLResponse* response, NSError*) {
+        NSDictionary* release = data && static_cast<NSHTTPURLResponse*>(response).statusCode == 200
+            ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+        NSString* tag = [release isKindOfClass:NSDictionary.class] ? release[@"tag_name"] : nil;
+        if (![tag isKindOfClass:NSString.class] || tag.length < 2 || tag.length > 32) return;  // asked again at the next launch
+        if ([tag hasPrefix:@"v"]) tag = [tag substringFromIndex:1];
+        // A version is digits and dots: nothing else from the network is shown or stored.
+        if ([tag rangeOfCharacterFromSet:[NSCharacterSet characterSetWithCharactersInString:@"0123456789."].invertedSet].location != NSNotFound) return;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [defaults setObject:tag forKey:UpdateLatestKey];
+            [defaults setDouble:now forKey:UpdateAskedKey];
+            if (NSString* version = AvailableUpdate()) found(version);
+        });
+    }] resume];
+}
+
 static NSString* ThermalState() {
     switch (NSProcessInfo.processInfo.thermalState) {
         case NSProcessInfoThermalStateNominal: return @"nominal";
@@ -510,6 +556,11 @@ static void FollowGuestAudio() {
               arrayByAddingObjectsFromArray:[(fast ? @[@{@"symbol": @"gauge.with.dots.needle.67percent", @"title": @"120 Hz",
                                                         @"detail": @"", @"url": @"", @"switch": Display120HzKey}] : @[])
               arrayByAddingObject:row(@"folder", @"Shared files", @"Open in Files", files)]]},
+        @{@"title": @"Updates", @"footer": @"Once a day Nestvane asks GitHub which version is the latest. It does not install anything itself.",
+          @"rows": [(AvailableUpdate() ? @[row(@"arrow.down.circle", [NSString stringWithFormat:@"Version %@ available", AvailableUpdate()],
+                                               @"See the release", UpdateReleaseAddress)] : @[])
+              arrayByAddingObject:@{@"symbol": @"arrow.triangle.2.circlepath", @"title": @"Check for updates",
+                                    @"detail": @"", @"url": @"", @"switch": UpdateCheckKey}]},
         @{@"title": @"Community", @"footer": @"",
           @"rows": @[row(@"globe", @"Website", @"atomsprout.com/nestvane", @"https://atomsprout.com/nestvane/"),
                      row(@"bubble.left.and.bubble.right", @"Discord", @"Join the server", @"https://discord.gg/eGzEaP6TzR"),
@@ -677,6 +728,7 @@ static void FollowGuestAudio() {
                 sheet.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
                 [owner presentViewController:sheet animated:YES completion:nil];
             }];
+            if (NSString* version = AvailableUpdate()) settings.subtitle = [NSString stringWithFormat:@"Version %@ is available", version];
             completion(@[install, settings, power]);
         }]]];
     UIStackView* controls = [[UIStackView alloc] initWithArrangedSubviews:
@@ -779,6 +831,10 @@ static void FollowGuestAudio() {
     [super viewDidAppear:animated];
     if (_started) return;
     _started = YES;
+    __weak ValidationViewController* owner = self;
+    AskForUpdate(^(NSString* version) {
+        [owner showApkStatus:[NSString stringWithFormat:@"Nestvane %@ is available. See Settings.", version] transient:YES];
+    });
     [self runValidation];
 }
 

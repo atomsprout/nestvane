@@ -103,10 +103,10 @@ export const content = {
       ['Source', 'github.com/atomsprout/nestvane', 'https://github.com/atomsprout/nestvane', 'Read the code and the notes on how Nestvane is built.'],
     ],
     privacyTitle: 'Privacy policy',
-    privacyEffective: 'Effective November 21, 2026.',
+    privacyEffective: 'Effective November 22, 2026.',
     privacy: [
       ['What Nestvane collects', 'Nothing. Nestvane has no account, no advertising and no analytics, and it does not send your files, your installed apps or your activity to AtomSprout.'],
-      ['Network', 'When Nestvane starts, it makes one request to Apple’s connectivity check at captive.apple.com so that iOS can ask whether Nestvane may use the network. Android itself checks its connection the way Android devices do, by contacting Google’s connectivity check servers. Everything else on the network is traffic of the Android apps you install, which handle your data under their own privacy policies.'],
+      ['Network', 'When Nestvane starts, it makes one request to Apple’s connectivity check at captive.apple.com so that iOS can ask whether Nestvane may use the network. Once a day, unless you turn it off in Nestvane’s Settings, it asks GitHub (api.github.com) which version of Nestvane is the latest; that request says nothing about you or your device beyond what any web request carries. Android itself checks its connection the way Android devices do, by contacting Google’s connectivity check servers. Everything else on the network is traffic of the Android apps you install, which handle your data under their own privacy policies.'],
       ['Your data', 'Android’s apps and their data are stored inside Nestvane on your iPhone. Shared files are in the Nestvane folder of the Files app. Deleting Nestvane removes all of it.'],
       ['Contact', 'If you email us, we receive your email address and the information you choose to share so we can respond. For privacy questions, email atomsprout@gmail.com.'],
     ],

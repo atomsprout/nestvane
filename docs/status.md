@@ -26,6 +26,7 @@ Unless noted, the build is a development-signed Release build.
 - **Shared storage.** The folder `Documents/Android` is Android's shared storage and is visible in the iOS Files app. A file put there from iOS appears in Android's Files app after Android is restarted.
 - **Persistence.** Installed apps, home-screen widgets and files under `/data` are still there after Android is restarted.
 - **Battery level and time zone** of the phone are shown by Android.
+- **An update notice.** Once a day the app asks GitHub which release is the latest and says so when it is newer; it installs nothing itself, and the question can be turned off in the app's Settings.
 - **Video and sound.** Android's `MediaPlayer` plays a 1280×720 H.264 video with AAC sound: the position advances one second a second, about 30 frames a second are composed (the video has 30), and the sound reaches the phone's output at the level it has in the file. NewPipe opens, lists videos and plays a YouTube live stream with sound. Measured on the samples that arrive at the phone's output; how it sounds has not been judged by ear, and resolutions above 720p have not been measured.
 
 ## What does not work yet
