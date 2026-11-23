@@ -4736,8 +4736,9 @@ bool ProbeLinux::fileCall(Machine& machine) {
                     x[0] = fd;
                     break;
                 }
-                if (path == GuestApkInbox::textDevice && apkInbox) {
-                    if (userId() != 2000 || current->process->context != "u:r:shell:s0" ||
+                if ((path == GuestApkInbox::textDevice || path == GuestApkInbox::broadcastDevice) && apkInbox) {
+                    const bool broadcast = path == GuestApkInbox::broadcastDevice;
+                    if (userId() != (broadcast ? 0u : 2000u) || current->process->context != "u:r:shell:s0" ||
                         current->process->executable != GuestApkInbox::textReader) {
                         x[0] = uint64_t(-13);
                         break;
@@ -4746,7 +4747,7 @@ bool ProbeLinux::fileCall(Machine& machine) {
                     const auto fd = freeDescriptor();
                     if (fd == descriptorCapacity) { x[0] = uint64_t(-24); break; }
                     std::vector<uint8_t> message;
-                    if (!apkInbox->takeText(message)) {
+                    if (!(broadcast ? apkInbox->takeBroadcast(message) : apkInbox->takeText(message))) {
                         if (!(x[2] & 0x800)) return waitForHostEvents();
                         x[0] = uint64_t(-11);
                         break;

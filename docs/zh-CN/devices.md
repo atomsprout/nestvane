@@ -140,7 +140,9 @@ App 底栏的返回和主页按钮，作为按键事件经同一个设备送入�
 客体里没有电话进程，也没有射频服务，短信不可能像在手机上那样到达。
 App 的 *Send Text Message…* 把发件人和文字排进队列（[`runtime/GuestApkInbox.hpp`](../../runtime/GuestApkInbox.hpp)）；开机后启动的一个客体服务（[`fixtures/android17-text.sh`](../../fixtures/android17-text.sh)）从 `/dev/nestvane-text` 读取，没有消息时这个设备会等待；它用 Android 的 `content` 工具往短信数据库写一行，再发一条通知。
 为此镜像带上了短信数据库（TelephonyProvider）和 Messaging 应用；数据库运行在名为 `com.android.phone` 的进程里，那不是电话应用。
-等待“收到短信”广播的应用看不到这样的短信。
+另一个服务为同一条短信发出 `SMS_RECEIVED` 广播（[`fixtures/android17-sms.sh`](../../fixtures/android17-sms.sh)），等短信的应用因此能收到；它以 root 运行，因为只有系统能发这条广播。
+短信在广播里以网络本该送来的 PDU 形式携带，由 [`tools/sms-broadcast/SmsBroadcast.java`](../../tools/sms-broadcast/SmsBroadcast.java) 生成：UCS-2 编码，超过 70 个字符时按每段 67 个字符拆开。
+写成号码的发件人到达时只剩数字，不带空格和连字符。
 
 **安装应用。**
 用 App 打开的 `.apk` 文件（来自“文件”、隔空投送或分享菜单），或者用 App 菜单里、主屏幕图标上的 Install APK… 选中的文件，会被复制到一个收件箱（[`runtime/GuestApkInbox.hpp`](../../runtime/GuestApkInbox.hpp)）。

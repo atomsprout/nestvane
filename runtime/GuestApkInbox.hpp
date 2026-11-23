@@ -83,6 +83,21 @@ public:
         if (stopped || texts.size() >= 16 || sender.empty() || text.empty()) return false;
         const auto message = "text\n" + line(sender) + "\n" + line(text) + "\n";
         texts.emplace_back(message.begin(), message.end());
+        if (broadcasts.size() < 16) {
+            const auto announced = line(sender) + "\n" + line(text) + "\n";
+            broadcasts.emplace_back(announced.begin(), announced.end());
+        }
+        return true;
+    }
+    // The same message once more, "sender\ntext\n", for the service that tells Android's apps a
+    // message arrived (sms.sh in DynamicProbe.cpp). Only the system may send that broadcast, so it
+    // is a service of its own, running as root, with a device of its own.
+    static constexpr std::string_view broadcastDevice = "/dev/nestvane-sms";
+    bool takeBroadcast(std::vector<uint8_t>& message) {
+        std::lock_guard lock(mutex);
+        if (broadcasts.empty()) return false;
+        message = std::move(broadcasts.front());
+        broadcasts.erase(broadcasts.begin());
         return true;
     }
     bool submitDisplayRate(int framesPerSecond) {
@@ -117,6 +132,7 @@ private:
     std::shared_ptr<Request> pending;
     std::weak_ptr<Request> active;
     std::vector<std::vector<uint8_t>> texts;
+    std::vector<std::vector<uint8_t>> broadcasts;
     bool stopped = false;
 };
 

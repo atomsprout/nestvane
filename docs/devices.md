@@ -140,7 +140,9 @@ The Back and Home buttons in the app's bar are sent as key events through the sa
 The guest has no phone process and no radio service, so no message can arrive the way it does on a phone.
 The app's *Send Text Message…* queues a sender and a text ([`runtime/GuestApkInbox.hpp`](../runtime/GuestApkInbox.hpp)); a guest service started after boot ([`fixtures/android17-text.sh`](../fixtures/android17-text.sh)) reads them from `/dev/nestvane-text`, which waits while there is none, writes a row into the SMS provider with Android's `content` tool, and posts a notification.
 The image carries the telephony provider and the Messaging app for this; the provider runs in a process named `com.android.phone`, which is not the phone app.
-Apps that wait for the incoming-SMS broadcast do not see such a message.
+A second service, running as root because only the system may send it ([`fixtures/android17-sms.sh`](../fixtures/android17-sms.sh)), sends the `SMS_RECEIVED` broadcast for the same message, so apps that wait for an incoming SMS receive it.
+The message travels in it as the PDUs a network would have delivered, built by [`tools/sms-broadcast/SmsBroadcast.java`](../tools/sms-broadcast/SmsBroadcast.java): UCS-2, in parts of 67 characters when it is longer than 70.
+A sender written as a number arrives as its digits alone, without spaces or hyphens.
 
 **Installing apps.**
 An `.apk` file opened with the app (from Files, AirDrop or a share sheet), or picked with Install APK… in the app's menu or on its home-screen icon, is copied into an inbox ([`runtime/GuestApkInbox.hpp`](../runtime/GuestApkInbox.hpp)).
