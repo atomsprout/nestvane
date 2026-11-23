@@ -128,7 +128,7 @@ On an iPhone 15 Pro unless noted. The running record, with every measurement, is
 
 - iOS 17 or later, on an iPhone with at least 6 GB of memory. Tested on iPhone 14 (iOS 17), iPhone 15 Pro and iPhone 17 Pro.
 - Android needs about 2.3–2.6 GB of memory, more than an iPhone 11 gives one app.
-- The newer the phone, the faster it runs: Android starts in about 7 seconds on an iPhone 17 Pro and in 12 to 20 on an iPhone 14.
+- The newer the phone, the faster it runs: Android starts in about 7 seconds on an iPhone 17 Pro, about 8 on an iPhone 15 Pro, and 12 to 20 on an iPhone 14.
 - The [releases](https://github.com/atomsprout/nestvane/releases) carry an IPA with no signature. You sign it
   with your own Apple developer identity; [docs/installing.md](docs/installing.md) says how, and which
   sideloading tools there are. Nestvane is not on the App Store.

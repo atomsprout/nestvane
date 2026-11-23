@@ -11,7 +11,7 @@ You sign it with your own Apple developer identity first. This page says how, an
 - An iPhone with iOS 17 or later and at least 6 GB of memory. Tested on iPhone 14 (6 GB, iOS 17.3), iPhone 15 Pro and
   iPhone 17 Pro (8 and 12 GB). Android's footprint is about 2.3 to 2.7 GB; an iPhone 11, whose limit for one app is
   about 2.3 GB, cannot hold it.
-- The newer the phone, the faster Android runs: it starts in about 7 seconds on an iPhone 17 Pro and in 12 to 20 on an iPhone 14.
+- The newer the phone, the faster Android runs: it starts in about 7 seconds on an iPhone 17 Pro, about 8 on an iPhone 15 Pro, and 12 to 20 on an iPhone 14.
 - About 4 GB of free storage. The IPA is about 1.1 GB and the installed app about 3.2 GB.
 - A Mac with Xcode, an Apple developer identity, and a provisioning profile for your device whose App ID has two
   capabilities: **Extended Virtual Addressing** and **Increased Memory Limit**. Without the first the app has about

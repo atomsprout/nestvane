@@ -121,7 +121,7 @@ Nestvane 走的是剩下的那条路：**把 Android 重新构建并提前翻译
 
 - iOS 17 及以上，内存不少于 6 GB 的 iPhone。在 iPhone 14（iOS 17）、iPhone 15 Pro 和 iPhone 17 Pro 上测试过。
 - Android 需要约 2.3–2.6 GB 内存，超过 iPhone 11 给单个 App 的上限。
-- 手机越新跑得越快：iPhone 17 Pro 上开机约 7 秒，iPhone 14 上 12–20 秒。
+- 手机越新跑得越快：iPhone 17 Pro 上开机约 7 秒，iPhone 15 Pro 上约 8 秒，iPhone 14 上 12–20 秒。
 - [Releases](https://github.com/atomsprout/nestvane/releases) 里有一个不带签名的 IPA，需要用你自己的 Apple 开发者身份签名，
   做法和可用的侧载工具见 [docs/zh-CN/installing.md](docs/zh-CN/installing.md)。Nestvane 没有上架 App Store。
 - **需要付费的 Apple Developer Program 会员（每年 99 美元）。** App 签名时必须带上两项能力：Extended Virtual Addressing
