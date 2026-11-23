@@ -29,13 +29,22 @@ channel, and a frame was saved 15 to 18 seconds later.
 | Tasks | 15.14 | 4 | Opens |
 | Termux | from F-Droid, build 1002 | 2 | Opens, and asks for a permission |
 | Wikipedia | r/50616 | 4 | Opens; search and the home feed work. Articles do not: they need a WebView |
-| DuckDuckGo | 5.301.1 | 10 | **Stops Android.** Nothing is drawn any more until Android is restarted |
-| Feeder | from F-Droid, build 4191 | 2 | **Stops Android**, a moment after its first screen is drawn |
+| DuckDuckGo | 5.301.1 | 10 | Does not open: it is a browser and needs a WebView. In 1.3 it stopped Android: see below |
+| Feeder | from F-Droid, build 4191 | 2 | Opens. In 1.3 it stopped Android: see below |
 
-Twenty of the twenty-two open. The two that stop Android both bring a library written in Go (`libwg-go.so`,
-`libgojni.so`); no other app in the list does. That is the only thing known about the cause. Until it is found,
-an app with a Go library should be expected to do the same. *Stop Android* in the More menu, then *Start Android*,
-brings Android back; the app that caused it stays installed.
+Twenty-one of the twenty-two open.
+
+## What changed after 1.3
+
+**Apps that stopped Android.** DuckDuckGo and Feeder each bring a library written in Go, and in 1.3 opening
+either one stopped Android: nothing was drawn any more. The interpreter that runs apps' own libraries had met an
+instruction it does not have, and that ended the whole run. Two things changed. An instruction the interpreter
+does not have now ends only the app that met it, with the signal a processor without the instruction would
+raise. And the instructions themselves were added: the ones Go's libraries use, and about forty more vector
+instructions that the libraries of the apps in this list contain. Each is run on a Mac's processor and in the
+interpreter with the same operands, and the results compared (`tools/validate-vector-instructions.cpp`).
+Tried on an iPhone 14 with iOS 17.3.1: Feeder opens and stays open; DuckDuckGo ends by itself, for want of a
+WebView, and Android goes on.
 
 ## What changed in 1.3
 
@@ -50,7 +59,6 @@ the kernel layer no longer refuses memory that gains execute permission, which t
 - **No WebView.** An app that shows a web page inside itself says that Android System WebView is being updated.
 - **Native libraries are interpreted,** at about forty million instructions a second. An app that does real work
   in its own library is slow.
-- **Go libraries stop Android,** as above.
 - **No Google Play services.** Apps that need them were not tried.
 
 Not in the list: VLC, because the APK at hand was built for x86 only and cannot run on a phone.

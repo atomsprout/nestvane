@@ -267,7 +267,8 @@ bool memory(Machine& machine, uint32_t word) {
         }
         return true;
     }
-    if ((word & 0x3fe07c00) == 0x08007c00) {
+    // The second register field of a store-exclusive should be all ones, and Go's assembler leaves it zero.
+    if ((word & 0x3fe00000) == 0x08000000) {
         const unsigned rs = (word >> 16) & 31;
         const bool matched = cpu.exclusiveSize == size && cpu.exclusiveAddress == machine.dataAddress(base);
         cpu.exclusiveSize = 0;
@@ -445,6 +446,186 @@ Float roundToNearestEven(CPU& cpu, Float value) {
     const bool increment = fraction > Float{0.5} ||
         (fraction == Float{0.5} && std::fmod(integral, Float{2}) != 0);
     return std::copysign(integral + increment, value);
+}
+
+// More of the vector instructions: the ones that apps' own libraries were found to use and the
+// interpreter did not have (tools/validate-vector-instructions.cpp runs each against the processor).
+// The result goes to |result|; false when the instruction is not one of these.
+bool moreVector(CPU& cpu, uint32_t word, std::array<uint8_t, 16>& result) {
+    const unsigned rd = word & 31, rn = (word >> 5) & 31, rm = (word >> 16) & 31;
+    const auto& first = cpu.v[rn];
+    const auto& second = cpu.v[rm];
+    const unsigned width = word & 0x40000000 ? 16 : 8;
+    const bool isUnsigned = word & 0x20000000;
+    const unsigned size = 1U << ((word >> 22) & 3), bits = size * 8;
+    using Wide = __int128;
+    const auto get = [](const std::array<uint8_t, 16>& vector, unsigned index, unsigned laneSize, bool asSigned) -> Wide {
+        const uint64_t raw = lane(vector, index, laneSize);
+        return asSigned ? Wide(int64_t(sx(raw, laneSize * 8))) : Wide(raw);
+    };
+    // The value held to what a lane of |laneBits| can hold, with the sticky flag set when it could not.
+    const auto saturate = [&](Wide value, unsigned laneBits, bool toUnsigned) -> uint64_t {
+        const Wide low = toUnsigned ? 0 : -(Wide(1) << (laneBits - 1));
+        const Wide high = toUnsigned ? (Wide(1) << laneBits) - 1 : (Wide(1) << (laneBits - 1)) - 1;
+        if (value < low) { cpu.fpsr |= fpsrSaturation; value = low; }
+        if (value > high) { cpu.fpsr |= fpsrSaturation; value = high; }
+        return uint64_t(value);
+    };
+    // A shift by a signed count, left when it is positive: what SSHL and its relatives do.
+    const auto shiftBy = [&](Wide value, int count, bool round, bool saturating, bool toUnsigned) -> uint64_t {
+        if (count >= 0) {
+            if (!saturating) return count >= int(bits) ? 0 : uint64_t(value << count);
+            if (count >= int(bits)) return value ? saturate(value > 0 ? Wide(1) << 100 : -(Wide(1) << 100), bits, toUnsigned) : 0;
+            return saturate(value << count, bits, toUnsigned);
+        }
+        const unsigned right = unsigned(-count);
+        Wide shifted;
+        if (right > bits) shifted = round ? 0 : (value < 0 ? -1 : 0);
+        else shifted = (value + (round ? Wide(1) << (right - 1) : 0)) >> right;
+        return saturating ? saturate(shifted, bits, toUnsigned) : uint64_t(shifted);
+    };
+
+    if ((word & 0xff20fc00) == 0x5e208400 || (word & 0xff20fc00) == 0x7e208400) { // ADD, SUB of two D registers.
+        if (size != 8) return false;
+        const uint64_t a = lane(first, 0, 8), b = lane(second, 0, 8);
+        setLane(result, 0, 8, word & 0x20000000 ? a - b : a + b);
+        return true;
+    }
+    if ((word & 0x9f200400) == 0x0e200400) { // Three registers of the same kind.
+        const unsigned opcode = (word >> 11) & 31;
+        const bool asSigned = !isUnsigned;
+        for (unsigned i = 0; i < width / size; ++i) {
+            const Wide a = get(first, i, size, asSigned), b = get(second, i, size, asSigned);
+            uint64_t value;
+            switch (opcode) {
+                case 0x00: if (size == 8) return false; value = uint64_t((a + b) >> 1); break;      // SHADD, UHADD
+                case 0x01: value = saturate(a + b, bits, isUnsigned); break;                         // SQADD, UQADD
+                case 0x02: if (size == 8) return false; value = uint64_t((a + b + 1) >> 1); break;  // SRHADD, URHADD
+                case 0x04: if (size == 8) return false; value = uint64_t((a - b) >> 1); break;      // SHSUB, UHSUB
+                case 0x05: value = saturate(a - b, bits, isUnsigned); break;                         // SQSUB, UQSUB
+                case 0x09: case 0x0a: case 0x0b: {                                                   // SQSHL, SRSHL, SQRSHL and unsigned
+                    const int count = int8_t(lane(second, i, 1 * size) & 0xff);
+                    value = shiftBy(a, count, opcode != 0x09, opcode != 0x0a, isUnsigned);
+                    break;
+                }
+                case 0x16: {                                                                          // SQDMULH, SQRDMULH
+                    if (size != 2 && size != 4) return false;
+                    const Wide x = get(first, i, size, true), y = get(second, i, size, true);
+                    value = saturate((2 * x * y + (isUnsigned ? Wide(1) << (bits - 1) : 0)) >> bits, bits, false);
+                    break;
+                }
+                default: return false;
+            }
+            setLane(result, i, size, value);
+        }
+        return true;
+    }
+    if ((word & 0xbf20f400) == 0x2e008400) { // SQRDMLAH, SQRDMLSH.
+        if (size != 2 && size != 4) return false;
+        const bool subtract = word & 0x800;
+        for (unsigned i = 0; i < width / size; ++i) {
+            const Wide accumulator = get(cpu.v[rd], i, size, true) << bits;
+            const Wide product = 2 * get(first, i, size, true) * get(second, i, size, true);
+            const Wide sum = (subtract ? accumulator - product : accumulator + product) + (Wide(1) << (bits - 1));
+            setLane(result, i, size, saturate(sum >> bits, bits, false));
+        }
+        return true;
+    }
+    if ((word & 0x9f3e0c00) == 0x0e200800) { // Two registers.
+        const unsigned opcode = (word >> 12) & 31;
+        if (opcode == 0x01 && !isUnsigned && size == 1) { // REV16
+            for (unsigned i = 0; i < width; i += 2) { result[i] = first[i + 1]; result[i + 1] = first[i]; }
+            return true;
+        }
+        if (opcode == 0x03) { // SUQADD, USQADD: the other operand is of the other signedness.
+            for (unsigned i = 0; i < width / size; ++i)
+                setLane(result, i, size, saturate(get(cpu.v[rd], i, size, !isUnsigned) + get(first, i, size, isUnsigned), bits, isUnsigned));
+            return true;
+        }
+        if (opcode == 0x07) { // SQABS, SQNEG
+            for (unsigned i = 0; i < width / size; ++i) {
+                const Wide value = get(first, i, size, true);
+                setLane(result, i, size, saturate(isUnsigned || value < 0 ? -value : value, bits, false));
+            }
+            return true;
+        }
+        if (opcode == 0x14 || (opcode == 0x12 && isUnsigned)) { // SQXTN, UQXTN, SQXTUN, and the upper-half forms.
+            if (size == 8) return false;
+            const unsigned count = 8 / size, start = width == 16 ? count : 0;
+            if (start) result = cpu.v[rd];
+            const bool sourceSigned = opcode == 0x12 || !isUnsigned;
+            for (unsigned i = 0; i < count; ++i)
+                setLane(result, start + i, size, saturate(get(first, i, size * 2, sourceSigned), bits, isUnsigned));
+            if (!start) std::fill(result.begin() + 8, result.end(), uint8_t{0});
+            return true;
+        }
+        if (opcode == 0x16 && !isUnsigned) { // FCVTN and its upper-half form.
+            const bool fromDouble = word & 0x400000;
+            const unsigned narrow = fromDouble ? 4 : 2, count = 8 / narrow, start = width == 16 ? count : 0;
+            if (start) result = cpu.v[rd];
+            for (unsigned i = 0; i < count; ++i) {
+                if (fromDouble) {
+                    const float value = float(std::bit_cast<double>(lane(first, i, 8)));
+                    setLane(result, start + i, 4, std::bit_cast<uint32_t>(value));
+                } else {
+                    const _Float16 value = _Float16(std::bit_cast<float>(uint32_t(lane(first, i, 4))));
+                    setLane(result, start + i, 2, std::bit_cast<uint16_t>(value));
+                }
+            }
+            return true;
+        }
+        if (opcode == 0x1c && !(word & 0x800000)) { // FCVTAS, FCVTAU: to the nearest whole number, halves away from zero.
+            const bool wide = word & 0x400000;
+            if (wide && width == 8) return false;
+            const unsigned laneSize = wide ? 8 : 4;
+            for (unsigned i = 0; i < width / laneSize; ++i) {
+                const double value = wide ? std::bit_cast<double>(lane(first, i, 8))
+                                          : double(std::bit_cast<float>(uint32_t(lane(first, i, 4))));
+                uint64_t converted;
+                const double rounded = std::round(value);
+                const double low = isUnsigned ? 0.0 : -std::ldexp(1.0, int(laneSize * 8 - 1));
+                const double high = std::ldexp(1.0, int(laneSize * 8 - (isUnsigned ? 0 : 1)));
+                if (std::isnan(value)) converted = 0;
+                else if (rounded < low) converted = isUnsigned ? 0 : uint64_t(1) << (laneSize * 8 - 1);
+                else if (rounded >= high) converted = isUnsigned ? UINT64_MAX : (uint64_t(1) << (laneSize * 8 - 1)) - 1;
+                else converted = isUnsigned ? uint64_t(rounded) : uint64_t(int64_t(rounded));
+                setLane(result, i, laneSize, converted);
+            }
+            return true;
+        }
+        return false;
+    }
+    if ((word & 0x9f800400) == 0x0f000400) { // Shifts by a number written in the instruction.
+        const unsigned opcode = (word >> 11) & 31;
+        const unsigned immediate = (word >> 16) & 127;
+        if (immediate < 8) return false;
+        const unsigned laneBits = std::bit_floor(immediate), laneSize = laneBits / 8;
+        if (opcode >= 0x10 && opcode <= 0x13) { // The narrowing ones that hold the result to what fits.
+            // 0x10 SQSHRUN, 0x11 SQRSHRUN (signed in, unsigned out, with U set); 0x12 and 0x13 with U set: UQSHRN, UQRSHRN.
+            if (!isUnsigned || laneBits == 64) return false;
+            const bool sourceSigned = opcode < 0x12, round = opcode & 1;
+            const unsigned count = 8 / laneSize, start = width == 16 ? count : 0;
+            const unsigned right = 2 * laneBits - immediate;
+            if (start) result = cpu.v[rd];
+            for (unsigned i = 0; i < count; ++i) {
+                const Wide value = get(first, i, laneSize * 2, sourceSigned);
+                const Wide shifted = (value + (round ? Wide(1) << (right - 1) : 0)) >> right;
+                setLane(result, start + i, laneSize, saturate(shifted, laneBits, true));
+            }
+            if (!start) std::fill(result.begin() + 8, result.end(), uint8_t{0});
+            return true;
+        }
+        if (opcode == 0x0e || (opcode == 0x0c && isUnsigned)) { // SQSHL, UQSHL, SQSHLU by a number.
+            if (laneBits == 64 && width == 8) return false;
+            const unsigned left = immediate - laneBits;
+            const bool sourceSigned = opcode == 0x0c || !isUnsigned;
+            for (unsigned i = 0; i < width / laneSize; ++i)
+                setLane(result, i, laneSize, saturate(get(first, i, laneSize, sourceSigned) << left, laneBits, isUnsigned));
+            return true;
+        }
+        return false;
+    }
+    return false;
 }
 
 bool vectorArithmetic(CPU& cpu, uint32_t word) {
@@ -774,6 +955,13 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
         for (unsigned i = 0; i < width; ++i) result[i] = std::popcount(source[i]);
     } else if ((word & 0xfffffc00) == 0x5ef1b800) { // ADDP Dd, Vn.2D.
         setLane(result, 0, 8, lane(source, 0, 8) + lane(source, 1, 8));
+    } else if ((word & 0x9f3ffc00) == 0x0e303800) { // SADDLV, UADDLV: the lanes added up in twice their width.
+        if (size == 8 || (size == 4 && width == 8)) return false;
+        const bool isSigned = !(word & 0x20000000);
+        uint64_t sum = 0;
+        for (unsigned i = 0; i < width / size; ++i)
+            sum += isSigned ? sx(lane(source, i, size), size * 8) : lane(source, i, size);
+        setLane(result, 0, size * 2, sum);
     } else if ((word & 0xbf3ffc00) == 0x0e31b800) { // ADDV.
         if (size == 8 || (size == 4 && width == 8)) return false;
         uint64_t sum = 0;
@@ -1095,6 +1283,20 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
             const auto rounding = round ? (value >> (amount - 1)) & 1 : 0;
             setLane(result, i, size, accumulator + shifted + rounding);
         }
+    } else if ((word & 0xbf80fc00) == 0x2f004400) { // SRI (vector): the source shifted right, the destination's top bits kept.
+        const unsigned immediate = (word >> 16) & 127;
+        if (immediate < 8) return false;
+        const unsigned bits = std::bit_floor(immediate);
+        if (bits == 64 && width == 8) return false;
+        size = bits / 8;
+        const unsigned amount = 2 * bits - immediate;  // 1 to bits
+        const uint64_t all = bits == 64 ? UINT64_MAX : (uint64_t{1} << bits) - 1;
+        const uint64_t inserted = amount == bits ? 0 : all >> amount;
+        for (unsigned i = 0; i < width / size; ++i) {
+            const auto destination = lane(cpu.v[rd], i, size);
+            const auto shifted = amount == bits ? 0 : lane(source, i, size) >> amount;
+            setLane(result, i, size, (destination & ~inserted & all) | (shifted & inserted));
+        }
     } else if ((word & 0xbf80fc00) == 0x2f005400) { // SLI (vector).
         const unsigned immediate = (word >> 16) & 127;
         if (immediate < 8) return false;
@@ -1122,7 +1324,7 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
             const auto extended = widen && !(word & 0x20000000) ? sx(value, bits) : value;
             setLane(result, i, widen ? size * 2 : size, extended << (immediate - bits));
         }
-    } else {
+    } else if (!moreVector(cpu, word, result)) {
         return false;
     }
     cpu.v[rd] = result;
@@ -1414,15 +1616,23 @@ bool vectors(Machine& m, uint32_t word) {
         if (postIndex) put(cpu, rn, base + (rm == 31 ? bytes.size() : reg(cpu, rm)), 64, true);
         return true;
     }
-    if ((word & 0xbf60f000) == 0x0d40c000) { // LD1R for one vector.
+    if ((word & 0xbf40d000) == 0x0d40c000) { // LD1R, LD2R, LD3R, LD4R: one element each, in every lane.
         const unsigned size = 1U << ((word >> 10) & 3);
+        const unsigned count = 1 + ((word >> 21) & 1) + 2 * ((word >> 13) & 1);
         const bool postIndex = word & 0x800000;
         if (!postIndex && rm) return false;
-        if (!vectorTransfer(m, base, rd, size, true)) return true;
-        unsigned width = word & 0x40000000 ? 16 : 8;
-        uint64_t value = lane(cpu.v[rd], 0, size);
-        for (unsigned i = 1; i < width / size; ++i) setLane(cpu.v[rd], i, size, value);
-        if (postIndex) put(cpu, rn, base + (rm == 31 ? size : reg(cpu, rm)), 64, true);
+        const unsigned width = word & 0x40000000 ? 16 : 8;
+        // Read all of it before any register changes: a fault has to leave them as they were.
+        std::array<uint8_t, 32> bytes{};
+        if (!m.readInto(base, std::span(bytes).first(count * size))) { m.fault(cpu.pc, base); return true; }
+        for (unsigned element = 0; element < count; ++element) {
+            auto& vector = cpu.v[(rd + element) & 31];
+            vector = {};
+            uint64_t value = 0;
+            std::memcpy(&value, bytes.data() + element * size, size);
+            for (unsigned i = 0; i < width / size; ++i) setLane(vector, i, size, value);
+        }
+        if (postIndex) put(cpu, rn, base + (rm == 31 ? count * size : reg(cpu, rm)), 64, true);
         return true;
     }
     if ((word & 0x3e000000) == 0x2c000000) {
@@ -1647,7 +1857,15 @@ bool executeStartupInstruction(Machine& machine, uint32_t word) {
             handled = memory(machine, word);
             break;
         case 6: case 7: case 14: case 15:
-            handled = vectors(machine, word);
+            if ((word & 0xfffffc00) == 0x9eae0000) { // FMOV Xd, Vn.D[1]
+                put(cpu, word & 31, lane(cpu.v[(word >> 5) & 31], 1, 8), 64);
+                handled = true;
+            } else if ((word & 0xfffffc00) == 0x9eaf0000) { // FMOV Vd.D[1], Xn
+                setLane(cpu.v[word & 31], 1, 8, reg(cpu, (word >> 5) & 31));
+                handled = true;
+            } else {
+                handled = vectors(machine, word);
+            }
             break;
         case 5:
             handled = (word & 0x01000000) ? arithmetic(cpu, word) : logic(cpu, word);
@@ -1689,7 +1907,20 @@ bool executeStartupInstruction(Machine& machine, uint32_t word) {
                                  word == 0xd50339bf || word == 0xd5033abf || word == 0xd5033bbf ||
                                  word == 0xd5033dbf || word == 0xd5033ebf || word == 0xd5033fbf || word == 0xd5033fdf;
             // CHKFEAT is a NOP on the guest CPU, which does not implement FEAT_CHK.
-            const bool hint = barrier || word == 0xd503251f || word == 0xd503201f ||
+            // Every hint does nothing here, YIELD among them; so do the other barriers, and writing
+            // PSTATE.DIT, which asks for timing that does not depend on data.
+            const bool anyHint = (word & 0xfffff01f) == 0xd503201f;
+            const unsigned barrierKind = (word >> 5) & 7;
+            const bool anyBarrier = (word & 0xfffff01f) == 0xd503301f && (barrierKind == 4 || barrierKind == 5 || barrierKind == 6);
+            const bool dit = (word & 0xfffff0ff) == 0xd503405f;
+            // The identification registers read as Linux lets a program read them when it offers
+            // nothing beyond the base: zero. What the guest is told it may use is in AT_HWCAP.
+            if ((word & 0xfffff000) == 0xd5380000) {
+                put(cpu, word & 31, 0, 64);
+                handled = true;
+                break;
+            }
+            const bool hint = anyHint || anyBarrier || dit || barrier || word == 0xd503251f || word == 0xd503201f ||
                               word == 0xd503245f || word == 0xd503249f ||
                               word == 0xd50324df || word == 0xd503233f || word == 0xd50323bf ||
                               word == 0xd503237f || word == 0xd50323ff || word == 0xd50320ff ||

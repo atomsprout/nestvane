@@ -40,6 +40,54 @@ static uint32x4_t nativeSha256Instruction(unsigned instruction, uint32x4_t dest,
 #endif
 
 int main() {
+    {
+        // LD1R to LD4R: one element for each of up to four vectors, in every lane of it. Go's
+        // assembly uses LD4R, and the interpreter had only LD1R.
+        const uint64_t base = 0x4000;
+        std::vector<uint8_t> data(0x4000);
+        for (unsigned i = 0; i < 64; ++i) data[i] = uint8_t(0x11 * (i % 15 + 1) + i);
+        Machine machine(Image{base, {{base, data, 6}}, {}});
+        const auto run = [&](uint32_t word) {
+            machine.cpu.pc = base + 0x1000;
+            machine.cpu.x[10] = base;
+            for (auto& vector : machine.cpu.v) vector.fill(0xee);
+            assert(executeStartupInstruction(machine, word));
+        };
+        const auto lane32 = [&](unsigned vector, unsigned index) {
+            uint32_t value;
+            std::memcpy(&value, machine.cpu.v[vector].data() + index * 4, 4);
+            return value;
+        };
+        const auto element32 = [&](unsigned index) {
+            uint32_t value;
+            std::memcpy(&value, data.data() + index * 4, 4);
+            return value;
+        };
+        run(0x4d60e940); // ld4r {v0.4s-v3.4s}, [x10]
+        for (unsigned vector = 0; vector < 4; ++vector)
+            for (unsigned index = 0; index < 4; ++index) assert(lane32(vector, index) == element32(vector));
+        assert(machine.cpu.v[4][0] == 0xee && machine.cpu.x[10] == base);
+        run(0x4dffe940); // ld4r {v0.4s-v3.4s}, [x10], #16
+        assert(lane32(3, 3) == element32(3) && machine.cpu.x[10] == base + 16);
+        run(0x4d60c95e); // ld2r {v30.4s, v31.4s}, [x10]
+        assert(lane32(30, 2) == element32(0) && lane32(31, 1) == element32(1) && machine.cpu.v[0][0] == 0xee);
+        run(0x0d40e940); // ld3r {v0.2s-v2.2s}, [x10]: the upper half of each is cleared
+        assert(lane32(2, 1) == element32(2) && lane32(2, 2) == 0 && machine.cpu.v[3][0] == 0xee);
+        run(0x4d40c140); // ld1r {v0.16b}, [x10]
+        assert(machine.cpu.v[0][15] == data[0] && machine.cpu.v[1][0] == 0xee);
+        // SRI: Go's ChaCha8 rotates with SHL and SRI.
+        const auto set32 = [&](unsigned vector, uint32_t value) {
+            for (unsigned index = 0; index < 4; ++index) std::memcpy(machine.cpu.v[vector].data() + index * 4, &value, 4);
+        };
+        machine.cpu.pc = base + 0x1000;
+        set32(30, 0x89abcdef);
+        set32(4, 0x12345678 << 12);                              // what SHL #12 leaves
+        assert(executeStartupInstruction(machine, 0x6f2c47c4));  // sri v4.4s, v30.4s, #20
+        assert(lane32(4, 0) == ((0x12345678u << 12) | (0x89abcdefu >> 20)) && lane32(4, 3) == lane32(4, 0));
+        set32(4, 0xffffffff);
+        assert(executeStartupInstruction(machine, 0x6f2047c4));  // sri v4.4s, v30.4s, #32: nothing is inserted
+        assert(lane32(4, 1) == 0xffffffff);
+    }
 #if defined(__APPLE__) && defined(__aarch64__)
     if (hasNativeSha256()) {
         constexpr std::array<uint32_t, 4> opcodes{0x5e004000, 0x5e005000, 0x5e282800, 0x5e006000};

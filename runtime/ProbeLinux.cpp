@@ -8652,6 +8652,21 @@ bool ProbeLinux::deliverMemoryFault(Machine& machine) {
     return installSignalFrame(machine, sigSegv, std::bit_cast<SignalWords>(info), address);
 }
 
+bool ProbeLinux::deliverIllegalInstruction(Machine& machine) {
+    constexpr uint32_t sigIll = 4;
+    if (current->process->id == pid) return false;
+    SignalFrame::Info info{};
+    info.number = sigIll;
+    info.code = 1; // ILL_ILLOPC
+    info.address = machine.cpu.pc;
+    if (installSignalFrame(machine, sigIll, std::bit_cast<SignalWords>(info), machine.cpu.pc)) return true;
+    finishProcess(*current->process, sigIll, true);
+    removeSiblingThreads();
+    current->wait = Wait::exited;
+    sliceEnd = 0;
+    return true;
+}
+
 bool ProbeLinux::installSignalFrame(Machine& machine, uint32_t signal, const SignalWords& info,
                                     uint64_t faultAddress) {
     auto& cpu = machine.cpu;

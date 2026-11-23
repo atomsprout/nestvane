@@ -13,6 +13,12 @@ xcrun clang++ -O2 -std=c++20 -Wall -Wextra -Werror -Iruntime \
     -lsqlite3 -lresolv -o generated/validate-boot-abi
 generated/validate-boot-abi
 
+# Vector instructions, each run on this Mac's processor and in the interpreter with the same operands.
+xcrun clang++ -O2 -std=c++20 -Wall -Wextra -Werror -Iruntime \
+    runtime/Runtime.cpp runtime/GuestSpace.cpp runtime/NativeCode.cpp runtime/NativeEntry.S runtime/NoNativeCode.cpp runtime/AArch64.cpp \
+    tools/no-aot.cpp tools/vector-instructions.S tools/validate-vector-instructions.cpp -o generated/validate-vector-instructions
+generated/validate-vector-instructions
+
 xcrun clang++ -O2 -std=c++20 -Wall -Wextra -Werror -Iruntime \
     tools/validate-dns-proxy.cpp -o generated/validate-dns-proxy
 generated/validate-dns-proxy

@@ -151,7 +151,7 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
     uint64_t zygotePid = 0;
     std::vector<uint64_t> graphicsPids;
     unsigned graphicsCalls = 0;
-    uint64_t deliveredFaults = 0, restoredSignals = 0;
+    uint64_t deliveredFaults = 0, restoredSignals = 0, illegalInstructions = 0;
     std::optional<uint64_t> unhandled;
     const auto start = std::chrono::steady_clock::now();
     bool idle = false, timedOut = false;
@@ -654,6 +654,18 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
             }
             if (trace) report << " result=0x" << std::hex << cpu.x[0] << std::dec << '\n';
         } else if (!executeStartupInstruction(machine, word)) {
+            // An instruction the interpreter does not have, in an app's own library: that app gets
+            // SIGILL and Android goes on. It used to end the whole run, and the screen stood still.
+            const auto pc = cpu.pc;
+            const auto process = linux.processId(), thread = linux.threadId();
+            if (init && linux.deliverIllegalInstruction(machine)) {
+                std::ostringstream message;
+                message << "native execution: no such instruction in the interpreter, SIGILL to PID=" << process
+                        << " TID=" << thread << std::hex << " PC=0x" << pc << " word=0x" << word << std::dec;
+                if (illegalInstructions++ < 32) report << "  " << message.str() << '\n';
+                if (linux.androidLogObserver) linux.androidLogObserver(message.str());
+                continue;
+            }
             cpu.stop = Stop::unsupported;
         }
     }

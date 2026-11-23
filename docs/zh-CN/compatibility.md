@@ -28,12 +28,19 @@
 | Tasks | 15.14 | 4 个 | 能打开 |
 | Termux | F-Droid，构建 1002 | 2 个 | 能打开，随后询问权限 |
 | Wikipedia | r/50616 | 4 个 | 能打开；搜索和首页信息流可用。文章打不开：需要 WebView |
-| DuckDuckGo | 5.301.1 | 10 个 | **让 Android 停住。** 画面不再更新，直到重启 Android |
-| Feeder | F-Droid，构建 4191 | 2 个 | **让 Android 停住**，在它的第一个界面画出来之后一瞬间 |
+| DuckDuckGo | 5.301.1 | 10 个 | 打不开：它是浏览器，需要 WebView。1.3 里它会让 Android 停住，见下文 |
+| Feeder | F-Droid，构建 4191 | 2 个 | 能打开。1.3 里它会让 Android 停住，见下文 |
 
-22 个里 20 个能打开。让 Android 停住的两个都带着一个用 Go 写的库（`libwg-go.so`、`libgojni.so`），列表里别的应用都没有。
-关于原因目前只知道这一点。在找到原因之前，带 Go 库的应用都应当预期会这样。
-用 More 菜单里的 *Stop Android* 再 *Start Android* 可以恢复；引起问题的应用仍然装着。
+22 个里 21 个能打开。
+
+## 1.3 之后改了什么
+
+**让 Android 停住的应用。** DuckDuckGo 和 Feeder 各带一个用 Go 写的库，在 1.3 里打开其中任何一个都会让 Android 停住：画面不再更新。
+原因是运行应用自带库的解释器遇到了一条它没有的指令，而这会结束整个运行。改了两处。
+解释器没有的指令现在只结束遇到它的那个应用，发的是没有这条指令的处理器会发的那个信号。
+指令本身也补上了：Go 的库用到的那些，以及这张表里的应用的库中出现的另外约四十条向量指令。
+每一条都在 Mac 的处理器上和解释器里用同样的操作数各跑一遍，再比较结果（`tools/validate-vector-instructions.cpp`）。
+在 iPhone 14（iOS 17.3.1）上试过：Feeder 能打开并保持运行；DuckDuckGo 因为没有 WebView 自己退出，Android 继续运行。
 
 ## 1.3 改了什么
 
@@ -46,7 +53,6 @@ Android 有一种兼容的加载方式，现在对所有应用打开（`bionic.l
 
 - **没有 WebView。** 在自己界面里显示网页的应用会提示 Android System WebView 正在更新。
 - **原生库是解释执行的**，约每秒四千万条指令。在自己的库里干重活的应用会很慢。
-- **Go 库会让 Android 停住**，如上。
 - **没有 Google Play 服务。** 需要它的应用没有试。
 
 没有列入的：VLC，手头的 APK 只有 x86 版，不能在手机上运行。

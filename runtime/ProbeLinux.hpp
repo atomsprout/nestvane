@@ -78,6 +78,10 @@ struct ProbeLinux {
     // Handles only the implemented guest syscalls. Unknown calls remain visible to the probe.
     bool syscall(Machine& machine);
     bool deliverMemoryFault(Machine& machine);
+    // The current thread met an instruction the interpreter does not have. Its process gets SIGILL:
+    // its handler runs, or the process ends, as on a processor without the instruction. False for
+    // the first process, whose end is the end of the run.
+    bool deliverIllegalInstruction(Machine& machine);
     bool restoredSignalContext() { return std::exchange(signalContextRestored, false); }
     uint64_t threadId() const { return currentTid; }
     uint64_t processId() const;
