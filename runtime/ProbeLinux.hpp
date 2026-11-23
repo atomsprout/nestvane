@@ -376,7 +376,7 @@ private:
                 if (const auto remote = peer.lock()) ++remote->pollNotifications.stateChange;
             }
             if (onClose) onClose(*this);
-            if (hostFd >= 0) ::close(hostFd);
+            if (hostFd >= 0) hostnet::closeSocket(hostFd);
         }
         PollNotifications pollNotifications;
         std::array<uint32_t, 3> peerCredentials{0, UINT32_MAX, UINT32_MAX};

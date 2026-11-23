@@ -1,5 +1,6 @@
 #import <CoreGraphics/CoreGraphics.h>
 #import <IOSurface/IOSurfaceRef.h>
+#import <Network/Network.h>
 #import <QuartzCore/QuartzCore.h>
 #import <UIKit/UIKit.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
@@ -11,6 +12,7 @@
 #include "DynamicProbe.hpp"
 #include "GfxstreamPipe.hpp"
 #include "GfxstreamSession.hpp"
+#include "HostSocket.hpp"
 #include "IOSCamera.hpp"
 #include "Validation.hpp"
 
@@ -1411,6 +1413,39 @@ static void FollowGuestAudio() {
             for (NSNotificationName name in @[UIDeviceBatteryLevelDidChangeNotification, UIDeviceBatteryStateDidChangeNotification])
                 [NSNotificationCenter.defaultCenter addObserverForName:name object:nil queue:NSOperationQueue.mainQueue
                                                              usingBlock:^(NSNotification*) { reportBattery(); }];
+            // What the phone's network is, each time it changes, in network-path.txt with the time since
+            // the start: for telling what Android did when the phone went from Wi-Fi to cellular or back.
+            static nw_path_monitor_t pathMonitor;
+            static NSMutableString* paths;
+            if (pathMonitor) nw_path_monitor_cancel(pathMonitor);
+            paths = [NSMutableString string];
+            pathMonitor = nw_path_monitor_create();
+            nw_path_monitor_set_queue(pathMonitor, dispatch_get_main_queue());
+            NSURL* pathURL = [documents URLByAppendingPathComponent:@"network-path.txt"];
+            nw_path_monitor_set_update_handler(pathMonitor, ^(nw_path_t path) {
+                nestvane::hostnet::networkChanged();
+                // Which network carries the traffic. When that changes, the connections made over the
+                // old one are ended (HostSocket.hpp); iOS reports a path many times without a change.
+                const int carrier = nw_path_get_status(path) != nw_path_status_satisfied ? 0
+                    : nw_path_uses_interface_type(path, nw_interface_type_wifi) ? 1
+                    : nw_path_uses_interface_type(path, nw_interface_type_wired) ? 2
+                    : nw_path_uses_interface_type(path, nw_interface_type_cellular) ? 3 : 4;
+                static int carrierBefore = -1;
+                const bool moved = carrierBefore >= 0 && carrier != carrierBefore;
+                carrierBefore = carrier;
+                const size_t ended = moved ? nestvane::hostnet::endStreams() : 0;
+                std::array<uint8_t, 12> gateway{};
+                if (moved) [paths appendFormat:@"another network: ended %zu connections\n", ended];
+                [paths appendFormat:@"%.0f ms | %s |%s%s%s%s%s\n", (NSProcessInfo.processInfo.systemUptime - validationStarted) * 1000,
+                    nw_path_get_status(path) == nw_path_status_satisfied ? "connected" : "not connected",
+                    nw_path_uses_interface_type(path, nw_interface_type_wifi) ? " Wi-Fi" : "",
+                    nw_path_uses_interface_type(path, nw_interface_type_cellular) ? " cellular" : "",
+                    nw_path_uses_interface_type(path, nw_interface_type_wired) ? " wired" : "",
+                    nw_path_is_expensive(path) ? " (expensive)" : "",
+                    nestvane::hostnet::nat64Prefix(gateway) ? " | no IPv4, through a gateway" : " | IPv4"];
+                [paths writeToURL:pathURL atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            });
+            nw_path_monitor_start(pathMonitor);
             // Android shows the time of the phone's time zone.
             setenv("NESTVANE_TIMEZONE", NSTimeZone.localTimeZone.name.UTF8String, 1);
             NSURL* progressURL = [documents URLByAppendingPathComponent:@"boot-progress.txt"];

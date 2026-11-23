@@ -36,6 +36,7 @@ targets:
       - sdk: libresolv.tbd
       - sdk: QuartzCore.framework
       - sdk: IOSurface.framework
+      - sdk: Network.framework
       - sdk: AudioToolbox.framework
       - sdk: AVFAudio.framework
     info:
@@ -100,6 +101,7 @@ targets:
       - sdk: libresolv.tbd
       - sdk: QuartzCore.framework
       - sdk: IOSurface.framework
+      - sdk: Network.framework
       - sdk: AudioToolbox.framework
       - sdk: AVFAudio.framework
       - framework: generated/native-code/ios/lib/NestvaneCode0.framework

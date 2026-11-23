@@ -88,6 +88,13 @@ No packets are forwarded. Instead, each guest TCP or UDP socket whose destinatio
 Host sockets are non-blocking; a guest thread that waits on one is checked again after a short delay, since a host socket cannot wake the guest scheduler by itself.
 Only IPv4 is supported.
 
+When the phone moves from Wi-Fi to cellular or back, the app ends every TCP connection the guest has open.
+A connection made over the old network does not move to the new one and gives no error either: left alone it stays silent, and an app that keeps connections for reuse waits out a timeout on each request.
+A phone's Android ends such connections itself when a network goes away; the guest sees one made-up network that never does, so the host does it, and the guest reads the end of the stream and connects again.
+
+On a network that has no IPv4 of its own, as some cellular networks are, the guest's IPv4 destinations are rewritten to the IPv6 addresses the network's gateway answers at (NAT64), when the system reports such a gateway.
+That part has not been tried on such a network.
+
 **DNS.**
 The address `10.0.2.3` is a name server inside the app (`runtime/DnsProxy.hpp`). It listens on the host's loopback and answers each query from the system's resolver (`DNSServiceQueryRecord`), so names resolve as they do for every other app on the phone, VPN and DNS settings included. Only queries over UDP are answered, and names under `.local` are refused.
 The app never sends to the network's own name server. That server is usually the router, and iOS asks the user for local network access the moment an app sends to it, which used to happen on the first boot. Multicast and broadcast packets from the guest, and packets to the guest's own made-up subnet, are not carried out either. An Android app that connects to a device on the local network still brings the question up, at that moment.
