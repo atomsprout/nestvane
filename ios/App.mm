@@ -24,6 +24,7 @@
 #include <new>
 #include <thread>
 #include <sys/resource.h>
+#include <sys/utsname.h>
 #include <vector>
 
 // Where the output of Android's sound stands, in words, for the rate report (NESTVANE_DISPLAY_RATE).
@@ -428,6 +429,27 @@ static NSString* ThermalState() {
         case NSProcessInfoThermalStateCritical: return @"critical";
     }
     return @"unknown";
+}
+
+// "Submit a bug" in the More menu opens a new issue on GitHub with the things every report needs
+// already written in: the version of Nestvane, the version of iOS, the model of the phone, its
+// memory, and whether 120 Hz is on. Nothing that names the phone or its owner. The person sees the
+// text in the browser and decides whether to submit it; the app sends nothing itself.
+static NSURL* BugReportAddress(bool androidRunning) {
+    utsname system{};
+    uname(&system);
+    NSDictionary* info = NSBundle.mainBundle.infoDictionary;
+    NSString* body = [NSString stringWithFormat:
+        @"**What happened**\n\n<!-- What you did, what you expected, and what you saw instead. -->\n\n"
+        "**The app that shows it, if it is about one**\n\n\n"
+        "**System**\n\n- Nestvane %@ (%@)\n- iOS %@\n- %s\n- %.0f GB of memory\n- 120 Hz %@\n- Android %@\n- Phone temperature: %@\n",
+        info[@"CFBundleShortVersionString"], info[@"CFBundleVersion"], UIDevice.currentDevice.systemVersion,
+        system.machine, std::round(NSProcessInfo.processInfo.physicalMemory / 1e9),
+        [NSUserDefaults.standardUserDefaults boolForKey:Display120HzKey] ? @"on" : @"off",
+        androidRunning ? @"was running" : @"was not running", ThermalState()];
+    NSURLComponents* address = [NSURLComponents componentsWithString:@"https://github.com/atomsprout/nestvane/issues/new"];
+    address.queryItems = @[[NSURLQueryItem queryItemWithName:@"body" value:body]];
+    return address.URL;
 }
 
 // Android's display. A frame is an IOSurface the renderer copied on the GPU, given to the layer as it
@@ -934,7 +956,11 @@ static void FollowGuestAudio() {
             UIAction* text = [UIAction actionWithTitle:@"Send Text Message…" image:[UIImage systemImageNamed:@"message"]
                                             identifier:nil handler:^(UIAction*) { [owner composeText]; }];
             if (!running || !owner->_apkInbox) text.attributes = UIMenuElementAttributesDisabled;
-            completion(@[install, text, settings, power]);
+            UIAction* bug = [UIAction actionWithTitle:@"Submit a Bug…" image:[UIImage systemImageNamed:@"ladybug"]
+                                           identifier:nil handler:^(UIAction*) {
+                [UIApplication.sharedApplication openURL:BugReportAddress(running) options:@{} completionHandler:nil];
+            }];
+            completion(@[install, text, settings, bug, power]);
         }]]];
     UIStackView* controls = [[UIStackView alloc] initWithArrangedSubviews:
         @[self.back, self.home, self.more, self.run]];
@@ -963,6 +989,12 @@ static void FollowGuestAudio() {
 
     // NESTVANE_TEST_SCREEN=start or =settings saves what the app itself draws, which the frames of
     // Android's display do not show: the start screen, or the settings sheet, as app-screen.png.
+    // NESTVANE_TEST_SCREEN=bug writes the address Submit a Bug would open to bug-report-url.txt, and opens nothing.
+    if ([NSProcessInfo.processInfo.environment[@"NESTVANE_TEST_SCREEN"] isEqualToString:@"bug"]) {
+        NSURL* documents = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
+        [BugReportAddress(false).absoluteString writeToURL:[documents URLByAppendingPathComponent:@"bug-report-url.txt"]
+                                               atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    }
     if (NSString* wanted = NSProcessInfo.processInfo.environment[@"NESTVANE_TEST_SCREEN"]) {
         __weak ValidationViewController* shown = self;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
