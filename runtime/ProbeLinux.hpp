@@ -366,7 +366,10 @@ private:
         // only talks to the guest's own loopback.
         int hostFd = -1;
         bool hostConnecting = false, hostConnectReported = false;
-        bool inetDatagram() const { return protocol == 17; }
+        // UDP, or the echo socket ping uses: ICMP over a datagram socket.
+        bool inetDatagram() const { return protocol == 17 || icmp(); }
+        bool icmp() const { return family == 2 && protocol == 1; }
+        uint16_t icmpIdentifier = 0;  // of the last echo request sent: replies to others are not ours
         bool firewallSocket() const { return type == 3 && protocol == 255; }
         bool hasInput() const { return !inbox.empty() || !datagrams.empty(); }
         std::function<void(const SocketState&)> onClose;
@@ -463,6 +466,7 @@ private:
         const SocketState* receiving = nullptr) const;
     uint64_t sendInetDatagram(Machine& machine, const std::shared_ptr<SocketState>& socket,
         std::span<const std::array<uint64_t, 2>> vectors, uint64_t address = 0, uint64_t addressLength = 0);
+    std::optional<uint64_t> pullHostDatagram(SocketState& socket);
     uint64_t receiveInetDatagram(Machine& machine, SocketState& socket, uint64_t address, uint64_t size,
         uint64_t flags = 0, uint64_t source = 0, uint64_t sourceLength = 0);
     uint64_t getInetSocketOption(Machine& machine, SocketState& socket);
@@ -805,10 +809,13 @@ private:
     static constexpr uint64_t maxDataFileBytes = 256 * 1024 * 1024;
     // Persistent data and transient filesystem writes each have their own budget.
     static constexpr uint64_t maxWritableBytes = 2048ULL * 1024 * 1024;
-    static constexpr size_t maxPersistentFiles = 4096;
-    static constexpr size_t maxTransientFiles = 2048;
-    static constexpr size_t maxGuestDirectories = 2048;
-    static constexpr size_t maxGuestLinks = 512;
+    // How many files and directories the guest's data may hold. With some thirty apps installed the
+    // earlier limits (4096 files, 2048 directories) were reached, and Android could start no new app:
+    // zygote could not make the app's profile directory and aborted.
+    static constexpr size_t maxPersistentFiles = 65536;
+    static constexpr size_t maxTransientFiles = 8192;
+    static constexpr size_t maxGuestDirectories = 32768;
+    static constexpr size_t maxGuestLinks = 8192;
     static constexpr size_t maxDataRecords = maxPersistentFiles + maxGuestDirectories + maxGuestLinks;
     std::vector<std::weak_ptr<SharedFileBytes>> memoryFiles;
     std::optional<Descriptor> find(std::string_view path, uint32_t flags, const Machine* machine = nullptr) const;

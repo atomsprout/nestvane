@@ -36,6 +36,9 @@ public final class SmsBroadcast {
         intent.addFlags(0x01000000);  // FLAG_RECEIVER_INCLUDE_BACKGROUND: receivers in manifests too
         context.sendBroadcast(intent, "android.permission.RECEIVE_SMS");
         Log.i(TAG, "sent SMS_RECEIVED from " + args[0] + " in " + pdus.size() + " part(s)");
+        // The broadcast is with the system by now. Leaving main is not enough: the system context has
+        // started threads that keep the process alive, sometimes for good.
+        System.exit(0);
     }
 
     /** SMS-DELIVER PDUs in UCS-2: one for up to 70 characters, otherwise parts of 67 joined by a header. */

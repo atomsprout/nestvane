@@ -307,10 +307,35 @@ inline int connectState(int fd) {
 }
 
 // A UDP socket of the family that reaches a guest destination.
-inline int openDatagram(const Address& destination) {
+inline int openDatagram(const Address& destination, bool icmp = false) {
     sockaddr_storage host;
     toHost(destination, host);
+    // An echo socket, which ping uses, is a datagram socket of ICMP: an app may have one without privileges.
+    if (icmp) return prepare(::socket(AF_INET, SOCK_DGRAM, IPPROTO_ICMP));
     return prepare(::socket(host.ss_family, SOCK_DGRAM, IPPROTO_UDP));
+}
+
+// The Internet checksum of an ICMP message, written into it. Linux works it out for an echo socket;
+// this system leaves it to the sender.
+inline void sealIcmp(std::span<uint8_t> message) {
+    if (message.size() < 8) return;
+    message[2] = message[3] = 0;
+    uint32_t sum = 0;
+    for (size_t at = 0; at + 1 < message.size(); at += 2) sum += uint32_t(message[at]) << 8 | message[at + 1];
+    if (message.size() & 1) sum += uint32_t(message.back()) << 8;
+    while (sum >> 16) sum = (sum & 0xffff) + (sum >> 16);
+    const uint16_t checksum = uint16_t(~sum);
+    message[2] = uint8_t(checksum >> 8);
+    message[3] = uint8_t(checksum);
+}
+
+// What arrived on an echo socket, as Linux hands it on: the ICMP message alone. This system puts the
+// IP header in front of it.
+inline void stripIpHeader(std::vector<uint8_t>& packet) {
+    if (packet.size() < 20 || packet[0] >> 4 != 4) return;
+    const size_t header = size_t(packet[0] & 15) * 4;
+    if (header < 20 || packet.size() < header + 8) return;
+    packet.erase(packet.begin(), packet.begin() + long(header));
 }
 
 inline int connectDatagram(int fd, const Address& destination) {

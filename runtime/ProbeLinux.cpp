@@ -3813,7 +3813,9 @@ bool ProbeLinux::socketCall(Machine& machine) {
             if (firewallSocket && !(current->process->effectiveCaps & (1ULL << 13))) {
                 x[0] = uint64_t(-1); break; // CAP_NET_RAW
             }
-            const uint32_t inetProtocol = firewallSocket ? 255 : type == 1 ? 6 : 17;
+            // A datagram socket of ICMP is an echo socket: what ping uses when it has no privileges.
+            const bool echoSocket = inet && x[0] == 2 && type == 2 && x[2] == 1;
+            const uint32_t inetProtocol = firewallSocket ? 255 : type == 1 ? 6 : echoSocket ? 1 : 17;
             if (inet && x[2] && x[2] != inetProtocol) { x[0] = uint64_t(-93); break; }
             if (x[1] & ~(uint64_t(flags) | 15) ||
                 (!inet && (uevent ? type != 2 : kernelNetlink ? (type != 2 && type != 3) :
@@ -4210,6 +4212,16 @@ bool ProbeLinux::socketCall(Machine& machine) {
                 current->deadline.reset();
                 x[0] = uint64_t(-std::exchange(endpoint.inetError, 0));
                 break;
+            }
+            // A datagram socket that the host carries: what the host has for it comes first.
+            if (endpoint.inetDatagram() && endpoint.hostFd >= 0 && endpoint.datagrams.empty()) {
+                if (const auto pulled = pullHostDatagram(endpoint); pulled && *pulled != uint64_t(-11)) {
+                    current->deadline.reset();
+                    x[0] = *pulled;
+                    break;
+                }
+                if (endpoint.datagrams.empty() && !endpoint.receiveShutdown &&
+                    !(fd->second.effectiveFlags() & 0x800) && !(x[2] & dontWait)) return waitForHostEvents();
             }
             if (!endpoint.hasInput()) {
                 const auto peer = endpoint.peer.lock();
@@ -6244,6 +6256,26 @@ bool ProbeLinux::switchThread(Machine& machine, std::chrono::steady_clock::time_
                     thread.nextSliceAfter.reset();
                 }
             }
+            // A child has ended and its parent, waiting in poll, has a handler for that: the handler
+            // runs. A program that waits for a child with a time limit, as toybox's timeout does,
+            // learns of the end from its handler and not from the wait running out. Zygote is left as
+            // it was: its handler reaps every child, and Android was brought up without it running.
+            if (wait == Wait::poll && thread.process->context != "u:r:zygote:s0") {
+                auto& child = thread.process->childSignal;
+                if (child && canCatchSignal(thread, sigChild) && !thread.pendingSignals.contains(sigChild)) {
+                    SignalWords info{};
+                    info[0] = sigChild;
+                    info[2] = child->code;
+                    info[4] = child->pid;
+                    info[5] = child->uid;
+                    info[6] = child->status;
+                    thread.pendingSignals.emplace(sigChild, info);
+                    child.reset();
+                    thread.signalInterruptedWait = wait;
+                    thread.wait = Wait::none;
+                    thread.nextSliceAfter.reset();
+                }
+            }
             if (wait == Wait::poll && thread.hostEventRetry) {
                 if (*thread.hostEventRetry <= now) {
                     thread.hostEventRetry.reset();
@@ -7502,6 +7534,13 @@ void ProbeLinux::finishProcess(Process& process, uint32_t status, bool killed) {
             if (!(task.signalMask & sigChildMask) && handler <= 1) continue;
             if (handler != 1 && !task.process->childSignal)
                 task.process->childSignal = Process::ChildSignal{uint32_t(process.id), uid, status, code};
+            // A thread waiting in rt_sigtimedwait for this signal asks again, and now finds it.
+            for (auto& [waitingTid, waiting] : threads) {
+                if (waiting.process->id == parent && waiting.wait == Wait::signal && (waiting.signalWaitMask & sigChildMask)) {
+                    waiting.wait = Wait::none;
+                    waiting.deadline.reset();
+                }
+            }
             break;
         }
     }
@@ -8755,7 +8794,9 @@ void ProbeLinux::deliverPendingCaughtSignal(Machine& machine) {
         const auto syscall = cpu.x[8], futexOp = cpu.x[1] & 127;
         const bool restartable = interrupted == Wait::futex
             ? (!cpu.x[3] || futexOp == 9)
-            : interrupted == Wait::poll && (syscall == 63 || syscall == 64 || syscall == 206 || syscall == 207);
+            // Reads and writes, and an open that was waiting, as of one of this layer's own devices: with
+            // SA_RESTART Linux starts each again after the handler.
+            : interrupted == Wait::poll && (syscall == 63 || syscall == 64 || syscall == 206 || syscall == 207 || syscall == 56);
         if (!(flags & saRestart) || !restartable) {
             uint64_t error = uint64_t(-4); // EINTR
             if (interrupted == Wait::sleep && thread.deadline) {
@@ -9334,8 +9375,8 @@ uint64_t ProbeLinux::connectHostSocket(const std::shared_ptr<SocketState>& socke
     if (socket->inetDatagram()) {
         // Connecting a datagram socket to port 0 only asks whether there is a route, which is how the
         // resolver finds out which address families the network has. The host refuses such a connect.
-        if (inetPort(destination)) {
-            if (socket->hostFd < 0) socket->hostFd = hostnet::openDatagram(destination);
+        if (inetPort(destination) || socket->icmp()) {
+            if (socket->hostFd < 0) socket->hostFd = hostnet::openDatagram(destination, socket->icmp());
             if (socket->hostFd < 0) return uint64_t(int64_t(std::exchange(socket->hostFd, -1)));
             if (const int error = hostnet::connectDatagram(socket->hostFd, destination)) return uint64_t(int64_t(error));
         }
@@ -9680,7 +9721,7 @@ uint64_t ProbeLinux::sendInetDatagram(Machine& machine, const std::shared_ptr<So
                           unsigned(destination[2]) << 8 | destination[3],
                           hostnet::ipv4(destination).empty() || hostnet::unreachable(destination) ? " (not carried)" : "");
             if (hostnet::ipv4(destination).empty() || hostnet::unreachable(destination)) return uint64_t(-101);
-            if (socket->hostFd < 0) socket->hostFd = hostnet::openDatagram(destination);
+            if (socket->hostFd < 0) socket->hostFd = hostnet::openDatagram(destination, socket->icmp());
             if (socket->hostFd < 0) return uint64_t(int64_t(std::exchange(socket->hostFd, -1)));
         } else if (const auto error = routeInetDestination(destination)) {
             return error;
@@ -9701,6 +9742,12 @@ uint64_t ProbeLinux::sendInetDatagram(Machine& machine, const std::shared_ptr<So
         if (!socket->localInetAddress[0] || !inetPort(socket->localInetAddress)) {
             socket->localInetAddress = hostnet::localAddress(socket->family, nextEphemeralPort);
             nextEphemeralPort = nextEphemeralPort >= 60999 ? 32768 : nextEphemeralPort + 1;
+        }
+        if (socket->icmp()) {
+            // Only an echo request goes out of an echo socket.
+            if (payload.size() < 8 || payload[0] != 8 || payload[1] != 0) return invalid;
+            socket->icmpIdentifier = uint16_t(payload[4] << 8 | payload[5]);
+            hostnet::sealIcmp(payload);
         }
         const auto transmit = [&] {
             return address || !socket->connected ? hostnet::sendTo(socket->hostFd, payload, destination)
@@ -9796,24 +9843,42 @@ uint64_t ProbeLinux::sendInetDatagram(Machine& machine, const std::shared_ptr<So
     }
 }
 
+// What the host has received for a datagram socket joins its queue, and is handed on like any other
+// datagram. Nothing when one was added; otherwise what the caller is to return.
+std::optional<uint64_t> ProbeLinux::pullHostDatagram(SocketState& socket) {
+    SocketState::Datagram arrived;
+    arrived.payload.resize(65536);
+    const auto received = hostnet::receiveFrom(socket.hostFd, arrived.payload, socket.family, arrived.source);
+    if (received == -11) {
+        if (socket.receiveShutdown) return uint64_t{0};
+        hostSocketWait = true;
+        return uint64_t(-11);
+    }
+    NETWORK_TRACE("udp receive -> %lld", static_cast<long long>(received));
+    if (received < 0) return uint64_t(received);
+    arrived.payload.resize(size_t(received));
+    if (socket.icmp()) {
+        hostnet::stripIpHeader(arrived.payload);
+        // The host hands an echo socket whatever ICMP arrives. Only the answers to this socket's own
+        // requests are passed on: an echo reply with the identifier it last sent.
+        if (arrived.payload.size() < 8 || arrived.payload[0] != 0 ||
+            uint16_t(arrived.payload[4] << 8 | arrived.payload[5]) != socket.icmpIdentifier) {
+            NETWORK_TRACE("icmp of type %u dropped", arrived.payload.empty() ? 255u : unsigned(arrived.payload[0]));
+            hostSocketWait = true;
+            return uint64_t(-11);
+        }
+        NETWORK_TRACE("icmp echo reply, %zu bytes", arrived.payload.size());
+    }
+    socket.queuedBytes += arrived.payload.size();
+    socket.datagrams.push_back(std::move(arrived));
+    return std::nullopt;
+}
+
 uint64_t ProbeLinux::receiveInetDatagram(Machine& machine, SocketState& socket, uint64_t address, uint64_t size,
     uint64_t flags, uint64_t source, uint64_t sourceLength) {
     if (socket.inetError) return uint64_t(-std::exchange(socket.inetError, 0));
     if (socket.hostFd >= 0 && socket.datagrams.empty()) {
-        // What the host has received for it joins the queue, and is handed on like any other datagram.
-        SocketState::Datagram arrived;
-        arrived.payload.resize(65536);
-        const auto received = hostnet::receiveFrom(socket.hostFd, arrived.payload, socket.family, arrived.source);
-        if (received == -11) {
-            if (socket.receiveShutdown) return 0;
-            hostSocketWait = true;
-            return uint64_t(-11);
-        }
-        NETWORK_TRACE("udp receive -> %lld", static_cast<long long>(received));
-        if (received < 0) return uint64_t(received);
-        arrived.payload.resize(size_t(received));
-        socket.queuedBytes += arrived.payload.size();
-        socket.datagrams.push_back(std::move(arrived));
+        if (const auto pulled = pullHostDatagram(socket); pulled) return *pulled;
     }
     if (socket.datagrams.empty()) return socket.receiveShutdown ? 0 : uint64_t(-11);
     const auto& packet = socket.datagrams.front();
@@ -12637,6 +12702,23 @@ bool ProbeLinux::syscall(Machine& machine) {
                 return true;
             };
             if (consume(current->pendingSignals) || consume(current->process->pendingSignals)) break;
+            // A child that has ended is kept apart from the other pending signals. A program that
+            // blocks SIGCHLD and waits for it here, as toybox's timeout does, is told of it too.
+            if (auto& child = current->process->childSignal; (requested & sigChildMask) && child) {
+                SignalWords info{};
+                info[0] = sigChild;
+                info[2] = child->code;
+                info[4] = child->pid;
+                info[5] = child->uid;
+                info[6] = child->status;
+                if (x[1] && !writeGuest(machine, x[1], info)) {
+                    x[0] = uint64_t(-14);
+                } else {
+                    x[0] = sigChild;
+                    child.reset();
+                }
+                break;
+            }
             if (timeout && timeout->count() == 0) { x[0] = uint64_t(-11); break; }
             if (timeout) {
                 const auto now = steady_clock::now();

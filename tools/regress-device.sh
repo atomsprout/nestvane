@@ -57,7 +57,9 @@ run '{"NESTVANE_DISPLAY_HZ":"120","NESTVANE_TEST_SWIPE":"1","NESTVANE_DISPLAY_RA
 echo "| Frames a second, finger moving, 120 Hz (lowest and highest second) | $(rates)|"
 run '{"NESTVANE_DISPLAY_HZ":"60","NESTVANE_TEST_SWIPE":"1","NESTVANE_DISPLAY_RATE":"1","NESTVANE_TEST_TAPS":"drag:0:0:10000"}' 42 display-rate.txt
 echo "| The same at 60 Hz | $(rates)|"
-run '{"NESTVANE_TEST_TEXT":"555-0100|Regression 482913","NESTVANE_LOG_MATCH":"NestvaneSms"}' 45 boot-progress.txt
+# With the whole log: the filtered log is cut off at 256 KiB, which the start of Android alone can
+# fill, and then the line this step looks for is not in it.
+run '{"NESTVANE_TEST_TEXT":"555-0100|Regression 482913","NESTVANE_LOG_ALL":"1"}' 50 boot-progress.txt
 echo "| Text message announced to apps | $(grep -a -c 'NestvaneSms: sent SMS_RECEIVED' $out/boot-progress.txt 2>/dev/null) of 1 |"
 if [[ -n "$apk" && -n "$package" ]]; then
     name=${apk:t}

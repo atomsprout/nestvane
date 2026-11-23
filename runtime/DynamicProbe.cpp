@@ -952,6 +952,11 @@ on property:sys.boot_completed=1
 on load_persist_props_action
     setprop persist.sys.timezone ${ro.boot.nestvane.timezone}
 
+# The display's density, when the host gives one (NESTVANE_DISPLAY_DENSITY): before the compositor
+# starts, which is what reads it.
+on early-init && property:ro.boot.nestvane.density=*
+    setprop qemu.sf.lcd_density ${ro.boot.nestvane.density}
+
 service nestvane-trim /system/bin/sh /system/etc/nestvane/trim.sh
     user root
     group root
@@ -1089,6 +1094,11 @@ service nestvane-trim /system/bin/sh /system/etc/nestvane/trim.sh
             if (const int hertz = std::atoi(std::getenv("NESTVANE_DISPLAY_HZ") ? std::getenv("NESTVANE_DISPLAY_HZ") : ""); hertz >= 10 && hertz <= 240) {
                 if (!configuration.empty() && configuration.back() != '\n') configuration += '\n';
                 configuration += "androidboot.qemu.vsync = \"" + std::to_string(hertz) + "\"\n";
+            }
+            // NESTVANE_DISPLAY_DENSITY is how many of the display's pixels make an inch for Android.
+            if (const int density = std::atoi(std::getenv("NESTVANE_DISPLAY_DENSITY") ? std::getenv("NESTVANE_DISPLAY_DENSITY") : ""); density >= 120 && density <= 640) {
+                if (!configuration.empty() && configuration.back() != '\n') configuration += '\n';
+                configuration += "androidboot.nestvane.density = \"" + std::to_string(density) + "\"\n";
             }
             linux.mount("/proc/bootconfig", {reinterpret_cast<const uint8_t*>(configuration.data()), configuration.size()});
         }

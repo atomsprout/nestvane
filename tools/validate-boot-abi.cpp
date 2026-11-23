@@ -3568,8 +3568,8 @@ int main() {
             if (fd < 256) assert(invoke(57, {fd}) == 0);
             return fd;
         };
-        for (unsigned i = 0; i < 4096; ++i) assert(createFile("/data/f" + std::to_string(i)) < 256);
-        for (unsigned i = 0; i < 2048; ++i) assert(createFile("/test/f" + std::to_string(i)) < 256);
+        for (unsigned i = 0; i < 65536; ++i) assert(createFile("/data/f" + std::to_string(i)) < 256);
+        for (unsigned i = 0; i < 8192; ++i) assert(createFile("/test/f" + std::to_string(i)) < 256);
         assert(createFile("/data/overflow") == uint64_t(-28));
         assert(createFile("/test/overflow") == uint64_t(-28));
 
@@ -3593,12 +3593,12 @@ int main() {
         assert(createFile("/test/replacement") < 256);
         assert(createFile("/test/overflow") == uint64_t(-28));
         const auto report = storage.workerReport(task);
-        assert(report.find("persistent files=4096/4096 transient files=2048/2048 bpffs pins=2048/2048") !=
+        assert(report.find("persistent files=65536/65536 transient files=8192/8192 bpffs pins=2048/2048") !=
                std::string::npos);
         writePath(base, "/data");
         assert(invoke(43, {base, attr}) == 0);
         uint64_t count = 0;
-        assert(task.load64(attr + 5 * sizeof(uint64_t), count) && count == 4096);
+        assert(task.load64(attr + 5 * sizeof(uint64_t), count) && count == 65536);
         assert(task.load64(attr + 6 * sizeof(uint64_t), count) && count == 0);
 
         writePath(base, "/data/f4095");
@@ -3611,7 +3611,7 @@ int main() {
         const auto path = reopened.bootGuestFile("/data/f4095");
         const uint64_t expected = 0x0123456789abcdef;
         assert(path.size() == sizeof(expected) && !std::memcmp(path.data(), &expected, sizeof(expected)));
-        assert(reopened.workerReport(task).find("persistent files=4096/4096 transient files=0/2048") !=
+        assert(reopened.workerReport(task).find("persistent files=65536/65536 transient files=0/8192") !=
                std::string::npos);
         assert(unlink(database) == 0);
     }
@@ -7371,7 +7371,7 @@ int main() {
                 return freeBlocks;
             };
             const auto initialFree = dataFreeBlocks();
-            for (unsigned i = 0; i < 2048; ++i) {
+            for (unsigned i = 0; i < 8192; ++i) {
                 const auto path = "/metadata/" + std::to_string(i);
                 put(base, path.c_str());
                 const auto file = invoke(quota, 56, {cwd, base, 0xc1, 0600});

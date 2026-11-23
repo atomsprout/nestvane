@@ -8,7 +8,7 @@ You sign it with your own Apple developer identity first. This page says how, an
 
 ## What you need
 
-- An iPhone with iOS 17 or later and at least 6 GB of memory. Tested on iPhone 14 (6 GB, iOS 17.3), iPhone 15 Pro and
+- An iPhone or iPad with iOS 17 or later and at least 6 GB of memory. Tested on iPhone 14 (6 GB, iOS 17.3), iPhone 15 Pro and
   iPhone 17 Pro (8 and 12 GB). Android's footprint is about 2.3 to 2.7 GB; an iPhone 11, whose limit for one app is
   about 2.3 GB, cannot hold it.
 - The newer the phone, the faster Android runs: it starts in about 7 seconds on an iPhone 17 Pro, about 8 on an iPhone 15 Pro, and 12 to 20 on an iPhone 14.

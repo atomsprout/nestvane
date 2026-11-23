@@ -158,12 +158,24 @@ struct DisplaySize {
     uint32_t height;
 };
 
+// How many pixels Android's display has. On an iPhone it is a fixed number, shaped like the view. An
+// iPad's view is several times as large: with the same number of pixels everything on it was a
+// phone's screen blown up. There Android gets two pixels for each square point of the view, about
+// what an iPhone's view comes to, so things are the size they are on a phone and Android, finding
+// itself on a wide display, lays its screens out as on a tablet.
+size_t GuestPixelBudget(CGSize viewport) {
+    if (UIDevice.currentDevice.userInterfaceIdiom != UIUserInterfaceIdiomPad) return displayPixelBudget;
+    constexpr size_t most = 2400 * 1000;
+    return std::clamp(size_t(viewport.width * viewport.height * 2.0), displayPixelBudget, most);
+}
+
 DisplaySize GuestDisplaySize(CGSize viewport) {
     if (viewport.width <= 0 || viewport.height <= 0) return {defaultGuestWidth, defaultGuestHeight};
     const double aspect = std::clamp(double(viewport.width / viewport.height), 0.25, 4.0);
+    const double budget = double(GuestPixelBudget(viewport));
     const auto evenPixels = [](double length) { return uint32_t(2 * std::lround(length / 2)); };
-    return {evenPixels(std::sqrt(displayPixelBudget * aspect)),
-            evenPixels(std::sqrt(displayPixelBudget / aspect))};
+    return {evenPixels(std::sqrt(budget * aspect)),
+            evenPixels(std::sqrt(budget / aspect))};
 }
 
 UIButton* ToolbarButton(NSString* symbol, NSString* label, id target, SEL action) {
@@ -1389,6 +1401,14 @@ static void FollowGuestAudio() {
             });
             // The rate Android composes at is fixed when it starts (GuestDisplayRate).
             setenv("NESTVANE_DISPLAY_HZ", @(GuestDisplayRate()).stringValue.UTF8String, 1);
+            // On an iPad the display has several times a phone's pixels. Android is told they are as
+            // many times denser, so that its screens are laid out as on a phone and drawn sharp: left
+            // at the usual density it takes the display for a tablet's, and the launcher's taskbar,
+            // which a tablet gets, stops the launcher with an error in this system.
+            if (!getenv("NESTVANE_DISPLAY_DENSITY") && displaySize.width > defaultGuestWidth) {
+                const int density = int(std::lround(160.0 * displaySize.width / 590.0));
+                setenv("NESTVANE_DISPLAY_DENSITY", @(density).stringValue.UTF8String, 1);
+            }
             // Android's sound comes out of the phone.
             static dispatch_source_t audioWatch;
             static dispatch_once_t audioWatched;
@@ -1503,12 +1523,17 @@ static void FollowGuestAudio() {
                     // NESTVANE_TEST_TEXT="<sender>|<text>" hands Android a text message, as the menu does,
                     // ten seconds after the launcher is displayed.
                     if (NSString* message = NSProcessInfo.processInfo.environment[@"NESTVANE_TEST_TEXT"]; message && apkInbox) {
-                        NSArray<NSString*>* parts = [message componentsSeparatedByString:@"|"];
-                        if (parts.count == 2)
-                            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC),
-                                           dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                        // Several messages, separated by ";;", go in two seconds apart.
+                        NSArray<NSString*>* messages = [message componentsSeparatedByString:@";;"];
+                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC),
+                                       dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                            for (NSString* one in messages) {
+                                NSArray<NSString*>* parts = [one componentsSeparatedByString:@"|"];
+                                if (parts.count != 2) continue;
                                 apkInbox->submitText(parts[0].UTF8String, parts[1].UTF8String);
-                            });
+                                sleep(2);
+                            }
+                        });
                     }
                     // NESTVANE_TEST_SWIPE=1 checks touch without a finger: some seconds after the launcher
                     // is displayed, a swipe up the middle of the screen goes in through the same device

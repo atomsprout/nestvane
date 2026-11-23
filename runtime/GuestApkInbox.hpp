@@ -84,6 +84,7 @@ public:
         if (stopped || texts.size() >= 16 || sender.empty() || text.empty()) return false;
         const auto message = "text\n" + line(sender) + "\n" + line(text) + "\n";
         texts.emplace_back(message.begin(), message.end());
+        textKinds.push_back(true);
         if (broadcasts.size() < 16) {
             const auto announced = line(sender) + "\n" + line(text) + "\n";
             broadcasts.emplace_back(announced.begin(), announced.end());
@@ -96,7 +97,8 @@ public:
     static constexpr std::string_view broadcastDevice = "/dev/nestvane-sms";
     bool takeBroadcast(std::vector<uint8_t>& message) {
         std::lock_guard lock(mutex);
-        if (broadcasts.empty()) return false;
+        if (broadcasts.empty() || !announceable) return false;
+        --announceable;
         message = std::move(broadcasts.front());
         broadcasts.erase(broadcasts.begin());
         return true;
@@ -108,6 +110,7 @@ public:
             if (!(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z') && !(c >= '0' && c <= '9') && c != '.' && c != '_') return false;
         const auto message = "launch\n" + std::string(package) + "\n\n";
         texts.emplace_back(message.begin(), message.end());
+        textKinds.push_back(false);
         return true;
     }
     bool submitDisplayRate(int framesPerSecond) {
@@ -115,13 +118,20 @@ public:
         if (stopped || texts.size() >= 16 || framesPerSecond < 0 || framesPerSecond > 240) return false;
         const auto message = "rate\n" + std::to_string(framesPerSecond) + "\n\n";
         texts.emplace_back(message.begin(), message.end());
+        textKinds.push_back(false);
         return true;
     }
     bool takeText(std::vector<uint8_t>& message) {
         std::lock_guard lock(mutex);
+        // The reader is back for more: what it took before has been dealt with, and a text message
+        // among it may now be announced. First into Messaging, then to the apps, as on a phone; and
+        // the two tools that do it, each a Java program starting up, do not start at the same moment.
+        announceable += std::exchange(textsBeingStored, 0);
         if (texts.empty()) return false;
         message = std::move(texts.front());
         texts.erase(texts.begin());
+        if (textKinds.front()) ++textsBeingStored;
+        textKinds.erase(textKinds.begin());
         return true;
     }
 
@@ -143,6 +153,8 @@ private:
     std::weak_ptr<Request> active;
     std::vector<std::vector<uint8_t>> texts;
     std::vector<std::vector<uint8_t>> broadcasts;
+    std::vector<bool> textKinds;  // for each of texts: whether it is a text message
+    unsigned textsBeingStored = 0, announceable = 0;
     bool stopped = false;
 };
 

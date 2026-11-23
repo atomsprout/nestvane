@@ -10,7 +10,7 @@ Unless noted, the build is a development-signed Release build.
 ## Requirements
 
 - iOS 17 or later, and at least 6 GB of memory.
-- Tested on iPhone 14 (iOS 17.3.1), iPhone 15 Pro and iPhone 17 Pro. Earlier stages were also run on an iPhone 11 and an iPad Air (M3).
+- Tested on iPhone 14 (iOS 17.3.1), iPhone 15 Pro, iPhone 17 Pro and iPad Air 11-inch (M3). On an iPad the display is sharp and fills the screen, upright only, laid out as on a phone. Earlier stages were also run on an iPhone 11 and an iPad Air (M3).
 - The app needs the Extended Virtual Addressing and Increased Memory Limit entitlements.
 
 ## What works

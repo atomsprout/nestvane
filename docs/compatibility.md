@@ -57,6 +57,8 @@ the kernel layer no longer refuses memory that gains execute permission, which t
 ## What stands in the way of more
 
 - **No WebView.** An app that shows a web page inside itself says that Android System WebView is being updated.
+- **A limit on how many files Android's data may hold** was reached with some thirty apps installed: no further app
+  would start. It was 4,096 files and 2,048 directories and is now sixteen times that.
 - **Native libraries are interpreted,** at about forty million instructions a second. An app that does real work
   in its own library is slow.
 - **No Google Play services.** Apps that need them were not tried.
