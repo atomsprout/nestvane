@@ -4,6 +4,22 @@ Nestvane starts Android 17 inside an iPhone app, without a just-in-time compiler
 This is the last report before the source is published: what the first release measures, on which phone, and
 where the numbers stop. Every figure comes from the lab record, [`results/G0.md`](../results/G0.md).
 
+## Version 1.4
+
+Measured on 23 November 2026 with the release build of 1.4 and `tools/regress-device.sh`.
+
+| | iPhone 14 (iOS 17.3.1), 9 apps | iPad Air 11-inch M3 (iPadOS 27.0.1), 1 app |
+| --- | --- | --- |
+| Boot to the Android home screen | 10.9 s; 16.5 s the first time after installing | 7.4 s; 12.1 s the first time after installing |
+| Memory footprint at the home screen | 2.43 GB | 2.37 to 2.40 GB |
+| Android's display | 578 × 1064 pixels | 1160 × 1578 pixels |
+| A finger kept moving on a list | up to 60 frames a second | up to 60 |
+| Installing an APK | 0.5 s | 0.3 s |
+
+On the iPhone 14 a 720p video played at 30 to 31 frames a second, and `ping` to 1.1.1.1 took 12 to 35 ms. On an
+iPhone 17 Pro with thirty apps, before the last two changes of this version: 7.5 s, 3.04 to 3.08 GB, up to 120
+frames a second.
+
 ## Version 1.3
 
 Measured on 23 November 2026 with the release build of 1.3 and `tools/regress-device.sh`.
