@@ -6215,6 +6215,7 @@ bool ProbeLinux::switchThread(Machine& machine, std::chrono::steady_clock::time_
     bool runnable = false;
     const auto updateTimers = [&]() {
         nextDeadline = refreshTimers(now);
+        fireAlarms(now, nextDeadline);
         for (auto& [tid, thread] : threads) {
             const auto wait = thread.wait;
             if (wait == Wait::native) {
@@ -6419,6 +6420,9 @@ bool ProbeLinux::forkProcess(Machine& machine) {
     Thread child;
     child.process = std::make_shared<Process>(*current->process);
     if (child.process->mdwe & mdweNoInherit) child.process->mdwe = 0;
+    // A timer belongs to the process that set it.
+    child.process->alarmAt.reset();
+    child.process->alarmEvery = {};
     child.process->childSignal.reset();
     child.process->pendingSignals.clear();
     child.process->cpuTime = child.process->reapedCpuTime = {};
@@ -8777,10 +8781,59 @@ void ProbeLinux::deliverPendingCaughtSignal(Machine& machine) {
 // with guest handlers use the separate signal-frame delivery path.
 static bool defaultFatalSignal(uint32_t signal) {
     switch (signal) {
-        case 4: case 5: case 6: case 7: case 8: case 9: case 11: case 31:
+        case 4: case 5: case 6: case 7: case 8: case 9: case 11: case 14: case 31:
             return true;
         default:
             return false;
+    }
+}
+
+void ProbeLinux::fireAlarms(std::chrono::steady_clock::time_point now,
+                            std::optional<std::chrono::steady_clock::time_point>& next) {
+    constexpr uint32_t sigAlrm = 14;
+    std::vector<Process*> ended;
+    for (const auto& [id, process] : processes) {
+        if (!process->alarmAt) continue;
+        if (*process->alarmAt > now) {
+            if (!next || *process->alarmAt < *next) next = process->alarmAt;
+            continue;
+        }
+        if (process->alarmEvery.count() > 0) {
+            while (*process->alarmAt <= now) *process->alarmAt += process->alarmEvery;
+            if (!next || *process->alarmAt < *next) next = process->alarmAt;
+        } else {
+            process->alarmAt.reset();
+        }
+        const auto handler = process->signalActions[sigAlrm][0];
+        if (handler == 1) continue;  // ignored
+        if (handler == 0) {          // the default: the process ends
+            if (process->id != pid) ended.push_back(process);
+            continue;
+        }
+        // To a thread that does not block it; the scheduler's pass that follows wakes it for the handler.
+        for (auto& [tid, thread] : threads) {
+            if (thread.process.get() != process || thread.wait == Wait::exited || thread.wait == Wait::native ||
+                (thread.signalMask & (1ULL << (sigAlrm - 1)))) continue;
+            if (!thread.pendingSignals.contains(sigAlrm)) {
+                SignalWords info{};
+                info[0] = sigAlrm;
+                info[2] = 0x80;  // SI_KERNEL
+                thread.pendingSignals.emplace(sigAlrm, info);
+            }
+            break;
+        }
+    }
+    for (Process* process : ended) {
+        recallNativeThreads(process);
+        finishProcess(*process, sigAlrm, true);
+        const auto id = process->id;
+        if (current->process.get() == process) {
+            current->wait = Wait::exited;
+            sliceEnd = 0;
+        }
+        std::erase_if(threads, [&](const auto& task) {
+            return task.first != currentTid && task.second.process->id == id;
+        });
     }
 }
 
@@ -11657,6 +11710,45 @@ bool ProbeLinux::syscall(Machine& machine) {
         }
         case 73: return poll(machine); // ppoll
         case 98: return futex(machine);
+        case 102: case 103: { // getitimer, setitimer
+            // The real-time timer, which alarm and the timeouts of command-line tools are made of.
+            // The two that count a process's own running time are taken and never go off.
+            using namespace std::chrono;
+            const bool set = number == 103;
+            if (x[0] > 2) { x[0] = invalid; break; }
+            std::array<int64_t, 4> wanted{};  // the interval, then the time until the first, each as seconds and microseconds
+            if (set && x[1] && !machine.readInto(x[1], {reinterpret_cast<uint8_t*>(wanted.data()), sizeof(wanted)})) {
+                x[0] = uint64_t(-14);
+                break;
+            }
+            if (wanted[0] < 0 || wanted[2] < 0 || wanted[1] < 0 || wanted[1] >= 1'000'000 || wanted[3] < 0 || wanted[3] >= 1'000'000) {
+                x[0] = invalid;
+                break;
+            }
+            auto& process = *current->process;
+            const uint64_t report = set ? x[2] : x[1];
+            if (report) {
+                std::array<int64_t, 4> before{};
+                if (x[0] == 0 && process.alarmAt) {
+                    const auto left = std::max(microseconds{1}, duration_cast<microseconds>(*process.alarmAt - steady_clock::now()));
+                    before = {process.alarmEvery.count() / 1'000'000, process.alarmEvery.count() % 1'000'000,
+                              left.count() / 1'000'000, left.count() % 1'000'000};
+                }
+                if (!machine.write(report, {reinterpret_cast<const uint8_t*>(before.data()), sizeof(before)})) {
+                    x[0] = uint64_t(-14);
+                    break;
+                }
+            }
+            if (set && x[0] == 0) {
+                const auto first = seconds(wanted[2]) + microseconds(wanted[3]);
+                process.alarmEvery = seconds(wanted[0]) + microseconds(wanted[1]);
+                if (x[1] && first.count() > 0) process.alarmAt = steady_clock::now() + first;
+                else process.alarmAt.reset();
+                sliceEnd = 0;  // the scheduler has a new time to wake for
+            }
+            x[0] = 0;
+            break;
+        }
         case 101: case 115: { // nanosleep / clock_nanosleep
             using namespace std::chrono;
             const auto now = steady_clock::now();

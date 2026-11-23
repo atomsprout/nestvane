@@ -594,7 +594,23 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
             const bool timeSyscall = syscallCount >= nextSyscallSample;
             const auto syscallStart = timeSyscall ? steady_clock::now() : steady_clock::time_point{};
             const auto callBegan = nativeExecution ? steady_clock::now() : steady_clock::time_point{};
+            // NESTVANE_TRACE_PROGRAM=<part of a program's path> puts that program's system calls into
+            // the Android log: the number, the first four arguments, and what came back.
+            static const char* const tracedProgram = std::getenv("NESTVANE_TRACE_PROGRAM");
+            const bool traceCall = tracedProgram && linux.androidLogObserver && !linux.blocked() &&
+                linux.currentExecutable().find(tracedProgram) != std::string::npos;
+            const std::array<uint64_t, 4> callArguments{cpu.x[0], cpu.x[1], cpu.x[2], cpu.x[3]};
+            const auto callProcess = traceCall ? linux.processId() : 0;
             const bool handled = linux.syscall(machine);
+            if (traceCall) {
+                char line[200];
+                std::snprintf(line, sizeof(line), "native execution: call %llu(0x%llx, 0x%llx, 0x%llx, 0x%llx) in PID %llu -> %s0x%llx",
+                              static_cast<unsigned long long>(syscall), static_cast<unsigned long long>(callArguments[0]),
+                              static_cast<unsigned long long>(callArguments[1]), static_cast<unsigned long long>(callArguments[2]),
+                              static_cast<unsigned long long>(callArguments[3]), static_cast<unsigned long long>(callProcess),
+                              !handled ? "not handled " : linux.blocked() ? "waits " : "", static_cast<unsigned long long>(cpu.x[0]));
+                linux.androidLogObserver(line);
+            }
             // NESTVANE_TRACE_DENIED=1: the calls that end in "permission denied", with where the path leads.
             if (static const bool traced = std::getenv("NESTVANE_TRACE_DENIED"); traced && cpu.x[0] == uint64_t(-13) && linux.androidLogObserver) {
                 const auto path = pathArgument(machine, cpu.x[1]);

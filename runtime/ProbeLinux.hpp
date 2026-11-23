@@ -88,6 +88,7 @@ struct ProbeLinux {
     uint64_t parentProcessId() const { return current->process->parent; }
     bool suspendChild();
     bool blocked() const { return current->wait != Wait::none; }
+    const std::string& currentExecutable() const { return current->process->executable; }
     bool schedule(Machine& machine, std::chrono::steady_clock::time_point deadline =
                   std::chrono::steady_clock::time_point::max(), const std::stop_token& stop = {}) {
         if (!(machine.cpu.retired & 4095) && graphicsDma) serviceGraphicsDma();
@@ -586,6 +587,8 @@ private:
     void fileEvent(std::string_view path, uint32_t mask, bool directory = false, uint32_t cookie = 0);
     void fileMoved(std::string_view source, std::string_view destination, bool directory);
     std::optional<std::chrono::steady_clock::time_point> refreshTimers(std::chrono::steady_clock::time_point now);
+    // Sends SIGALRM for the interval timers that are due, and brings |next| forward to the earliest one that is not.
+    void fireAlarms(std::chrono::steady_clock::time_point now, std::optional<std::chrono::steady_clock::time_point>& next);
     struct Pipe {
         std::deque<uint8_t> data;
         std::weak_ptr<int> reader, writer;
@@ -944,6 +947,10 @@ private:
         uint64_t group = 0, session = 0;
         uint32_t umask = 0022, secureBits = 0;
         uint8_t mdwe = 0;
+        // The real-time interval timer (setitimer, which alarm is made of): when SIGALRM is due
+        // next, and how long after that again.
+        std::optional<std::chrono::steady_clock::time_point> alarmAt;
+        std::chrono::microseconds alarmEvery{};
         int oomScoreAdjustment = 0, minimumOomScoreAdjustment = 0;
         std::array<uint32_t, 3> userIds{}, groupIds{}; // real, effective, saved
         std::vector<uint32_t> groups;

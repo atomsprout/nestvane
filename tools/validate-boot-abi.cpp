@@ -5106,8 +5106,38 @@ int main() {
         // libraries laid out for 4 KiB pages that way, and zygote sets this for every app.
         assert(invoke(222, {0, pageSize, 7, 0x22, uint64_t(-1), 0}) == uint64_t(-13));
         assert(invoke(226, {area, pageSize, 5}) == 0 && invoke(226, {area, pageSize, 1}) == 0);
+        // The real-time interval timer: set, read back, replaced with the old value reported, and not
+        // inherited by a child.
+        {
+            const std::array<int64_t, 4> tenSeconds{0, 0, 10, 0}, every{1, 500000, 2, 0};
+            std::array<int64_t, 4> read{};
+            const auto bytes = [](const auto& value) { return std::span(reinterpret_cast<const uint8_t*>(value.data()), sizeof(value)); };
+            const auto load = [&](uint64_t address) {
+                assert(guardedMachine.readInto(address, {reinterpret_cast<uint8_t*>(read.data()), sizeof(read)}));
+            };
+            assert(guardedMachine.write(base + 0x100, bytes(tenSeconds)) && guardedMachine.write(base + 0x140, bytes(every)));
+            assert(invoke(102, {0, base + 0x180}) == 0);
+            load(base + 0x180);
+            assert(read == (std::array<int64_t, 4>{}));
+            assert(invoke(103, {0, base + 0x100, 0}) == 0 && invoke(102, {0, base + 0x180}) == 0);
+            load(base + 0x180);
+            assert(read[0] == 0 && read[1] == 0 && (read[2] == 9 || (read[2] == 10 && read[3] == 0)));
+            assert(invoke(103, {0, base + 0x140, base + 0x180}) == 0);
+            load(base + 0x180);
+            assert(read[2] == 9 || read[2] == 10);
+            assert(invoke(102, {0, base + 0x180}) == 0);
+            load(base + 0x180);
+            assert(read[0] == 1 && read[1] == 500000 && (read[2] == 1 || read[2] == 2));
+            assert(invoke(103, {3, base + 0x100, 0}) == uint64_t(-22) && invoke(103, {1, base + 0x100, 0}) == 0);
+        }
         assert(invoke(220, {0x1200011, 0, 0, 0, base}) == 2);
         assert(guarded.schedule(guardedMachine) && guarded.processId() == 2);
+        {
+            std::array<int64_t, 4> read{1, 1, 1, 1};
+            assert(invoke(102, {0, base + 0x180}) == 0);
+            assert(guardedMachine.readInto(base + 0x180, {reinterpret_cast<uint8_t*>(read.data()), sizeof(read)}));
+            assert(read == (std::array<int64_t, 4>{}));
+        }
         assert(invoke(167, {56}) == 0 && invoke(226, {area, pageSize, 5}) == 0);
     }
     assert(machine.store64(base + 0x680, 0) && machine.store64(base + 0x688, 0));

@@ -349,8 +349,19 @@ inline int64_t receiveFrom(int fd, std::span<uint8_t> bytes, uint32_t family, Ad
 inline int events(int fd) {
     pollfd entry{fd, POLLIN | POLLOUT, 0};
     if (::poll(&entry, 1, 0) <= 0) return 0;
-    return (entry.revents & POLLIN ? 1 : 0) | (entry.revents & POLLOUT ? 4 : 0) | (entry.revents & POLLERR ? 8 : 0) |
-           (entry.revents & POLLHUP ? 16 : 0);
+    int result = (entry.revents & POLLIN ? 1 : 0) | (entry.revents & POLLOUT ? 4 : 0) | (entry.revents & POLLERR ? 8 : 0);
+    if (entry.revents & POLLHUP) {
+        // This system says "hung up" as soon as one direction is shut, also when it was this side
+        // that finished sending and the answer is still to come. Linux says it when nothing more
+        // can arrive. So look: data or the end of the stream is something to read; nothing yet is
+        // no event at all, and a program that sent its request and waits for the reply goes on waiting.
+        char byte;
+        const auto waiting = ::recv(fd, &byte, 1, MSG_PEEK | MSG_DONTWAIT);
+        if (waiting > 0) result |= 1;
+        else if (waiting == 0) result |= 1 | 16;
+        else if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) result |= 16;
+    }
+    return result;
 }
 
 } // namespace nestvane::hostnet
