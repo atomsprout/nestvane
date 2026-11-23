@@ -1011,6 +1011,16 @@ static void FollowGuestAudio() {
 - (void)runValidation {
     const auto validationStarted = NSProcessInfo.processInfo.systemUptime;
     self.run.enabled = NO;
+    // The app declares iOS 26 as its minimum, and iOS itself refuses to install it on anything older.
+    // A sideloading tool can take that declaration out; then the app says so here and starts nothing,
+    // since it has never been run on an older system. NESTVANE_TEST_OLD_SYSTEM=1 shows the message.
+    if (NSProcessInfo.processInfo.operatingSystemVersion.majorVersion < 26 || getenv("NESTVANE_TEST_OLD_SYSTEM")) {
+        self.status.text = [NSString stringWithFormat:@"Nestvane needs iOS 26 or later.\nThis iPhone has iOS %@.",
+            UIDevice.currentDevice.systemVersion];
+        self.status.numberOfLines = 0;
+        self.status.textAlignment = NSTextAlignmentCenter;
+        return;
+    }
     NSString* installer = [NSBundle.mainBundle.resourcePath
         stringByAppendingPathComponent:@"android17-init-root/system/bin/nestvane-apk-install"];
     _apkInbox = [NSFileManager.defaultManager fileExistsAtPath:installer] ?
