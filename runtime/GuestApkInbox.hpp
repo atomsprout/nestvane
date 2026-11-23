@@ -65,9 +65,12 @@ public:
         return request;
     }
 
-    // A text message the person wrote in the app, for Android to show as one it received: "sender\n
-    // text\n". The guest's service (text.sh in DynamicProbe.cpp) opens textDevice, which waits here
-    // for the next one. Nothing is sent anywhere: the guest has no phone process and no radio.
+    // What the app asks of Android through its service (text.sh in DynamicProbe.cpp), which opens
+    // textDevice and waits here for the next request: three lines, the kind and two fields.
+    // "text", sender, text: a text message the person wrote in the app, for Android to show as one
+    // it received. Nothing is sent anywhere: the guest has no phone process and no radio.
+    // "rate", frames a second, nothing: the most frames a second apps are to draw, lowered while
+    // the phone is hot; 0 lifts it again.
     static constexpr std::string_view textDevice = "/dev/nestvane-text";
     static constexpr std::string_view textReader = "/system/bin/sh";
     bool submitText(std::string_view sender, std::string_view text) {
@@ -78,7 +81,14 @@ public:
         };
         std::lock_guard lock(mutex);
         if (stopped || texts.size() >= 16 || sender.empty() || text.empty()) return false;
-        const auto message = line(sender) + "\n" + line(text) + "\n";
+        const auto message = "text\n" + line(sender) + "\n" + line(text) + "\n";
+        texts.emplace_back(message.begin(), message.end());
+        return true;
+    }
+    bool submitDisplayRate(int framesPerSecond) {
+        std::lock_guard lock(mutex);
+        if (stopped || texts.size() >= 16 || framesPerSecond < 0 || framesPerSecond > 240) return false;
+        const auto message = "rate\n" + std::to_string(framesPerSecond) + "\n\n";
         texts.emplace_back(message.begin(), message.end());
         return true;
     }

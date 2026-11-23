@@ -1,0 +1,485 @@
+diff --git a/host/CMakeLists.txt b/host/CMakeLists.txt
+--- a/host/CMakeLists.txt
++++ b/host/CMakeLists.txt
+@@ -98,6 +98,9 @@
+     virtio_gpu_ring_blob.cpp
+     virtio_gpu_timelines.cpp
+     vsync_thread.cpp)
++if (APPLE)
++    list(APPEND stream-server-core-sources guest_display_surface.cpp)
++endif()
+ 
+ 
+ 
+diff --git a/host/frame_buffer.cpp b/host/frame_buffer.cpp
+--- a/host/frame_buffer.cpp
++++ b/host/frame_buffer.cpp
+@@ -32,6 +32,9 @@
+ 
+ #if GFXSTREAM_ENABLE_HOST_GLES
+ #include "host/gl/color_buffer_gl.h"
++#ifdef __APPLE__
++#include "guest_display_surface.h"
++#endif
+ #include "host/gl/gles_version_detector.h"
+ #include "OpenGLESDispatch/DispatchTables.h"
+ #include "OpenGLESDispatch/EGLDispatch.h"
+@@ -618,6 +621,7 @@
+     void getCombinedDisplaySize(int* w, int* h);
+ 
+     uint64_t readGuestDisplay(uint64_t after, uint8_t* rgba, size_t capacity, uint32_t* dimensions);
++    void* copyGuestDisplaySurface(uint64_t after, uint64_t* sequence, bool finish);
+     HandleType getLastPostedColorBuffer() { return m_lastPostedColorBuffer; }
+     void asyncWaitForGpuVulkanWithCb(uint64_t deviceHandle, uint64_t fenceHandle,
+                                      FenceCompletionCallback cb);
+@@ -920,6 +924,9 @@
+ 
+     EGLNativeWindowType m_subWin = {};
+     uint64_t m_guestDisplaySequence = 0;
++#ifdef __APPLE__
++    GuestDisplaySurfaces m_guestDisplaySurfaces;
++#endif
+     HandleType m_lastPostedColorBuffer = 0;
+     float m_zRot = 0;
+     float m_px = 0;
+@@ -3078,6 +3085,37 @@
+     return m_guestDisplaySequence;
+ #else
+     return 0;
++#endif
++}
++
++void* FrameBuffer::Impl::copyGuestDisplaySurface(uint64_t after, uint64_t* sequence, bool finish) {
++#if GFXSTREAM_ENABLE_HOST_GLES && defined(__APPLE__)
++    AutoLock lock(m_lock);
++    if (after >= m_guestDisplaySequence || !sequence) return nullptr;
++
++    auto colorBuffer = findColorBuffer(m_lastPostedColorBuffer);
++    if (!colorBuffer) return nullptr;
++    const uint32_t width = colorBuffer->getWidth();
++    const uint32_t height = colorBuffer->getHeight();
++    if (!width || !height || width > 4096 || height > 4096) return nullptr;
++
++    colorBuffer->touch();
++    auto* gl = colorBuffer->getColorBufferGl();
++    IOSurfaceRef surface = nullptr;
++    m_guestDisplaySurfaces.setFinish(finish);
++    if (!gl || !gl->withFramebuffer([&] {
++            surface = m_guestDisplaySurfaces.copyBoundFramebuffer(width, height);
++            return surface != nullptr;
++        })) {
++        return nullptr;
++    }
++    *sequence = m_guestDisplaySequence;
++    return surface;
++#else
++    (void)after;
++    (void)sequence;
++    (void)finish;
++    return nullptr;
+ #endif
+ }
+ 
+@@ -5213,6 +5251,10 @@
+     return mImpl->readGuestDisplay(after, rgba, capacity, dimensions);
+ }
+ 
++void* FrameBuffer::copyGuestDisplaySurface(uint64_t after, uint64_t* sequence, bool finish) {
++    return mImpl->copyGuestDisplaySurface(after, sequence, finish);
++}
++
+ HandleType FrameBuffer::getLastPostedColorBuffer() { return mImpl->getLastPostedColorBuffer(); }
+ 
+ void FrameBuffer::asyncWaitForGpuVulkanWithCb(uint64_t deviceHandle, uint64_t fenceHandle,
+diff --git a/host/frame_buffer.h b/host/frame_buffer.h
+--- a/host/frame_buffer.h
++++ b/host/frame_buffer.h
+@@ -427,6 +427,7 @@
+     static const uint32_t s_maxNumMultiDisplay = 11;
+ 
+     uint64_t readGuestDisplay(uint64_t after, uint8_t* rgba, size_t capacity, uint32_t* dimensions);
++    void* copyGuestDisplaySurface(uint64_t after, uint64_t* sequence, bool finish);
+     HandleType getLastPostedColorBuffer();
+     void asyncWaitForGpuVulkanWithCb(uint64_t deviceHandle, uint64_t fenceHandle, FenceCompletionCallback cb);
+     void asyncWaitForGpuVulkanQsriWithCb(uint64_t image, FenceCompletionCallback cb);
+diff --git a/host/gl/color_buffer_gl.cpp b/host/gl/color_buffer_gl.cpp
+--- a/host/gl/color_buffer_gl.cpp
++++ b/host/gl/color_buffer_gl.cpp
+@@ -532,6 +532,21 @@
+         outputParams.pixelDataType);
+ }
+ 
++bool ColorBufferGl::withFramebuffer(const std::function<bool()>& use) {
++    RecursiveScopedContextBind context(m_helper);
++    if (!context.isOk()) {
++        return false;
++    }
++    waitSync();
++    if (!bindFbo(&m_fbo, m_tex, m_needFboReattach)) {
++        return false;
++    }
++    m_needFboReattach = false;
++    const bool res = use();
++    unbindFbo();
++    return res;
++}
++
+ bool ColorBufferGl::readPixels(int x, int y, int width, int height, GfxstreamFormat pixelFormat,
+                                void* pixels, uint32_t pixelsSize) {
+     RecursiveScopedContextBind context(m_helper);
+diff --git a/host/gl/color_buffer_gl.h b/host/gl/color_buffer_gl.h
+--- a/host/gl/color_buffer_gl.h
++++ b/host/gl/color_buffer_gl.h
+@@ -22,6 +22,7 @@
+ #include <GLES3/gl3.h>
+ 
+ #include <array>
++#include <functional>
+ #include <memory>
+ #include <optional>
+ #include <unordered_map>
+@@ -106,6 +107,10 @@
+     GLuint getWidth() const { return m_width; }
+     GLuint getHeight() const { return m_height; }
+ 
++    // Runs |use| in this buffer's context with its framebuffer bound, for a caller that copies
++    // the content somewhere the translator does not know of.
++    bool withFramebuffer(const std::function<bool()>& use);
++
+     // Read the ColorBufferGl instance's pixel values into host memory.
+     bool readPixels(int x, int y, int width, int height, GfxstreamFormat pixelsFormat, void* pixels,
+                     uint32_t pixels_size);
+diff --git a/host/virtio_gpu_gfxstream_renderer.cpp b/host/virtio_gpu_gfxstream_renderer.cpp
+--- a/host/virtio_gpu_gfxstream_renderer.cpp
++++ b/host/virtio_gpu_gfxstream_renderer.cpp
+@@ -392,6 +392,15 @@
+     return fb ? fb->readGuestDisplay(after, rgba, capacity, dimensions) : 0;
+ }
+ 
++// The latest posted primary frame as an IOSurface the caller owns one reference to, copied on the
++// GPU: nothing is read back. Null means there is no frame newer than |after|, every surface is
++// still being shown, or this build cannot do it; the caller falls back to reading pixels the first
++// time that happens. |finish| waits for the GPU to complete the copy before returning.
++VG_EXPORT void* gfxstream_guest_display_surface(uint64_t after, uint64_t* sequence, int finish) {
++    auto* fb = gfxstream::host::FrameBuffer::getFB();
++    return fb ? fb->copyGuestDisplaySurface(after, sequence, finish != 0) : nullptr;
++}
++
+ // The guest closes this notification pipe when its last descriptor goes away.
+ VG_EXPORT void gfxstream_guest_color_buffer_release(uint32_t handle) {
+     if (auto* fb = FrameBuffer::getFB(); fb && handle) {
+diff --git a/host/guest_display_surface.cpp b/host/guest_display_surface.cpp
+new file mode 100644
+--- /dev/null
++++ b/host/guest_display_surface.cpp
+@@ -0,0 +1,260 @@
++// The guest's display as IOSurfaces, for Nestvane: the posted frame is copied on the GPU into a
++// surface the app hands to Core Animation, so no pixel passes through the CPU.
++//
++// The copy is made with ANGLE's own entry points, below gfxstream's GLES translator, because the
++// translator knows nothing of IOSurface pbuffers. It runs in the context the frame buffer binds for
++// a colour buffer's read, with that buffer's framebuffer bound, and puts back the two bindings it
++// changes.
++
++#include "guest_display_surface.h"
++
++#include <TargetConditionals.h>
++#include <dlfcn.h>
++
++#include "gfxstream/common/logging.h"
++
++namespace gfxstream {
++namespace host {
++namespace {
++
++#if TARGET_OS_IOS
++const char* const kEgl = "@executable_path/Frameworks/libEGL.framework/libEGL";
++const char* const kGles = "@executable_path/Frameworks/libGLESv2.framework/libGLESv2";
++#else
++const char* const kEgl = "libEGL.dylib";
++const char* const kGles = "libGLESv2.dylib";
++#endif
++
++enum : int {
++    kEglNone = 0x3038,
++    kEglWidth = 0x3057,
++    kEglHeight = 0x3056,
++    kEglRedSize = 0x3024,
++    kEglGreenSize = 0x3023,
++    kEglBlueSize = 0x3022,
++    kEglAlphaSize = 0x3021,
++    kEglSurfaceType = 0x3033,
++    kEglPbufferBit = 0x0001,
++    kEglBindToTextureRgba = 0x303A,
++    kEglTextureFormat = 0x3080,
++    kEglTextureRgba = 0x305E,
++    kEglTextureTarget = 0x3081,
++    kEglTexture2D = 0x305F,
++    kEglBackBuffer = 0x3084,
++    kEglIosurface = 0x3454,
++    kEglIosurfacePlane = 0x345A,
++    kEglTextureType = 0x345C,
++    kEglTextureInternalFormat = 0x345D,
++};
++enum : unsigned {
++    kGlTexture2D = 0x0DE1,
++    kGlTextureBinding2D = 0x8069,
++    kGlFramebuffer = 0x8D40,
++    kGlDrawFramebuffer = 0x8CA9,
++    kGlFramebufferBinding = 0x8CA6,
++    kGlColorAttachment0 = 0x8CE0,
++    kGlFramebufferComplete = 0x8CD5,
++    kGlColorBufferBit = 0x4000,
++    kGlNearest = 0x2600,
++    kGlScissorTest = 0x0C11,
++    kGlBgra = 0x80E1,
++    kGlUnsignedByte = 0x1401,
++};
++
++struct Angle {
++    void* (*eglGetCurrentDisplay)();
++    unsigned (*eglChooseConfig)(void*, const int*, void**, int, int*);
++    void* (*eglCreatePbufferFromClientBuffer)(void*, unsigned, void*, void*, const int*);
++    unsigned (*eglBindTexImage)(void*, void*, int);
++    unsigned (*eglReleaseTexImage)(void*, void*, int);
++    unsigned (*eglDestroySurface)(void*, void*);
++    int (*eglGetError)();
++    void (*glGenTextures)(int, unsigned*);
++    void (*glDeleteTextures)(int, const unsigned*);
++    void (*glBindTexture)(unsigned, unsigned);
++    void (*glGenFramebuffers)(int, unsigned*);
++    void (*glDeleteFramebuffers)(int, const unsigned*);
++    void (*glBindFramebuffer)(unsigned, unsigned);
++    void (*glFramebufferTexture2D)(unsigned, unsigned, unsigned, unsigned, int);
++    unsigned (*glCheckFramebufferStatus)(unsigned);
++    void (*glGetIntegerv)(unsigned, int*);
++    void (*glBlitFramebuffer)(int, int, int, int, int, int, int, int, unsigned, unsigned);
++    unsigned char (*glIsEnabled)(unsigned);
++    void (*glEnable)(unsigned);
++    void (*glDisable)(unsigned);
++    void (*glFlush)();
++    void (*glFinish)();
++    unsigned (*glGetError)();
++    bool ok = false;
++
++    Angle() {
++        void* egl = dlopen(kEgl, RTLD_NOW | RTLD_LOCAL);
++        void* gles = dlopen(kGles, RTLD_NOW | RTLD_LOCAL);
++        if (!egl || !gles) return;
++        ok = true;
++#define NESTVANE_ANGLE(library, name)                                              \
++    name = reinterpret_cast<decltype(name)>(dlsym(library, #name));               \
++    ok = ok && name
++        NESTVANE_ANGLE(egl, eglGetCurrentDisplay);
++        NESTVANE_ANGLE(egl, eglChooseConfig);
++        NESTVANE_ANGLE(egl, eglCreatePbufferFromClientBuffer);
++        NESTVANE_ANGLE(egl, eglBindTexImage);
++        NESTVANE_ANGLE(egl, eglReleaseTexImage);
++        NESTVANE_ANGLE(egl, eglDestroySurface);
++        NESTVANE_ANGLE(egl, eglGetError);
++        NESTVANE_ANGLE(gles, glGenTextures);
++        NESTVANE_ANGLE(gles, glDeleteTextures);
++        NESTVANE_ANGLE(gles, glBindTexture);
++        NESTVANE_ANGLE(gles, glGenFramebuffers);
++        NESTVANE_ANGLE(gles, glDeleteFramebuffers);
++        NESTVANE_ANGLE(gles, glBindFramebuffer);
++        NESTVANE_ANGLE(gles, glFramebufferTexture2D);
++        NESTVANE_ANGLE(gles, glCheckFramebufferStatus);
++        NESTVANE_ANGLE(gles, glGetIntegerv);
++        NESTVANE_ANGLE(gles, glBlitFramebuffer);
++        NESTVANE_ANGLE(gles, glIsEnabled);
++        NESTVANE_ANGLE(gles, glEnable);
++        NESTVANE_ANGLE(gles, glDisable);
++        NESTVANE_ANGLE(gles, glFlush);
++        NESTVANE_ANGLE(gles, glFinish);
++        NESTVANE_ANGLE(gles, glGetError);
++#undef NESTVANE_ANGLE
++    }
++};
++
++const Angle& angle() {
++    static const Angle sAngle;
++    return sAngle;
++}
++
++CFNumberRef number(int value) { return CFNumberCreate(nullptr, kCFNumberIntType, &value); }
++
++}  // namespace
++
++GuestDisplaySurfaces::~GuestDisplaySurfaces() {
++    // The context these belong to is going away with the frame buffer; only the surfaces are ours.
++    for (auto& slot : mSlots) {
++        if (slot.surface) CFRelease(slot.surface);
++    }
++}
++
++void GuestDisplaySurfaces::drop(Slot& slot) {
++    const Angle& gl = angle();
++    if (slot.framebuffer) gl.glDeleteFramebuffers(1, &slot.framebuffer);
++    if (slot.texture) gl.glDeleteTextures(1, &slot.texture);
++    if (slot.pbuffer) gl.eglDestroySurface(gl.eglGetCurrentDisplay(), slot.pbuffer);
++    if (slot.surface) CFRelease(slot.surface);
++    slot = {};
++}
++
++bool GuestDisplaySurfaces::make(Slot& slot, uint32_t width, uint32_t height) {
++    const Angle& gl = angle();
++    void* display = gl.eglGetCurrentDisplay();
++    if (!display) return false;
++
++    const int wanted[] = {kEglRedSize, 8, kEglGreenSize, 8, kEglBlueSize, 8, kEglAlphaSize, 8,
++                          kEglSurfaceType, kEglPbufferBit, kEglBindToTextureRgba, 1, kEglNone};
++    void* config = nullptr;
++    int configs = 0;
++    if (!gl.eglChooseConfig(display, wanted, &config, 1, &configs) || configs < 1) {
++        GFXSTREAM_ERROR("display surface: no EGL config, error 0x%x", gl.eglGetError());
++        return false;
++    }
++
++    const void* keys[] = {kIOSurfaceWidth, kIOSurfaceHeight, kIOSurfaceBytesPerElement,
++                          kIOSurfacePixelFormat};
++    const void* values[] = {number(int(width)), number(int(height)), number(4), number('BGRA')};
++    CFDictionaryRef properties = CFDictionaryCreate(nullptr, keys, values, 4,
++                                                    &kCFTypeDictionaryKeyCallBacks,
++                                                    &kCFTypeDictionaryValueCallBacks);
++    for (const void* value : values) CFRelease(value);
++    slot.surface = properties ? IOSurfaceCreate(properties) : nullptr;
++    if (properties) CFRelease(properties);
++    if (!slot.surface) return false;
++
++    const int attributes[] = {kEglWidth, int(width), kEglHeight, int(height),
++                              kEglIosurfacePlane, 0,
++                              kEglTextureTarget, kEglTexture2D,
++                              kEglTextureInternalFormat, int(kGlBgra),
++                              kEglTextureFormat, kEglTextureRgba,
++                              kEglTextureType, int(kGlUnsignedByte),
++                              kEglNone};
++    slot.pbuffer = gl.eglCreatePbufferFromClientBuffer(display, kEglIosurface, slot.surface, config,
++                                                       attributes);
++    if (!slot.pbuffer) {
++        GFXSTREAM_ERROR("display surface: no pbuffer for the IOSurface, error 0x%x",
++                        gl.eglGetError());
++        drop(slot);
++        return false;
++    }
++
++    int textureBefore = 0, framebufferBefore = 0;
++    gl.glGetIntegerv(kGlTextureBinding2D, &textureBefore);
++    gl.glGetIntegerv(kGlFramebufferBinding, &framebufferBefore);
++    gl.glGenTextures(1, &slot.texture);
++    gl.glBindTexture(kGlTexture2D, slot.texture);
++    const bool bound = gl.eglBindTexImage(display, slot.pbuffer, kEglBackBuffer);
++    gl.glGenFramebuffers(1, &slot.framebuffer);
++    gl.glBindFramebuffer(kGlFramebuffer, slot.framebuffer);
++    gl.glFramebufferTexture2D(kGlFramebuffer, kGlColorAttachment0, kGlTexture2D, slot.texture, 0);
++    const unsigned status = gl.glCheckFramebufferStatus(kGlFramebuffer);
++    gl.glBindFramebuffer(kGlFramebuffer, unsigned(framebufferBefore));
++    gl.glBindTexture(kGlTexture2D, unsigned(textureBefore));
++    if (!bound || status != kGlFramebufferComplete) {
++        GFXSTREAM_ERROR("display surface: bound %d, framebuffer status 0x%x, EGL error 0x%x", bound,
++                        status, gl.eglGetError());
++        drop(slot);
++        return false;
++    }
++    return true;
++}
++
++IOSurfaceRef GuestDisplaySurfaces::copyBoundFramebuffer(uint32_t width, uint32_t height) {
++    const Angle& gl = angle();
++    if (!gl.ok || mFailed) return nullptr;
++
++    if (width != mWidth || height != mHeight) {
++        for (auto& slot : mSlots) drop(slot);
++        mWidth = width;
++        mHeight = height;
++    }
++
++    // A surface Core Animation is not showing, and not the one handed out last: the app may not
++    // have given that one to a layer yet.
++    Slot* target = nullptr;
++    for (size_t step = 1; step <= kSlots && !target; ++step) {
++        Slot& slot = mSlots[(mLast + step) % kSlots];
++        if (&slot == &mSlots[mLast] && slot.surface) continue;
++        if (slot.surface && IOSurfaceIsInUse(slot.surface)) continue;
++        if (!slot.surface && !make(slot, width, height)) {
++            mFailed = true;
++            return nullptr;
++        }
++        target = &slot;
++    }
++    if (!target) return nullptr;
++
++    while (gl.glGetError()) {}
++    int source = 0;
++    gl.glGetIntegerv(kGlFramebufferBinding, &source);
++    const bool scissor = gl.glIsEnabled(kGlScissorTest);
++    if (scissor) gl.glDisable(kGlScissorTest);
++    gl.glBindFramebuffer(kGlDrawFramebuffer, target->framebuffer);
++    gl.glBlitFramebuffer(0, 0, int(width), int(height), 0, 0, int(width), int(height),
++                         kGlColorBufferBit, kGlNearest);
++    gl.glBindFramebuffer(kGlDrawFramebuffer, unsigned(source));
++    if (scissor) gl.glEnable(kGlScissorTest);
++    if (const unsigned error = gl.glGetError()) {
++        GFXSTREAM_ERROR("display surface: copy failed with GL error 0x%x", error);
++        mFailed = true;
++        return nullptr;
++    }
++    if (mFinish) gl.glFinish(); else gl.glFlush();
++
++    mLast = size_t(target - mSlots);
++    CFRetain(target->surface);
++    return target->surface;
++}
++
++}  // namespace host
++}  // namespace gfxstream
+diff --git a/host/guest_display_surface.h b/host/guest_display_surface.h
+new file mode 100644
+--- /dev/null
++++ b/host/guest_display_surface.h
+@@ -0,0 +1,45 @@
++#pragma once
++
++#include <IOSurface/IOSurfaceRef.h>
++
++#include <cstddef>
++#include <cstdint>
++
++namespace gfxstream {
++namespace host {
++
++// A few IOSurfaces the guest's posted frame is copied into in turn. See guest_display_surface.cpp.
++class GuestDisplaySurfaces {
++  public:
++    ~GuestDisplaySurfaces();
++
++    // Copies the framebuffer bound for reading in the current context, |width| by |height|, into a
++    // surface nothing is showing, and returns that surface retained. Null when every surface is
++    // being shown or the copy cannot be made.
++    IOSurfaceRef copyBoundFramebuffer(uint32_t width, uint32_t height);
++
++    // Wait for the GPU to finish the copy before returning, instead of only submitting it.
++    void setFinish(bool finish) { mFinish = finish; }
++
++  private:
++    struct Slot {
++        IOSurfaceRef surface = nullptr;
++        void* pbuffer = nullptr;
++        unsigned texture = 0;
++        unsigned framebuffer = 0;
++    };
++    static constexpr size_t kSlots = 4;
++
++    bool make(Slot& slot, uint32_t width, uint32_t height);
++    void drop(Slot& slot);
++
++    Slot mSlots[kSlots];
++    size_t mLast = 0;
++    uint32_t mWidth = 0;
++    uint32_t mHeight = 0;
++    bool mFailed = false;
++    bool mFinish = false;
++};
++
++}  // namespace host
++}  // namespace gfxstream

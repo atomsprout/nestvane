@@ -1,4 +1,6 @@
 #import <CoreGraphics/CoreGraphics.h>
+#import <IOSurface/IOSurfaceRef.h>
+#import <QuartzCore/QuartzCore.h>
 #import <UIKit/UIKit.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
@@ -15,6 +17,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstring>
 #include <chrono>
 #include <mach/mach.h>
 #include <memory>
@@ -25,6 +28,122 @@
 
 // Where the output of Android's sound stands, in words, for the rate report (NESTVANE_DISPLAY_RATE).
 static NSString* GuestAudioOutputState = @"not started";
+
+static UIImage* ImageOfSurface(IOSurfaceRef surface) {
+    if (!surface || IOSurfaceLock(surface, kIOSurfaceLockReadOnly, nullptr) != 0) return nil;
+    const size_t width = IOSurfaceGetWidth(surface), height = IOSurfaceGetHeight(surface);
+    const size_t stride = IOSurfaceGetBytesPerRow(surface);
+    NSData* pixels = [NSData dataWithBytes:IOSurfaceGetBaseAddress(surface) length:stride * height];
+    IOSurfaceUnlock(surface, kIOSurfaceLockReadOnly, nullptr);
+    CGDataProviderRef provider = CGDataProviderCreateWithCFData((__bridge CFDataRef)pixels);
+    CGColorSpaceRef color = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    const CGBitmapInfo bitmap = kCGBitmapByteOrder32Little | CGBitmapInfo(kCGImageAlphaNoneSkipFirst);
+    CGImageRef frame = provider && color
+        ? CGImageCreate(width, height, 8, 32, stride, color, bitmap, provider, nullptr, false, kCGRenderingIntentDefault)
+        : nullptr;
+    UIImage* image = frame ? [UIImage imageWithCGImage:frame] : nil;
+    if (frame) CGImageRelease(frame);
+    if (color) CGColorSpaceRelease(color);
+    if (provider) CGDataProviderRelease(provider);
+    return image;
+}
+
+// Whether a surface holds more than one colour: the same question guestDisplayHasColorVariation asks of pixels read back.
+static bool SurfaceHasColorVariation(IOSurfaceRef surface) {
+    if (IOSurfaceLock(surface, kIOSurfaceLockReadOnly, nullptr) != 0) return false;
+    const size_t width = IOSurfaceGetWidth(surface), height = IOSurfaceGetHeight(surface);
+    const size_t stride = IOSurfaceGetBytesPerRow(surface);
+    const auto* base = static_cast<const uint8_t*>(IOSurfaceGetBaseAddress(surface));
+    bool varies = false;
+    if (base && width && height) {
+        uint32_t first;
+        std::memcpy(&first, base, 4);
+        for (size_t y = 0; y < height && !varies; ++y) {
+            const uint8_t* row = base + y * stride;
+            for (size_t x = 0; x < width; ++x) {
+                uint32_t pixel;
+                std::memcpy(&pixel, row + x * 4, 4);
+                if ((pixel ^ first) & 0x00ffffff) { varies = true; break; }
+            }
+        }
+    }
+    IOSurfaceUnlock(surface, kIOSurfaceLockReadOnly, nullptr);
+    return varies;
+}
+
+// While the phone is hot Android draws less. At "serious" the most frames a second is half the rate
+// the display runs at, at "critical" 30; the screen is asked for frames no more often than that, and
+// Android is told to draw no more (GuestApkInbox::submitDisplayRate). The display itself keeps its
+// rate, which Android reads once as it starts.
+// NESTVANE_TEST_HOT="<state>:<seconds>" pretends the phone reached that state so long after launch.
+static std::atomic_int HeatPretended{-1};
+static NSProcessInfoThermalState HeatNow() {
+    const int pretended = HeatPretended.load(std::memory_order_relaxed);
+    return pretended >= 0 ? NSProcessInfoThermalState(pretended) : NSProcessInfo.processInfo.thermalState;
+}
+static int RateInHeat(int rate) {
+    switch (HeatNow()) {
+        case NSProcessInfoThermalStateCritical: return std::min(rate, 30);
+        case NSProcessInfoThermalStateSerious: return std::max(rate / 2, 30);
+        default: return rate;
+    }
+}
+
+// The screen's refresh, for the thread that takes Android's frames: it waits here and is woken each
+// time the screen is about to show a new frame, at most |rate| times a second.
+@interface ScreenRefresh : NSObject
+- (instancetype)initWithRate:(int)rate;
+- (void)wait;
+- (unsigned)takeTicks;
+- (void)stop;
+@end
+
+@implementation ScreenRefresh {
+    CADisplayLink* _link;
+    dispatch_semaphore_t _tick;
+    std::atomic_uint _ticks;
+    int _rate;
+}
+
+- (instancetype)initWithRate:(int)rate {
+    if ((self = [super init])) {
+        _tick = dispatch_semaphore_create(0);
+        _link = [CADisplayLink displayLinkWithTarget:self selector:@selector(refreshed:)];
+        _rate = rate;
+        [self heatChanged];
+        [_link addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(heatChanged)
+            name:NSProcessInfoThermalStateDidChangeNotification object:nil];
+    }
+    return self;
+}
+
+- (void)heatChanged {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        const float most = std::min<float>(RateInHeat(self->_rate), UIScreen.mainScreen.maximumFramesPerSecond);
+        self->_link.preferredFrameRateRange = CAFrameRateRangeMake(std::min(most, 60.0f), most, most);
+    });
+}
+
+- (void)refreshed:(CADisplayLink*)link {
+    _ticks.fetch_add(1, std::memory_order_relaxed);
+    dispatch_semaphore_signal(_tick);
+}
+
+- (void)wait {
+    // Not for ever: the caller also has to notice that it was asked to stop.
+    dispatch_semaphore_wait(_tick, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC / 10));
+    while (dispatch_semaphore_wait(_tick, DISPATCH_TIME_NOW) == 0) {}
+}
+
+- (unsigned)takeTicks { return _ticks.exchange(0, std::memory_order_relaxed); }
+
+- (void)stop {
+    [NSNotificationCenter.defaultCenter removeObserver:self];
+    [_link invalidate];
+    _link = nil;
+}
+@end
 
 namespace {
 constexpr uint32_t defaultGuestWidth = 640;
@@ -80,10 +199,16 @@ UIImage* GuestDisplayImage(std::unique_ptr<uint8_t[]>& pixels, size_t capacity,
 
 std::jthread StartDisplayReader(const nestvane::GfxstreamSession& renderer, DisplaySize size, bool captureContent,
                                 const std::atomic_bool& launcherDrawn,
-                                void (^present)(UIImage*, bool, bool)) {
+                                void (^present)(id, CGSize, bool, bool)) {
     if (!renderer.hasDisplayReadback()) return {};
     return std::jthread([&renderer, &launcherDrawn, size, captureContent, present](std::stop_token stop) mutable {
         bool reportLauncher = true;
+        // Frames come as surfaces copied on the GPU, taken when the screen is about to refresh. When the
+        // renderer cannot make one, or NESTVANE_DISPLAY_READBACK=1 asks for the old way, pixels are
+        // read back on a timer instead. NESTVANE_DISPLAY_FINISH=1 waits for the GPU after each copy.
+        bool surfaces = renderer.hasDisplaySurface() && !getenv("NESTVANE_DISPLAY_READBACK");
+        const bool finish = getenv("NESTVANE_DISPLAY_FINISH") != nullptr;
+        unsigned misses = 0;
         // How often the display is looked at for a new frame: NESTVANE_DISPLAY_HZ, the rate the guest
         // composes at. NESTVANE_DISPLAY_RATE=1 writes what came of it to display-rate.txt each second:
         // the frames the guest composed and the frames that were shown.
@@ -91,6 +216,8 @@ std::jthread StartDisplayReader(const nestvane::GfxstreamSession& renderer, Disp
         const int hertz = std::clamp(std::atoi(getenv("NESTVANE_DISPLAY_HZ") ?: "30"), 10, 240);
         const int readHertz = std::clamp(std::atoi(getenv("NESTVANE_DISPLAY_READ_HZ") ?: "0") ?: hertz, 1, 240);
         const auto period = std::chrono::microseconds(1'000'000 / readHertz);
+        __block ScreenRefresh* refresh = nil;
+        if (surfaces) dispatch_sync(dispatch_get_main_queue(), ^{ refresh = [[ScreenRefresh alloc] initWithRate:readHertz]; });
         const bool reportRate = getenv("NESTVANE_DISPLAY_RATE") != nullptr;
         NSURL* rateURL = [[NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject
             URLByAppendingPathComponent:@"display-rate.txt"];
@@ -110,6 +237,35 @@ std::jthread StartDisplayReader(const nestvane::GfxstreamSession& renderer, Disp
             @autoreleasepool {
                 if (dispatch_semaphore_wait(slot, DISPATCH_TIME_NOW) == 0) {
                     const bool wantLauncher = reportLauncher && launcherDrawn.load(std::memory_order_relaxed);
+                    uint64_t sequence = 0;
+                    IOSurfaceRef surface = surfaces ? renderer.copyDisplaySurface(lastFrame, sequence, finish) : nullptr;
+                    if (surface) {
+                        if (!rateFirstFrame) rateFirstFrame = sequence;
+                        ++shown;
+                        lastFrame = sequence;
+                        misses = 0;
+                        const bool nonuniform = (captureContent || wantLauncher) && SurfaceHasColorVariation(surface);
+                        const bool content = captureContent && nonuniform;
+                        const bool launcher = wantLauncher && nonuniform;
+                        if (content) captureContent = false;
+                        if (launcher) reportLauncher = false;
+                        const CGSize frameSize = CGSizeMake(IOSurfaceGetWidth(surface), IOSurfaceGetHeight(surface));
+                        id frame = CFBridgingRelease(surface);
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            present(frame, frameSize, content, launcher);
+                            dispatch_semaphore_signal(slot);
+                        });
+                    } else if (surfaces && (lastFrame || ++misses < 600)) {
+                        // No newer frame, or every surface is on screen. Before the first frame this may
+                        // also mean the renderer cannot make surfaces, so after a while pixels are read.
+                        dispatch_semaphore_signal(slot);
+                    } else {
+                    if (surfaces) {
+                        surfaces = false;
+                        ScreenRefresh* ended = refresh;
+                        refresh = nil;
+                        dispatch_async(dispatch_get_main_queue(), ^{ [ended stop]; });
+                    }
                     if (!pixels) pixels.reset(new (std::nothrow) uint8_t[capacity]);
                     const auto* readback = pixels.get();
                     uint32_t dimensions[2]{};
@@ -130,12 +286,14 @@ std::jthread StartDisplayReader(const nestvane::GfxstreamSession& renderer, Disp
                         const bool launcher = wantLauncher && nonuniform;
                         if (content) captureContent = false;
                         if (launcher) reportLauncher = false;
+                        const CGSize frameSize = image.size;
                         dispatch_async(dispatch_get_main_queue(), ^{
-                            present(image, content, launcher);
+                            present(image, frameSize, content, launcher);
                             dispatch_semaphore_signal(slot);
                         });
                     } else {
                         dispatch_semaphore_signal(slot);
+                    }
                     }
                 }
             }
@@ -150,7 +308,14 @@ std::jthread StartDisplayReader(const nestvane::GfxstreamSession& renderer, Disp
                 auto& sound = nestvane::GuestAudio::host();
                 static uint64_t playedBefore = 0;
                 const uint64_t soundNow = sound.taken.load(), playedNow = sound.played.load();
-                [rates appendFormat:@"%dx%d at %d Hz: composed %.0f, shown %.0f frames per second; sound %.0f bytes a second taken, %.0f played by Android, peak %u (%@, %zu bytes waiting); most in a tenth %llu\n", size.width, size.height, hertz,
+                rusage used{};
+                getrusage(RUSAGE_SELF, &used);
+                static double cpuBefore = 0;
+                const double cpuNow = used.ru_utime.tv_sec + used.ru_stime.tv_sec + (used.ru_utime.tv_usec + used.ru_stime.tv_usec) / 1e6;
+                [rates appendFormat:@"cpu %.0f%%; ", (cpuNow - std::exchange(cpuBefore, cpuNow)) / seconds * 100];
+                [rates appendFormat:@"%@%dx%d at %d Hz: composed %.0f, shown %.0f frames per second; sound %.0f bytes a second taken, %.0f played by Android, peak %u (%@, %zu bytes waiting); most in a tenth %llu\n",
+                    refresh ? [NSString stringWithFormat:@"surfaces, screen refreshed %.0f times a second; ", [refresh takeTicks] / seconds] : @"read back; ",
+                    size.width, size.height, hertz,
                     rateFirstFrame ? double(lastFrame - rateFirstFrame + 1) / seconds : 0.0, shown / seconds, double(soundNow - soundBefore) / seconds, double(playedNow - playedBefore) / seconds,
                     sound.peak.exchange(0), GuestAudioOutputState, sound.buffered(), std::exchange(tenthMost, 0)];
                 soundBefore = soundNow;
@@ -160,9 +325,14 @@ std::jthread StartDisplayReader(const nestvane::GfxstreamSession& renderer, Disp
                 rateFirstFrame = 0;
                 shown = 0;
             }
-            next = std::max(next + period, std::chrono::steady_clock::now());
-            std::this_thread::sleep_until(next);
+            if (refresh) {
+                [refresh wait];
+            } else {
+                next = std::max(next + period, std::chrono::steady_clock::now());
+                std::this_thread::sleep_until(next);
+            }
         }
+        if (ScreenRefresh* ended = refresh) dispatch_async(dispatch_get_main_queue(), ^{ [ended stop]; });
     });
 }
 void WriteGuestDisplayPNG(NSData* png, NSURL* destination) {
@@ -260,7 +430,12 @@ static NSString* ThermalState() {
     return @"unknown";
 }
 
-@interface GuestDisplayView : UIImageView
+// Android's display. A frame is an IOSurface the renderer copied on the GPU, given to the layer as it
+// is, or, when the renderer cannot do that, an image made of pixels read back.
+@interface GuestDisplayView : UIView
+// The frame on screen as an image, for captures; nil when there is none.
+@property (nonatomic, readonly) UIImage* image;
+- (void)show:(id)frame size:(CGSize)size;
 - (void)setTouchDevice:(std::shared_ptr<nestvane::GuestTouch>)device;
 - (void)pressKey:(nestvane::GuestTouch::Key)key;
 @end
@@ -268,6 +443,22 @@ static NSString* ThermalState() {
 @implementation GuestDisplayView {
     std::shared_ptr<nestvane::GuestTouch> _touchDevice;
     UITouch* _activeTouch;
+    id _frame;
+    CGSize _frameSize;
+}
+
+- (void)show:(id)frame size:(CGSize)size {
+    _frame = frame;
+    _frameSize = frame ? size : CGSizeZero;
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    self.layer.contents = [frame isKindOfClass:UIImage.class] ? (__bridge id)static_cast<UIImage*>(frame).CGImage : frame;
+    [CATransaction commit];
+}
+
+- (UIImage*)image {
+    if ([_frame isKindOfClass:UIImage.class]) return _frame;
+    return _frame ? ImageOfSurface((__bridge IOSurfaceRef)_frame) : nil;
 }
 
 - (void)setTouchDevice:(std::shared_ptr<nestvane::GuestTouch>)device {
@@ -281,7 +472,7 @@ static NSString* ThermalState() {
 }
 
 - (BOOL)sendTouch:(UITouch*)touch down:(BOOL)down {
-    const CGSize imageSize = self.image.size;
+    const CGSize imageSize = _frameSize;
     const CGRect bounds = self.bounds;
     if (!_touchDevice || imageSize.width <= 0 || imageSize.height <= 0 ||
         bounds.size.width <= 0 || bounds.size.height <= 0) return NO;
@@ -684,6 +875,14 @@ static void FollowGuestAudio() {
     return YES;
 }
 
+// Tells Android the most frames a second to draw for the heat the phone is in; 0 when there is no limit.
+- (void)heatChanged {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        const int rate = int(GuestDisplayRate()), most = RateInHeat(rate);
+        if (self->_apkInbox) self->_apkInbox->submitDisplayRate(most < rate ? most : 0);
+    });
+}
+
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.view.backgroundColor = UIColor.blackColor;
@@ -1026,6 +1225,19 @@ static void FollowGuestAudio() {
     _apkInbox = [NSFileManager.defaultManager fileExistsAtPath:installer] ?
         std::make_shared<nestvane::GuestApkInbox>() : nullptr;
     const auto apkInbox = _apkInbox;
+    static dispatch_once_t heatWatched;
+    dispatch_once(&heatWatched, ^{
+        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(heatChanged)
+            name:NSProcessInfoThermalStateDidChangeNotification object:nil];
+        NSArray<NSString*>* pretend = [NSProcessInfo.processInfo.environment[@"NESTVANE_TEST_HOT"] componentsSeparatedByString:@":"];
+        NSArray<NSString*>* states = @[@"nominal", @"fair", @"serious", @"critical"];
+        if (pretend.count == 2 && [states containsObject:pretend[0]])
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, pretend[1].intValue * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+                HeatPretended = int([states indexOfObject:pretend[0]]);
+                [NSNotificationCenter.defaultCenter postNotificationName:NSProcessInfoThermalStateDidChangeNotification object:nil];
+            });
+    });
+    [self heatChanged];
     _androidStop = apkInbox ? std::stop_source{} : std::stop_source{std::nostopstate};
     const auto stop = _androidStop.get_token();
     if (stop.stop_possible()) {
@@ -1045,7 +1257,7 @@ static void FollowGuestAudio() {
     self.apkStatus.hidden = YES;
     auto touch = std::make_shared<nestvane::GuestTouch>();
     [self.display setTouchDevice:touch];
-    self.display.image = nil;
+    [self.display show:nil size:CGSizeZero];
     self.display.hidden = YES;
     self.back.hidden = self.home.hidden = !apkInbox;
     self.back.enabled = self.home.enabled = NO;
@@ -1378,15 +1590,15 @@ static void FollowGuestAudio() {
                 const BOOL captureFirstFrame = [NSProcessInfo.processInfo.environment[@"NESTVANE_CAPTURE_FIRST_FRAME"]
                     isEqualToString:@"1"];
                 auto displayReader = StartDisplayReader(renderer, displaySize, captureFirstFrame, launcherDisplayed,
-                                                        ^(UIImage* frame, bool content, bool launcher) {
+                                                        ^(id frame, CGSize frameSize, bool content, bool launcher) {
                     const BOOL firstFrame = self.display.hidden;
-                    self.display.image = frame;
+                    [self.display show:frame size:frameSize];
                     const auto writePresentationTime = [&](NSURL* url) {
                         const auto milliseconds = (NSProcessInfo.processInfo.systemUptime - validationStarted) * 1000;
                         NSString* message = [NSString stringWithFormat:
                             @"process %d | %.0f ms | presented %.0f × %.0f Android pixels\n",
                             NSProcessInfo.processInfo.processIdentifier, milliseconds,
-                            frame.size.width, frame.size.height];
+                            frameSize.width, frameSize.height];
                         NSError* error = nil;
                         if (![message writeToURL:url atomically:YES encoding:NSUTF8StringEncoding error:&error])
                             NSLog(@"Unable to export display progress: %@", error);
@@ -1408,7 +1620,7 @@ static void FollowGuestAudio() {
                             [launcherPrefix stringByAppendingPathExtension:@"txt"]]);
                     }
                     if (captureFirstFrame && (firstFrame || content || launcher)) {
-                        NSData* png = UIImagePNGRepresentation(frame);
+                        NSData* png = UIImagePNGRepresentation(self.display.image);
                         const auto save = [&](NSString* filename) {
                             NSURL* capture = [documents URLByAppendingPathComponent:filename];
                             WriteGuestDisplayPNG(png, capture);
@@ -1449,7 +1661,7 @@ static void FollowGuestAudio() {
             self.status.text = status;
             [self.display setTouchDevice:std::shared_ptr<nestvane::GuestTouch>{}];
             self.display.hidden = YES;
-            self.display.image = nil;
+            [self.display show:nil size:CGSizeZero];
             self.startup.hidden = NO;
             self.emblem.active = YES;
     self.emblem.active = YES;
