@@ -4295,9 +4295,9 @@ int main() {
         };
         for (uint64_t batch = 0; batch < 2; ++batch) {
             const auto child = clone(0x1200011, 0);
-            assert(child >= 2 && child < 4096);
+            assert(child >= 2 && child < 16384);
             assert(guest.schedule(task) && guest.processId() == child);
-            for (uint64_t created = 1; created <= 1022; ++created)
+            for (uint64_t created = 1; created <= 4094; ++created)
                 assert(clone(0x3d0f00, base + 256) == child + created);
             assert(clone(0x3d0f00, base + 256) == uint64_t(-11));
             assert(clone(0x1200011, 0) == uint64_t(-11));
@@ -4306,7 +4306,7 @@ int main() {
             assert(guest.syscall(task) && guest.blocked());
             assert(guest.schedule(task) && guest.processId() == 1);
             const auto report = guest.workerReport(task, 1);
-            assert(report.find("1 active, 1 tracked, limit 1024") != std::string::npos);
+            assert(report.find("1 active, 1 tracked, limit 4096") != std::string::npos);
         }
     }
     {
@@ -7845,7 +7845,7 @@ int main() {
         assert(std::memcmp(machine.read(base + 0x480, sizeof(rootLabel), 4), rootLabel, sizeof(rootLabel)) == 0);
         assert(invoke(writer, 43, {firstPath, base + 0x450}) == 0);
         const auto quotaBlocks = load(base + 0x460);
-        assert(quotaBlocks == (2048ULL * 1024 * 1024) / pageSize);  // ProbeLinux::maxWritableBytes
+        assert(quotaBlocks == (8192ULL * 1024 * 1024) / pageSize);  // ProbeLinux::maxWritableBytes
         assert(load(base + 0x468) == quotaBlocks && load(base + 0x470) == quotaBlocks);
         constexpr auto markerName = base + 0x530, markerValue = base + 0x590;
         put(markerName, "user.restorecon_in_progress");

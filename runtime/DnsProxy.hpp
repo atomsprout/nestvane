@@ -140,26 +140,46 @@ inline std::vector<uint8_t> respond(const Question& question, std::span<const Re
     out.insert(out.end(), question.wire.begin(), question.wire.end());
     const size_t limit = question.answerLimit - (question.extended ? 11 : 0);
     uint16_t count = 0;
-    bool truncated = false;
+    bool truncated = false, answered = false;
+    // Names that are already in the packet are written as a pointer to where they stand. A name
+    // behind three aliases, each a long name of a content network, otherwise did not fit into 512
+    // bytes; the answer went out cut short, and the asker's second try, by TCP, is not served here.
+    const auto lower = [](std::vector<uint8_t> name) {
+        for (auto& byte : name) byte = uint8_t(tolower(byte));
+        return name;
+    };
+    std::vector<std::pair<std::vector<uint8_t>, uint16_t>> written;
+    if (question.wire.size() > 4)
+        written.emplace_back(lower({question.wire.begin(), question.wire.end() - 4}), uint16_t(12));
     for (const auto& record : records) {
+        std::vector<uint8_t> owner;
+        if (!appendName(owner, record.name) || record.data.size() > 0xffff) continue;
         std::vector<uint8_t> entry;
-        if (!appendName(entry, record.name) || record.data.size() > 0xffff) continue;
+        const auto known = std::find_if(written.begin(), written.end(), [&](const auto& item) { return item.first == lower(owner); });
+        if (known != written.end()) append16(entry, uint16_t(0xc000 | known->second));
+        else entry = owner;
         append16(entry, record.type);
         append16(entry, record.recordClass);
         append16(entry, uint16_t(record.timeToLive >> 16));
         append16(entry, uint16_t(record.timeToLive));
         append16(entry, uint16_t(record.data.size()));
+        const size_t dataAt = out.size() + entry.size();
         entry.insert(entry.end(), record.data.begin(), record.data.end());
         if (out.size() + entry.size() > limit) {
             truncated = true;
             break;
         }
+        // What an alias leads to is the name of the records that follow it.
+        if (record.type == 5 && dataAt < 0x4000) written.emplace_back(lower(record.data), uint16_t(dataAt));
         out.insert(out.end(), entry.begin(), entry.end());
+        answered = answered || record.type == question.type;
         ++count;
     }
     out[6] = uint8_t(count >> 8);
     out[7] = uint8_t(count);
-    if (truncated) out[2] |= 0x02;
+    // Cut short is only said when nothing of what was asked for is in the answer: with some of the
+    // addresses in it the asker has what it needs.
+    if (truncated && !answered) out[2] |= 0x02;
     if (question.extended) {
         out.push_back(0);
         append16(out, 41);

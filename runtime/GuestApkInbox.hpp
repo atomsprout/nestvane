@@ -13,7 +13,8 @@ namespace nestvane {
 
 class GuestApkInbox {
 public:
-    static constexpr size_t maxBytes = 256 * 1024 * 1024;
+    // Large apps come as packages of several hundred megabytes: the one of Douyin is 271 MB.
+    static constexpr size_t maxBytes = 1024 * 1024 * 1024;
     static constexpr std::string_view device = "/dev/nestvane-apk";
     static constexpr std::string_view installer = "/system/bin/nestvane-apk-install";
     static constexpr uint32_t resultIoctl = 0x40044e01;

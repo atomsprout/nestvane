@@ -653,8 +653,11 @@ def make_framework_root(base, image, guest, defer_zygote_preload, hardware_timeo
         setting = f"ro.hw_timeout_multiplier={hardware_timeout_multiplier}"
         values, count = re.subn(r"^ro\.hw_timeout_multiplier=[^\r\n]*$", setting, values, flags=re.MULTILINE)
         system_properties.write_text((values if count else f"{values}\n{setting}") + "\n")
+    # How large one app's Java heap may grow. Every process sets the whole of it aside as address
+    # space, which is what there is least of here, so it was 96 MB; a large app such as Douyin runs
+    # out of that within a minute of starting. 256 MB is what phones give.
     for key in ("heapgrowthlimit", "heapsize"):
-        replace_line(guest / "vendor/build.prop", rf"^dalvik\.vm\.{key}=[^\r\n]*$", f"dalvik.vm.{key}=96m")
+        replace_line(guest / "vendor/build.prop", rf"^dalvik\.vm\.{key}=[^\r\n]*$", f"dalvik.vm.{key}=256m")
     if (guest / "vendor/lib64/egl/libEGL_emulation.so").is_file():
         # The SDK normally selects these drivers from Ranchu's early-init actions.
         vendor_properties = guest / "vendor/build.prop"

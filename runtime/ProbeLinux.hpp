@@ -806,9 +806,9 @@ private:
     // The database still has the content of files that have moved out of it: it is packed after the next sync.
     bool compactData = false;
     int64_t dataGeneration = 0;
-    static constexpr uint64_t maxDataFileBytes = 256 * 1024 * 1024;
+    static constexpr uint64_t maxDataFileBytes = 1024ULL * 1024 * 1024;
     // Persistent data and transient filesystem writes each have their own budget.
-    static constexpr uint64_t maxWritableBytes = 2048ULL * 1024 * 1024;
+    static constexpr uint64_t maxWritableBytes = 8192ULL * 1024 * 1024;
     // How many files and directories the guest's data may hold. With some thirty apps installed the
     // earlier limits (4096 files, 2048 directories) were reached, and Android could start no new app:
     // zygote could not make the app's profile directory and aborted.

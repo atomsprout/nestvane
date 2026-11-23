@@ -46,7 +46,10 @@ constexpr uint64_t mappingLimit = 0x20'0000'0000; // 128 GiB guest arena; includ
 constexpr uint64_t maxGuestFileBytes = 2 * 1024 * 1024;
 constexpr size_t maxBpfPins = 2048;
 // Even the reference system_server alone exceeds 256 threads after boot.
-constexpr size_t maxGuestTasks = 1024;
+// How many threads the guest may have at once. Android with a dozen ordinary apps comes to about 700;
+// one large app brings several hundred of its own, and at 1024 it could start no more (Douyin beside
+// Toutiao: "pthread_create failed", and the system came apart after it).
+constexpr size_t maxGuestTasks = 4096;
 // /proc/config.gz reports this guest's ABI, including the absence of VMAP_STACK.
 // Contents of the fixed gzip stream
 // CONFIG_ARM64=y
