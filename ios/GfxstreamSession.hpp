@@ -2,6 +2,8 @@
 
 #include "GfxstreamPipe.hpp"
 
+#include <IOSurface/IOSurfaceRef.h>
+
 #include <string>
 
 namespace nestvane {
@@ -18,6 +20,7 @@ public:
 
         shutdown = reinterpret_cast<void (*)()>(dlsym(module, "stream_renderer_teardown"));
         displayRead = reinterpret_cast<DisplayRead>(dlsym(module, "gfxstream_guest_display_read"));
+        displaySurface = reinterpret_cast<DisplaySurface>(dlsym(module, "gfxstream_guest_display_surface"));
         pipes = loadGfxstreamPipeFactory(module);
         if (!shutdown || !pipes) {
             failure = "gfxstream is missing the Nestvane renderer interfaces";
@@ -50,7 +53,17 @@ public:
         return hasDisplayReadback() ? displayRead(after, pixels.data(), pixels.size(), dimensions) : 0;
     }
 
+    // The frame after |after| as a surface the caller owns, copied on the GPU; null when there is none
+    // or the renderer cannot do it. |finish| waits for the GPU before returning.
+    bool hasDisplaySurface() const { return started && displaySurface; }
+    IOSurfaceRef copyDisplaySurface(uint64_t after, uint64_t& sequence, bool finish) const {
+        return hasDisplaySurface()
+            ? static_cast<IOSurfaceRef>(displaySurface(after, &sequence, finish)) : nullptr;
+    }
+
 private:
+    using DisplaySurface = void* (*)(uint64_t, uint64_t*, int);
+    DisplaySurface displaySurface = nullptr;
     using DisplayRead = uint64_t (*)(uint64_t, uint8_t*, size_t, uint32_t*);
     DisplayRead displayRead = nullptr;
     void* module = nullptr;

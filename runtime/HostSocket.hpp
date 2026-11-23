@@ -10,10 +10,15 @@
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
+#include <atomic>
+#include <chrono>
 #include <fcntl.h>
+#include <mutex>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
+#include <set>
 #include <span>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -107,6 +112,56 @@ inline bool isNameServer(const Address& address) {
     return !four.empty() && std::equal(four.begin(), four.end(), nameServer.begin());
 }
 
+// A network with no IPv4 of its own, as many cellular networks are, carries IPv4 through a gateway:
+// an IPv4 address is reached at an IPv6 address made of the network's prefix and the four bytes
+// (NAT64). The guest knows only IPv4, so its destinations are rewritten here. The system says
+// whether the network is such a one when it is asked to resolve an IPv4 address written out: it
+// answers with the IPv6 address to use, and with the IPv4 address itself where IPv4 works.
+// The answer is asked for again when the app reports a change of network, and every few seconds.
+inline std::atomic_bool& networkChangedFlag() {
+    static std::atomic_bool changed{true};
+    return changed;
+}
+inline void networkChanged() { networkChangedFlag().store(true, std::memory_order_relaxed); }
+
+inline bool nat64Prefix(std::array<uint8_t, 12>& prefix) {
+    static std::mutex mutex;
+    static std::array<uint8_t, 12> known{};
+    static bool present = false;
+    static std::chrono::steady_clock::time_point asked{};
+    std::lock_guard lock(mutex);
+    const auto now = std::chrono::steady_clock::now();
+    if (networkChangedFlag().exchange(false, std::memory_order_relaxed) || now - asked > std::chrono::seconds(5)) {
+        asked = now;
+        static constexpr uint8_t probe[4] = {192, 0, 2, 1};
+        addrinfo hints{};
+        hints.ai_family = AF_UNSPEC;
+        hints.ai_socktype = SOCK_STREAM;
+#ifdef AI_DEFAULT
+        hints.ai_flags = AI_DEFAULT;
+#else
+        hints.ai_flags = AI_ADDRCONFIG;
+#endif
+        addrinfo* answers = nullptr;
+        bool four = false, six = false;
+        if (getaddrinfo("192.0.2.1", nullptr, &hints, &answers) == 0) {
+            for (const addrinfo* answer = answers; answer; answer = answer->ai_next) {
+                if (answer->ai_family == AF_INET) four = true;
+                if (answer->ai_family != AF_INET6 || six) continue;
+                const auto* bytes = reinterpret_cast<const sockaddr_in6*>(answer->ai_addr)->sin6_addr.s6_addr;
+                // Only prefixes of 96 bits, which put the IPv4 address in the last four bytes.
+                if (std::memcmp(bytes + 12, probe, 4) != 0) continue;
+                std::memcpy(known.data(), bytes, 12);
+                six = true;
+            }
+            freeaddrinfo(answers);
+        }
+        present = six && !four;
+    }
+    if (present) prefix = known;
+    return present;
+}
+
 // The host address for a guest destination.
 inline socklen_t toHost(const Address& guest, sockaddr_storage& host) {
     host = {};
@@ -116,6 +171,15 @@ inline socklen_t toHost(const Address& guest, sockaddr_storage& host) {
         return sizeof(server);
     }
     if (const auto four = ipv4(guest); !four.empty()) {
+        if (std::array<uint8_t, 12> prefix; nat64Prefix(prefix)) {
+            auto& address = reinterpret_cast<sockaddr_in6&>(host);
+            address.sin6_len = sizeof(address);
+            address.sin6_family = AF_INET6;
+            std::memcpy(&address.sin6_port, guest.data() + 2, 2);
+            std::memcpy(address.sin6_addr.s6_addr, prefix.data(), 12);
+            std::memcpy(address.sin6_addr.s6_addr + 12, four.data(), 4);
+            return sizeof(address);
+        }
         auto& address = reinterpret_cast<sockaddr_in&>(host);
         address.sin_len = sizeof(address);
         address.sin_family = AF_INET;
@@ -148,6 +212,11 @@ inline Address toGuest(const sockaddr_storage& host, uint32_t family) {
         hasFour = true;
     } else if (host.ss_family == AF_INET) {
         std::memcpy(four.data(), &reinterpret_cast<const sockaddr_in&>(host).sin_addr, 4);
+        hasFour = true;
+    } else if (std::array<uint8_t, 12> prefix; host.ss_family == AF_INET6 && nat64Prefix(prefix) &&
+               std::memcmp(reinterpret_cast<const sockaddr_in6&>(host).sin6_addr.s6_addr, prefix.data(), 12) == 0) {
+        // What came through the gateway came from the IPv4 address in its last four bytes.
+        std::memcpy(four.data(), reinterpret_cast<const sockaddr_in6&>(host).sin6_addr.s6_addr + 12, 4);
         hasFour = true;
     }
     if (family == 2) {
@@ -184,6 +253,31 @@ inline int prepare(int fd) {
     return fd;
 }
 
+// The TCP connections that are open, so that all of them can be ended when the phone moves to another
+// network. A connection made over Wi-Fi does not move to cellular: left alone it stays silent, and
+// the app that holds it waits out its timeout on every request before it tries a new one. Android
+// ends such connections itself when a network goes away; here the guest has one made-up network
+// that never does, so the host ends them: the guest reads the end of the stream and connects again.
+inline std::mutex& streamsMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+inline std::set<int>& streams() {
+    static std::set<int> open;
+    return open;
+}
+inline size_t endStreams() {
+    std::lock_guard lock(streamsMutex());
+    for (const int fd : streams()) ::shutdown(fd, SHUT_RDWR);
+    return streams().size();
+}
+// Closes a host socket of either kind.
+inline void closeSocket(int fd) {
+    std::lock_guard lock(streamsMutex());
+    streams().erase(fd);
+    ::close(fd);
+}
+
 // Starts a TCP connection to a guest destination. A host socket that never blocks, or a negative
 // Linux error number.
 inline int openStream(const Address& destination) {
@@ -196,6 +290,8 @@ inline int openStream(const Address& destination) {
         ::close(fd);
         return -error;
     }
+    std::lock_guard lock(streamsMutex());
+    streams().insert(fd);
     return fd;
 }
 

@@ -1,10 +1,16 @@
 #!/system/bin/sh
 
-# Shows a text message the person wrote in the app as one that Android received. The guest has no
-# phone process and no radio, so nothing arrives the way a message does on a phone: this writes the
-# message into the provider the Messaging app reads, and posts a notification for it.
-# /dev/nestvane-text gives one message each time it is opened, the sender on the first line and the
-# text on the second, and waits while there is none.
+# Does what the app asks of Android. /dev/nestvane-text gives one request each time it is opened,
+# on three lines, the kind and two fields, and waits while there is none.
+#
+# "text", sender, text: shows a text message the person wrote in the app as one that Android
+# received. The guest has no phone process and no radio, so nothing arrives the way a message does
+# on a phone: this writes the message into the provider the Messaging app reads, and posts a
+# notification for it.
+#
+# "rate", frames a second: the most frames a second apps are to draw, which the app lowers while
+# the phone is hot. The display keeps its rate; Android draws every second or fourth frame. 0 puts
+# back what the system image sets.
 
 # Android's content tool, without its wrapper script: the guest root has no app_process link.
 content() {
@@ -15,12 +21,23 @@ content() {
 /system/bin/cmd appops set com.android.shell WRITE_SMS allow
 
 while true; do
-    { IFS= read -r sender && IFS= read -r text; } < /dev/nestvane-text || exit 1
-    now=$(/system/bin/toybox date +%s)000
-    # The tool prints a SecurityException after the row is in: the provider then tries to change an
-    # app-op as the phone UID, which nothing here lets it do. The message is stored all the same.
-    content insert --uri content://sms/inbox \
-        --bind address:s:"$sender" --bind body:s:"$text" --bind date:l:"$now" \
-        --bind read:i:0 --bind seen:i:0 --bind type:i:1 > /dev/null 2>&1
-    /system/bin/cmd notification post -t "$sender" "nestvane-text-$now" "$text" > /dev/null 2>&1
+    { IFS= read -r kind && IFS= read -r sender && IFS= read -r text; } < /dev/nestvane-text || exit 1
+    case "$kind" in
+    rate)
+        if [ "$sender" -gt 0 ] 2> /dev/null; then
+            /system/bin/cmd settings put system peak_refresh_rate "$sender.0" > /dev/null 2>&1
+        else
+            /system/bin/cmd settings delete system peak_refresh_rate > /dev/null 2>&1
+        fi
+        ;;
+    text)
+        now=$(/system/bin/toybox date +%s)000
+        # The tool prints a SecurityException after the row is in: the provider then tries to change
+        # an app-op as the phone UID, which nothing here lets it do. The message is stored all the same.
+        content insert --uri content://sms/inbox \
+            --bind address:s:"$sender" --bind body:s:"$text" --bind date:l:"$now" \
+            --bind read:i:0 --bind seen:i:0 --bind type:i:1 > /dev/null 2>&1
+        /system/bin/cmd notification post -t "$sender" "nestvane-text-$now" "$text" > /dev/null 2>&1
+        ;;
+    esac
 done

@@ -67,7 +67,8 @@ for the app** gives that code the system it expects.
 - **Graphics on the GPU** through gfxstream and ANGLE on Metal, at 60 Hz, or at 120 Hz on a ProMotion screen when you
   turn that on in Nestvane's Settings.
 - **Text messages you write yourself.** *Send Text Message…* hands Android a sender and a text, and the Messaging app
-  shows it as an incoming message. Nothing is sent to anyone: Android has no phone number and no radio.
+  shows it as an incoming message. Apps that wait for an SMS, to read a code for example, receive it too. Nothing is
+  sent to anyone: Android has no phone number and no radio.
 - **An update notice.** Once a day Nestvane asks GitHub which release is the latest and tells you when there is a newer one.
 - **Video and sound.** Android's software decoders play a 720p video at its 30 frames a second, and the sound
   comes out of the phone. NewPipe plays a YouTube stream.
@@ -118,7 +119,7 @@ On an iPhone 15 Pro unless noted. The running record, with every measurement, is
 | The same on an iPhone 17 Pro | 9.5–10.9 s; about 17 s the first time after installing |
 | Memory footprint | about 2.4–2.6 GB |
 | App download | 1.07 GB |
-| A finger kept moving on a list | 58–60 frames a second; with 120 Hz on, 113–121 composed and 85–120 shown |
+| A finger kept moving on a list | 58–60 frames a second; with 120 Hz on, 111–120 (iPhone 17 Pro) |
 | Playing a 1280×720 H.264 video | 30 frames a second, in step with the clock |
 | Translated modules | about 1,230, in 12 frameworks |
 | Open-source apps installed from APK | 15 |

@@ -88,6 +88,13 @@ Android 运行期间从 iOS 一侧做的改动，要等下一次启动 Android �
 宿主套接字都是非阻塞的；等在上面的客体线程隔一小段时间再被检查一次，因为宿主套接字自己没法唤醒客体的调度器。
 只支持 IPv4。
 
+手机从 Wi-Fi 换到蜂窝或换回来时，App 会结束客体所有打开的 TCP 连接。
+在旧网络上建立的连接不会搬到新网络上，也不会报错：放着不管它只是不再有数据，复用连接的应用每个请求都要等到超时。
+真手机上的 Android 在网络消失时会自己结束这些连接；客体看到的是一个永远不变的假网络，所以由宿主来做，客体读到流结束后重新连接。
+
+在自身没有 IPv4 的网络上（一些蜂窝网络是这样），如果系统报告有网关，客体的 IPv4 目的地址会改写成网关应答的 IPv6 地址（NAT64）。
+这一部分没有在这样的网络上试过。
+
 **DNS。**
 地址 `10.0.2.3` 是 App 里的一个域名服务器（`runtime/DnsProxy.hpp`）。它只在宿主的回环地址上监听，每个查询都交给系统的解析服务（`DNSServiceQueryRecord`）回答，所以域名的解析结果和手机上其他 App 一样，也跟随系统的 VPN 和 DNS 设置。只回答 UDP 查询，`.local` 下的名字直接拒绝。
 App 从不直接连网络自己的域名服务器。那通常是路由器，App 一往它发包，iOS 就会询问是否允许访问本地网络，以前这发生在第一次开机时。客体发出的组播和广播包、发往客体自己那个虚构子网的包，也都不带出去。某个 Android 应用真的去连本地网络里的设备时，这个询问仍会在那一刻出现。
@@ -140,7 +147,9 @@ App 底栏的返回和主页按钮，作为按键事件经同一个设备送入�
 客体里没有电话进程，也没有射频服务，短信不可能像在手机上那样到达。
 App 的 *Send Text Message…* 把发件人和文字排进队列（[`runtime/GuestApkInbox.hpp`](../../runtime/GuestApkInbox.hpp)）；开机后启动的一个客体服务（[`fixtures/android17-text.sh`](../../fixtures/android17-text.sh)）从 `/dev/nestvane-text` 读取，没有消息时这个设备会等待；它用 Android 的 `content` 工具往短信数据库写一行，再发一条通知。
 为此镜像带上了短信数据库（TelephonyProvider）和 Messaging 应用；数据库运行在名为 `com.android.phone` 的进程里，那不是电话应用。
-等待“收到短信”广播的应用看不到这样的短信。
+另一个服务为同一条短信发出 `SMS_RECEIVED` 广播（[`fixtures/android17-sms.sh`](../../fixtures/android17-sms.sh)），等短信的应用因此能收到；它以 root 运行，因为只有系统能发这条广播。
+短信在广播里以网络本该送来的 PDU 形式携带，由 [`tools/sms-broadcast/SmsBroadcast.java`](../../tools/sms-broadcast/SmsBroadcast.java) 生成：UCS-2 编码，超过 70 个字符时按每段 67 个字符拆开。
+写成号码的发件人到达时只剩数字，不带空格和连字符。
 
 **安装应用。**
 用 App 打开的 `.apk` 文件（来自“文件”、隔空投送或分享菜单），或者用 App 菜单里、主屏幕图标上的 Install APK… 选中的文件，会被复制到一个收件箱（[`runtime/GuestApkInbox.hpp`](../../runtime/GuestApkInbox.hpp)）。

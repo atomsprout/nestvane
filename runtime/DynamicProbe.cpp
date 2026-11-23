@@ -872,7 +872,9 @@ DynamicReport probeInit(const std::string& directory, const std::string& databas
                                       std::string_view("/system/bin/sh"), std::string_view("/system/bin/dumpsys"),
                                       std::string_view("/system/bin/toybox"),
                                       std::string_view("/system/etc/nestvane/apk-ready.sh"),
-                                      std::string_view("/system/etc/nestvane/text.sh")}) {
+                                      std::string_view("/system/etc/nestvane/text.sh"),
+                                      std::string_view("/system/etc/nestvane/sms.sh"),
+                                      std::string_view("/system/framework/nestvane-sms.jar")}) {
                 if (!files.contains(input))
                     throw std::runtime_error("missing Android APK installer input: " + std::string(input));
             }
@@ -897,6 +899,18 @@ on property:sys.boot_completed=1
 service nestvane-text /system/bin/sh /system/etc/nestvane/text.sh
     user shell
     group shell
+    seclabel u:r:shell:s0
+    disabled
+    stdio_to_kmsg
+
+# The broadcast that tells apps a text message arrived (GuestApkInbox::takeBroadcast). Root, because
+# only the system may send it.
+on property:sys.boot_completed=1
+    start nestvane-sms
+
+service nestvane-sms /system/bin/sh /system/etc/nestvane/sms.sh
+    user root
+    group root
     seclabel u:r:shell:s0
     disabled
     stdio_to_kmsg
