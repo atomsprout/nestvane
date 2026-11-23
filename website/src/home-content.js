@@ -90,7 +90,8 @@ export const content = {
     ],
     requirementsTitle: 'Requirements',
     requirements: [
-      'iOS 26 or later. Nestvane has been tested on iPhone 15 Pro and iPhone 17 Pro; no other phone has been tried.',
+      'iOS 17 or later, on an iPhone with at least 6 GB of memory. Tested on iPhone 14 (iOS 17), iPhone 15 Pro and iPhone 17 Pro.',
+      'The newer the phone, the faster Android runs: it starts in about 7 seconds on an iPhone 17 Pro and in 12 to 20 on an iPhone 14.',
       'The app is a download of about 1.1 GB and uses about 2.4 to 2.6 GB of memory while Android runs.',
     ],
     thanksTitle: 'With thanks to two similar projects',

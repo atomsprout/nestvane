@@ -1,7 +1,7 @@
 name: nestvane
 options:
   deploymentTarget:
-    iOS: "26.0"
+    iOS: "17.0"
 settings:
   base:
     CLANG_CXX_LANGUAGE_STANDARD: c++20

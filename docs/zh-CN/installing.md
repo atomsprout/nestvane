@@ -8,8 +8,9 @@
 
 ## 需要什么
 
-- 一台 iOS 26 及以上的 iPhone。在 iPhone 15 Pro 和 iPhone 17 Pro 上测试过，两台都是 8 GB 内存。
-  Android 的内存占用约 2.2–2.7 GB；iPhone 11 的单个 App 上限约 2.3 GB，放不下。
+- 一台 iOS 17 及以上、内存不少于 6 GB 的 iPhone。在 iPhone 14（6 GB，iOS 17.3）、iPhone 15 Pro 和 iPhone 17 Pro（8 GB 和 12 GB）上测试过。
+  Android 的内存占用约 2.3–2.7 GB；iPhone 11 的单个 App 上限约 2.3 GB，放不下。
+- 手机越新，Android 跑得越快：iPhone 17 Pro 上开机约 7 秒，iPhone 14 上 12–20 秒。
 - 约 4 GB 的可用存储。IPA 约 1.1 GB，装好的 App 约 3.2 GB。
 - 一台装有 Xcode 的 Mac、一个 Apple 开发者签名身份，以及一份包含你的设备的描述文件，它的 App ID 要开启两项能力：
   **Extended Virtual Addressing** 和 **Increased Memory Limit**。没有前一项，App 的地址空间只有约 7 GiB，

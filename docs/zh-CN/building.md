@@ -22,7 +22,7 @@
 | 与工具链版本对应的 LLVM 源码、`toolchain/llvm_android` 和一份 NDK——**不在仓库里** | 重编工具链自带的预编译运行时库。 |
 | gfxstream 和 ANGLE 的源码——**不在仓库里** | 渲染器。 |
 | 具备 Extended Virtual Addressing 和 Increased Memory Limit 能力的 Apple 开发团队 | 给 App 签名（[`ios/Native.entitlements`](../../ios/Native.entitlements)）。 |
-| iOS 26 或更高版本的设备 | 运行。 |
+| iOS 17 或更高版本的设备 | 运行。 |
 
 ## 第 1 步：带保留寄存器构建 Android
 

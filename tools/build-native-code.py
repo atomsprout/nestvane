@@ -33,7 +33,7 @@ OPTIONS = ["--table", "--chunk-shift", "20", "--reuse", "--split-index", "--fina
 FIRST_BASE, LIMIT = 0x8000_0000, 0xFFF0_0000  # the runtime has its signal return page at 0xFFFF_0000
 KEY_BYTES = 16384
 IOS = "--ios" in sys.argv
-TARGET = (["-target", "arm64-apple-ios26.0", "-isysroot", subprocess.run(["xcrun", "--sdk", "iphoneos", "--show-sdk-path"],
+TARGET = (["-target", "arm64-apple-ios17.0", "-isysroot", subprocess.run(["xcrun", "--sdk", "iphoneos", "--show-sdk-path"],
            capture_output=True, text=True).stdout.strip()] if IOS else ["-arch", "arm64"])
 LIBRARIES = 12  # a fixed number, so that the app project can name them
 # Modules for hardware and services that the guest does not have. Their files stay in the image, which
@@ -229,10 +229,14 @@ def main():
         index, symbols = item
         (library, install_name), listing = product(index), os.path.join(out, "objects-%d.txt" % index)
         content = "".join(os.path.join(objects, symbol + ".o") + "\n" for symbol in symbols)
+        # Linked again when the system it is built for changes, too.
+        built_for = listing + ".target"
         if os.path.exists(library) and os.path.exists(listing) and open(listing).read() == content and \
+                os.path.exists(built_for) and open(built_for).read() == " ".join(TARGET[:2]) and \
                 all(os.path.getmtime(os.path.join(objects, symbol + ".o")) < os.path.getmtime(library) for symbol in symbols):
             return
         open(listing, "w").write(content)
+        open(built_for, "w").write(" ".join(TARGET[:2]))
         os.makedirs(os.path.dirname(library), exist_ok=True)
         if IOS:
             name = os.path.basename(library)
@@ -240,7 +244,7 @@ def main():
                 plistlib.dump({"CFBundleIdentifier": "com.atomsprout.nestvane.code%d" % index, "CFBundleName": name,
                                "CFBundleExecutable": name, "CFBundlePackageType": "FMWK", "CFBundleVersion": "1",
                                "CFBundleShortVersionString": "0.1", "CFBundleSupportedPlatforms": ["iPhoneOS"],
-                               "MinimumOSVersion": "26.0"}, file)
+                               "MinimumOSVersion": "17.0"}, file)
         result = subprocess.run(["clang", *TARGET, "-dynamiclib", "-o", library, "-install_name", install_name,
                                  "-Wl,-filelist," + listing, svc], capture_output=True, text=True)
         if result.returncode:

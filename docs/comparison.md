@@ -43,7 +43,7 @@ App Store until Apple removed it, and is now an IPA to sideload. It is open sour
 
 ## What Nestvane chose
 
-- **The newest of both.** Android 17 on iOS 26 and later. It has been tested on an iPhone 15 Pro and an
+- **The newest of both.** Android 17 on iOS 17 and later. It has been tested on an iPhone 14, an iPhone 15 Pro and an
   iPhone 17 Pro only; no other phone is known to work.
 - **Less trimming.** The home screen keeps its widgets, and Settings, Files and the installer are the stock ones.
   The trimming that would need another rebuild of Android was set aside.

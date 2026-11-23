@@ -21,7 +21,7 @@
 <p align="center">
   <img alt="Status: early release" src="https://img.shields.io/badge/status-early%20release-ff7a59">
   <img alt="Android 17" src="https://img.shields.io/badge/Android-17-3fe0b0">
-  <img alt="iOS 26 or later" src="https://img.shields.io/badge/iOS-26%2B-5aa9ff">
+  <img alt="iOS 17 or later" src="https://img.shields.io/badge/iOS-17%2B-5aa9ff">
   <img alt="arm64" src="https://img.shields.io/badge/arch-arm64-9b7bff">
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-f2c14e"></a>
 </p>
@@ -126,8 +126,9 @@ On an iPhone 15 Pro unless noted. The running record, with every measurement, is
 
 ## Requirements
 
-- iOS 26 or later. Tested on iPhone 15 Pro and iPhone 17 Pro.
-- No other phone has been tested. Android needs about 2.4–2.6 GB of memory, more than an iPhone 11 gives one app.
+- iOS 17 or later, on an iPhone with at least 6 GB of memory. Tested on iPhone 14 (iOS 17), iPhone 15 Pro and iPhone 17 Pro.
+- Android needs about 2.3–2.6 GB of memory, more than an iPhone 11 gives one app.
+- The newer the phone, the faster it runs: Android starts in about 7 seconds on an iPhone 17 Pro and in 12 to 20 on an iPhone 14.
 - The [releases](https://github.com/atomsprout/nestvane/releases) carry an IPA with no signature. You sign it
   with your own Apple developer identity; [docs/installing.md](docs/installing.md) says how, and which
   sideloading tools there are. Nestvane is not on the App Store.

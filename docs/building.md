@@ -22,7 +22,7 @@ There is no single command that performs the whole build, and no continuous inte
 | The LLVM sources at the toolchain's revision, `toolchain/llvm_android`, and an NDK — **not in the repository** | Rebuilding the toolchain's prebuilt runtime libraries. |
 | gfxstream and ANGLE sources — **not in the repository** | The renderer. |
 | An Apple developer team with the Extended Virtual Addressing and Increased Memory Limit capabilities | Signing the app ([`ios/Native.entitlements`](../ios/Native.entitlements)). |
-| A device with iOS 26 or later | Running it. |
+| A device with iOS 17 or later | Running it. |
 
 ## Step 1: build Android with reserved registers
 

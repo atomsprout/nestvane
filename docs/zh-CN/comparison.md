@@ -40,7 +40,7 @@ arm64，客体程序由线程化解释器执行。**Andarium** 是它的 Android
 
 ## Nestvane 的选择
 
-- **两边都用最新的。** iOS 26 及以上系统上的 Android 17。只在 iPhone 15 Pro 和 iPhone 17 Pro 上测过，别的手机不知道能不能用。
+- **两边都用最新的。** iOS 17 及以上系统上的 Android 17。只在 iPhone 14、iPhone 15 Pro 和 iPhone 17 Pro 上测过，别的手机不知道能不能用。
 - **裁剪得少。** 桌面保留了小组件，Settings、Files 和安装器都是原版的。需要再重编一次 Android 才能做的裁剪，没有做。
 - **不追求启动速度。** 停在了约 10 秒，项目不打算为了更快而继续裁系统。
 - **内核层而不是内核。** 启动快、容易嵌进 App，但不如真内核完整：Android 没有用到的东西就没有。

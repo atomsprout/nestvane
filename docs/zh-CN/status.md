@@ -9,8 +9,8 @@ Nestvane 是早期版本，目前只有开发者能运行：IPA 必须用付费�
 
 ## 运行要求
 
-- iOS 26 或更高版本。
-- 在 iPhone 15 Pro 和 iPhone 17 Pro 上测试过。较早的阶段也在 iPhone 11 和 iPad Air（M3）上运行过。
+- iOS 17 或更高版本，内存不少于 6 GB。
+- 在 iPhone 14（iOS 17.3.1）、iPhone 15 Pro 和 iPhone 17 Pro 上测试过。较早的阶段也在 iPhone 11 和 iPad Air（M3）上运行过。
 - App 需要 Extended Virtual Addressing 和 Increased Memory Limit 两项权限。
 
 ## 能用的
