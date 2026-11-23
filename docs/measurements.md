@@ -4,6 +4,25 @@ Nestvane starts Android 17 inside an iPhone app, without a just-in-time compiler
 This is the last report before the source is published: what the first release measures, on which phone, and
 where the numbers stop. Every figure comes from the lab record, [`results/G0.md`](../results/G0.md).
 
+## Version 1.2
+
+Measured on 22 November 2026 with the release build of 1.2, on an iPhone 17 Pro (iOS 27.0.1) with ten apps
+installed, after installing it over 1.1.
+
+| | |
+| --- | --- |
+| Boot to the Android home screen | 6.6 to 7.8 s (four starts); 10.7 s the first time after installing |
+| Memory footprint at the home screen | 2.48 GB, peak 2.57 GB |
+| A finger kept moving on a list, 120 Hz on | 111 to 120 frames a second handed to iOS; the screen asked for a frame 120 times a second |
+| The same, 120 Hz off | 58 to 60 |
+| Processor time in that test at 120 Hz | 48 to 56% of one core; 85 to 95% the old way, in the same build |
+| 720p H.264 video | 29 to 32 frames a second of 30 |
+| A text message, from the request to an app receiving it | about 0.4 s |
+| Installing an APK | 0.2 s |
+
+Frames no longer pass through the processor on their way to the screen: 1.1 read each one back and handed iOS
+a picture. The refresh count is iOS's callbacks, still not a measurement of the panel.
+
 ## Version 1.1
 
 Measured on 22 November 2026 with the release build of 1.1, on an iPhone 15 Pro (iOS 26.2) and an iPhone 17 Pro

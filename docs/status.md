@@ -27,7 +27,10 @@ Unless noted, the build is a development-signed Release build.
 - **Persistence.** Installed apps, home-screen widgets and files under `/data` are still there after Android is restarted.
 - **Battery level and time zone** of the phone are shown by Android.
 - **Text messages written in the app.** The More menu's Send Text Message… takes a sender and a text; Android's Messaging app lists it as an incoming message and a notification icon appears in the status bar. Nothing is sent or received over any network: the guest has no phone process and no radio, so nothing arrives the way a message does on a phone. Apps that listen for incoming SMS (to read a code, say) are told by a broadcast the guest sends itself; an app has to have been opened once and hold the permission to receive SMS, as on a phone.
-- **120 Hz**, off by default, on a screen that shows 120: see the display figures below.
+- **120 Hz**, off by default, on a screen that shows 120: see the display figures below. Frames go to the screen as surfaces copied on the graphics processor, taken when the screen is about to refresh; nothing is read back.
+- **Less drawing when the phone is hot.** At iOS's "serious" thermal state Android draws at most half the display's rate, at "critical" at most 30 frames a second. Checked with a pretended state, not a hot phone.
+- **Changing network.** When the phone moves between Wi-Fi and cellular the guest's TCP connections are ended, so apps connect again at once instead of waiting on connections that lead nowhere.
+- **Submit a Bug** in the More menu opens a new GitHub issue with the versions of Nestvane and iOS and the phone's model written in.
 - **An update notice.** Once a day the app asks GitHub which release is the latest and says so when it is newer; it installs nothing itself, and the question can be turned off in the app's Settings.
 - **Video and sound.** Android's `MediaPlayer` plays a 1280×720 H.264 video with AAC sound: the position advances one second a second, about 30 frames a second are composed (the video has 30), and the sound reaches the phone's output at the level it has in the file. NewPipe opens, lists videos and plays a YouTube live stream with sound. Measured on the samples that arrive at the phone's output; how it sounds has not been judged by ear, and resolutions above 720p have not been measured.
 

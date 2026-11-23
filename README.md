@@ -119,7 +119,7 @@ On an iPhone 15 Pro unless noted. The running record, with every measurement, is
 | The same on an iPhone 17 Pro | 9.5–10.9 s; about 17 s the first time after installing |
 | Memory footprint | about 2.4–2.6 GB |
 | App download | 1.07 GB |
-| A finger kept moving on a list | 58–60 frames a second; with 120 Hz on, 113–121 composed and 85–120 shown |
+| A finger kept moving on a list | 58–60 frames a second; with 120 Hz on, 111–120 (iPhone 17 Pro) |
 | Playing a 1280×720 H.264 video | 30 frames a second, in step with the clock |
 | Translated modules | about 1,230, in 12 frameworks |
 | Open-source apps installed from APK | 15 |
