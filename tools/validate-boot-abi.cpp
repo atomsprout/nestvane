@@ -5053,8 +5053,11 @@ int main() {
         assert(invoke(167, {56}) == 0 && invoke(167, {55, 2}) == uint64_t(-22));
         assert(invoke(167, {55, 3}) == 0 && invoke(167, {56}) == 3);
         assert(invoke(167, {55, 0}) == uint64_t(-1));
-        assert(invoke(226, {area, pageSize, 5}) == uint64_t(-13));
+        // The setting is kept and reported, and a mapping that asks for write and execute at once is
+        // still refused. Memory gaining execute permission later is let through: the linker loads
+        // libraries laid out for 4 KiB pages that way, and zygote sets this for every app.
         assert(invoke(222, {0, pageSize, 7, 0x22, uint64_t(-1), 0}) == uint64_t(-13));
+        assert(invoke(226, {area, pageSize, 5}) == 0 && invoke(226, {area, pageSize, 1}) == 0);
         assert(invoke(220, {0x1200011, 0, 0, 0, base}) == 2);
         assert(guarded.schedule(guardedMachine) && guarded.processId() == 2);
         assert(invoke(167, {56}) == 0 && invoke(226, {area, pageSize, 5}) == 0);
