@@ -123,6 +123,7 @@ From the record, on an iPhone 15 Pro. "Opens" means the app reached a usable scr
 - **Large files after power loss.** The content of a file of 1 MiB or more is not flushed to disk in step with the snapshot; after a power loss it can be older than the snapshot ([devices.md](devices.md)).
 - **Storage limits.** 256 MiB per file and 2 GiB for `/data` in total. Larger files in the shared folder do not appear in Android.
 - **SELinux decisions are captured, not computed.** Services added after the capture run under rules written by hand.
+- **A paid developer account is required**, because each Android process takes host address space of its own and the total needs the Extended Virtual Addressing entitlement. A developer of Twoyi suggested the way out, a software MMU with one pool of memory shared by all processes, with our thanks; it is planned and not started ([PLAN.md](../PLAN.md), in Chinese).
 - **One scheduler thread.** System calls of all guest processes run one at a time.
 - **Android thinks it is an emulator.** Settings titles the device page "About emulated device".
 - **The `Documents` folder** also holds diagnostic text files and screenshots written by the app, which show up in the Files app.
