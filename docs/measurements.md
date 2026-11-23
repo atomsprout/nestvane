@@ -1,10 +1,30 @@
-# Nestvane 1.0 in numbers
+# Nestvane in numbers
 
 Nestvane starts Android 17 inside an iPhone app, without a just-in-time compiler and without a hypervisor.
 This is the last report before the source is published: what the first release measures, on which phone, and
 where the numbers stop. Every figure comes from the lab record, [`results/G0.md`](../results/G0.md).
 
-## One run from a fresh install
+## Version 1.1
+
+Measured on 22 November 2026 with the release build of 1.1, on an iPhone 15 Pro (iOS 26.2) and an iPhone 17 Pro
+(iOS 27.0.1). The rest of this page is the report written for 1.0 and is kept as it was.
+
+| | |
+| --- | --- |
+| Boot to the Android home screen, no apps added | 7.7 to 8.1 s (iPhone 15 Pro); 17.3 s the first time after installing |
+| The same with eight apps kept from 1.0 | 9.8 to 11.6 s (iPhone 17 Pro, installed over 1.0) |
+| Memory footprint at the home screen | 2.38 to 2.55 GB |
+| A finger kept moving on a list, 120 Hz on | 113 to 121 frames a second composed, 85 to 120 shown |
+| The same, 120 Hz off | 58 to 60 |
+| 720p H.264 video | 29 to 32 frames a second of 30 (iPhone 17 Pro) |
+| Installing an APK | 0.1 to 0.5 s |
+| Download | 1.07 GB, about 3.3 GB installed |
+
+"Shown" counts frames handed to iOS, not refreshes of the screen itself. Before 1.1 Android drew at most 60
+frames a second whatever the display was set to: resource overlays of its framework were never applied, because
+the program that applies them was missing from the system image.
+
+## One run from a fresh install (1.0)
 
 On 22 November 2026 the release build was installed on an iPhone 17 Pro (iOS 27.0.1) that did not have the app,
 and everything below was done in order.

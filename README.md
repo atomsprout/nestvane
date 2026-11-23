@@ -103,7 +103,7 @@ Read more in the documentation:
 - [Devices](docs/devices.md) — graphics, storage, network and sound
 - [Design notes](docs/design-notes.md) — decisions, and the problems that taught the most
 - [Building](docs/building.md) and [Status](docs/status.md)
-- [Installing the release](docs/installing.md), [1.0 in numbers](docs/measurements.md), and
+- [Installing the release](docs/installing.md), [Nestvane in numbers](docs/measurements.md), and
   [Nestvane, Twoyi and Andarium](docs/comparison.md)
 - [How it was built in four days](https://atomsprout.com/nestvane/blog/android-17-inside-an-iphone-app/), on the blog
 
@@ -116,9 +116,9 @@ On an iPhone 15 Pro unless noted. The running record, with every measurement, is
 | --- | --- |
 | Boot to the Android launcher | about 8 s; about 10 s with the media services |
 | The same on an iPhone 17 Pro | 9.5–10.9 s; about 17 s the first time after installing |
-| Memory footprint | about 2.2–2.7 GB |
-| App download | 1.06 GB |
-| Scrolling a list | up to about 55 frames a second at 60 Hz |
+| Memory footprint | about 2.4–2.6 GB |
+| App download | 1.07 GB |
+| A finger kept moving on a list | 58–60 frames a second; with 120 Hz on, 113–121 composed and 85–120 shown |
 | Playing a 1280×720 H.264 video | 30 frames a second, in step with the clock |
 | Translated modules | about 1,230, in 12 frameworks |
 | Open-source apps installed from APK | 15 |
@@ -126,7 +126,7 @@ On an iPhone 15 Pro unless noted. The running record, with every measurement, is
 ## Requirements
 
 - iOS 26 or later. Tested on iPhone 15 Pro and iPhone 17 Pro.
-- No other phone has been tested. Android needs about 2.2–2.7 GB of memory, more than an iPhone 11 gives one app.
+- No other phone has been tested. Android needs about 2.4–2.6 GB of memory, more than an iPhone 11 gives one app.
 - The [releases](https://github.com/atomsprout/nestvane/releases) carry an IPA with no signature. You sign it
   with your own Apple developer identity; [docs/installing.md](docs/installing.md) says how, and which
   sideloading tools there are. Nestvane is not on the App Store.
