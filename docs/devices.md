@@ -20,12 +20,16 @@ The gfxstream and ANGLE sources themselves are not in this repository; [building
 
 **Frame rate.**
 Two settings have to agree: how often the guest composes, and how often the app looks for a new frame.
-Both come from `NESTVANE_DISPLAY_HZ`, which the app sets to 60, or to the screen's maximum if that is lower. The guest receives it as its vsync rate through the boot configuration.
+Both come from `NESTVANE_DISPLAY_HZ`, which the app sets to 60, or to 120 on a screen that shows 120 when "120 Hz" is turned on in the app's Settings; a screen with a lower maximum gets that. The guest receives it as its vsync rate through the boot configuration.
 Earlier the app looked for a frame every 33 ms, which capped the display at 30 frames a second.
 
 Measured while scrolling a list in Settings: up to about 55 frames a second at 60 Hz on an iPhone 15 Pro.
-On an iPhone 17 Pro, asking for 120 Hz gave the same rate as 60 Hz, about 50 frames a second, so the limit is not the screen.
-Which stage is the limit (the app's drawing, SurfaceFlinger, the renderer, or reading each frame back to the processor and making an image of it) has not been analysed.
+At 120 Hz, with a finger kept moving on the same list, Android composes 120 frames a second and the app shows 86 to 120 of them (iPhone 15 Pro).
+
+Two things had kept 120 Hz from working, and neither was speed.
+The framework holds drawing to 60 frames a second by default whatever the display mode is; the overlay in [`fixtures/overlay-framework`](../fixtures/overlay-framework) lifts that default to 120.
+And overlays of the framework's own resources were never applied: zygote runs `/system/bin/idmap2` for them before anything else, the guest root did not have it, and zygote logged `'idmap2 create-multiple' failed` at every boot.
+The earlier figures of about 50 frames a second "at 120 Hz" were Android drawing at 60.
 
 **Shader compilation.**
 SurfaceFlinger normally compiles a set of shaders at boot. Here that took 3.9 seconds, so it is switched off (`service.sf.prime_shader_cache=0`) and shaders are compiled when first used.

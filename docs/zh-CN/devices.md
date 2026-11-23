@@ -20,12 +20,16 @@ gfxstream 和 ANGLE 的源码本身不在这个仓库里，需要什么见 [buil
 
 **帧率。**
 有两个设置必须一致：客体多久合成一次，App 多久去取一次新帧。
-两者都来自 `NESTVANE_DISPLAY_HZ`，App 把它设为 60；屏幕的最高刷新率更低时取屏幕的。客体通过启动配置拿到这个值，作为自己的 vsync 频率。
+两者都来自 `NESTVANE_DISPLAY_HZ`，App 把它设为 60；屏幕能显示 120 并且在 App 的 Settings 里打开了“120 Hz”时设为 120；屏幕的最高刷新率更低时取屏幕的。客体通过启动配置拿到这个值，作为自己的 vsync 频率。
 早先 App 每 33 毫秒取一次帧，画面被限制在每秒 30 帧。
 
 在 Settings 里滑动列表时的实测：iPhone 15 Pro 在 60 Hz 下最高约每秒 55 帧。
-在 iPhone 17 Pro 上要求 120 Hz，得到的帧率和 60 Hz 一样，约每秒 50 帧，所以瓶颈不在屏幕。
-到底卡在哪一段（应用绘制、SurfaceFlinger、渲染器，还是把每一帧读回处理器再做成图像这条显示路径），还没有分析。
+120 Hz 下，手指在同一个列表上持续移动时，Android 每秒合成 120 帧，App 显示出其中的 86 到 120 帧（iPhone 15 Pro）。
+
+此前 120 Hz 不起作用有两个原因，都和速度无关。
+框架默认把绘制限制在每秒 60 帧，不管显示模式是多少；[`fixtures/overlay-framework`](../../fixtures/overlay-framework) 里的覆盖包把这个默认值提到 120。
+而针对框架自身资源的覆盖包此前从未生效：zygote 最先为它们运行 `/system/bin/idmap2`，客体根目录里没有这个程序，每次开机 zygote 都记下 `'idmap2 create-multiple' failed`。
+早先“120 Hz 下约 50 帧”的数字，其实是 Android 在按 60 帧绘制。
 
 **着色器编译。**
 SurfaceFlinger 平常在开机时预编译一批着色器。在这里这一步要 3.9 秒，所以关掉了（`service.sf.prime_shader_cache=0`），着色器在第一次用到时再编译。

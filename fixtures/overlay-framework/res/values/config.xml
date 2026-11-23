@@ -2,4 +2,9 @@
 <resources>
     <!-- The boot does not wait for SystemUI to draw the wallpaper before it starts the launcher. -->
     <bool name="config_checkWallpaperAtBoot">false</bool>
+    <!-- Android draws at the rate of the display mode it is given. The framework's own default holds
+         drawing to 60 frames a second whatever the mode is; the mode's rate is set by the app
+         (androidboot.qemu.vsync), so at 60 Hz these change nothing. -->
+    <integer name="config_defaultRefreshRate">120</integer>
+    <integer name="config_defaultPeakRefreshRate">120</integer>
 </resources>

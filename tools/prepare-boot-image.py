@@ -282,15 +282,22 @@ def add_low_memory_killer(adb, guest):
 
 
 def add_overlay_daemon(adb, guest):
-    """idmap2d, which the overlay manager starts to put resource overlays into effect.
+    """idmap2d, which the overlay manager starts to put resource overlays into effect, and idmap2,
+    which zygote runs before anything else for the overlays of the framework's own resources.
 
-    Without it the overlays that tools/build-overlays.sh installs are scanned and never applied.
+    Without idmap2d the overlays that tools/build-overlays.sh installs are scanned and never applied.
+    Without idmap2 the ones that target "android" are left out of every process: zygote logs
+    "'idmap2 create-multiple' failed" and the framework keeps its own values.
     """
-    for path in ("system/bin/idmap2d", "system/lib64/libidmap2.so"):
+    for path in ("system/bin/idmap2d", "system/bin/idmap2", "system/lib64/libidmap2.so"):
         if not (guest / path).is_file():
             subprocess.run(adb + ["pull", "/" + path, str(guest / path)], check=True, stdout=subprocess.DEVNULL)
     (guest / "system/bin/idmap2d").chmod(0o755)
+    (guest / "system/bin/idmap2").chmod(0o755)
     transitions = guest / "nestvane-metadata/selinux-process-transition.txt"
+    if "/system/bin/idmap2 " not in transitions.read_text():
+        with transitions.open("a") as file:
+            file.write("/system/bin/idmap2 u:r:zygote:s0 u:object_r:idmap_exec:s0 2 u:r:idmap:s0\n")
     if "/system/bin/idmap2d " not in transitions.read_text():
         with transitions.open("a") as file:
             file.write("/system/bin/idmap2d u:r:init:s0 u:object_r:idmap_exec:s0 2 u:r:idmap:s0\n")

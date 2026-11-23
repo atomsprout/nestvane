@@ -35,7 +35,6 @@ Unless noted, the build is a development-signed Release build.
 - **IPv6.** The guest network is IPv4 only.
 - **Live changes to the shared folder from iOS.** They show up only after Android restarts.
 - **Apps with heavy native code are slow**, because the native libraries inside an APK are interpreted. Some apps do not start.
-- **120 Hz.** Asking for it gains nothing; see the frame rate figures below.
 
 ## Measured numbers
 
@@ -74,7 +73,7 @@ For comparison, the same Android image on a real Linux kernel in the reference e
 | --- | --- | --- |
 | Peak frame rate while scrolling a Settings list, at 60 Hz | 55 to 56 frames a second | iPhone 15 Pro |
 | Typical frame rate in the same test, at 60 Hz | 30 to 46 frames a second, peak 52 | iPhone 17 Pro |
-| The same at 120 Hz | 33 to 44 frames a second, peak 51 | iPhone 17 Pro |
+| A finger kept moving on the same list, at 120 Hz (off by default) | 120 frames a second composed, 86 to 120 shown | iPhone 15 Pro |
 
 ### Responsiveness
 

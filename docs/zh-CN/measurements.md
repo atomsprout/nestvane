@@ -53,7 +53,8 @@ Nestvane 在 iPhone 的一个 App 里启动 Android 17，不用即时编译，�
 | --- | --- | --- |
 | 60 Hz 下滑动 Settings 的列表 | 最高每秒 55–56 帧 | iPhone 15 Pro |
 | 同上 | 每秒 30–46 帧，峰值 52 | iPhone 17 Pro |
-| 同上，120 Hz | 33–44 帧，峰值 51：没有提升 | iPhone 17 Pro |
+| 手指在同一列表上持续移动，60 Hz | 每秒合成并显示 60 帧 | iPhone 15 Pro |
+| 同上，120 Hz | 合成 120 帧，显示 86–120 帧 | iPhone 15 Pro |
 | 1280×720 的 H.264 视频加 AAC 声音 | 30 帧的视频每秒合成 28–31 帧，播放位置每秒前进一秒 | iPhone 15 Pro |
 | 打开 Settings | 0.4–0.8 秒 | iPhone 15 Pro |
 | 打开 Settings 的子页面 | 0.15–0.35 秒 | iPhone 15 Pro |

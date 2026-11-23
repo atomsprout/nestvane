@@ -59,7 +59,8 @@ shows the launcher 6.84 seconds after its kernel starts.
 | --- | --- | --- |
 | Scrolling a Settings list at 60 Hz | up to 55 to 56 frames a second | iPhone 15 Pro |
 | The same | 30 to 46 frames a second, peak 52 | iPhone 17 Pro |
-| The same at 120 Hz | 33 to 44, peak 51: no gain | iPhone 17 Pro |
+| A finger kept moving on the same list, at 60 Hz | 60 frames a second composed and shown | iPhone 15 Pro |
+| The same at 120 Hz | 120 composed, 86 to 120 shown | iPhone 15 Pro |
 | 1280×720 H.264 video with AAC sound | 28 to 31 frames a second of 30, position one second a second | iPhone 15 Pro |
 | Opening Settings | 0.4 to 0.8 s | iPhone 15 Pro |
 | Opening a Settings sub-page | 0.15 to 0.35 s | iPhone 15 Pro |

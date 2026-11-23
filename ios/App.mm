@@ -87,8 +87,10 @@ std::jthread StartDisplayReader(const nestvane::GfxstreamSession& renderer, Disp
         // How often the display is looked at for a new frame: NESTVANE_DISPLAY_HZ, the rate the guest
         // composes at. NESTVANE_DISPLAY_RATE=1 writes what came of it to display-rate.txt each second:
         // the frames the guest composed and the frames that were shown.
+        // NESTVANE_DISPLAY_READ_HZ looks at another rate than the guest composes at, to tell the two apart.
         const int hertz = std::clamp(std::atoi(getenv("NESTVANE_DISPLAY_HZ") ?: "30"), 10, 240);
-        const auto period = std::chrono::microseconds(1'000'000 / hertz);
+        const int readHertz = std::clamp(std::atoi(getenv("NESTVANE_DISPLAY_READ_HZ") ?: "0") ?: hertz, 1, 240);
+        const auto period = std::chrono::microseconds(1'000'000 / readHertz);
         const bool reportRate = getenv("NESTVANE_DISPLAY_RATE") != nullptr;
         NSURL* rateURL = [[NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject
             URLByAppendingPathComponent:@"display-rate.txt"];
@@ -96,6 +98,9 @@ std::jthread StartDisplayReader(const nestvane::GfxstreamSession& renderer, Disp
         auto rateStarted = std::chrono::steady_clock::now();
         uint64_t rateFirstFrame = 0;
         unsigned shown = 0;
+        // The most frames composed in any tenth of the second: what the guest reaches while something moves.
+        auto tenthStarted = rateStarted;
+        uint64_t tenthFirst = 0, tenthMost = 0;
         auto next = std::chrono::steady_clock::now();
         const auto capacity = std::max(displayPixelBudget, size_t(size.width) * size.height) * 4;
         std::unique_ptr<uint8_t[]> pixels;
@@ -134,15 +139,20 @@ std::jthread StartDisplayReader(const nestvane::GfxstreamSession& renderer, Disp
                     }
                 }
             }
+            if (const auto now = std::chrono::steady_clock::now(); reportRate && now - tenthStarted >= std::chrono::milliseconds(100)) {
+                tenthMost = std::max(tenthMost, lastFrame - tenthFirst);
+                tenthFirst = lastFrame;
+                tenthStarted = now;
+            }
             if (const auto now = std::chrono::steady_clock::now(); reportRate && now - rateStarted >= std::chrono::seconds(1)) {
                 const double seconds = std::chrono::duration<double>(now - rateStarted).count();
                 static uint64_t soundBefore = 0;
                 auto& sound = nestvane::GuestAudio::host();
                 static uint64_t playedBefore = 0;
                 const uint64_t soundNow = sound.taken.load(), playedNow = sound.played.load();
-                [rates appendFormat:@"%dx%d at %d Hz: composed %.0f, shown %.0f frames per second; sound %.0f bytes a second taken, %.0f played by Android, peak %u (%@, %zu bytes waiting)\n", size.width, size.height, hertz,
+                [rates appendFormat:@"%dx%d at %d Hz: composed %.0f, shown %.0f frames per second; sound %.0f bytes a second taken, %.0f played by Android, peak %u (%@, %zu bytes waiting); most in a tenth %llu\n", size.width, size.height, hertz,
                     rateFirstFrame ? double(lastFrame - rateFirstFrame + 1) / seconds : 0.0, shown / seconds, double(soundNow - soundBefore) / seconds, double(playedNow - playedBefore) / seconds,
-                    sound.peak.exchange(0), GuestAudioOutputState, sound.buffered()];
+                    sound.peak.exchange(0), GuestAudioOutputState, sound.buffered(), std::exchange(tenthMost, 0)];
                 soundBefore = soundNow;
                 playedBefore = playedNow;
                 [rates writeToURL:rateURL atomically:YES encoding:NSUTF8StringEncoding error:nil];
@@ -181,6 +191,18 @@ void AppendMemoryUsage(std::string& report) {
               ", reusable " + std::to_string(memory.reusable) + ", resident " + std::to_string(memory.resident_size) + "\n";
 }
 } // namespace
+
+// The rate Android composes at and the app looks for frames at: 60 a second, or 120 on a screen that
+// shows 120 when the person has turned that on in Settings. The framework draws at 120 only because
+// the overlay in fixtures/overlay-framework lifts its default of 60. NESTVANE_DISPLAY_HZ, when the app
+// was launched with it, overrides both; Android reads the rate once, as it starts.
+static NSString* const Display120HzKey = @"Display120Hz";
+static NSInteger GuestDisplayRate() {
+    static const NSInteger launchedWith = std::atoi(getenv("NESTVANE_DISPLAY_HZ") ?: "");
+    if (launchedWith) return launchedWith;
+    const NSInteger screen = UIScreen.mainScreen.maximumFramesPerSecond;
+    return std::min<NSInteger>(screen, [NSUserDefaults.standardUserDefaults boolForKey:Display120HzKey] ? 120 : 60);
+}
 
 static NSString* ThermalState() {
     switch (NSProcessInfo.processInfo.thermalState) {
@@ -476,13 +498,18 @@ static void FollowGuestAudio() {
     NSString* files = [@"shareddocuments://" stringByAppendingString:
         [storage.path stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLPathAllowedCharacterSet]];
     NSString* rate = [NSString stringWithFormat:@"%s frames per second", getenv("NESTVANE_DISPLAY_HZ") ?: "60"];
+    const BOOL fast = UIScreen.mainScreen.maximumFramesPerSecond >= 120;
     const auto row = [](NSString* symbol, NSString* title, NSString* detail, NSString* url) {
         return @{@"symbol": symbol, @"title": title, @"detail": detail ?: @"", @"url": url ?: @""};
     };
     _sections = @[
-        @{@"title": @"Android", @"footer": @"Files you put into the Android folder appear in Android the next time it starts.",
-          @"rows": @[row(@"cpu", @"Android version", @"17", nil), row(@"display", @"Display", rate, nil),
-                     row(@"folder", @"Shared files", @"Open in Files", files)]},
+        @{@"title": @"Android", @"footer": fast
+              ? @"120 Hz makes motion smoother and uses more battery. It takes effect the next time Android starts, as do files you put into the Android folder."
+              : @"Files you put into the Android folder appear in Android the next time it starts.",
+          @"rows": [@[row(@"cpu", @"Android version", @"17", nil), row(@"display", @"Display", rate, nil)]
+              arrayByAddingObjectsFromArray:[(fast ? @[@{@"symbol": @"gauge.with.dots.needle.67percent", @"title": @"120 Hz",
+                                                        @"detail": @"", @"url": @"", @"switch": Display120HzKey}] : @[])
+              arrayByAddingObject:row(@"folder", @"Shared files", @"Open in Files", files)]]},
         @{@"title": @"Community", @"footer": @"",
           @"rows": @[row(@"globe", @"Website", @"atomsprout.com/nestvane", @"https://atomsprout.com/nestvane/"),
                      row(@"bubble.left.and.bubble.right", @"Discord", @"Join the server", @"https://discord.gg/eGzEaP6TzR"),
@@ -556,6 +583,15 @@ static void FollowGuestAudio() {
             [UIImageSymbolConfiguration configurationWithPointSize:13 weight:UIImageSymbolWeightSemibold]]] : nil;
     cell.accessoryView.tintColor = UIColor.tertiaryLabelColor;
     cell.accessibilityTraits = opens ? UIAccessibilityTraitLink : UIAccessibilityTraitStaticText;
+    if (NSString* key = row[@"switch"]) {
+        UISwitch* toggle = [UISwitch new];
+        toggle.on = [NSUserDefaults.standardUserDefaults boolForKey:key];
+        toggle.accessibilityLabel = row[@"title"];
+        [toggle addAction:[UIAction actionWithHandler:^(UIAction* action) {
+            [NSUserDefaults.standardUserDefaults setBool:static_cast<UISwitch*>(action.sender).on forKey:key];
+        }] forControlEvents:UIControlEventValueChanged];
+        cell.accessoryView = toggle;
+    }
     return cell;
 }
 
@@ -1002,11 +1038,8 @@ static void FollowGuestAudio() {
                     [outcome writeToURL:checkURL atomically:YES encoding:NSUTF8StringEncoding error:nil];
                 }] resume];
             });
-            // Android composes 60 times a second, unless NESTVANE_DISPLAY_HZ says otherwise. A screen that
-            // can show 120 gains nothing from asking for it yet: on an iPhone 17 Pro the guest gets about 50
-            // frames a second composed while a list scrolls, at 60 and at 120 alike (results/G0.md).
-            if (!getenv("NESTVANE_DISPLAY_HZ"))
-                setenv("NESTVANE_DISPLAY_HZ", @(std::min<NSInteger>(UIScreen.mainScreen.maximumFramesPerSecond, 60)).stringValue.UTF8String, 1);
+            // The rate Android composes at is fixed when it starts (GuestDisplayRate).
+            setenv("NESTVANE_DISPLAY_HZ", @(GuestDisplayRate()).stringValue.UTF8String, 1);
             // Android's sound comes out of the phone.
             static dispatch_source_t audioWatch;
             static dispatch_once_t audioWatched;
@@ -1157,6 +1190,29 @@ static void FollowGuestAudio() {
                                     }
                                     usleep(200000);
                                     device->submit(axis / 2, axis * 60 / 200, false);
+                                } else if ([fields[0] isEqualToString:@"drag"]) {
+                                    // "drag:0:0:ms" keeps a finger moving up and down for that long, a move
+                                    // every 4 ms: the list has something new to draw at every frame.
+                                    const int moves = fields[3].intValue / 4;
+                                    for (int move = 0; move < moves; ++move) {
+                                        const int phase = move % 500, at = phase < 250 ? 140 - phase / 4 : 78 + (phase - 250) / 4;
+                                        device->submit(axis / 2, axis * at / 200, true);
+                                        usleep(4000);
+                                    }
+                                    device->submit(axis / 2, axis / 2, false);
+                                    continue;
+                                } else if ([fields[0] hasPrefix:@"fling"]) {
+                                    // "fling:0:0:ms" and "flingdown:0:0:ms" throw the list: a fast drag up or
+                                    // down, then that many milliseconds for it to coast. No frame is saved.
+                                    const bool down = [fields[0] isEqualToString:@"flingdown"];
+                                    for (int step = 0; step <= 8; ++step) {
+                                        const int at = down ? 60 + step * 10 : 140 - step * 10;
+                                        device->submit(axis / 2, axis * at / 200, true);
+                                        usleep(8000);
+                                    }
+                                    device->submit(axis / 2, axis * (down ? 140 : 60) / 200, false);
+                                    usleep(useconds_t(fields[3].intValue) * 1000);
+                                    continue;
                                 } else {
                                     device->submit(x, y, true);
                                     usleep(useconds_t(fields[2].intValue) * 1000);
