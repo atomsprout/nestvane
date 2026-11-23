@@ -64,7 +64,11 @@ for the app** gives that code the system it expects.
 - **Shared files.** Android's shared storage is a real folder in the Files app
   (*On My iPhone → Nestvane → Android*).
 - **Home-screen widgets**, the phone's battery level and time zone, touch input.
-- **Graphics on the GPU** through gfxstream and ANGLE on Metal, at 60 Hz.
+- **Graphics on the GPU** through gfxstream and ANGLE on Metal, at 60 Hz, or at 120 Hz on a ProMotion screen when you
+  turn that on in Nestvane's Settings.
+- **Text messages you write yourself.** *Send Text Message…* hands Android a sender and a text, and the Messaging app
+  shows it as an incoming message. Nothing is sent to anyone: Android has no phone number and no radio.
+- **An update notice.** Once a day Nestvane asks GitHub which release is the latest and tells you when there is a newer one.
 - **Video and sound.** Android's software decoders play a 720p video at its 30 frames a second, and the sound
   comes out of the phone. NewPipe plays a YouTube stream.
 

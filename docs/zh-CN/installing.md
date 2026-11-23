@@ -36,7 +36,7 @@
 ## 签名与安装
 
 ```sh
-unzip Nestvane-1.0.ipa
+unzip Nestvane-1.1.ipa
 app=Payload/Nestvane.app
 
 # 你的描述文件；如果它的包标识符不是 com.atomsprout.nestvane，也要改。
@@ -59,7 +59,7 @@ Android 启动到了桌面（这次首次启动 15.5 秒）。改包标识符，
 
 ## 校验下载
 
-每个 Release 都列出了 IPA 的 SHA-256，用 `shasum -a 256 Nestvane-1.0.ipa` 对比。
+每个 Release 都列出了 IPA 的 SHA-256，用 `shasum -a 256 Nestvane-1.1.ipa` 对比。
 
 ## 第一次启动
 

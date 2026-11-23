@@ -40,7 +40,7 @@ Extended Virtual Addressing. Tell us which tools work for you.
 ## Signing and installing
 
 ```sh
-unzip Nestvane-1.0.ipa
+unzip Nestvane-1.1.ipa
 app=Payload/Nestvane.app
 
 # Your profile, and its bundle identifier if it is not com.atomsprout.nestvane.
@@ -64,7 +64,7 @@ that first start). Changing the bundle identifier, and tools that sign and insta
 
 ## Checking the download
 
-Each release lists the SHA-256 of its IPA. Compare it with `shasum -a 256 Nestvane-1.0.ipa`.
+Each release lists the SHA-256 of its IPA. Compare it with `shasum -a 256 Nestvane-1.1.ipa`.
 
 ## First start
 

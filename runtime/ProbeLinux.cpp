@@ -4736,6 +4736,28 @@ bool ProbeLinux::fileCall(Machine& machine) {
                     x[0] = fd;
                     break;
                 }
+                if (path == GuestApkInbox::textDevice && apkInbox) {
+                    if (userId() != 2000 || current->process->context != "u:r:shell:s0" ||
+                        current->process->executable != GuestApkInbox::textReader) {
+                        x[0] = uint64_t(-13);
+                        break;
+                    }
+                    if (x[2] & ~0x80800ULL) { x[0] = invalid; break; }
+                    const auto fd = freeDescriptor();
+                    if (fd == descriptorCapacity) { x[0] = uint64_t(-24); break; }
+                    std::vector<uint8_t> message;
+                    if (!apkInbox->takeText(message)) {
+                        if (!(x[2] & 0x800)) return waitForHostEvents();
+                        x[0] = uint64_t(-11);
+                        break;
+                    }
+                    const auto owned = std::make_shared<std::string>(message.begin(), message.end());
+                    Descriptor entry{path, {reinterpret_cast<const uint8_t*>(owned->data()), owned->size()}, uint32_t(x[2]), Node::regular};
+                    entry.snapshot = owned;
+                    descriptors().emplace(fd, std::move(entry));
+                    x[0] = fd;
+                    break;
+                }
                 const auto ownProc = "/proc/" + std::to_string(processId());
                 const bool procMaps = path == "/proc/self/maps" || path == ownProc + "/maps";
                 const std::string_view procPath = path;

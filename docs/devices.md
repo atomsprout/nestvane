@@ -136,6 +136,12 @@ The app passes the phone's time zone name in the boot configuration, and `init` 
 The app's view converts touches to absolute positions on a 0 to 32767 scale and queues them; the kernel layer delivers them through `/dev/input/event0`, which Android's input system reads like any touch screen.
 The Back and Home buttons in the app's bar are sent as key events through the same device.
 
+**Text messages.**
+The guest has no phone process and no radio service, so no message can arrive the way it does on a phone.
+The app's *Send Text Message…* queues a sender and a text ([`runtime/GuestApkInbox.hpp`](../runtime/GuestApkInbox.hpp)); a guest service started after boot ([`fixtures/android17-text.sh`](../fixtures/android17-text.sh)) reads them from `/dev/nestvane-text`, which waits while there is none, writes a row into the SMS provider with Android's `content` tool, and posts a notification.
+The image carries the telephony provider and the Messaging app for this; the provider runs in a process named `com.android.phone`, which is not the phone app.
+Apps that wait for the incoming-SMS broadcast do not see such a message.
+
 **Installing apps.**
 An `.apk` file opened with the app (from Files, AirDrop or a share sheet), or picked with Install APK… in the app's menu or on its home-screen icon, is copied into an inbox ([`runtime/GuestApkInbox.hpp`](../runtime/GuestApkInbox.hpp)).
 Once Android has booted, a small guest program ([`fixtures/android17-apk-install.c`](../fixtures/android17-apk-install.c)) hands it to Android's own package manager with the stock `cmd package install` command.

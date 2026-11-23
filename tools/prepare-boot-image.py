@@ -24,6 +24,9 @@ FRAMEWORK_APPS = (
     "com.android.keychain",
     "com.android.launcher3",
     "com.android.location.fused",
+    # Text messages: the app that shows them. Nothing sends or receives one, there is no phone
+    # process and no radio; the app writes a message the person composed into the provider below.
+    "com.android.messaging",
     "com.android.modulemetadata",
     # Brings the Ethernet interface up and checks the network: without it nothing is ever connected.
     "com.android.networkstack",
@@ -31,6 +34,7 @@ FRAMEWORK_APPS = (
     "com.android.providers.downloads",
     "com.android.providers.downloads.ui",
     "com.android.providers.settings",
+    "com.android.providers.telephony",
     "com.android.server.telecom",
     "com.android.settings",
     "com.android.shell",
@@ -279,6 +283,15 @@ def add_low_memory_killer(adb, guest):
     if "/system/bin/lmkd " not in transitions.read_text():
         with transitions.open("a") as file:
             file.write("/system/bin/lmkd u:r:init:s0 u:object_r:lmkd_exec:s0 2 u:r:lmkd:s0\n")
+
+
+def add_content_tool(adb, guest):
+    """Android's content tool, which fixtures/android17-text.sh uses to store a text message."""
+    for path in ("system/framework/content.jar", "system/framework/oat/arm64/content.odex",
+                 "system/framework/oat/arm64/content.vdex"):
+        if not (guest / path).is_file():
+            (guest / path).parent.mkdir(parents=True, exist_ok=True)
+            subprocess.run(adb + ["pull", "/" + path, str(guest / path)], check=True, stdout=subprocess.DEVNULL)
 
 
 def add_overlay_daemon(adb, guest):
@@ -845,6 +858,7 @@ def main():
                     copy_prebuilt_code(adb, remote, guest)
                     add_low_memory_killer(adb, guest)
                     add_overlay_daemon(adb, guest)
+                    add_content_tool(adb, guest)
                     add_media_server(adb, guest)
                     precompile_apex_apps(adb, remote, guest)
                 if args.precompile_framework_code:

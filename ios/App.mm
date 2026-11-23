@@ -657,6 +657,7 @@ static void FollowGuestAudio() {
 @interface ValidationViewController : UIViewController <UIDocumentPickerDelegate>
 - (void)installApkAtURL:(NSURL*)source;
 - (void)chooseApkWhenReady;
+- (void)composeText;
 @property(nonatomic, strong) UILabel* status;
 @property(nonatomic, strong) UITextView* details;
 @property(nonatomic, strong) GuestDisplayView* display;
@@ -729,7 +730,12 @@ static void FollowGuestAudio() {
                 [owner presentViewController:sheet animated:YES completion:nil];
             }];
             if (NSString* version = AvailableUpdate()) settings.subtitle = [NSString stringWithFormat:@"Version %@ is available", version];
-            completion(@[install, settings, power]);
+            // Android has no phone number and no radio: a text message is one the person writes here,
+            // which Android then shows as received.
+            UIAction* text = [UIAction actionWithTitle:@"Send Text Message…" image:[UIImage systemImageNamed:@"message"]
+                                            identifier:nil handler:^(UIAction*) { [owner composeText]; }];
+            if (!running || !owner->_apkInbox) text.attributes = UIMenuElementAttributesDisabled;
+            completion(@[install, text, settings, power]);
         }]]];
     UIStackView* controls = [[UIStackView alloc] initWithArrangedSubviews:
         @[self.back, self.home, self.more, self.run]];
@@ -907,6 +913,35 @@ static void FollowGuestAudio() {
         if (!self->_apkInbox) self->_pendingPicker = YES;
         else [self chooseApk];
     });
+}
+
+// Asks for a sender and a text, and hands them to Android, which shows them as a message it received
+// (fixtures/android17-text.sh). Android takes it once it has booted.
+- (void)composeText {
+    UIAlertController* sheet = [UIAlertController alertControllerWithTitle:@"Send Text Message"
+        message:@"Android receives this as an incoming text. Nothing is sent to anyone."
+        preferredStyle:UIAlertControllerStyleAlert];
+    [sheet addTextFieldWithConfigurationHandler:^(UITextField* field) {
+        field.placeholder = @"From";
+        field.text = @"+1 555 0100";
+        field.keyboardType = UIKeyboardTypePhonePad;
+    }];
+    [sheet addTextFieldWithConfigurationHandler:^(UITextField* field) { field.placeholder = @"Message"; }];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    __weak UIAlertController* fields = sheet;
+    __weak ValidationViewController* owner = self;
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Send" style:UIAlertActionStyleDefault handler:^(UIAlertAction*) {
+        ValidationViewController* controller = owner;
+        NSString* sender = [fields.textFields[0].text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        NSString* text = [fields.textFields[1].text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        if (!controller) return;
+        const auto inbox = controller->_apkInbox;
+        const bool taken = inbox && sender.length && text.length && inbox->submitText(sender.UTF8String, text.UTF8String);
+        [controller showApkStatus:taken ? @"Text message handed to Android." : @"The text message needs a sender and a text."
+                        transient:YES];
+    }]];
+    sheet.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+    [self presentViewController:sheet animated:YES completion:nil];
 }
 
 // Installs an APK from the picker, or one that another app handed over ("Open in", AirDrop, a quick
@@ -1174,6 +1209,16 @@ static void FollowGuestAudio() {
                     report += '\n';
                     AppendMemoryUsage(report);
                     exportReport(launcherURL, report);
+                    // NESTVANE_TEST_TEXT="<sender>|<text>" hands Android a text message, as the menu does,
+                    // ten seconds after the launcher is displayed.
+                    if (NSString* message = NSProcessInfo.processInfo.environment[@"NESTVANE_TEST_TEXT"]; message && apkInbox) {
+                        NSArray<NSString*>* parts = [message componentsSeparatedByString:@"|"];
+                        if (parts.count == 2)
+                            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC),
+                                           dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                                apkInbox->submitText(parts[0].UTF8String, parts[1].UTF8String);
+                            });
+                    }
                     // NESTVANE_TEST_SWIPE=1 checks touch without a finger: some seconds after the launcher
                     // is displayed, a swipe up the middle of the screen goes in through the same device
                     // the view feeds, with the frame saved before it and after it.

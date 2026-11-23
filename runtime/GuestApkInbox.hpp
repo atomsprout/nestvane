@@ -4,6 +4,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -64,6 +65,31 @@ public:
         return request;
     }
 
+    // A text message the person wrote in the app, for Android to show as one it received: "sender\n
+    // text\n". The guest's service (text.sh in DynamicProbe.cpp) opens textDevice, which waits here
+    // for the next one. Nothing is sent anywhere: the guest has no phone process and no radio.
+    static constexpr std::string_view textDevice = "/dev/nestvane-text";
+    static constexpr std::string_view textReader = "/system/bin/sh";
+    bool submitText(std::string_view sender, std::string_view text) {
+        const auto line = [](std::string_view field) {
+            std::string out(field.substr(0, 2000));
+            for (auto& c : out) if (c == '\n' || c == '\r' || c == '\0') c = ' ';
+            return out;
+        };
+        std::lock_guard lock(mutex);
+        if (stopped || texts.size() >= 16 || sender.empty() || text.empty()) return false;
+        const auto message = line(sender) + "\n" + line(text) + "\n";
+        texts.emplace_back(message.begin(), message.end());
+        return true;
+    }
+    bool takeText(std::vector<uint8_t>& message) {
+        std::lock_guard lock(mutex);
+        if (texts.empty()) return false;
+        message = std::move(texts.front());
+        texts.erase(texts.begin());
+        return true;
+    }
+
     void stop() {
         std::shared_ptr<Request> queued, running;
         {
@@ -80,6 +106,7 @@ private:
     std::mutex mutex;
     std::shared_ptr<Request> pending;
     std::weak_ptr<Request> active;
+    std::vector<std::vector<uint8_t>> texts;
     bool stopped = false;
 };
 

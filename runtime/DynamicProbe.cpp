@@ -871,7 +871,8 @@ DynamicReport probeInit(const std::string& directory, const std::string& databas
             for (const auto input : {GuestApkInbox::installer, std::string_view("/system/bin/cmd"),
                                       std::string_view("/system/bin/sh"), std::string_view("/system/bin/dumpsys"),
                                       std::string_view("/system/bin/toybox"),
-                                      std::string_view("/system/etc/nestvane/apk-ready.sh")}) {
+                                      std::string_view("/system/etc/nestvane/apk-ready.sh"),
+                                      std::string_view("/system/etc/nestvane/text.sh")}) {
                 if (!files.contains(input))
                     throw std::runtime_error("missing Android APK installer input: " + std::string(input));
             }
@@ -883,6 +884,17 @@ on property:sys.boot_completed=1
     start nestvane-apk-install
 
 service nestvane-apk-install /system/bin/sh /system/etc/nestvane/apk-ready.sh
+    user shell
+    group shell
+    seclabel u:r:shell:s0
+    disabled
+    stdio_to_kmsg
+
+# Text messages the person writes in the app (GuestApkInbox::submitText).
+on property:sys.boot_completed=1
+    start nestvane-text
+
+service nestvane-text /system/bin/sh /system/etc/nestvane/text.sh
     user shell
     group shell
     seclabel u:r:shell:s0

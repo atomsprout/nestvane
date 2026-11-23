@@ -61,7 +61,10 @@ Nestvane 走的是剩下的那条路：**把 Android 重新构建并提前翻译
 - **联网**：Android 应用使用 iPhone 的 Wi-Fi 或蜂窝网络。
 - **共享文件**：Android 的共享存储是“文件”App 里的一个真实文件夹（*我的 iPhone → Nestvane → Android*）。
 - **桌面小组件**，手机的电量和时区，触摸输入。
-- **GPU 图形**：经 gfxstream 和 ANGLE 走 Metal，60 Hz。
+- **GPU 图形**：经 gfxstream 和 ANGLE 走 Metal，60 Hz；在 ProMotion 屏幕上可以在 Nestvane 的 Settings 里打开 120 Hz。
+- **自己写的短信**：用 *Send Text Message…* 给 Android 一个发件人和一段文字，Messaging 应用把它显示成一条收到的短信。
+  不会发给任何人：Android 里没有电话号码，也没有射频。
+- **更新提示**：Nestvane 每天一次向 GitHub 询问最新的 Release，有新版时提示。
 - **视频和声音**：Android 的软件解码器能按每秒 30 帧播放 720p 视频，声音从手机放出来。NewPipe 能播放 YouTube 的视频流。
 
 ## 现在还不能做什么

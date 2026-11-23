@@ -24,4 +24,5 @@ if [[ -f "$root/system/bin/cmd" ]]; then
     mkdir -p "$root/system/etc/nestvane"
     cp fixtures/android17-apk-ready.sh "$root/system/etc/nestvane/apk-ready.sh"
     cp fixtures/android17-trim.sh "$root/system/etc/nestvane/trim.sh"
+    cp fixtures/android17-text.sh "$root/system/etc/nestvane/text.sh"
 fi

@@ -136,6 +136,12 @@ App 在启动配置里传入手机的时区名，`init` 据此设置 `persist.sy
 App 的视图把触摸换算成 0 到 32767 刻度上的绝对坐标并放进队列；内核层通过 `/dev/input/event0` 把它们交出去，Android 的输入系统像读任何触摸屏一样读它。
 App 底栏的返回和主页按钮，作为按键事件经同一个设备送入。
 
+**短信。**
+客体里没有电话进程，也没有射频服务，短信不可能像在手机上那样到达。
+App 的 *Send Text Message…* 把发件人和文字排进队列（[`runtime/GuestApkInbox.hpp`](../../runtime/GuestApkInbox.hpp)）；开机后启动的一个客体服务（[`fixtures/android17-text.sh`](../../fixtures/android17-text.sh)）从 `/dev/nestvane-text` 读取，没有消息时这个设备会等待；它用 Android 的 `content` 工具往短信数据库写一行，再发一条通知。
+为此镜像带上了短信数据库（TelephonyProvider）和 Messaging 应用；数据库运行在名为 `com.android.phone` 的进程里，那不是电话应用。
+等待“收到短信”广播的应用看不到这样的短信。
+
 **安装应用。**
 用 App 打开的 `.apk` 文件（来自“文件”、隔空投送或分享菜单），或者用 App 菜单里、主屏幕图标上的 Install APK… 选中的文件，会被复制到一个收件箱（[`runtime/GuestApkInbox.hpp`](../../runtime/GuestApkInbox.hpp)）。
 Android 开机完成后，一个小的客体程序（[`fixtures/android17-apk-install.c`](../../fixtures/android17-apk-install.c)）用原版的 `cmd package install` 命令把它交给 Android 自己的包管理器。
