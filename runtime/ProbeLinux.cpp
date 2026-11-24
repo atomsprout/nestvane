@@ -4665,6 +4665,13 @@ bool ProbeLinux::socketCall(Machine& machine) {
                 break;
             }
             const bool timestamp = name == 29 && endpoint.netlink;
+            // SO_BROADCAST: Java's DatagramSocket sets it on every socket it makes (Jellyfin looks for
+            // servers that way). Nothing here is broadcast, so it changes nothing.
+            if (name == 6 && endpoint.storageIdentity) {
+                uint32_t enabled = 0;
+                x[0] = size < 4 ? invalid : readOption({reinterpret_cast<uint8_t*>(&enabled), sizeof(enabled)}) ? 0 : uint64_t(-14);
+                break;
+            }
             if (name != 2 && name != 16 && name != 7 && name != 8 && (name != 33 || !endpoint.netlink) && !timestamp) {
                 if (!endpoint.storageIdentity) return false;
                 x[0] = uint64_t(-92);

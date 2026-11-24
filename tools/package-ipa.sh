@@ -3,8 +3,9 @@
 # sign with their own identity (see docs/installing.md).
 #   package-ipa.sh <built .app with graphics embedded> <output .ipa> <NOTICE of the AOSP build>
 # The licenses the app is distributed under go inside it, in Licenses/: Nestvane's own, the notices of
-# the Android system (the NOTICE.txt that the emulator image build writes), and those of the graphics
-# libraries (ios/Licenses/THIRD-PARTY-NOTICES.txt).
+# the Android system (the NOTICE.txt that the emulator image build writes), those of Android System
+# WebView (NOTICE-WEBVIEW.html, see tools/add-webview.sh) and those of the graphics libraries
+# (ios/Licenses/THIRD-PARTY-NOTICES.txt).
 set -euo pipefail
 
 app=${1:A} output=${2:A} aosp=${3:A}
@@ -20,6 +21,8 @@ cp "$repository/LICENSE" "$bundle/Licenses/LICENSE.txt"
 cp "$repository/NOTICE" "$bundle/Licenses/NOTICE.txt"
 cp "$repository/ios/Licenses/THIRD-PARTY-NOTICES.txt" "$bundle/Licenses/"
 cp "$aosp" "$bundle/Licenses/NOTICE-AOSP.txt"
+# Android System WebView's (tools/add-webview.sh writes them).
+cp "$repository/generated/webview/NOTICE-WEBVIEW.html" "$bundle/Licenses/NOTICE-WEBVIEW.html"
 
 # The profile names the devices and the team it was made for, and the signatures name the signer.
 rm -f "$bundle/embedded.mobileprovision"

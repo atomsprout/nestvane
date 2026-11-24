@@ -20,4 +20,8 @@ for root in "$@"; do
     mkdir -p "$root/product/app/webview"
     cp $apk "$root/product/app/webview/webview.apk"
 done
+# Its library, for translating ahead of time (tools/prepare-ios-native.sh), and its license notices,
+# which go inside the app (tools/package-ipa.sh).
+unzip -o -q $apk 'lib/arm64-v8a/libwebviewchromium.so' -d generated/webview
+python3 tools/extract-webview-credits.py $apk generated/webview/NOTICE-WEBVIEW.html
 echo "webview $version: $(stat -f %z $apk) bytes"

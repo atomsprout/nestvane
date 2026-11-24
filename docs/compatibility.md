@@ -28,8 +28,8 @@ channel, and a frame was saved 15 to 18 seconds later.
 | ScriptWidget | 1.1.1 | 1 | Opens. Its first widget preview takes about two minutes |
 | Tasks | 15.14 | 4 | Opens |
 | Termux | from F-Droid, build 1002 | 2 | Opens, and asks for a permission |
-| Wikipedia | r/50616 | 4 | Opens; search and the home feed work. Articles do not: they need a WebView |
-| DuckDuckGo | 5.301.1 | 10 | Does not open: it is a browser and needs a WebView. In 1.3 it stopped Android: see below |
+| Wikipedia | r/50616 | 4 | Opens; search and the home feed work. Articles needed a WebView, which Android has since 1.6; the app itself was not tried again |
+| DuckDuckGo | 5.301.1 | 10 | Did not open: it is a browser and needs a WebView, which Android has since 1.6; not tried again. In 1.3 it stopped Android: see below |
 | Feeder | from F-Droid, build 4191 | 2 | Opens. In 1.3 it stopped Android: see below |
 
 Twenty-one of the twenty-two open.
@@ -70,10 +70,10 @@ to two minutes for the slow ones.
 | Telegram | 13.3.1 | 4 | Opens, at its welcome screen. Before 1.5 it stopped as it started: see below |
 | Telegram X | 0.28.11 | 8 | Opens, at its welcome screen |
 | Element Classic | 1.6.62 | 21 | Opens, at its first screen, after about a minute. Before 1.5 it stopped as it started: see below |
-| Toutiao (今日头条) | 19.2.0 | 161 | Opens, with its tabs and bars; the feed stays empty: its network library needs a WebView |
-| Douyin (抖音) | 32.2.6 | 204 | Opens, with its tabs and bars; no video loads, for the same reason. Needs about 5 GB of memory: an iPad |
-| AnkiDroid | 2.25.3 | 2 | Does not show a screen within a minute; it uses a WebView |
-| Jellyfin | 2.7.3 | 2 | Opens only to say that a WebView is needed |
+| Toutiao (今日头条) | 19.2.0 | 161 | Opens, with its tabs and bars. Since 1.6 (with a WebView) the feed loads: its headlines are there within two minutes |
+| Douyin (抖音) | 32.2.6 | 204 | Opens, with its tabs and bars. No video loads within two minutes, with a WebView too (1.6): its own native libraries are interpreted. Needs about 5 GB of memory: an iPad |
+| AnkiDroid | 2.25.3 | 2 | Opens to its introduction (1.6, with a WebView; before, no screen within a minute) |
+| Jellyfin | 2.7.3 | 2 | Opens to Connect to Server (1.6, with a WebView and SO_BROADCAST; before, only to say that a WebView is needed) |
 | KDE Connect | 1.37.3 | 1 | Stops as it starts: it asks for the Wi-Fi service, which this Android does not have |
 
 Twenty-nine of the thirty-two open; of all fifty-four, fifty.
@@ -127,7 +127,8 @@ the kernel layer no longer refuses memory that gains execute permission, which t
 
 ## What stands in the way of more
 
-- **No WebView.** An app that shows a web page inside itself says that Android System WebView is being updated.
+- **WebView came in 1.6.** Android System WebView 128 from AOSP, translated ahead of time like the rest. JavaScript
+  runs without V8's JIT. A Wikipedia article loads in a WebView in 4 to 8 seconds.
 - **A limit on how many files Android's data may hold** was reached with some thirty apps installed: no further app
   would start. It was 4,096 files and 2,048 directories and is now sixteen times that.
 - **Native libraries are interpreted,** at about forty million instructions a second. An app that does real work

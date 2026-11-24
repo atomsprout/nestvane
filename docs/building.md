@@ -153,15 +153,18 @@ usage: prepare-ios-native.sh <guest root> [<tree with unpacked APEXes>...]
 
 1. builds the small helper programs that run inside the guest ([`tools/prepare-property-reader.sh`](../tools/prepare-property-reader.sh)), with 16 KiB pages;
 2. builds the test fixtures ([`tools/build-fixtures.sh`](../tools/build-fixtures.sh));
-3. translates every ELF file of the guest root for iOS devices;
-4. copies the guest root to `generated/native-app/android17-init-root`, where the app project picks it up as a resource;
-5. runs `xcodegen generate --spec project.yml`.
+3. puts Android System WebView into the guest root ([`tools/add-webview.sh`](../tools/add-webview.sh)): AOSP's prebuilt package, fetched from AOSP and checked against its digest, its library taken out of it, and its license notices written to `generated/webview/NOTICE-WEBVIEW.html`;
+4. translates every ELF file of the guest root for iOS devices, and WebView's library for the address the runtime gives it (`--extra`);
+5. copies the guest root to `generated/native-app/android17-init-root`, where the app project picks it up as a resource;
+6. runs `xcodegen generate --spec project.yml`.
 
 The translation in item 3 is [`tools/build-native-code.py`](../tools/build-native-code.py):
 
 ```
-usage: build-native-code.py <output directory> <tree>... [--only <substring>]... [--ios] [--used <list>]
+usage: build-native-code.py <output directory> <tree>... [--only <substring>]... [--ios] [--used <list>] [--extra <ELF>@<address>]...
 ```
+
+`--extra` translates a library that is not in the trees for a fixed address, without `--reuse`: WebView's, which lives in its APK and which the runtime maps at `0x1_4000_0000`.
 
 It writes `<output>/modules.c`, `<output>/addresses.txt` and, for iOS, the frameworks `<output>/ios/lib/NestvaneCode<n>.framework`.
 The second and later `<tree>` arguments are directories with unpacked APEX modules from the build: the files in them only have to hold the same bytes as the image the guest boots, because modules are matched by content.
@@ -192,7 +195,7 @@ Usage: embed-ios-graphics.sh input.app gfxstream.dylib angle-build-directory out
 
 [`tools/embed-ios-graphics.sh`](../tools/embed-ios-graphics.sh) checks that the frameworks' minimum iOS version does not exceed the app's, wraps the gfxstream library as `NestvaneGfxstream.framework`, copies ANGLE's `libEGL` and `libGLESv2` frameworks, and signs everything with the Apple Development identity the input app was signed with. The output path must end in `.app` and must not exist.
 
-`tools/package-ipa.sh <app> <ipa> <NOTICE.txt of the AOSP build>` packs the app, with the licenses it is distributed under, into the unsigned IPA that a release carries. Installing on a device and producing TestFlight builds are not scripted in the repository.
+`tools/package-ipa.sh <app> <ipa> <NOTICE.txt of the AOSP build>` packs the app, with the licenses it is distributed under (WebView's from `generated/webview/NOTICE-WEBVIEW.html`), into the unsigned IPA that a release carries. Installing on a device and producing TestFlight builds are not scripted in the repository.
 
 ## Checking the runtime on the Mac
 
@@ -200,7 +203,7 @@ Usage: embed-ios-graphics.sh input.app gfxstream.dylib angle-build-directory out
 tools/validate-host.sh
 ```
 
-[`tools/validate-host.sh`](../tools/validate-host.sh) takes no arguments. It builds the fixtures and then compiles and runs three test programs on the Mac: the interpreter validation, the kernel layer's interface tests ([`tools/validate-boot-abi.cpp`](../tools/validate-boot-abi.cpp)), and the tests of the guest address space ([`tools/validate-guest-space.cpp`](../tools/validate-guest-space.cpp)).
+[`tools/validate-host.sh`](../tools/validate-host.sh) takes no arguments. It builds the fixtures and then compiles and runs three test programs on the Mac: the interpreter validation, the kernel layer's interface tests ([`tools/validate-boot-abi.cpp`](../tools/validate-boot-abi.cpp)), the tests of the guest address space ([`tools/validate-guest-space.cpp`](../tools/validate-guest-space.cpp)), and the rewriter's tests ([`tools/validate-rewriter.py`](../tools/validate-rewriter.py)): instructions that name x25-x28, each run as written and as translated on the Mac's processor. `tools/validate-rewriter.py <work directory> <ELF> <count>` does the same for a random sample of a library's instructions.
 It needs only Xcode's command-line tools and `ld.lld`, and is the quickest way to check a change to the runtime.
 
 ## Useful environment variables

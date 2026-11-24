@@ -81,8 +81,9 @@ Each release lists the SHA-256 of its IPA. Compare it with `shasum -a 256 Nestva
 ## What is inside
 
 The app contains an Android 17 system built from the Android Open Source Project with this repository's patch,
-translated ahead of time, together with gfxstream and ANGLE. Their notices are inside the app, in `Licenses/`, and
-attached to each release as `NOTICE-AOSP.txt` and `THIRD-PARTY-NOTICES.txt`.
+translated ahead of time, Android System WebView (AOSP's prebuilt build of Chromium), and gfxstream and ANGLE. Their
+notices are inside the app, in `Licenses/`, and attached to each release as `NOTICE-AOSP.txt`, `NOTICE-WEBVIEW.html`
+and `THIRD-PARTY-NOTICES.txt`.
 
 A few parts of that Android system, iptables and libexif among them, are under the GNU General Public License or
 the GNU Lesser General Public License. Their source is the Android Open Source Project at the tag
