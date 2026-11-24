@@ -23,6 +23,7 @@ English version: [../README.md](../README.md).
 | [installing.md](installing.md) | 怎样给发布的 IPA 签名并装到手机上。 |
 | [measurements.md](measurements.md) | 数字里的 1.0：从全新安装开始的一轮，以及数字到哪里为止。 |
 | [comparison.md](comparison.md) | Nestvane 与两仪、Andarium 的对比，以及它从这两个项目得到了什么。 |
+| [roadmap.md](roadmap.md) | 接下来几个版本做什么、大概多久，以及不做的事。 |
 
 第一次阅读建议按架构、静态改写、内核层、设备、现状的顺序。
 构建文档和设计笔记可以单独读。
