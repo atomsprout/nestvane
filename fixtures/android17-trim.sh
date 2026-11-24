@@ -29,3 +29,9 @@ elif [ "$state" != "5" ]; then
     /system/bin/cmd settings put global nestvane_trim 5
 fi
 
+
+# WebView's flags, read from this file on a debuggable build such as this one. V8 is told not to make
+# machine code: here code made while running is interpreted instruction by instruction anyway, and
+# V8's own interpreter is faster than that. Written at every boot, so that a change here takes effect.
+echo "_ --js-flags=--jitless --disable-seccomp-filter-sandbox" > /data/local/tmp/webview-command-line
+/system/bin/toybox chmod 644 /data/local/tmp/webview-command-line

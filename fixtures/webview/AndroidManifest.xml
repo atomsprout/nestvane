@@ -1,0 +1,16 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="dev.nestvane.webview">
+    <uses-sdk android:minSdkVersion="23" android:targetSdkVersion="37" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Shows a page in a WebView and says in the log how long each stage takes: the WebView made, the
+         page started and finished, its script run, and a frame drawn. With an intent extra "url" it
+         loads that page instead of its own. For testing Android System WebView. -->
+    <application android:label="AAA WebView Test" android:theme="@android:style/Theme.Material.Light.NoActionBar"
+                 android:allowBackup="false" android:usesCleartextTraffic="true">
+        <activity android:name=".MainActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

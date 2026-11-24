@@ -89,6 +89,7 @@ struct ProbeLinux {
     bool suspendChild();
     bool blocked() const { return current->wait != Wait::none; }
     const std::string& currentExecutable() const { return current->process->executable; }
+    const std::string& currentContext() const { return current->process->context; }
     bool schedule(Machine& machine, std::chrono::steady_clock::time_point deadline =
                   std::chrono::steady_clock::time_point::max(), const std::stop_token& stop = {}) {
         if (!(machine.cpu.retired & 4095) && graphicsDma) serviceGraphicsDma();
@@ -781,6 +782,7 @@ private:
     bool validAppDataContext(std::string_view label) const;
     bool validAppProcessContext(std::string_view label) const;
     bool canSpecializeApp(std::string_view label) const;
+    bool ownerMayChown(uint32_t owner, uint32_t uid, uint32_t gid) const;
     bool canAccessParent(std::string_view path, bool modify, bool realIds = false) const;
     const Directory* parentDirectory(std::string_view path) const;
     PosixAcl inheritAcl(const Directory* parent, uint32_t& mode) const;

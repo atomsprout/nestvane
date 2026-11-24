@@ -625,6 +625,21 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
                               !handled ? "not handled " : linux.blocked() ? "waits " : "", static_cast<unsigned long long>(cpu.x[0]));
                 linux.androidLogObserver(line);
             }
+            // NESTVANE_TRACE_FAILED=<part of an SELinux domain> puts the calls that fail in processes of
+            // that domain into the Android log, such as isolated_app for WebView's renderers.
+            if (static const char* const failedDomain = std::getenv("NESTVANE_TRACE_FAILED");
+                failedDomain && handled && !linux.blocked() && linux.androidLogObserver &&
+                (cpu.x[0] >= uint64_t(-4095) || ((syscall == 222 || syscall == 215 || syscall == 216 || syscall == 226 ||
+                                                  syscall == 233) && callArguments[1] >= 1024 * 1024)) &&
+                linux.currentContext().find(failedDomain) != std::string::npos) {
+                char line[200];
+                std::snprintf(line, sizeof(line), "native execution: traced call %llu(0x%llx, 0x%llx, 0x%llx, 0x%llx) in PID %llu -> 0x%llx",
+                              static_cast<unsigned long long>(syscall), static_cast<unsigned long long>(callArguments[0]),
+                              static_cast<unsigned long long>(callArguments[1]), static_cast<unsigned long long>(callArguments[2]),
+                              static_cast<unsigned long long>(callArguments[3]), static_cast<unsigned long long>(linux.processId()),
+                              static_cast<unsigned long long>(cpu.x[0]));
+                linux.androidLogObserver(line);
+            }
             // NESTVANE_TRACE_DENIED=1: the calls that end in "permission denied", with where the path leads.
             if (static const bool traced = std::getenv("NESTVANE_TRACE_DENIED"); traced && cpu.x[0] == uint64_t(-13) && linux.androidLogObserver) {
                 const auto path = pathArgument(machine, cpu.x[1]);
