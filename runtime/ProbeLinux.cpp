@@ -5718,7 +5718,7 @@ uint64_t ProbeLinux::randomMappingBase() const {
     // With native execution the first addresses are for code without a translation (native::foreignLow).
     // The random part stays in the lower half of the arena whatever the page size is: a base beyond the
     // arena would make every mapping of the process a search for free addresses from the floor.
-    const uint64_t floor = native::enabled() ? native::foreignHigh : mappingFloor;
+    const uint64_t floor = native::enabled() ? native::webViewBase + native::webViewSize : mappingFloor;
     return floor + pages(entropy) * pageSize % ((mappingLimit - floor) / 2);
 }
 
@@ -5726,7 +5726,7 @@ uint64_t ProbeLinux::randomMappingBase() const {
 // must still be able to reuse unmapped addresses after reaching the arena end.
 static uint64_t freeMappingAddress(const Machine& machine, uint64_t next, uint64_t length) {
     if (next <= mappingLimit - length) return next;
-    auto candidate = native::enabled() ? native::foreignHigh : mappingFloor;
+    auto candidate = native::enabled() ? native::webViewBase + native::webViewSize : mappingFloor;
     for (const auto& segment : machine.segments) {
         if (candidate > mappingLimit - length) return 0;
         if (segment.address >= candidate + length) return candidate;
@@ -5775,11 +5775,13 @@ uint64_t ProbeLinux::map(Machine& machine) {
         machine.space->inLinker(machine.cpu.pc) ? freeForeignAddress(machine, length) : 0;
     // A hint in the arena is taken when the range is free, as Linux takes it. V8 places its code range
     // near its own code this way, and gives up when every mapping lands somewhere else.
-    const uint64_t arenaFloor = native::enabled() ? native::foreignHigh : mappingFloor;
+    const uint64_t arenaFloor = native::enabled() ? native::webViewBase + native::webViewSize : mappingFloor;
     const bool highHint = !atAddress && !lowHint && !forLibrary && hint >= arenaFloor && length <= mappingLimit - hint &&
                           !overlaps(hint, false);
-    const auto start = atAddress ? x[0] : lowHint || highHint ? hint : forLibrary ? forLibrary :
-                       freeMappingAddress(machine, nextMapping, length);
+    const bool webView = !atAddress && anon && !(x[2] & 7) && length == native::webViewSize && machine.space &&
+                         native::covers(native::webViewBase, native::webViewBase + length) && !overlaps(native::webViewBase, false);
+    const auto start = atAddress ? x[0] : webView ? native::webViewBase : lowHint || highHint ? hint :
+                       forLibrary ? forLibrary : freeMappingAddress(machine, nextMapping, length);
     if (static const bool trace = std::getenv("NESTVANE_NATIVE_TRACE"); trace && machine.space && !(x[2] & 7) && anon)
         std::fprintf(stderr, "[native] pid %llu reserves 0x%llx bytes hint 0x%llx flags 0x%llx pc 0x%llx: linker %d interpreted %d -> 0x%llx\n",
                      static_cast<unsigned long long>(processId()), static_cast<unsigned long long>(length),

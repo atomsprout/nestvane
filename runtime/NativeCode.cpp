@@ -164,7 +164,7 @@ Registry& registry() {
         // The table also spans the addresses of code without a translation. Its pages are made when
         // they are first looked up in (see makePage), and they are pages of a file: the system can
         // write them out and take them back, which it cannot do with memory that has no file.
-        result.covered = std::max(high, foreignHigh);
+        result.covered = std::max(high, webViewBase + webViewSize);
         const size_t bytes = (result.covered - low) * 2;
         std::string path = std::string(std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp") + "/nestvane-code-table.XXXXXX";
         result.tableFile = mkstemp(path.data());
