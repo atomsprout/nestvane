@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -114,6 +115,22 @@ public:
         textKinds.push_back(false);
         return true;
     }
+    // "rotate", quarter turns, nothing: which way up Android is to hold its display, 0 as it was made
+    // and 1 turned a quarter; an app that asks for one orientation still gets it. Sent when the
+    // person turns the device.
+    bool submitRotation(int quarterTurns) {
+        std::lock_guard lock(mutex);
+        if (stopped || texts.size() >= 16 || quarterTurns < 0 || quarterTurns > 3) return false;
+        const auto message = "rotate\n" + std::to_string(quarterTurns) + "\n\n";
+        texts.emplace_back(message.begin(), message.end());
+        textKinds.push_back(false);
+        return true;
+    }
+    // Which way up Android's display is now, in quarter turns: its rotation watcher
+    // (tools/rotation-watch) writes a digit to rotationDevice at the start and at each change.
+    static constexpr std::string_view rotationDevice = "/dev/nestvane-rotation";
+    static constexpr std::string_view rotationWriter = "/system/bin/app_process64";
+    std::atomic_int rotation{0};
     bool submitDisplayRate(int framesPerSecond) {
         std::lock_guard lock(mutex);
         if (stopped || texts.size() >= 16 || framesPerSecond < 0 || framesPerSecond > 240) return false;

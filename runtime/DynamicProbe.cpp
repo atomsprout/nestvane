@@ -903,7 +903,9 @@ DynamicReport probeInit(const std::string& directory, const std::string& databas
                                       std::string_view("/system/etc/nestvane/apk-ready.sh"),
                                       std::string_view("/system/etc/nestvane/text.sh"),
                                       std::string_view("/system/etc/nestvane/sms.sh"),
-                                      std::string_view("/system/framework/nestvane-sms.jar")}) {
+                                      std::string_view("/system/framework/nestvane-sms.jar"),
+                                      std::string_view("/system/etc/nestvane/rotation.sh"),
+                                      std::string_view("/system/framework/nestvane-rotation.jar")}) {
                 if (!files.contains(input))
                     throw std::runtime_error("missing Android APK installer input: " + std::string(input));
             }
@@ -940,6 +942,17 @@ on property:sys.boot_completed=1
 service nestvane-sms /system/bin/sh /system/etc/nestvane/sms.sh
     user root
     group root
+    seclabel u:r:shell:s0
+    disabled
+    stdio_to_kmsg
+
+# Which way up the display is, for the app that shows it (tools/rotation-watch).
+on property:sys.boot_completed=1
+    start nestvane-rotation
+
+service nestvane-rotation /system/bin/sh /system/etc/nestvane/rotation.sh
+    user shell
+    group shell
     seclabel u:r:shell:s0
     disabled
     stdio_to_kmsg

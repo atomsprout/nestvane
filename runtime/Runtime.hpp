@@ -303,6 +303,10 @@ struct CPU {
     uint64_t exclusiveAddress = 0;
     unsigned exclusiveSize = 0;
     uint32_t fpsr = 0;
+    // The floating-point control register as the guest wrote it. Only the rounding mode has an effect,
+    // and only on FRINTX and FRINTI; everything else rounds to nearest, which is all the system's own
+    // code ever asks for.
+    uint32_t fpcr = 0;
     uint8_t nzcv = 0;
     int exitCode = 0;
     Stop stop = Stop::running;

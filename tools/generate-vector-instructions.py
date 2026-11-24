@@ -56,6 +56,40 @@ add('fcvtl v0.4s, v1.4h', 'fcvtl2 v0.4s, v1.8h')
 add('faddp v0.4s, v1.4s, v2.4s', 'faddp v0.2s, v1.2s, v2.2s', 'faddp v0.2d, v1.2d, v2.2d')
 add('sshl d0, d1, d2', 'ushl d0, d1, d2', 'rbit v0.16b, v1.16b', 'rbit v0.8b, v1.8b')
 
+# The third lot (laterVector).
+for op in ('frintn', 'frintm', 'frintp', 'frintz', 'frinta', 'frintx', 'frinti', 'frecpe', 'frsqrte',
+           'fcvtns', 'fcvtms', 'fcvtps', 'fcvtzs', 'fcvtnu', 'fcvtmu', 'fcvtpu', 'fcvtzu'):
+    add(f'{op} v0.4s, v1.4s', f'{op} v0.2d, v1.2d', f'{op} v0.2s, v1.2s')
+for op in ('frecpe', 'frsqrte', 'fcvtns', 'fcvtms', 'fcvtps', 'fcvtzs', 'fcvtnu', 'fcvtmu', 'fcvtpu', 'fcvtzu'):
+    add(f'{op} s0, s1', f'{op} d0, d1')
+for op in ('fcmgt', 'fcmeq', 'fcmlt', 'fcmge', 'fcmle'):
+    add(f'{op} s0, s1, #0.0', f'{op} d0, d1, #0.0')
+for op in ('frecps', 'frsqrts', 'fmulx', 'facge', 'facgt', 'fcmeq', 'fcmge', 'fcmgt'):
+    add(f'{op} v0.4s, v1.4s, v2.4s', f'{op} v0.2d, v1.2d, v2.2d', f'{op} v0.2s, v1.2s, v2.2s',
+        f'{op} s0, s1, s2', f'{op} d0, d1, d2')
+for op in ('fmaxp', 'fminp', 'fmaxnmp', 'fminnmp'):
+    add(f'{op} v0.4s, v1.4s, v2.4s', f'{op} v0.2d, v1.2d, v2.2d', f'{op} v0.2s, v1.2s, v2.2s',
+        f'{op} s0, v1.2s', f'{op} d0, v1.2d')
+for op in ('fmaxnmv', 'fminnmv', 'fmaxv', 'fminv'): add(f'{op} s0, v1.4s')
+for op in ('sabal', 'uabal'):
+    add(f'{op} v0.8h, v1.8b, v2.8b', f'{op} v0.4s, v1.4h, v2.4h', f'{op} v0.2d, v1.2s, v2.2s',
+        f'{op}2 v0.8h, v1.16b, v2.16b', f'{op}2 v0.4s, v1.8h, v2.8h', f'{op}2 v0.2d, v1.4s, v2.4s')
+for op in ('saba', 'uaba', 'smaxp', 'umaxp', 'sminp', 'uminp'):
+    for t in ('16b', '8h', '4s', '8b', '4h', '2s'): add(f'{op} v0.{t}, v1.{t}, v2.{t}')
+for op in ('sqadd', 'uqadd', 'sqsub', 'uqsub'):
+    for r in 'bhsd': add(f'{op} {r}0, {r}1, {r}2')
+for op in ('sqabs', 'sqneg'):
+    for r in 'bhsd': add(f'{op} {r}0, {r}1')
+for op in ('sqxtn', 'uqxtn', 'sqxtun'):
+    add(f'{op} b0, h1', f'{op} h0, s1', f'{op} s0, d1')
+for op in ('sqshrn', 'sqrshrn', 'uqshrn', 'uqrshrn', 'sqshrun', 'sqrshrun'):
+    add(f'{op} b0, h1, #3', f'{op} h0, s1, #16', f'{op} s0, d1, #7', f'{op} s0, d1, #32')
+for op in ('scvtf', 'ucvtf', 'fcvtzs', 'fcvtzu'):
+    add(f'{op} v0.4s, v1.4s, #15', f'{op} v0.2s, v1.2s, #1', f'{op} v0.4s, v1.4s, #32', f'{op} v0.2d, v1.2d, #6',
+        f'{op} v0.2d, v1.2d, #64', f'{op} s0, s1, #9', f'{op} d0, d1, #40')
+add('fcvt h0, s1', 'fcvt h0, d1', 'fcvt s0, h1', 'fcvt d0, h1')
+add('fcvtas s0, s1', 'fcvtas d0, d1', 'fcvtau s0, s1', 'fcvtau d0, d1')
+
 out = ['''// Written by tools/generate-vector-instructions.py: do not edit.
 // One small function for each instruction, which runs it on the processor. x0 points at three
 // 16-byte vectors and a 64-bit word: v0, v1 and v2 go in, v0 and the status register come out.

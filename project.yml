@@ -166,10 +166,19 @@ targets:
             UIApplicationShortcutItemTitle: Install APK…
             UIApplicationShortcutItemIconSymbolName: square.and.arrow.down
         NSCameraUsageDescription: Nestvane shares the rear camera with Android apps when you use their camera.
+        NSMicrophoneUsageDescription: Nestvane lets Android apps hear the microphone while they record.
         NSLocalNetworkUsageDescription: Android apps in Nestvane reach devices on your local network, such as your router, when they ask to.
         UILaunchScreen: {}
+        # Android's display turns with the device (GuestDisplayView in ios/App.mm).
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        "UISupportedInterfaceOrientations~ipad":
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
           UISceneConfigurations:

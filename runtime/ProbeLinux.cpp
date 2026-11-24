@@ -1367,6 +1367,11 @@ uint64_t ProbeLinux::stat(Machine& machine, uint64_t address, const Descriptor& 
         }
         return result(0, 3, 0140777);
     }
+    if (fd.pipe) {
+        if (const auto fifo = fifoPaths.find(fd.path); fifo != fifoPaths.end())
+            return result(0, std::hash<std::string>{}(fd.path) | 1, 0010000 | fifo->second.mode, fifo->second.uid, fifo->second.gid);
+        return result(0, 3, 0010600);
+    }
     if (fd.node != Node::regular) return result(0, 3, 0020666);
     const auto file = files.find(fd.path);
     const auto mode = fd.path.starts_with("/data/") || fd.path.find("/bin/") != std::string::npos
@@ -1571,6 +1576,11 @@ std::optional<ProbeLinux::Descriptor> ProbeLinux::find(std::string_view path, ui
         return entry;
     }
     if (socketPaths.contains(path)) return Descriptor{std::string(path), {}, flags, Node::socket};
+    if (const auto fifo = fifoPaths.find(path); fifo != fifoPaths.end()) {
+        Descriptor entry{std::string(path), {}, flags, (flags & 3) == 1 ? Node::pipeWrite : Node::pipeRead};
+        entry.pipe = fifo->second.pipe; // open() gives it its ends
+        return entry;
+    }
     if (hostNetwork && isInterfaceSetting(path))
         const_cast<ProbeLinux*>(this)->kernelSettings.try_emplace(std::string(path), Setting{0, 0, UINT32_MAX});
     if (kernelSettings.contains(path)) return Descriptor{std::string(path), {}, flags, Node::kernelSetting};
@@ -1606,7 +1616,7 @@ std::optional<ProbeLinux::Descriptor> ProbeLinux::find(std::string_view path, ui
         if (static const bool traced = std::getenv("NESTVANE_SOUND_TRACE"); traced && androidLogObserver)
             androidLogObserver("native execution: sound open " + std::string(path));
     }
-    if ((path == "/dev/snd/pcmC0D0p" || path == "/dev/snd/controlC0") && directoryExists("/dev/snd"))
+    if ((path == "/dev/snd/pcmC0D0p" || path == "/dev/snd/pcmC0D0c" || path == "/dev/snd/controlC0") && directoryExists("/dev/snd"))
         return Descriptor{std::string(path), {}, flags, Node::sound};
     if (path.starts_with("/dev/dma_heap/system") && directoryExists("/dev/dma_heap"))
         return Descriptor{std::string(path), {}, flags, Node::dmaHeap};
@@ -1909,7 +1919,7 @@ uint64_t ProbeLinux::renameDirectory(const std::string& source, const std::strin
     if (directories.contains(destination)) {
         if (noReplace) return uint64_t(-17);
         if (containsChild(directories) || containsChild(writableFiles) ||
-            containsChild(links) || containsChild(socketPaths)) return uint64_t(-39);
+            containsChild(links) || containsChild(socketPaths) || containsChild(fifoPaths)) return uint64_t(-39);
     } else if (find(destination, 0) || links.contains(destination)) {
         return noReplace ? uint64_t(-17) : uint64_t(-20);
     }
@@ -1926,6 +1936,7 @@ uint64_t ProbeLinux::renameDirectory(const std::string& source, const std::strin
     auto movedFiles = collect(writableFiles);
     auto movedLinks = collect(links);
     auto movedSockets = collect(socketPaths);
+    auto movedFifos = collect(fifoPaths);
     const auto apply = [](auto& nodes, auto& moves) {
         for (auto& [position, target] : moves) {
             auto node = nodes.extract(position);
@@ -1938,6 +1949,7 @@ uint64_t ProbeLinux::renameDirectory(const std::string& source, const std::strin
     apply(writableFiles, movedFiles);
     apply(links, movedLinks);
     apply(socketPaths, movedSockets);
+    apply(fifoPaths, movedFifos);
     for (auto& [path, target] : descriptorMoves) path->swap(target);
     return 0;
 }
@@ -2116,6 +2128,20 @@ uint64_t ProbeLinux::open(const Machine& machine, const std::string& path, uint3
     if (entry->path != *logical) entry->visiblePath = *logical;
     if (!entry->pathOnly() && (entry->node == Node::regular || entry->temporary || entry->node == Node::directory))
         fileEvent(entry->path, fileOpened, entry->node == Node::directory);
+    if (entry->pipe && !entry->pathOnly()) {
+        // A named pipe: every reader shares one end and every writer the other, so that the pipe sees
+        // its last reader or writer go. Opening does not wait for the other side as Linux would,
+        // except that a writer who will not wait is told there is no reader.
+        const auto end = [](std::weak_ptr<int>& slot) {
+            auto held = slot.lock();
+            if (!held) slot = held = std::make_shared<int>(0);
+            return held;
+        };
+        const unsigned access = flags & 3;
+        if (access == 1 && (flags & 0x800) && entry->pipe->reader.expired()) return uint64_t(-6);
+        if (access != 1) entry->pipeEnd = end(entry->pipe->reader);
+        if (access != 0) (access == 1 ? entry->pipeEnd : entry->pipeOtherEnd) = end(entry->pipe->writer);
+    }
     descriptors().emplace(fd, std::move(*entry));
     return fd;
 }
@@ -3317,9 +3343,80 @@ uint64_t ProbeLinux::soundRoom() {
     return pending >= soundBufferFrames ? 0 : soundBufferFrames - pending;
 }
 
-std::optional<uint64_t> ProbeLinux::soundIoctl(Machine& machine, bool nonblocking) {
+// The frames the capture device has for the guest: what the host's microphone has put in, or, with
+// nobody recording, what the clock says a card would have heard since the guest last took any.
+uint64_t ProbeLinux::microphoneAvailable() {
+    auto& microphone = GuestMicrophone::host();
+    const bool fromHost = microphone.producer.load();
+    const auto now = std::chrono::steady_clock::now();
+    if (fromHost != microphoneFromHost) {
+        microphoneFromHost = fromHost;
+        microphoneClockStart = now;
+        microphoneClockFrames = microphoneFrames;
+    }
+    if (fromHost) return microphone.buffered() / std::max<uint32_t>(microphoneFrameBytes, 1);
+    const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(now - microphoneClockStart).count();
+    const uint64_t heard = microphoneClockFrames + uint64_t(std::max<int64_t>(elapsed, 0)) * microphoneRate / 1'000'000;
+    if (heard > microphoneFrames + microphoneBufferFrames) { // nobody read for a while: the card overran, and starts afresh
+        microphoneClockStart = now;
+        microphoneClockFrames = microphoneFrames;
+        return 0;
+    }
+    return heard > microphoneFrames ? heard - microphoneFrames : 0;
+}
+
+std::optional<uint64_t> ProbeLinux::soundIoctl(Machine& machine, bool nonblocking, bool capture) {
     auto& x = machine.cpu.x;
     auto& audio = GuestAudio::host();
+    auto& microphone = GuestMicrophone::host();
+    if (capture) switch (uint32_t(x[1])) {
+        case 0x81204101: { // SNDRV_PCM_IOCTL_INFO: card 0, device 0, capture
+            std::array<uint8_t, 288> info{};
+            info[8] = 1;
+            return machine.write(x[2], info) ? 0 : uint64_t(-14);
+        }
+        case 0xc0884113: { // SNDRV_PCM_IOCTL_SW_PARAMS: how much there must be before a wait for sound ends
+            uint64_t minimum;
+            if (!machine.readInto(x[2] + 16, {reinterpret_cast<uint8_t*>(&minimum), sizeof(minimum)})) return uint64_t(-14);
+            microphoneAvailableMinimum = uint32_t(std::clamp<uint64_t>(minimum, 1, microphoneBufferFrames));
+            return 0;
+        }
+        case 0x80184151: { // SNDRV_PCM_IOCTL_READI_FRAMES
+            std::array<uint64_t, 3> transfer;
+            if (!machine.readInto(x[2], {reinterpret_cast<uint8_t*>(transfer.data()), sizeof(transfer)})) return uint64_t(-14);
+            const auto frameBytes = std::max<uint32_t>(microphoneFrameBytes, 1);
+            if (transfer[2] > (1 << 20) / frameBytes) return invalid;
+            const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+            microphone.wanted = uint64_t(now);
+            const uint64_t frames = std::min<uint64_t>(transfer[2], microphoneAvailable());
+            if (!frames && transfer[2]) {
+                if (nonblocking) return uint64_t(-11);
+                return std::nullopt;
+            }
+            std::vector<uint8_t> samples(size_t(frames) * frameBytes);
+            if (microphoneFromHost) microphone.read(samples.data(), samples.size());
+            if (!machine.write(transfer[1], samples)) return uint64_t(-14);
+            microphoneFrames += frames;
+            transfer[0] = frames;
+            return machine.write(x[2], {reinterpret_cast<const uint8_t*>(transfer.data()), sizeof(transfer)}) ? 0 : uint64_t(-14);
+        }
+        case 0xc0884123: { // SNDRV_PCM_IOCTL_SYNC_PTR: running, and how far the recording has come
+            std::array<uint64_t, 17> pointers;
+            if (!machine.readInto(x[2], {reinterpret_cast<uint8_t*>(pointers.data()), sizeof(pointers)})) return uint64_t(-14);
+            const auto now = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+            pointers[1] = 3;  // SNDRV_PCM_STATE_RUNNING
+            pointers[2] = microphoneFrames + microphoneAvailable();
+            pointers[3] = uint64_t(now / 1'000'000'000);
+            pointers[4] = uint64_t(now % 1'000'000'000);
+            pointers[9] = microphoneFrames;
+            pointers[10] = microphoneAvailableMinimum;
+            return machine.write(x[2], {reinterpret_cast<const uint8_t*>(pointers.data()), sizeof(pointers)}) ? 0 : uint64_t(-14);
+        }
+        case 0x80084121: // SNDRV_PCM_IOCTL_DELAY
+            return machine.store64(x[2], microphoneAvailable()) ? 0 : uint64_t(-14);
+        case 0xc2604111: break; // the parameters, below
+        default: return 0;
+    }
     const auto frameBytes = std::max<uint32_t>(soundFrameBytes, 1);
     // NESTVANE_SOUND_TRACE=1: what the guest asks of its sound device, in the Android log.
     if (static const bool traced = std::getenv("NESTVANE_SOUND_TRACE"); traced && androidLogObserver) {
@@ -3405,6 +3502,17 @@ std::optional<uint64_t> ProbeLinux::soundIoctl(Machine& machine, bool nonblockin
             parameters[132] = rate;  // the rate as a fraction
             parameters[133] = 1;
             if (!machine.write(x[2], {reinterpret_cast<const uint8_t*>(parameters.data()), sizeof(parameters)})) return uint64_t(-14);
+            if (capture) {
+                microphoneFrameBytes = channels * bits / 8;
+                microphoneBufferFrames = buffer;
+                microphoneAvailableMinimum = period;
+                microphoneRate = rate;
+                microphoneFrames = microphoneClockFrames = 0;
+                microphoneClockStart = std::chrono::steady_clock::now();
+                microphoneFromHost = false;
+                microphone.configure(rate, channels, bits);
+                return 0;
+            }
             soundFrameBytes = channels * bits / 8;
             soundBufferFrames = buffer;
             soundAvailableMinimum = period;
@@ -4579,6 +4687,7 @@ uint64_t ProbeLinux::readDirectory(Machine& machine, const Descriptor& fd) const
     add(writableFiles, 8);
     add(links, 10);
     add(socketPaths, 12);
+    add(fifoPaths, 1);
     add(loopDevices, 6);
     add(binderDevices, 2);
     add(ueventTriggers, 8);
@@ -4751,6 +4860,18 @@ bool ProbeLinux::fileCall(Machine& machine) {
                     x[0] = fd;
                     break;
                 }
+                if (path == GuestApkInbox::rotationDevice && apkInbox) {
+                    if (userId() != 2000 || current->process->context != "u:r:shell:s0" ||
+                        current->process->executable != GuestApkInbox::rotationWriter || (x[2] & 3) != 1) {
+                        x[0] = uint64_t(-13);
+                        break;
+                    }
+                    const auto fd = freeDescriptor();
+                    if (fd == descriptorCapacity) { x[0] = uint64_t(-24); break; }
+                    descriptors().emplace(fd, Descriptor{path, {}, uint32_t(x[2]), Node::null});
+                    x[0] = fd;
+                    break;
+                }
                 if ((path == GuestApkInbox::textDevice || path == GuestApkInbox::broadcastDevice) && apkInbox) {
                     const bool broadcast = path == GuestApkInbox::broadcastDevice;
                     if (userId() != (broadcast ? 0u : 2000u) || current->process->context != "u:r:shell:s0" ||
@@ -4849,7 +4970,7 @@ bool ProbeLinux::fileCall(Machine& machine) {
                     x[0] = uint64_t(-2);
                 break;
             }
-            if (x[8] == 34 || x[8] == 35) { // mkdirat and unlinkat follow only ancestor links.
+            if (x[8] == 33 || x[8] == 34 || x[8] == 35) { // mknodat, mkdirat and unlinkat follow only ancestor links.
                 uint64_t lookupError = uint64_t(-40);
                 auto visible = followLinks(std::move(path), false, &lookupError);
                 if (!visible) { x[0] = lookupError; break; }
@@ -4866,11 +4987,17 @@ bool ProbeLinux::fileCall(Machine& machine) {
                 if (*resolved != path) entry = find(backingPath(*resolved), 0);
             }
             if (entry && entry->path != path) entry->visiblePath = path;
-            if (x[8] == 33) { // mknodat against the guest's registered loop devices.
-                if (userId() != 0) { x[0] = uint64_t(-1); break; }
+            if (x[8] == 33) { // mknodat: named pipes, and the refusal the guest's loop devices expect.
+                const bool fifo = (x[2] & 0170000) == 0010000;
+                if (!fifo && userId() != 0) { x[0] = uint64_t(-1); break; }
                 if (entry || target) { x[0] = uint64_t(-17); break; }
                 if (!directoryExists(backing.substr(0, backing.rfind('/')))) { x[0] = uint64_t(-2); break; }
-                x[0] = writablePath(path) ? uint64_t(-95) : uint64_t(-30);
+                if (!fifo) { x[0] = writablePath(path) ? uint64_t(-95) : uint64_t(-30); break; }
+                if (!writablePath(path)) { x[0] = uint64_t(-30); break; }
+                if (!canAccessParent(backing, true)) { x[0] = uint64_t(-13); break; }
+                if (fifoPaths.size() >= 1024) { x[0] = uint64_t(-28); break; }
+                fifoPaths.emplace(backing, NamedPipe{std::make_shared<Pipe>(), uint32_t(x[2] & 0777), userId(), groupId()});
+                x[0] = 0;
             } else if (x[8] == 35) { // unlinkat and rmdir
                 constexpr uint64_t removeDirectory = 0x200;
                 if (x[2] && x[2] != removeDirectory) { x[0] = invalid; break; }
@@ -4888,7 +5015,7 @@ bool ProbeLinux::fileCall(Machine& machine) {
                         return next != entries.end() && next->first.starts_with(prefix);
                     };
                     if (hasChild(directories) || hasChild(files) || hasChild(writableFiles) ||
-                        hasChild(links) || hasChild(socketPaths)) {
+                        hasChild(links) || hasChild(socketPaths) || hasChild(fifoPaths)) {
                         x[0] = uint64_t(-39);
                     } else if (const auto file = cgroupFiles.find(backing + std::string(cgroupProcs)); file != cgroupFiles.end()) {
                         if (std::any_of(threads.begin(), threads.end(), [&](const auto& task) {
@@ -4925,6 +5052,11 @@ bool ProbeLinux::fileCall(Machine& machine) {
                 else if (entry && entry->node == Node::cgroupProcs) x[0] = uint64_t(-1);
                 else if (!entry && !links.contains(backing)) x[0] = uint64_t(-2);
                 else if (socketPaths.contains(path) && userId() == 0) { socketPaths.erase(path); x[0] = 0; }
+                else if (fifoPaths.contains(backing)) {
+                    if (!canAccessParent(backing, true)) { x[0] = uint64_t(-13); break; }
+                    fifoPaths.erase(backing); // descriptors that have it open keep the pipe
+                    x[0] = 0;
+                }
                 else if (!writablePath(path)) x[0] = uint64_t(-30);
                 else return false;
             } else if (x[8] == 53 || x[8] == 54) { // fchmodat, fchownat
@@ -5882,6 +6014,14 @@ uint64_t ProbeLinux::writeDescriptor(Machine& machine, const Descriptor& fd, uin
     if (fd.pathOnly() || !(fd.flags & 3)) return uint64_t(-9);
     if (position && !fd.temporary) return uint64_t(-29);
     if (fd.graphics) return writeGraphics(machine, *fd.graphics, address, size);
+    if (fd.path == GuestApkInbox::rotationDevice && apkInbox) { // one digit from Android's rotation watcher
+        std::vector<uint8_t> dataScratch;
+        const auto* data = size ? machine.read(address, 1, 4, dataScratch) : nullptr;
+        if (!data) return size ? uint64_t(-14) : 0;
+        if (*data < '0' || *data > '3') return invalid;
+        apkInbox->rotation = *data - '0';
+        return size;
+    }
     if (fd.node == Node::securityInfo || fd.node == Node::securityValidate) {
         if (!size || size > pageSize) return invalid;
         std::vector<uint8_t> dataScratch;
@@ -5942,7 +6082,18 @@ uint64_t ProbeLinux::writeDescriptor(Machine& machine, const Descriptor& fd, uin
                 const auto end = source.find(':', 4);
                 decision = access->second.decisions.find({source.substr(0, end) + ":s0", object});
             }
-            if (decision == access->second.decisions.end()) return uint64_t(-95);
+            if (decision == access->second.decisions.end()) {
+                const auto appKeys = [&] {
+                    if (access->second.applicationKeys.empty() || object != "u:r:keystore:s0" ||
+                        !validAppProcessContext(source)) return false;
+                    const std::string_view domain = std::string_view(source).substr(4);
+                    return !domain.starts_with("isolated_app") && !domain.starts_with("ephemeral_app") &&
+                        !domain.starts_with("sdk_sandbox");
+                };
+                if (!appKeys()) return uint64_t(-95);
+                *fd.securityReply = access->second.applicationKeys;
+                return size;
+            }
             *fd.securityReply = decision->second;
         }
         return size;
@@ -6628,7 +6779,20 @@ bool ProbeLinux::loadKeystorePolicy(std::string_view manifest, bool key) {
             "convert_storage_key_to_ephemeral", "delete", "gen_unique_id", "get_info", "grant", "manage_blob",
             "rebind", "req_forced_op", "update", "use", "use_dev_id",
         };
-        return loadAccessClass(manifest, "keystore2_key", permissions);
+        if (!loadAccessClass(manifest, "keystore2_key", permissions)) return false;
+        // The captured decisions cover the system's own processes, which were all there was to ask about
+        // when they were taken. Apps get what AOSP's policy gives every app domain except the isolated,
+        // instant and SDK sandbox ones (system/sepolicy/private/app.te):
+        //   allow { appdomain ... } keystore:keystore2_key { delete use get_info grant rebind update };
+        // Without it no app can make a key: EncryptedSharedPreferences and the like fail at once.
+        const std::string directory = "/sys/fs/selinux/class/keystore2_key";
+        uint32_t allowed = 0;
+        for (const std::string_view permission : {"delete", "use", "get_info", "grant", "rebind", "update"})
+            allowed |= uint32_t{1} << (std::stoul(kernelFiles.at(directory + "/perms/" + std::string(permission))) - 1);
+        std::ostringstream reply;
+        reply << std::hex << allowed << " ffffffff 0 ffffffff 1 0";
+        accessClasses.at(uint32_t(std::stoul(kernelFiles.at(directory + "/index")))).applicationKeys = reply.str();
+        return true;
     }
     constexpr std::string_view permissions[] = {
         "add_auth", "change_password", "change_user", "clear_ns", "clear_uid", "delete_all_keys",
@@ -8088,12 +8252,15 @@ bool ProbeLinux::poll(Machine& machine) {
             // The playback device takes more when there is the room its user asked to wait for; the card's control device
             // never has anything to report.
             watchesHostEvents = true;
-            entry.returned = descriptor->second.path.ends_with("p") && soundRoom() >= soundAvailableMinimum ? entry.events & 0x104 : 0;
+            entry.returned = descriptor->second.path.ends_with("p") && soundRoom() >= soundAvailableMinimum ? entry.events & 0x104 :
+                descriptor->second.path.ends_with("D0c") && microphoneAvailable() >= microphoneAvailableMinimum ? entry.events & 0x41 : 0;
         } else if (descriptor->second.pty) {
             const auto events = ptyPoll(descriptor->second);
             entry.returned = (events & entry.events) | (events & 16);
         } else if (const auto pipe = descriptor->second.pipe) {
-            entry.returned = pipe->pollEvents(descriptor->second.node == Node::pipeRead) & (entry.events | 0x18);
+            entry.returned = descriptor->second.pipeOtherEnd
+                ? (pipe->pollEvents(true) | pipe->pollEvents(false)) & entry.events
+                : pipe->pollEvents(descriptor->second.node == Node::pipeRead) & (entry.events | 0x18);
         } else if (const auto& map = descriptor->second.bpfMap) {
             entry.returned = map->type == BpfMap::ringBuffer && map->ringReadable() ? entry.events & 0x41 : 0;
         } else if (descriptor->second.node == Node::timer) {
@@ -8749,6 +8916,7 @@ bool ProbeLinux::installSignalFrame(Machine& machine, uint32_t signal, const Sig
     saved.fp.magic = fpsimdMagic;
     saved.fp.size = sizeof(saved.fp);
     saved.fp.fpsr = cpu.fpsr;
+    saved.fp.fpcr = cpu.fpcr;
     saved.fp.regs = cpu.v;
     frame.frameRecord = {cpu.x[29], cpu.x[30]};
     const auto returnAddress = flags & saRestorer ? restorer : signalRestorer(machine);
@@ -8918,6 +9086,7 @@ bool ProbeLinux::restoreSignalContext(Machine& machine) {
     cpu.x = saved.regs;
     cpu.v = saved.fp.regs;
     cpu.fpsr = saved.fp.fpsr & fpsrMask;
+    cpu.fpcr = saved.fp.fpcr & 0x07c00000;
     cpu.sp = saved.sp;
     cpu.pc = saved.pc;
     cpu.nzcv = (saved.pstate >> 28) & 15;
@@ -11127,7 +11296,7 @@ bool ProbeLinux::syscall(Machine& machine) {
                 break;
             }
             if (descriptor != descriptors().end() && descriptor->second.node == Node::sound) {
-                const auto answer = soundIoctl(machine, descriptor->second.flags & 0x800);
+                const auto answer = soundIoctl(machine, descriptor->second.flags & 0x800, descriptor->second.path.ends_with("D0c"));
                 if (!answer) return waitForHostEvents();
                 x[0] = *answer;
                 break;

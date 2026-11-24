@@ -823,6 +823,237 @@ bool moreVector(CPU& cpu, uint32_t word, std::array<uint8_t, 16>& result) {
     return false;
 }
 
+// A third lot of vector instructions, found in the libraries of the fifty apps tried for 1.5
+// (tools/scan-interpreter-coverage.py). The floating-point ones are run by the processor's own
+// instruction on the whole register, so every bit of the result is the processor's; what the guest's
+// instruction leaves alone is cleared afterwards.
+bool laterVector(CPU& cpu, uint32_t word, std::array<uint8_t, 16>& result) {
+    const unsigned rd = word & 31, rn = (word >> 5) & 31, rm = (word >> 16) & 31;
+    const auto& first = cpu.v[rn];
+    const auto& second = cpu.v[rm];
+    const bool q = word & 0x40000000, isUnsigned = word & 0x20000000, scalar = word & 0x10000000;
+    const bool wide = word & 0x400000; // double precision, in the floating-point encodings
+    const unsigned size = 1U << ((word >> 22) & 3), bits = size * 8;
+    using Wide = __int128;
+    const auto f32 = [](const std::array<uint8_t, 16>& vector) { return vreinterpretq_f32_u8(vld1q_u8(vector.data())); };
+    const auto f64 = [](const std::array<uint8_t, 16>& vector) { return vreinterpretq_f64_u8(vld1q_u8(vector.data())); };
+    const auto finish = [&](uint8x16_t value, unsigned keep) {
+        vst1q_u8(result.data(), value);
+        std::fill(result.begin() + keep, result.end(), uint8_t{0});
+        return true;
+    };
+    const unsigned fpKeep = scalar ? (wide ? 8 : 4) : q ? 16 : 8;
+    const bool fpShape = scalar ? q : !(wide && !q); // a scalar is written with Q set; there is no one-lane vector of doubles
+    const auto get = [](const std::array<uint8_t, 16>& vector, unsigned index, unsigned laneSize, bool asSigned) -> Wide {
+        const uint64_t raw = lane(vector, index, laneSize);
+        return asSigned ? Wide(int64_t(sx(raw, laneSize * 8))) : Wide(raw);
+    };
+    const auto saturate = [&](Wide value, unsigned laneBits, bool toUnsigned) -> uint64_t {
+        const Wide low = toUnsigned ? 0 : -(Wide(1) << (laneBits - 1));
+        const Wide high = toUnsigned ? (Wide(1) << laneBits) - 1 : (Wide(1) << (laneBits - 1)) - 1;
+        if (value < low) { cpu.fpsr |= fpsrSaturation; value = low; }
+        if (value > high) { cpu.fpsr |= fpsrSaturation; value = high; }
+        return uint64_t(value);
+    };
+#define NESTVANE_FP1(single, twice) \
+    return fpShape && finish(wide ? vreinterpretq_u8_f64(twice(f64(first))) : vreinterpretq_u8_f32(single(f32(first))), fpKeep)
+#define NESTVANE_FP1_TO(single, twice, to32, to64) \
+    return fpShape && finish(wide ? vreinterpretq_u8_##to64(twice(f64(first))) : vreinterpretq_u8_##to32(single(f32(first))), fpKeep)
+#define NESTVANE_FP2(single, twice) \
+    return fpShape && finish(wide ? vreinterpretq_u8_f64(twice(f64(first), f64(second))) \
+                                  : vreinterpretq_u8_f32(single(f32(first), f32(second))), fpKeep)
+#define NESTVANE_FP2_TO(single, twice) \
+    return fpShape && finish(wide ? vreinterpretq_u8_u64(twice(f64(first), f64(second))) \
+                                  : vreinterpretq_u8_u32(single(f32(first), f32(second))), fpKeep)
+
+    // One operand: the opcode with Q, the scalar bit and the precision taken out.
+    if (((word >> 17) & 31) == 16 && (word & 0x0f000c00) == 0x0e000800) {
+        const uint32_t operation = word & 0xafbffc00;
+        // FRINTX and FRINTI round the way the control register says.
+        const auto byMode = [&]() {
+            const unsigned mode = (cpu.fpcr >> 22) & 3;
+            if (wide) {
+                const auto value = f64(first);
+                return finish(vreinterpretq_u8_f64(mode == 0 ? vrndnq_f64(value) : mode == 1 ? vrndpq_f64(value) :
+                                                   mode == 2 ? vrndmq_f64(value) : vrndq_f64(value)), fpKeep);
+            }
+            const auto value = f32(first);
+            return finish(vreinterpretq_u8_f32(mode == 0 ? vrndnq_f32(value) : mode == 1 ? vrndpq_f32(value) :
+                                               mode == 2 ? vrndmq_f32(value) : vrndq_f32(value)), fpKeep);
+        };
+        if (!scalar) switch (operation) {
+            case 0x0e218800: NESTVANE_FP1(vrndnq_f32, vrndnq_f64); // FRINTN
+            case 0x0e219800: NESTVANE_FP1(vrndmq_f32, vrndmq_f64); // FRINTM
+            case 0x0ea18800: NESTVANE_FP1(vrndpq_f32, vrndpq_f64); // FRINTP
+            case 0x0ea19800: NESTVANE_FP1(vrndq_f32, vrndq_f64);   // FRINTZ
+            case 0x2e218800: NESTVANE_FP1(vrndaq_f32, vrndaq_f64); // FRINTA
+            case 0x2e219800: case 0x2ea19800: return fpShape && byMode(); // FRINTX, FRINTI
+        }
+        switch (operation) {
+            case 0x0ea1d800: NESTVANE_FP1(vrecpeq_f32, vrecpeq_f64);   // FRECPE
+            case 0x2ea1d800: NESTVANE_FP1(vrsqrteq_f32, vrsqrteq_f64); // FRSQRTE
+            case 0x0e21a800: NESTVANE_FP1_TO(vcvtnq_s32_f32, vcvtnq_s64_f64, s32, s64); // FCVTNS
+            case 0x0e21b800: NESTVANE_FP1_TO(vcvtmq_s32_f32, vcvtmq_s64_f64, s32, s64); // FCVTMS
+            case 0x0ea1a800: NESTVANE_FP1_TO(vcvtpq_s32_f32, vcvtpq_s64_f64, s32, s64); // FCVTPS
+            case 0x0ea1b800: NESTVANE_FP1_TO(vcvtq_s32_f32, vcvtq_s64_f64, s32, s64);   // FCVTZS
+            case 0x2e21a800: NESTVANE_FP1_TO(vcvtnq_u32_f32, vcvtnq_u64_f64, u32, u64); // FCVTNU
+            case 0x2e21b800: NESTVANE_FP1_TO(vcvtmq_u32_f32, vcvtmq_u64_f64, u32, u64); // FCVTMU
+            case 0x2ea1a800: NESTVANE_FP1_TO(vcvtpq_u32_f32, vcvtpq_u64_f64, u32, u64); // FCVTPU
+            case 0x2ea1b800: NESTVANE_FP1_TO(vcvtq_u32_f32, vcvtq_u64_f64, u32, u64);   // FCVTZU
+            case 0x0e21c800: NESTVANE_FP1_TO(vcvtaq_s32_f32, vcvtaq_s64_f64, s32, s64); // FCVTAS
+            case 0x2e21c800: NESTVANE_FP1_TO(vcvtaq_u32_f32, vcvtaq_u64_f64, u32, u64); // FCVTAU
+            case 0x0ea0c800: NESTVANE_FP1_TO(vcgtzq_f32, vcgtzq_f64, u32, u64); // FCMGT with zero
+            case 0x0ea0d800: NESTVANE_FP1_TO(vceqzq_f32, vceqzq_f64, u32, u64); // FCMEQ with zero
+            case 0x0ea0e800: NESTVANE_FP1_TO(vcltzq_f32, vcltzq_f64, u32, u64); // FCMLT with zero
+            case 0x2ea0c800: NESTVANE_FP1_TO(vcgezq_f32, vcgezq_f64, u32, u64); // FCMGE with zero
+            case 0x2ea0d800: NESTVANE_FP1_TO(vclezq_f32, vclezq_f64, u32, u64); // FCMLE with zero
+        }
+    }
+    // Two operands of the same shape.
+    if ((word & 0x0f200400) == 0x0e200400) {
+        switch (word & 0xafa0fc00) {
+            case 0x0e20fc00: NESTVANE_FP2(vrecpsq_f32, vrecpsq_f64);   // FRECPS
+            case 0x0ea0fc00: NESTVANE_FP2(vrsqrtsq_f32, vrsqrtsq_f64); // FRSQRTS
+            case 0x0e20dc00: NESTVANE_FP2(vmulxq_f32, vmulxq_f64);     // FMULX
+            case 0x2e20ec00: NESTVANE_FP2_TO(vcageq_f32, vcageq_f64);  // FACGE
+            case 0x2ea0ec00: NESTVANE_FP2_TO(vcagtq_f32, vcagtq_f64);  // FACGT
+            case 0x0e20e400: NESTVANE_FP2_TO(vceqq_f32, vceqq_f64);    // FCMEQ
+            case 0x2e20e400: NESTVANE_FP2_TO(vcgeq_f32, vcgeq_f64);    // FCMGE
+            case 0x2ea0e400: NESTVANE_FP2_TO(vcgtq_f32, vcgtq_f64);    // FCMGT
+        }
+        if (!scalar && !q && !wide) { // Two lanes each: the pair of the first operand, then the second's.
+            const auto both = vcombine_f32(vget_low_f32(f32(first)), vget_low_f32(f32(second)));
+            switch (word & 0xafa0fc00) {
+                case 0x2e20f400: return finish(vreinterpretq_u8_f32(vpmaxq_f32(both, both)), 8);
+                case 0x2ea0f400: return finish(vreinterpretq_u8_f32(vpminq_f32(both, both)), 8);
+                case 0x2e20c400: return finish(vreinterpretq_u8_f32(vpmaxnmq_f32(both, both)), 8);
+                case 0x2ea0c400: return finish(vreinterpretq_u8_f32(vpminnmq_f32(both, both)), 8);
+            }
+        }
+        if (!scalar) switch (word & 0xafa0fc00) { // Neighbours taken in pairs.
+            case 0x2e20f400: NESTVANE_FP2(vpmaxq_f32, vpmaxq_f64);     // FMAXP
+            case 0x2ea0f400: NESTVANE_FP2(vpminq_f32, vpminq_f64);     // FMINP
+            case 0x2e20c400: NESTVANE_FP2(vpmaxnmq_f32, vpmaxnmq_f64); // FMAXNMP
+            case 0x2ea0c400: NESTVANE_FP2(vpminnmq_f32, vpminnmq_f64); // FMINNMP
+        }
+    }
+#undef NESTVANE_FP1
+#undef NESTVANE_FP1_TO
+#undef NESTVANE_FP2
+#undef NESTVANE_FP2_TO
+    // The two lanes of one register, to a scalar.
+    switch (word & 0xffbffc00) {
+        case 0x7e30c800: if (wide) setLane(result, 0, 8, std::bit_cast<uint64_t>(vpmaxnmqd_f64(f64(first))));
+                         else setLane(result, 0, 4, std::bit_cast<uint32_t>(vpmaxnms_f32(vget_low_f32(f32(first))))); return true;
+        case 0x7eb0c800: if (wide) setLane(result, 0, 8, std::bit_cast<uint64_t>(vpminnmqd_f64(f64(first))));
+                         else setLane(result, 0, 4, std::bit_cast<uint32_t>(vpminnms_f32(vget_low_f32(f32(first))))); return true;
+        case 0x7e30f800: if (wide) setLane(result, 0, 8, std::bit_cast<uint64_t>(vpmaxqd_f64(f64(first))));
+                         else setLane(result, 0, 4, std::bit_cast<uint32_t>(vpmaxs_f32(vget_low_f32(f32(first))))); return true;
+        case 0x7eb0f800: if (wide) setLane(result, 0, 8, std::bit_cast<uint64_t>(vpminqd_f64(f64(first))));
+                         else setLane(result, 0, 4, std::bit_cast<uint32_t>(vpmins_f32(vget_low_f32(f32(first))))); return true;
+    }
+    // All four lanes, to a scalar.
+    switch (word & 0xfffffc00) {
+        case 0x6e30c800: setLane(result, 0, 4, std::bit_cast<uint32_t>(vmaxnmvq_f32(f32(first)))); return true; // FMAXNMV
+        case 0x6eb0c800: setLane(result, 0, 4, std::bit_cast<uint32_t>(vminnmvq_f32(f32(first)))); return true; // FMINNMV
+        case 0x6e30f800: setLane(result, 0, 4, std::bit_cast<uint32_t>(vmaxvq_f32(f32(first)))); return true;   // FMAXV
+        case 0x6eb0f800: setLane(result, 0, 4, std::bit_cast<uint32_t>(vminvq_f32(f32(first)))); return true;   // FMINV
+    }
+
+    const uint32_t threeSame = word & 0x9f20fc00;
+    if (threeSame == 0x0e205000) { // SABAL, UABAL: the difference without its sign, added in at twice the width.
+        if (size == 8) return false;
+        const unsigned count = 8 / size, start = q ? count : 0;
+        for (unsigned i = 0; i < count; ++i) {
+            const Wide difference = get(first, start + i, size, !isUnsigned) - get(second, start + i, size, !isUnsigned);
+            setLane(result, i, size * 2, lane(cpu.v[rd], i, size * 2) + uint64_t(difference < 0 ? -difference : difference));
+        }
+        return true;
+    }
+    if (threeSame == 0x0e207c00) { // SABA, UABA.
+        if (size == 8) return false;
+        for (unsigned i = 0; i < (q ? 16 : 8) / size; ++i) {
+            const Wide difference = get(first, i, size, !isUnsigned) - get(second, i, size, !isUnsigned);
+            setLane(result, i, size, lane(cpu.v[rd], i, size) + uint64_t(difference < 0 ? -difference : difference));
+        }
+        return true;
+    }
+    if (threeSame == 0x0e20a400 || threeSame == 0x0e20ac00) { // SMAXP, UMAXP, SMINP, UMINP.
+        if (size == 8) return false;
+        const unsigned count = (q ? 16 : 8) / size;
+        const bool minimum = threeSame == 0x0e20ac00;
+        for (unsigned i = 0; i < count; ++i) {
+            const auto& from = i < count / 2 ? first : second;
+            const unsigned at = (i % (count / 2)) * 2;
+            const Wide left = get(from, at, size, !isUnsigned), right = get(from, at + 1, size, !isUnsigned);
+            setLane(result, i, size, uint64_t(minimum ? std::min(left, right) : std::max(left, right)));
+        }
+        return true;
+    }
+    // One lane of each register, held to what fits.
+    if (const uint32_t one = word & 0xdf20fc00; one == 0x5e200c00 || one == 0x5e202c00) { // SQADD, UQADD, SQSUB, UQSUB.
+        const Wide left = get(first, 0, size, !isUnsigned), right = get(second, 0, size, !isUnsigned);
+        setLane(result, 0, size, saturate(one == 0x5e200c00 ? left + right : left - right, bits, isUnsigned));
+        return true;
+    }
+    if ((word & 0xdf3ffc00) == 0x5e207800) { // SQABS, SQNEG.
+        const Wide value = get(first, 0, size, true);
+        setLane(result, 0, size, saturate(isUnsigned || value < 0 ? -value : value, bits, false));
+        return true;
+    }
+    if (const uint32_t narrow = word & 0xff3ffc00; narrow == 0x5e214800 || narrow == 0x7e214800 || narrow == 0x7e212800) {
+        if (size == 8) return false; // SQXTN, UQXTN, SQXTUN: half the width.
+        const bool sourceSigned = narrow != 0x7e214800;
+        setLane(result, 0, size, saturate(get(first, 0, size * 2, sourceSigned), bits, narrow != 0x5e214800));
+        return true;
+    }
+    if ((word & 0xdf80e400) == 0x5f008400) { // SQSHRN, SQRSHRN, UQSHRN, UQRSHRN, SQSHRUN, SQRSHRUN of one lane.
+        const unsigned immediate = (word >> 16) & 127, opcode = (word >> 11) & 31;
+        if (immediate < 8 || immediate >= 64) return false;
+        if (opcode < 0x10 || opcode > 0x13 || (opcode < 0x12 && !isUnsigned)) return false;
+        const unsigned laneBits = std::bit_floor(immediate), right = 2 * laneBits - immediate;
+        const bool round = opcode & 1, sourceSigned = opcode < 0x12 || !isUnsigned;
+        const Wide value = get(first, 0, laneBits / 4, sourceSigned);
+        const Wide shifted = (value + (round ? Wide(1) << (right - 1) : 0)) >> right;
+        setLane(result, 0, laneBits / 8, saturate(shifted, laneBits, isUnsigned));
+        return true;
+    }
+    // Whole numbers with a binary point to floating point, and back.
+    if (const uint32_t fixed = word & 0x8f80fc00; fixed == 0x0f00e400 || fixed == 0x0f00fc00) {
+        const unsigned immediate = (word >> 16) & 127;
+        if (immediate < 32) return false;
+        const unsigned laneBits = immediate >= 64 ? 64 : 32, laneSize = laneBits / 8;
+        const int fraction = int(2 * laneBits - immediate);
+        if (scalar ? !q : (laneBits == 64 && !q)) return false;
+        const unsigned count = scalar ? 1 : (q ? 16 : 8) / laneSize;
+        for (unsigned i = 0; i < count; ++i) {
+            const uint64_t raw = lane(first, i, laneSize);
+            if (fixed == 0x0f00e400) { // SCVTF, UCVTF
+                if (laneBits == 32) {
+                    const float number = isUnsigned ? float(uint32_t(raw)) : float(int32_t(uint32_t(raw)));
+                    setLane(result, i, 4, std::bit_cast<uint32_t>(std::ldexp(number, -fraction)));
+                } else {
+                    const double number = isUnsigned ? double(raw) : double(int64_t(raw));
+                    setLane(result, i, 8, std::bit_cast<uint64_t>(std::ldexp(number, -fraction)));
+                }
+            } else { // FCVTZS, FCVTZU
+                const double number = laneBits == 32 ? double(std::bit_cast<float>(uint32_t(raw))) : std::bit_cast<double>(raw);
+                const double scaled = std::trunc(std::ldexp(number, fraction));
+                const double low = isUnsigned ? 0.0 : -std::ldexp(1.0, int(laneBits - 1));
+                const double high = std::ldexp(1.0, int(laneBits - (isUnsigned ? 0 : 1)));
+                uint64_t converted;
+                if (std::isnan(number)) converted = 0;
+                else if (scaled < low) converted = isUnsigned ? 0 : uint64_t{1} << (laneBits - 1);
+                else if (scaled >= high) converted = isUnsigned ? ~uint64_t{0} : (uint64_t{1} << (laneBits - 1)) - 1;
+                else converted = isUnsigned ? uint64_t(scaled) : uint64_t(int64_t(scaled));
+                setLane(result, i, laneSize, converted);
+            }
+        }
+        return true;
+    }
+    return false;
+}
+
 bool vectorArithmetic(CPU& cpu, uint32_t word) {
     const unsigned rd = word & 31, rn = (word >> 5) & 31, rm = (word >> 16) & 31;
     const auto& source = cpu.v[rn];
@@ -1520,7 +1751,8 @@ bool vectorArithmetic(CPU& cpu, uint32_t word) {
             setLane(result, i, widen ? size * 2 : size, extended << (immediate - bits));
         }
     } else if (!moreVector(cpu, word, result)) {
-        return false;
+        result = {};
+        if (!laterVector(cpu, word, result)) return false;
     }
     cpu.v[rd] = result;
     return true;
@@ -1583,7 +1815,9 @@ bool floatInstruction(CPU& cpu, uint32_t word) {
         store(std::round(get(rn)));
     } else if ((word & 0xffbffc00) == 0x1e274000 || (word & 0xffbffc00) == 0x1e27c000) {
         // FRINTX and FRINTI round the way the control register says, which is to the nearest, halves to even.
-        store(roundToNearestEven(cpu, get(rn)));
+        const unsigned mode = (cpu.fpcr >> 22) & 3;
+        store(mode == 0 ? roundToNearestEven(cpu, get(rn)) : mode == 1 ? std::ceil(get(rn)) :
+              mode == 2 ? std::floor(get(rn)) : std::trunc(get(rn)));
     } else if (unary == 0x1e220000 || unary == 0x1e230000 ||
                (word & 0x7fbe0000) == 0x1e020000) { // SCVTF / UCVTF, including fixed point.
         const bool fixedPoint = !(word & 0x200000);
@@ -1630,8 +1864,18 @@ bool floatInstruction(CPU& cpu, uint32_t word) {
     } else if (binary == 0x1e204800 || binary == 0x1e205800 ||
                binary == 0x1e206800 || binary == 0x1e207800) { // FMAX, FMIN, FMAXNM, FMINNM.
         store(floatingMinMax<Float, UInt>(cpu, get(rn), get(rm), word & 0x1000, word & 0x2000));
-    } else if (binary == 0x1e202000 && (rd == 0 || rd == 8)) {
-        const auto a = get(rn), b = rd ? 0 : get(rm);
+    } else if (unary == 0x1e200000 || unary == 0x1e210000) { // FCVTNS, FCVTNU: to the nearest, halves to even.
+        const Float value = roundToNearestEven(cpu, get(rn));
+        if (unary == 0x1e210000) {
+            const Float bound = std::ldexp(Float{1}, bits);
+            put(cpu, rd, !(value > 0) ? 0 : value >= bound ? mask(bits) : uint64_t(value), bits);
+        } else {
+            const auto bound = std::ldexp(Float{1}, bits - 1);
+            const auto sign = uint64_t{1} << (bits - 1);
+            put(cpu, rd, std::isnan(value) ? 0 : value >= bound ? sign - 1 : value <= -bound ? sign : uint64_t(int64_t(value)), bits);
+        }
+    } else if (binary == 0x1e202000 && !(rd & 7)) { // FCMP and FCMPE, with a register or with zero.
+        const auto a = get(rn), b = rd & 8 ? 0 : get(rm);
         cpu.nzcv = std::isunordered(a, b) ? 3 : a < b ? 8 : a == b ? 6 : 2;
     } else {
         return false;
@@ -1891,6 +2135,19 @@ bool vectors(Machine& m, uint32_t word) {
         if (size == 8) std::fill(cpu.v[rd].begin() + 8, cpu.v[rd].end(), 0);
         return true;
     }
+    // FCVT to and from half precision, which every ARMv8 processor has even without the rest of FP16.
+    if (const uint32_t half = word & 0xfffffc00; half == 0x1e23c000 || half == 0x1e63c000 || half == 0x1ee24000 || half == 0x1ee2c000) {
+        const unsigned rd = word & 31, rn = (word >> 5) & 31;
+        const auto source = cpu.v[rn];
+        cpu.v[rd].fill(0);
+        switch (half) {
+            case 0x1e23c000: setLane(cpu.v[rd], 0, 2, std::bit_cast<uint16_t>(_Float16(std::bit_cast<float>(uint32_t(lane(source, 0, 4)))))); break;
+            case 0x1e63c000: setLane(cpu.v[rd], 0, 2, std::bit_cast<uint16_t>(_Float16(std::bit_cast<double>(lane(source, 0, 8))))); break;
+            case 0x1ee24000: setLane(cpu.v[rd], 0, 4, std::bit_cast<uint32_t>(float(std::bit_cast<_Float16>(uint16_t(lane(source, 0, 2)))))); break;
+            default: setLane(cpu.v[rd], 0, 8, std::bit_cast<uint64_t>(double(std::bit_cast<_Float16>(uint16_t(lane(source, 0, 2)))))); break;
+        }
+        return true;
+    }
     return vectorArithmetic(cpu, word) ||
            (word & 0x400000 ? floatInstruction<double, uint64_t>(cpu, word)
                             : floatInstruction<float, uint32_t>(cpu, word));
@@ -1988,6 +2245,9 @@ bool values(CPU& cpu, uint32_t word) {
     } else if ((word & 0x7ffffc00) == 0x5ac00000) { // RBIT.
         const auto a = reg(cpu, rn);
         put(cpu, rd, bits == 64 ? __builtin_bitreverse64(a) : __builtin_bitreverse32(uint32_t(a)), bits);
+    } else if ((word & 0x7ffffc00) == 0x5ac01400) { // CLS: how many bits after the sign bit repeat it.
+        const uint64_t a = reg(cpu, rn);
+        put(cpu, rd, bits == 64 ? __builtin_clrsbll(int64_t(a)) : __builtin_clrsb(int32_t(uint32_t(a))), bits);
     } else if ((word & 0x7ffffc00) == 0x5ac01000) { // CLZ.
         uint64_t a = reg(cpu, rn);
         put(cpu, rd, bits == 64 ? std::countl_zero(a) : std::countl_zero(uint32_t(a)), bits);
@@ -2027,9 +2287,11 @@ bool values(CPU& cpu, uint32_t word) {
     } else if ((word & 0xffffffe0) == 0xd51b4200) { // MSR NZCV, <Xt>.
         cpu.nzcv = (reg(cpu, rd) >> 28) & 15;
     } else if ((word & 0xffffffe0) == 0xd53b4400) {
-        put(cpu, rd, 0); // FPCR for the default guest floating-point environment.
+        put(cpu, rd, cpu.fpcr); // FPCR: what the guest last wrote there.
     } else if ((word & 0xffffffe0) == 0xd51b4400) {
-        if (reg(cpu, rd) != 0) return false;
+        // Rounding mode, flush to zero, default NaN: bits Linux lets a program set. See CPU::fpcr for
+        // how little of it is acted on.
+        cpu.fpcr = uint32_t(reg(cpu, rd)) & 0x07c00000;
     } else if ((word & 0xffffffe0) == 0xd53b4420) { // MRS <Xt>, FPSR.
         put(cpu, rd, cpu.fpsr);
     } else if ((word & 0xffffffe0) == 0xd51b4420) { // MSR FPSR, <Xt>.
@@ -2092,7 +2354,14 @@ bool executeStartupInstruction(Machine& machine, uint32_t word) {
                 handled = true;
                 break;
             }
-            if ((word & 0xffffffe0) == 0xd50b7a20) { // DC CVAC
+            // IC IVAU, with DC CVAU what a program does after writing code of its own (__clear_cache).
+            // Nothing here keeps decoded instructions, so there is nothing to throw away.
+            if ((word & 0xffffffe0) == 0xd50b7520) {
+                handled = true;
+                break;
+            }
+            if ((word & 0xfffffee0) == 0xd50b7a20 || (word & 0xfffffee0) == 0xd50b7c20 ||
+                (word & 0xffffffe0) == 0xd50b7e20) { // DC CVAC, CVAU, CVAP, CVADP, CIVAC
                 const auto address = reg(cpu, word & 31);
                 // The interpreter has coherent guest memory. Preserve the EL0 read access check.
                 constexpr unsigned readable = 4;

@@ -31,6 +31,7 @@
 
 // Where the output of Android's sound stands, in words, for the rate report (NESTVANE_DISPLAY_RATE).
 static NSString* GuestAudioOutputState = @"not started";
+static NSString* GuestMicrophoneState = @"idle";
 
 static UIImage* ImageOfSurface(IOSurfaceRef surface) {
     if (!surface || IOSurfaceLock(surface, kIOSurfaceLockReadOnly, nullptr) != 0) return nil;
@@ -333,6 +334,14 @@ std::jthread StartDisplayReader(const nestvane::GfxstreamSession& renderer, Disp
                     size.width, size.height, hertz,
                     rateFirstFrame ? double(lastFrame - rateFirstFrame + 1) / seconds : 0.0, shown / seconds, double(soundNow - soundBefore) / seconds, double(playedNow - playedBefore) / seconds,
                     sound.peak.exchange(0), GuestAudioOutputState, sound.buffered(), std::exchange(tenthMost, 0)];
+                {
+                    auto& microphone = nestvane::GuestMicrophone::host();
+                    static uint64_t givenBefore = 0;
+                    const uint64_t givenNow = microphone.given.load();
+                    if (givenNow || microphone.wanted.load())
+                        [rates appendFormat:@"microphone %@: %.0f bytes a second to Android, peak %u\n", GuestMicrophoneState,
+                            double(givenNow - std::exchange(givenBefore, givenNow)) / seconds, microphone.peak.exchange(0)];
+                }
                 soundBefore = soundNow;
                 playedBefore = playedNow;
                 [rates writeToURL:rateURL atomically:YES encoding:NSUTF8StringEncoding error:nil];
@@ -472,6 +481,9 @@ static NSURL* BugReportAddress(bool androidRunning) {
 // The frame on screen as an image, for captures; nil when there is none.
 @property (nonatomic, readonly) UIImage* image;
 - (void)show:(id)frame size:(CGSize)size;
+// Which way up Android holds its display, in quarter turns (GuestApkInbox::rotation). The frames are
+// always the display as it was made; this turns the picture, and the touches, to match.
+- (void)setRotation:(int)quarterTurns;
 - (void)setTouchDevice:(std::shared_ptr<nestvane::GuestTouch>)device;
 - (void)pressKey:(nestvane::GuestTouch::Key)key;
 @end
@@ -481,14 +493,56 @@ static NSURL* BugReportAddress(bool androidRunning) {
     UITouch* _activeTouch;
     id _frame;
     CGSize _frameSize;
+    CALayer* _content;  // the picture: as large as fits, turned the way Android's display is turned
+    int _rotation;
 }
 
 - (void)show:(id)frame size:(CGSize)size {
+    const CGSize before = _frameSize;
     _frame = frame;
     _frameSize = frame ? size : CGSizeZero;
+    if (!_content) {
+        _content = [CALayer layer];
+        _content.contentsGravity = kCAGravityResize;
+        [self.layer addSublayer:_content];
+    }
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
-    self.layer.contents = [frame isKindOfClass:UIImage.class] ? (__bridge id)static_cast<UIImage*>(frame).CGImage : frame;
+    _content.contents = [frame isKindOfClass:UIImage.class] ? (__bridge id)static_cast<UIImage*>(frame).CGImage : frame;
+    [CATransaction commit];
+    if (!CGSizeEqualToSize(before, _frameSize)) [self placeContent];
+}
+
+- (void)setRotation:(int)quarterTurns {
+    if (quarterTurns == _rotation) return;
+    _rotation = quarterTurns & 3;
+    [self placeContent];
+}
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    [self placeContent];
+}
+
+// Android turned a quarter to the left shows its screens with their top along the right edge of the
+// frame, so the picture is turned a quarter to the left to stand them up, and so on round.
+- (void)placeContent {
+    if (!_content) return;
+    const CGRect bounds = self.bounds;
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    _content.affineTransform = CGAffineTransformIdentity;
+    if (_frameSize.width > 0 && _frameSize.height > 0 && bounds.size.width > 0 && bounds.size.height > 0) {
+        const bool turned = _rotation & 1;
+        const CGFloat acrossWidth = turned ? _frameSize.height : _frameSize.width;
+        const CGFloat acrossHeight = turned ? _frameSize.width : _frameSize.height;
+        const CGFloat scale = std::min(bounds.size.width / acrossWidth, bounds.size.height / acrossHeight);
+        _content.bounds = CGRectMake(0, 0, _frameSize.width * scale, _frameSize.height * scale);
+        _content.position = CGPointMake(CGRectGetMidX(bounds), CGRectGetMidY(bounds));
+        _content.affineTransform = CGAffineTransformMakeRotation(-M_PI_2 * _rotation);
+    } else {
+        _content.frame = bounds;
+    }
     [CATransaction commit];
 }
 
@@ -512,11 +566,13 @@ static NSURL* BugReportAddress(bool androidRunning) {
     const CGRect bounds = self.bounds;
     if (!_touchDevice || imageSize.width <= 0 || imageSize.height <= 0 ||
         bounds.size.width <= 0 || bounds.size.height <= 0) return NO;
-    const CGFloat scale = std::min(bounds.size.width / imageSize.width, bounds.size.height / imageSize.height);
-    const CGSize size = CGSizeMake(imageSize.width * scale, imageSize.height * scale);
-    const CGPoint location = [touch locationInView:self];
-    const CGFloat x = (location.x - CGRectGetMidX(bounds) + size.width / 2) / size.width;
-    const CGFloat y = (location.y - CGRectGetMidY(bounds) + size.height / 2) / size.height;
+    // The touch device's coordinates are those of the display as it was made, which is the picture's
+    // own: the layer takes the turn out.
+    const CGSize size = _content.bounds.size;
+    if (size.width <= 0 || size.height <= 0) return NO;
+    const CGPoint location = [_content convertPoint:[touch locationInView:self] fromLayer:self.layer];
+    const CGFloat x = location.x / size.width;
+    const CGFloat y = location.y / size.height;
     if (!_activeTouch && (x < 0 || x > 1 || y < 0 || y > 1)) return NO;
     const auto axis = [](CGFloat location) {
         return int32_t(std::clamp(location, CGFloat(0), CGFloat(1)) * nestvane::GuestTouch::maximumAxis + 0.5);
@@ -560,6 +616,96 @@ static OSStatus RenderGuestAudio(void*, AudioUnitRenderActionFlags*, const Audio
     return noErr;
 }
 
+// Whether the microphone is recording for Android: the audio session is then one that plays and records.
+static bool GuestMicrophoneRecording = false;
+
+// Follows the guest's recording: the phone's microphone is opened when Android reads from its capture
+// device, in the format it set, and closed three seconds after it last did. iOS asks the person for the
+// microphone the first time; until they allow it, and if they do not, Android records silence.
+static void FollowGuestMicrophone() {
+    static AVAudioEngine* engine = nil;
+    static uint64_t recording = 0;
+    static bool asking = false, refused = false;
+    auto& microphone = nestvane::GuestMicrophone::host();
+    const uint64_t now = uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+    const uint64_t last = microphone.wanted.load(), generation = microphone.generation.load();
+    const bool wanted = last && now - last < 3000 && microphone.rate.load();
+    if (engine && (!wanted || generation != recording)) {
+        [engine.inputNode removeTapOnBus:0];
+        [engine stop];
+        engine = nil;
+        microphone.producer = false;
+        GuestMicrophoneRecording = false;
+        GuestMicrophoneState = @"idle";
+        [AVAudioSession.sharedInstance setCategory:AVAudioSessionCategoryPlayback error:nil];
+    }
+    if (!wanted || engine || asking || refused) return;
+    const AVAudioApplicationRecordPermission permission = AVAudioApplication.sharedInstance.recordPermission;
+    if (permission == AVAudioApplicationRecordPermissionUndetermined) {
+        asking = true;
+        GuestMicrophoneState = @"asking";
+        [AVAudioApplication requestRecordPermissionWithCompletionHandler:^(BOOL granted) {
+            dispatch_async(dispatch_get_main_queue(), ^{ asking = false; refused = !granted; });
+        }];
+        return;
+    }
+    if (permission != AVAudioApplicationRecordPermissionGranted) {
+        refused = true;
+        GuestMicrophoneState = @"not allowed";
+        return;
+    }
+    static CFAbsoluteTime retry = 0;
+    if (CFAbsoluteTimeGetCurrent() < retry) return;
+    retry = CFAbsoluteTimeGetCurrent() + 2;
+    NSError* error = nil;
+    if (![AVAudioSession.sharedInstance setCategory:AVAudioSessionCategoryPlayAndRecord
+                                        withOptions:AVAudioSessionCategoryOptionDefaultToSpeaker | AVAudioSessionCategoryOptionAllowBluetooth
+                                              error:&error] ||
+        ![AVAudioSession.sharedInstance setActive:YES error:&error]) {
+        GuestMicrophoneState = [NSString stringWithFormat:@"audio session: %@", error.localizedDescription];
+        return;
+    }
+    AVAudioEngine* made = [AVAudioEngine new];
+    AVAudioFormat* heard = [made.inputNode outputFormatForBus:0];
+    const uint32_t bits = microphone.bits.load();
+    AVAudioFormat* asked = [[AVAudioFormat alloc] initWithCommonFormat:bits == 16 ? AVAudioPCMFormatInt16 : AVAudioPCMFormatInt32
+                                                            sampleRate:microphone.rate.load()
+                                                              channels:microphone.channels.load()
+                                                           interleaved:YES];
+    AVAudioConverter* converter = heard.sampleRate > 0 && asked ? [[AVAudioConverter alloc] initFromFormat:heard toFormat:asked] : nil;
+    if (!converter) {
+        GuestMicrophoneState = @"no input format";
+        [AVAudioSession.sharedInstance setCategory:AVAudioSessionCategoryPlayback error:nil];
+        return;
+    }
+    [made.inputNode installTapOnBus:0 bufferSize:1024 format:heard block:^(AVAudioPCMBuffer* buffer, AVAudioTime*) {
+        const AVAudioFrameCount room = AVAudioFrameCount(buffer.frameLength * asked.sampleRate / heard.sampleRate) + 64;
+        AVAudioPCMBuffer* out = [[AVAudioPCMBuffer alloc] initWithPCMFormat:asked frameCapacity:room];
+        __block BOOL given = NO;
+        [converter convertToBuffer:out error:nil withInputFromBlock:^AVAudioBuffer*(AVAudioPacketCount, AVAudioConverterInputStatus* status) {
+            *status = given ? AVAudioConverterInputStatus_NoDataNow : AVAudioConverterInputStatus_HaveData;
+            if (given) return nil;
+            given = YES;
+            return buffer;
+        }];
+        if (out.frameLength)
+            nestvane::GuestMicrophone::host().write(static_cast<const uint8_t*>(out.audioBufferList->mBuffers[0].mData),
+                                                    size_t(out.frameLength) * asked.streamDescription->mBytesPerFrame);
+    }];
+    if (![made startAndReturnError:&error]) {
+        [made.inputNode removeTapOnBus:0];
+        GuestMicrophoneState = [NSString stringWithFormat:@"starting: %@", error.localizedDescription];
+        [AVAudioSession.sharedInstance setCategory:AVAudioSessionCategoryPlayback error:nil];
+        return;
+    }
+    engine = made;
+    recording = generation;
+    GuestMicrophoneRecording = true;
+    microphone.producer = true;
+    GuestMicrophoneState = [NSString stringWithFormat:@"recording %u Hz, %u channels, %u bits from %.0f Hz, %u channels",
+                            microphone.rate.load(), microphone.channels.load(), bits, heard.sampleRate, heard.channelCount];
+}
+
 // Follows the guest's playing: started when the guest plays, in the format it set, and again when that changes.
 static void FollowGuestAudio() {
     static AudioUnit unit = nullptr;
@@ -586,7 +732,7 @@ static void FollowGuestAudio() {
         AudioUnitUninitialize(unit);
         AudioComponentInstanceDispose(unit);
         unit = nullptr;
-        if (!wanted) {
+        if (!wanted && !GuestMicrophoneRecording) {
             [AVAudioSession.sharedInstance setActive:NO withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation error:nil];
             GuestAudioOutputState = @"idle";
         }
@@ -601,7 +747,7 @@ static void FollowGuestAudio() {
         return status == noErr;
     };
     NSError* error = nil;
-    if (![AVAudioSession.sharedInstance setCategory:AVAudioSessionCategoryPlayback error:&error] ||
+    if ((!GuestMicrophoneRecording && ![AVAudioSession.sharedInstance setCategory:AVAudioSessionCategoryPlayback error:&error]) ||
         ![AVAudioSession.sharedInstance setActive:YES error:&error]) {
         GuestAudioOutputState = [NSString stringWithFormat:@"audio session: %@", error.localizedDescription];
         return;
@@ -905,6 +1051,9 @@ static void FollowGuestAudio() {
     std::stop_source _androidStop;
     BOOL _started;
     NSUInteger _apkStatusGeneration;
+    bool _displayMadeWide;  // the shape Android's display was given when it started
+    int _rotationAsked;     // the quarter turns last asked of Android
+    bool _rotationHeld;     // a test asked for a rotation: the view's shape no longer decides
 }
 
 - (BOOL)prefersStatusBarHidden {
@@ -917,6 +1066,17 @@ static void FollowGuestAudio() {
         const int rate = int(GuestDisplayRate()), most = RateInHeat(rate);
         if (self->_apkInbox) self->_apkInbox->submitDisplayRate(most < rate ? most : 0);
     });
+}
+
+// The device was turned: Android is asked to hold its display the same way, a quarter turn from how
+// the display was made when the view has the other shape. The picture follows when Android has turned.
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    const CGSize size = self.display.bounds.size;
+    if (!_apkInbox || _rotationHeld || self.display.hidden || size.width <= 0 || size.height <= 0) return;
+    const int wanted = (size.width > size.height) != _displayMadeWide ? 1 : 0;
+    if (wanted == _rotationAsked) return;
+    if (_apkInbox->submitRotation(wanted)) _rotationAsked = wanted;
 }
 
 - (void)viewDidLoad {
@@ -1009,9 +1169,37 @@ static void FollowGuestAudio() {
         [BugReportAddress(false).absoluteString writeToURL:[documents URLByAppendingPathComponent:@"bug-report-url.txt"]
                                                atomically:YES encoding:NSUTF8StringEncoding error:nil];
     }
+    // NESTVANE_TEST_TURN=<seconds> asks the system to turn the app to landscape that long after it
+    // starts, as turning the device does; a second number, =<seconds>:<seconds>, turns it back then.
+    if (NSString* turn = NSProcessInfo.processInfo.environment[@"NESTVANE_TEST_TURN"]) {
+        __weak ValidationViewController* shown = self;
+        NSArray<NSString*>* times = [turn componentsSeparatedByString:@":"];
+        for (NSUInteger index = 0; index < times.count && index < 2; ++index) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, int64_t(times[index].doubleValue * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                UIWindowScene* scene = shown.view.window.windowScene;
+                const UIInterfaceOrientationMask mask = index ? UIInterfaceOrientationMaskPortrait : UIInterfaceOrientationMaskLandscapeRight;
+                [scene requestGeometryUpdateWithPreferences:[[UIWindowSceneGeometryPreferencesIOS alloc] initWithInterfaceOrientations:mask]
+                                               errorHandler:^(NSError* error) { NSLog(@"turn refused: %@", error); }];
+            });
+        }
+    }
+    // NESTVANE_TEST_ROTATE=<quarter turns>:<seconds> asks Android to turn its display that long after
+    // the app starts, as viewDidLayoutSubviews does when the device is turned.
+    if (NSString* rotate = NSProcessInfo.processInfo.environment[@"NESTVANE_TEST_ROTATE"]) {
+        __weak ValidationViewController* shown = self;
+        NSArray<NSString*>* parts = [rotate componentsSeparatedByString:@":"];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, int64_t(parts.lastObject.doubleValue * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            ValidationViewController* owner = shown;
+            if (owner && owner->_apkInbox && owner->_apkInbox->submitRotation(parts.firstObject.intValue))
+                owner->_rotationHeld = true;
+        });
+    }
+    // NESTVANE_TEST_SCREEN=window:<seconds> saves the whole window that long after the app starts: how
+    // Android's display sits in it, turned or not.
     if (NSString* wanted = NSProcessInfo.processInfo.environment[@"NESTVANE_TEST_SCREEN"]) {
         __weak ValidationViewController* shown = self;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+        const double after = [wanted hasPrefix:@"window:"] ? [wanted substringFromIndex:7].doubleValue : 2;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, int64_t(after * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             ValidationViewController* owner = shown;
             UIWindow* window = owner.view.window;
             if (!window) return;
@@ -1316,6 +1504,8 @@ static void FollowGuestAudio() {
     UIApplication.sharedApplication.idleTimerDisabled = YES;
     self.status.text = apkInbox ? @"Starting Android…" : @"Running ARM64 ELF validation…";
     const auto displaySize = GuestDisplaySize(self.display.bounds.size);
+    _displayMadeWide = displaySize.width > displaySize.height;
+    _rotationAsked = -1;  // Android keeps the rotation it was last asked for: say again which it is to be
     // A thread of its own, not a dispatch queue's: the runtime ends guest time slices with a signal to
     // this thread, and the system refuses to send one to a queue's worker thread.
     NSThread* guestThread = [[NSThread alloc] initWithBlock:^{
@@ -1402,11 +1592,13 @@ static void FollowGuestAudio() {
             // The rate Android composes at is fixed when it starts (GuestDisplayRate).
             setenv("NESTVANE_DISPLAY_HZ", @(GuestDisplayRate()).stringValue.UTF8String, 1);
             // On an iPad the display has several times a phone's pixels. Android is told they are as
-            // many times denser, so that its screens are laid out as on a phone and drawn sharp: left
-            // at the usual density it takes the display for a tablet's, and the launcher's taskbar,
-            // which a tablet gets, stops the launcher with an error in this system.
-            if (!getenv("NESTVANE_DISPLAY_DENSITY") && displaySize.width > defaultGuestWidth) {
-                const int density = int(std::lround(160.0 * displaySize.width / 590.0));
+            // many times denser, so that its screens are laid out as on a phone and drawn sharp. At a
+            // tablet's density (the short side 600 of its units or more) this system does not work:
+            // the launcher stops with an error as it starts (its taskbar's buttons are told where the
+            // bubble bar is before they are set up), and after it restarts, apps' windows are not
+            // drawn. Tried again on 2026-11-23 at 214; see results/G0.md.
+            if (!getenv("NESTVANE_DISPLAY_DENSITY") && std::min(displaySize.width, displaySize.height) > defaultGuestWidth) {
+                const int density = int(std::lround(160.0 * std::min(displaySize.width, displaySize.height) / 590.0));
                 setenv("NESTVANE_DISPLAY_DENSITY", @(density).stringValue.UTF8String, 1);
             }
             // Android's sound comes out of the phone.
@@ -1415,7 +1607,7 @@ static void FollowGuestAudio() {
             dispatch_once(&audioWatched, ^{
                 audioWatch = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
                 dispatch_source_set_timer(audioWatch, DISPATCH_TIME_NOW, NSEC_PER_SEC / 4, NSEC_PER_SEC / 20);
-                dispatch_source_set_event_handler(audioWatch, ^{ FollowGuestAudio(); });
+                dispatch_source_set_event_handler(audioWatch, ^{ FollowGuestMicrophone(); FollowGuestAudio(); });
                 dispatch_resume(audioWatch);
             });
             // Android shows the phone's battery: its level, and whether it is charging.
@@ -1693,6 +1885,7 @@ static void FollowGuestAudio() {
                                                         ^(id frame, CGSize frameSize, bool content, bool launcher) {
                     const BOOL firstFrame = self.display.hidden;
                     [self.display show:frame size:frameSize];
+                    if (const auto inbox = self->_apkInbox) [self.display setRotation:inbox->rotation.load()];
                     const auto writePresentationTime = [&](NSURL* url) {
                         const auto milliseconds = (NSProcessInfo.processInfo.systemUptime - validationStarted) * 1000;
                         NSString* message = [NSString stringWithFormat:
@@ -1707,6 +1900,7 @@ static void FollowGuestAudio() {
                         self.startup.hidden = YES;
                         self.emblem.active = NO;
                         self.display.hidden = NO;
+                        [self.view setNeedsLayout];  // viewDidLayoutSubviews says which way up Android is to be
                         self.back.hidden = self.home.hidden = NO;
                         self.back.enabled = self.home.enabled = YES;
                         writePresentationTime(displayProgress);
