@@ -15,6 +15,15 @@
 
 namespace nestvane {
 
+// The files of the system image that are mapped just now: path, where, how long. For reading in
+// ahead of time what a start uses (ios/CodePrefetch.hpp). The visitor runs with the list held still.
+struct MappedImageFile {
+    std::string path;
+    const uint8_t* data;
+    size_t size;
+};
+void visitMappedImageFiles(const std::function<void(const MappedImageFile&)>& visit);
+
 struct DynamicReport {
     bool passed;
     std::string report;

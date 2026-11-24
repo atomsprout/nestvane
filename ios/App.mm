@@ -11,6 +11,7 @@
 #include "GuestBattery.hpp"
 #include "DynamicProbe.hpp"
 #include "GfxstreamPipe.hpp"
+#include "CodePrefetch.hpp"
 #include "GfxstreamSession.hpp"
 #include "HostSocket.hpp"
 #include "IOSCamera.hpp"
@@ -1740,6 +1741,14 @@ static void FollowGuestAudio() {
                     report += '\n';
                     AppendMemoryUsage(report);
                     exportReport(launcherURL, report);
+                    // A few seconds on, when the home screen has drawn: which code pages this start used.
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                        NSString* list = [NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject
+                            stringByAppendingPathComponent:@"boot-code-pages"];
+                        nestvane::prefetch::record(list.fileSystemRepresentation);
+                        nestvane::prefetch::recordFiles([list stringByAppendingString:@"-files"].fileSystemRepresentation,
+                                                        NSBundle.mainBundle.resourcePath.fileSystemRepresentation);
+                    });
                     // NESTVANE_TEST_TEXT="<sender>|<text>" hands Android a text message, as the menu does,
                     // ten seconds after the launcher is displayed.
                     if (NSString* message = NSProcessInfo.processInfo.environment[@"NESTVANE_TEST_TEXT"]; message && apkInbox) {
@@ -1911,6 +1920,17 @@ static void FollowGuestAudio() {
                                                progress, {}, touch, {}, apkInbox, stop, exportWatchdog, exportLiveSnapshot);
                 }
 
+                // The code pages the last start used, read in on other cores while this one begins
+                // (ios/CodePrefetch.hpp). NESTVANE_NO_PREFETCH=1 leaves it out, for comparing.
+                NSString* prefetchList = [NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject
+                    stringByAppendingPathComponent:@"boot-code-pages"];
+                if (!getenv("NESTVANE_NO_PREFETCH")) {
+                    const std::string imageRoot = NSBundle.mainBundle.resourcePath.fileSystemRepresentation;
+                    const size_t pages = nestvane::prefetch::start(prefetchList.fileSystemRepresentation);
+                    const size_t filePages = nestvane::prefetch::startFiles(
+                        [prefetchList stringByAppendingString:@"-files"].fileSystemRepresentation, imageRoot);
+                    NSLog(@"reading in %zu code pages and %zu pages of the system image", pages, filePages);
+                }
                 progress("Initializing local Android renderer");
                 nestvane::GfxstreamSession renderer(rendererPath.fileSystemRepresentation, displaySize.width, displaySize.height);
                 if (!renderer) return {false, renderer.error() + "\n"};
