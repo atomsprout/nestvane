@@ -38,6 +38,10 @@ Unless noted, the build is a development-signed Release build.
 - **Landscape.** Android's display turns with the device, and an app that asks for landscape is shown the right way up, with touches landing where they are made (checked on an iPhone 14 with Android a quarter turn round).
 - **The microphone.** The sound card Android sees has a capture device, fed from the device's microphone while an Android app records. iOS asks for the microphone the first time. Seen: a voice recorder starts recording and Android reads the device. Not yet checked: what it records once the microphone is allowed.
 - **Web pages inside apps (1.6).** Android System WebView 128, AOSP's prebuilt build of Chromium, is part of the system. Its library was not built with the registers the translated code keeps for itself set aside; the translator now lends other registers in their place, and the library is translated ahead of time like the rest. A Wikipedia article loads in a WebView in 4.4 seconds on an iPad Air and 8.3 on an iPhone 14. JavaScript runs in V8's interpreter, with no JIT. Toutiao's feed, AnkiDroid and Jellyfin, which needed a WebView, now open. Renderer processes run without Chromium's seccomp sandbox, and WebView's overlays are off.
+- **Storage that is the device's (1.7).** Android's Storage page shows the size of the volume Nestvane is on and what iOS says is free on it, less 1 GiB kept back; Android can write until then.
+- **Root, when you want it (1.7).** Off unless you turn it on in Nestvane's Settings. Then `su` exists in Android, and the first time an app runs it iOS asks whether that app may have root; the answers are kept and can be changed in Settings. An allowed app's `su -c id` gives `uid=0(root)`, with every capability and an SELinux domain that may do anything.
+- **Running commands (1.7).** Java's `Runtime.exec` and `ProcessBuilder` used to hang the calling thread (`vfork`, and asking a pipe how much it holds, were missing); the usual commands (`ls`, `id`, `cp`, `ps` and about 70 more) are now in `/system/bin`.
+- **Apps' own native libraries run faster (1.7).** They are still interpreted, now about twice as fast: common instructions are decoded once, and a thread that keeps interpreting moves to a core of its own. The renderers of WebView run in Chromium's seccomp sandbox again.
 
 ## What does not work yet
 
@@ -47,7 +51,7 @@ Unless noted, the build is a development-signed Release build.
 - **Google apps and Play services.** The system is AOSP. Apps that need Google's services will not run.
 - **IPv6.** The guest network is IPv4 only.
 - **Live changes to the shared folder from iOS.** They show up only after Android restarts.
-- **Apps with heavy native code are slow**, because the native libraries inside an APK are interpreted. Some apps do not start.
+- **Apps with heavy native code are slow**, because the native libraries inside an APK are interpreted. Some apps do not start. ScriptWidget's previews do not appear: it stops a script that runs past its deadline, and interpreted, its scripts do.
 
 ## Measured numbers
 
@@ -107,7 +111,7 @@ Measured on an iPhone 15 Pro with scripted taps.
 | The same with the chunk table used in the app, estimated | about 1.4 to 1.5 times native | Mac |
 | Zygote preloading 18,596 classes | 111 ms | iPhone 15 Pro, experimental runtime |
 | Recovering from a fault inside the process | 1.5 to 2.6 µs on average | iPhone 15 Pro and iPhone 11 |
-| First widget preview from ScriptWidget, whose script engine is interpreted | about 2 minutes after opening the app | iPhone 15 Pro |
+| First widget preview from ScriptWidget, whose script engine is interpreted | about 2 minutes after opening the app (before 1.7); none within 3 minutes on an iPad Air with 1.7, the scripts run past the app's own deadline | iPhone 15 Pro, iPad Air |
 
 The last row shows the cost of interpretation. The app's own interface is Java code run by ART and the system's libraries, all of which are translated, and it opens in under a second. Its JavaScript engine is a native library inside the APK, which has no translation and is interpreted; rendering the previews took minutes.
 
@@ -134,7 +138,7 @@ From the record, on an iPhone 15 Pro. "Opens" means the app reached a usable scr
 
 - **Shared storage has no per-app access control.** File operations do not pass through the media provider, and the kernel layer does not check owners or modes for files under the shared storage ([kernel-layer.md](kernel-layer.md)).
 - **Large files after power loss.** The content of a file of 1 MiB or more is not flushed to disk in step with the snapshot; after a power loss it can be older than the snapshot ([devices.md](devices.md)).
-- **Storage limits.** 256 MiB per file and 2 GiB for `/data` in total. Larger files in the shared folder do not appear in Android.
+- **Storage limits.** 1 GiB per file; `/data` as a whole up to what the device has free, less 1 GiB. Larger files in the shared folder do not appear in Android.
 - **SELinux decisions are captured, not computed.** Services added after the capture run under rules written by hand.
 - **A paid developer account is required**, because each Android process takes host address space of its own and the total needs the Extended Virtual Addressing entitlement. A developer of Twoyi suggested the way out, a software MMU with one pool of memory shared by all processes, with our thanks; it is planned and not started ([PLAN.md](../PLAN.md), in Chinese).
 - **One scheduler thread.** System calls of all guest processes run one at a time.

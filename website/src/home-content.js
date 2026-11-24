@@ -54,6 +54,8 @@ export const content = {
       ['120 Hz', 'On a ProMotion screen Android can draw 120 frames a second. It is off until you turn it on in Nestvane’s settings, and uses more battery.'],
       ['Text messages you write', 'Send Text Message in Nestvane’s menu hands Android a sender and a text, and Messaging shows it as an incoming message. Apps that wait for an SMS, to read a code for example, receive it too. Nothing is sent to anyone.'],
       ['Web pages in apps', 'Android System WebView is part of the system, so apps that show web pages work: a Wikipedia article loads in a few seconds.'],
+      ['Root, if you want it', 'Off until you turn it on in Nestvane’s settings. Then an app that asks for root with su gets it once you allow it, and you can change your answer later.'],
+      ['Your device’s storage', 'Android’s Storage page shows how big your device’s storage is and how much of it is free.'],
       ['Update notice', 'Once a day Nestvane asks GitHub which release is the latest and tells you when there is a newer one. It installs nothing itself.'],
     ],
     figures: [

@@ -78,6 +78,9 @@ for the app** gives that code the system it expects.
   New, and so far only seen as far as Android starting to record.
 - **Web pages inside apps.** Android System WebView 128 from AOSP is part of the system, translated ahead of time
   like the rest: a Wikipedia article loads in a WebView in 4 to 8 seconds. JavaScript runs without a JIT.
+- **Root, when you want it.** Off unless you turn it on in Nestvane's Settings; then an app that runs `su` gets root
+  once you allow it in an iOS prompt, and the answer can be changed in Settings.
+- **The device's storage.** Android's Storage page shows the size of the volume Nestvane is on and what is free on it.
 
 ## What does not work yet
 
@@ -85,7 +88,8 @@ for the app** gives that code the system it expects.
   30 frames a second.
 - **A tablet's layout on an iPad.** Android is laid out as on a phone there, sharp and filling the screen.
 - **Google apps and Play services.** This is AOSP. Apps that need them will not run.
-- **Apps with heavy native code are slow**: an app's own native libraries are interpreted.
+- **Apps with heavy native code are slow**: an app's own native libraries are interpreted, now about twice as fast
+  as before and on a core of their own, but still far from native speed.
 - IPv6, and live updates of the shared folder (changes made from iOS appear when Android next starts).
 
 [docs/status.md](docs/status.md) has the full list with the measurements behind it.
