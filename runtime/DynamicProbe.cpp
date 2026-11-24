@@ -4,6 +4,8 @@
 #include "AndroidBootAot.hpp"
 #include "ProbeLinux.hpp"
 
+#include <map>
+#include <mutex>
 #include <algorithm>
 #include <charconv>
 #include <chrono>
@@ -37,6 +39,9 @@ void describeCall(std::ostream& report, const CPU& cpu, uint64_t number) {
     report << std::dec;
 }
 
+std::mutex mappedImageLock;
+std::map<const uint8_t*, MappedImageFile> mappedImages;
+
 class ReadOnlyImageFile {
 public:
     ReadOnlyImageFile(const std::filesystem::path& path, size_t bytes) : size(bytes) {
@@ -47,11 +52,20 @@ public:
         ::close(fd);
         if (mapped == MAP_FAILED) throw std::runtime_error("cannot map " + path.string());
         data = static_cast<const uint8_t*>(mapped);
+        const std::lock_guard guard(mappedImageLock);
+        mappedImages[data] = {path.string(), data, size};
     }
     ReadOnlyImageFile(ReadOnlyImageFile&& other) noexcept
         : data(std::exchange(other.data, nullptr)), size(other.size) {}
     ReadOnlyImageFile(const ReadOnlyImageFile&) = delete;
-    ~ReadOnlyImageFile() { if (data) ::munmap(const_cast<uint8_t*>(data), size); }
+    ~ReadOnlyImageFile() {
+        if (!data) return;
+        {
+            const std::lock_guard guard(mappedImageLock);
+            mappedImages.erase(data);
+        }
+        ::munmap(const_cast<uint8_t*>(data), size);
+    }
     std::span<const uint8_t> bytes() const { return data ? std::span(data, size) : std::span<const uint8_t>{}; }
 
 private:
@@ -1398,6 +1412,11 @@ service nestvane-smoke /system/bin/sh /system/etc/nestvane/apk-ready.sh /system/
     } catch (const std::exception& error) {
         return {false, "Android 17 second-stage init probe\n  load error: " + std::string(error.what()) + "\n"};
     }
+}
+
+void visitMappedImageFiles(const std::function<void(const MappedImageFile&)>& visit) {
+    const std::lock_guard guard(mappedImageLock);
+    for (const auto& [data, file] : mappedImages) visit(file);
 }
 
 } // namespace nestvane
