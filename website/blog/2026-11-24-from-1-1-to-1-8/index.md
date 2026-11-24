@@ -81,6 +81,8 @@ Building root turned up three bugs that hit every app. Java's `Runtime.exec` and
 
 While testing it, two clears in three with a WebView in the background brought Android down. `system_server` aborted with "Unexpected BR_REPLY" and everything restarted. The cause was in our Binder. When a process died while another thread was calling it, the death notice went to that very thread. It ran the death handler inside its call, and the call's own reply then arrived at the wrong place. Linux treats a death notice as work for the whole process, and now Nestvane does too. This was not only a problem for the new button: Android ending an app on its own could hit it.
 
+**Checked after release.** With the microphone allowed in iOS, a test app on an iPad Air recorded the room, and Android turned with the iPad when it was turned by hand. Both had been owed since 1.5.
+
 **Root shells and names.** An app can keep `su` open and write commands to it, as terminal apps do. The root prompt shows the app's name, not only its package.
 
 ## Boot time may only get faster
@@ -97,7 +99,6 @@ This is harder than it sounds, because one build can vary by 3 seconds from star
 
 ## What did not work out
 
-- **The microphone's recording has not been verified.** A test app records silence until iOS is told to give Nestvane the microphone. That needs a tap on the device, and it has not been done yet.
 - **ScriptWidget's widget previews still do not appear.** Its script engine is a native library, and it sets a deadline on every script. Interpreted, the scripts run past it. Doubling the speed was not enough.
 - **Douyin still shows no video**, for the same reason.
 - **The home screen does not turn.** Launcher3 controls it with a preference, not a resource we can override. It needs more than a day.
