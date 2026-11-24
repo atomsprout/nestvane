@@ -38,6 +38,11 @@ public final class MainActivity extends Activity {
         WebView view = new WebView(this);
         say("WebView made: " + WebView.getCurrentWebViewPackage());
         view.getSettings().setJavaScriptEnabled(true);
+        // With the extra "software" the WebView draws without the GPU.
+        if (getIntent().getBooleanExtra("software", false)) {
+            view.setLayerType(android.view.View.LAYER_TYPE_SOFTWARE, null);
+            say("drawing in software");
+        }
         view.setWebViewClient(new WebViewClient() {
             @Override
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
@@ -46,7 +51,7 @@ public final class MainActivity extends Activity {
 
             @Override
             public void onPageFinished(WebView view, String url) {
-                say("page finished, title " + view.getTitle());
+                say("page finished " + url.substring(0, Math.min(url.length(), 60)) + ", title " + view.getTitle());
             }
         });
         view.setWebChromeClient(new WebChromeClient() {
@@ -64,6 +69,16 @@ public final class MainActivity extends Activity {
         });
         setContentView(view);
         String url = getIntent().getStringExtra("url");
+        // Or the first line of url.txt in the app's folder of the shared storage
+        // (Android/data/dev.nestvane.webview/files/url.txt), which the iOS Files app can put there.
+        java.io.File file = new java.io.File(getExternalFilesDir(null), "url.txt");
+        if (url == null && file.isFile()) {
+            try (java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.FileReader(file))) {
+                url = reader.readLine().trim();
+            } catch (java.io.IOException | NullPointerException e) {
+                say("could not read " + file + ": " + e);
+            }
+        }
         if (url != null) {
             view.loadUrl(url);
         } else {

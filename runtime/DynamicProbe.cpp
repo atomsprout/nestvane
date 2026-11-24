@@ -638,7 +638,9 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
                               static_cast<unsigned long long>(callArguments[1]), static_cast<unsigned long long>(callArguments[2]),
                               static_cast<unsigned long long>(callArguments[3]), static_cast<unsigned long long>(linux.processId()),
                               static_cast<unsigned long long>(cpu.x[0]));
-                linux.androidLogObserver(line);
+                // A Unix socket's path, for connect and bind.
+                const auto path = (syscall == 203 || syscall == 200) ? pathArgument(machine, callArguments[1] + 2) : std::string();
+                linux.androidLogObserver(path.empty() ? std::string(line) : std::string(line) + " " + path);
             }
             // NESTVANE_TRACE_DENIED=1: the calls that end in "permission denied", with where the path leads.
             if (static const bool traced = std::getenv("NESTVANE_TRACE_DENIED"); traced && cpu.x[0] == uint64_t(-13) && linux.androidLogObserver) {

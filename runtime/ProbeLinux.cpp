@@ -2501,7 +2501,7 @@ bool ProbeLinux::eventCall(Machine& machine) {
 }
 
 uint64_t ProbeLinux::socketRead(Machine& machine, const Descriptor& fd, uint64_t address, uint64_t size,
-                                bool reportPacketSize) {
+                                bool reportPacketSize, bool peek) {
     auto& endpoint = *fd.socket;
     if (!size && (!reportPacketSize || endpoint.type == 1)) return 0;
     if (endpoint.inetDatagram()) return receiveInetDatagram(machine, endpoint, address, size);
@@ -2511,7 +2511,7 @@ uint64_t ProbeLinux::socketRead(Machine& machine, const Descriptor& fd, uint64_t
         if (!endpoint.connected) return uint64_t(-107);
         if (endpoint.receiveShutdown) return 0;
         std::vector<uint8_t> bytes(std::min<uint64_t>(size, 256 * 1024));
-        const auto received = hostnet::receive(endpoint.hostFd, bytes);
+        const auto received = hostnet::receive(endpoint.hostFd, bytes, peek);
         if (received == -11) hostSocketWait = true;
         if (received <= 0) return uint64_t(received);
         return machine.write(address, std::span(bytes).first(size_t(received))) ? uint64_t(received) : uint64_t(-14);
@@ -4236,7 +4236,11 @@ bool ProbeLinux::socketCall(Machine& machine) {
                 break;
             }
             constexpr uint64_t truncate = 0x20; // MSG_TRUNC, ignored for UNIX streams.
-            const auto receiveFlags = 0x140ULL | (socket->family == 1 ? truncate : 0);
+            // MSG_PEEK on a TCP connection: Chromium looks at one byte to learn whether the connection is
+            // still open before it uses it again.
+            constexpr uint64_t peek = 0x2;
+            const bool hostStream = socket->hostFd >= 0 && !socket->inetDatagram();
+            const auto receiveFlags = 0x140ULL | (socket->family == 1 ? truncate : 0) | (hostStream ? peek : 0);
             if (x[4] || x[5] || (x[3] & ~(send ? 0x4040ULL : receiveFlags))) return false;
             const auto& endpoint = *socket;
             const auto peer = endpoint.peer.lock();
@@ -4246,7 +4250,7 @@ bool ProbeLinux::socketCall(Machine& machine) {
                 !peer->sendShutdown && !endpoint.receiveShutdown;
             if (waitAll && waitForSocketTimeout(endpoint.receiveTimeout)) return true;
             const auto result = send ? socketWrite(machine, fd->second, x[1], x[2])
-                                     : socketRead(machine, fd->second, x[1], x[2], x[3] & truncate);
+                                     : socketRead(machine, fd->second, x[1], x[2], x[3] & truncate, x[3] & peek);
             if (result == uint64_t(-11) && blocking &&
                 (!waitAll && waitForSocketTimeout(send ? endpoint.sendTimeout : endpoint.receiveTimeout))) return true;
             current->deadline.reset();
