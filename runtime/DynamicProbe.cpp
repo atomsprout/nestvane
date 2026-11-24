@@ -104,19 +104,32 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
     bool reachedExecutable = false;
     const bool nativeExecution = native::enabled();
     bool interpretNext = false;
+    // After native code faults, the thread is interpreted for a stretch before it goes back. A fault
+    // costs as much as thousands of interpreted instructions, and a loop that reaches across the end
+    // of a run of host memory (GuestSpace) used to fault on every turn: one fault, one instruction
+    // interpreted, native again, the same fault. The stretch doubles while faults keep coming.
+    uint64_t stretchLeft = 0, stretchThread = 0;
+    unsigned stretchLength = 256;
+    std::chrono::steady_clock::time_point lastNativeFault{};
     bool afterNative = false;
     uint64_t nativeFaults = 0;
     using namespace std::chrono;
     // Where the host thread's time goes besides guest code: in system calls, and in the scheduler,
     // which is also where it waits when no guest thread can run.
     steady_clock::duration scheduleTime{}, syscallTime{};
+    // Code without a translation run in place in native processes: instructions, and time in them.
+    uint64_t inPlaceInstructions = 0, inPlaceStretched = 0;
+    steady_clock::duration inPlaceTime{};
     std::array<std::pair<steady_clock::duration, uint64_t>, 512> syscallCost{};
     const auto timeReport = [&] {
         std::ostringstream out;
         out << "  host thread time: " << duration_cast<milliseconds>(syscallTime).count() << " ms in system calls, "
             << duration_cast<milliseconds>(scheduleTime).count() << " ms in the scheduler, of which "
             << duration_cast<milliseconds>(linux.idleTime).count() << " ms asleep in " << linux.idleWaits << " waits; "
-            << linux.threadSwitches << " thread switches; costliest calls:";
+            << linux.threadSwitches << " thread switches; interpreted in place " << inPlaceInstructions
+            << " instructions in " << duration_cast<milliseconds>(inPlaceTime).count() << " ms ("
+            << inPlaceInstructions / uint64_t(std::max<int64_t>(1, duration_cast<microseconds>(inPlaceTime).count()))
+            << " million a second), " << inPlaceStretched << " of them in stretches after a fault; costliest calls:";
         std::array<size_t, 8> top{};
         std::vector<size_t> order(syscallCost.size());
         for (size_t index = 0; index < order.size(); ++index) order[index] = index;
@@ -423,9 +436,13 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
         }
         // A run on a worker that has ended is looked at now, at the thread's next turn.
         auto taken = nativeExecution ? linux.takeNativeResult() : std::nullopt;
+        // The instruction native code left to the interpreter is interpreted, whatever it is.
+        bool leftToInterpreter = false;
         if (!taken && interpretNext) {
             interpretNext = false;
-        } else if (taken || (nativeExecution && linux.nativeAt(machine) && !(init && linux.hasChildEntryAt(cpu.pc)))) {
+            leftToInterpreter = true;
+        } else if (const bool stretching = stretchLeft && linux.threadId() == stretchThread;
+                   taken || (!stretching && nativeExecution && linux.nativeAt(machine) && !(init && linux.hasChildEntryAt(cpu.pc)))) {
             if (!taken && linux.offloadNative(machine)) continue;
             // A thread that waits in a system call comes back to its svc whenever the wait is tried
             // again. Entering native code there only to leave it at once costs more than the call.
@@ -471,6 +488,16 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
                     // An svc, or something else that the interpreter does in native code's place.
                     cpu.retired += 16;
                     interpretNext = true;
+                    // NESTVANE_NO_STRETCH=1 goes back to native code after one instruction, for comparison.
+                    static const bool stretches = !std::getenv("NESTVANE_NO_STRETCH");
+                    if (left == native::Exit::fault && stretches) {
+                        const auto now = steady_clock::now();
+                        const bool again = linux.threadId() == stretchThread && now - lastNativeFault < milliseconds(2);
+                        stretchLength = again ? std::min(stretchLength * 2, 65536U) : 256;
+                        stretchThread = linux.threadId();
+                        stretchLeft = stretchLength;
+                        lastNativeFault = now;
+                    }
                     break;
             }
             continue;
@@ -480,7 +507,9 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
             // one instruction that native code left to the interpreter. The library is run in a loop
             // of its own up to the next thing the code around this loop looks after: a system call,
             // the end of the thread's turn, translated code, a fault.
-            bool ran = false;
+            bool ran = false, stretchEnded = false;
+            const auto inPlaceStart = steady_clock::now();
+            const auto retiredBefore = cpu.retired;
             // Instructions are fetched from a window onto the code, looked up again when pc leaves
             // it: nothing in this loop changes the mappings (a system call ends it).
             uint64_t windowStart = 0, windowEnd = 0;
@@ -499,17 +528,41 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
                 }
                 if (!code) break;
                 std::memcpy(&word, code, sizeof(word));
+                // In translated code only on a stretch after a fault; and not for an exclusive or atomic
+                // access there, which other threads running natively beside this one would not see as one.
+                const bool translated = machine.space->hasCode(cpu.pc);
+                const bool forced = std::exchange(leftToInterpreter, false);
+                if (forced) {
+                    // as before: this one instruction, then on as below
+                } else if (translated) {
+                    const bool atomic = (word & 0x3f000000) == 0x08000000 || (word & 0x3b200c00) == 0x38200000;
+                    if (!stretchLeft || linux.threadId() != stretchThread || atomic) {
+                        if (stretchLeft && linux.threadId() == stretchThread) stretchEnded = true;
+                        stretchLeft = 0;
+                        break;
+                    }
+                    --stretchLeft;
+                    ++inPlaceStretched;
+                }
                 // The common instructions from their decoded form; the rest from the full interpreter,
                 // here too: going round the outer loop for each, through the scheduler and its checks,
                 // cost more than the instruction itself. A system call, or an instruction the
                 // interpreter does not have (false, nothing done), goes round, where the app gets SIGILL.
-                if (const auto& fast = fastWord(word); fast.kind != FastInstruction::none) executeFast(machine, fast, &dataWindows);
-                else if (word == 0xd4000001 || !executeStartupInstruction(machine, word)) break;
+                if (const auto& fast = fastWord(word); fast.kind != FastInstruction::none) {
+                    executeFast(machine, fast, &dataWindows);
+                } else if (word == 0xd4000001) {
+                    break;
+                } else if (!executeStartupInstruction(machine, word)) {
+                    // Translated code the interpreter does not have goes back to native code.
+                    if (translated && !forced) { stretchLeft = 0; stretchEnded = true; }
+                    break;
+                }
                 ran = true;
-                if (cpu.stop != Stop::running || !(cpu.retired & 4095) || !linux.hasSliceBudget(cpu.retired, 1) ||
-                    machine.space->hasCode(cpu.pc)) break;
+                if (cpu.stop != Stop::running || !(cpu.retired & 4095) || !linux.hasSliceBudget(cpu.retired, 1)) break;
             }
-            if (ran) continue;
+            inPlaceTime += steady_clock::now() - inPlaceStart;
+            inPlaceInstructions += cpu.retired - retiredBefore;
+            if (ran || stretchEnded) continue;
         }
         const auto* bytes = machine.readInstruction(cpu.pc);
         if (!bytes) {
