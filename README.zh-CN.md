@@ -70,6 +70,7 @@ Nestvane 走的是剩下的那条路：**把 Android 重新构建并提前翻译
 - **麦克风**：在 iOS 里允许之后，录音的 Android 应用拿到的是设备的麦克风。新功能，目前只看到 Android 开始录音这一步。
 - **应用里的网页**：系统里带了 AOSP 的 Android System WebView 128，和其他部分一样预先翻译。WebView 里打开一篇 Wikipedia 文章 4 到 8 秒。JavaScript 不用 JIT。
 - **内置 root，需要时打开**：默认关，在 Nestvane 的设置里打开；之后应用执行 `su` 时，iOS 弹窗问你是否允许，允许后拿到 root，回答可以在设置里改。
+- **清理后台**：长按 Nestvane 底栏的 Home 键，结束后台的应用、释放内存。
 - **设备的存储**：Android 的“存储空间”显示 Nestvane 所在卷的大小和剩余空间。
 
 ## 现在还不能做什么
@@ -127,7 +128,7 @@ Nestvane 走的是剩下的那条路：**把 Android 重新构建并提前翻译
 
 - iOS 17 及以上，内存不少于 6 GB 的 iPhone 或 iPad。在 iPhone 14（iOS 17）、iPhone 15 Pro、iPhone 17 Pro 和 iPad Air（M3）上测试过。
 - Android 需要约 2.3–2.6 GB 内存，超过 iPhone 11 给单个 App 的上限。
-- 手机越新跑得越快：iPhone 17 Pro 上开机约 7 秒，iPhone 15 Pro 上约 8 秒，iPhone 14 上 12–20 秒。
+- 手机越新跑得越快：iPhone 17 Pro 上开机约 7 秒，iPhone 15 Pro 上约 8 秒，iPhone 14 上 9–13 秒。
 - [Releases](https://github.com/atomsprout/nestvane/releases) 里有一个不带签名的 IPA，需要用你自己的 Apple 开发者身份签名，
   做法和可用的侧载工具见 [docs/zh-CN/installing.md](docs/zh-CN/installing.md)。Nestvane 没有上架 App Store。
 - **需要付费的 Apple Developer Program 会员（每年 99 美元）。** App 签名时必须带上两项能力：Extended Virtual Addressing

@@ -55,6 +55,7 @@ export const content = {
       ['Text messages you write', 'Send Text Message in Nestvane’s menu hands Android a sender and a text, and Messaging shows it as an incoming message. Apps that wait for an SMS, to read a code for example, receive it too. Nothing is sent to anyone.'],
       ['Web pages in apps', 'Android System WebView is part of the system, so apps that show web pages work: a Wikipedia article loads in a few seconds.'],
       ['Root, if you want it', 'Off until you turn it on in Nestvane’s settings. Then an app that asks for root with su gets it once you allow it, and you can change your answer later.'],
+      ['Clear background apps', 'Touch and hold Home in Nestvane’s bar to close the apps in the background and free their memory.'],
       ['Your device’s storage', 'Android’s Storage page shows how big your device’s storage is and how much of it is free.'],
       ['Update notice', 'Once a day Nestvane asks GitHub which release is the latest and tells you when there is a newer one. It installs nothing itself.'],
     ],
@@ -94,7 +95,7 @@ export const content = {
     requirementsTitle: 'Requirements',
     requirements: [
       'iOS 17 or later, on an iPhone or iPad with at least 6 GB of memory. Tested on iPhone 14 (iOS 17), iPhone 15 Pro, iPhone 17 Pro and iPad Air (M3).',
-      'The newer the phone, the faster Android runs: it starts in about 7 seconds on an iPhone 17 Pro, about 8 on an iPhone 15 Pro, and 12 to 20 on an iPhone 14.',
+      'The newer the phone, the faster Android runs: it starts in about 7 seconds on an iPhone 17 Pro, about 8 on an iPhone 15 Pro, and 9 to 13 on an iPhone 14.',
       'The app is a download of about 1.1 GB and uses about 2.4 to 2.6 GB of memory while Android runs.',
     ],
     thanksTitle: 'With thanks to two similar projects',

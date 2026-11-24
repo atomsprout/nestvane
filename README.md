@@ -81,6 +81,7 @@ for the app** gives that code the system it expects.
 - **Root, when you want it.** Off unless you turn it on in Nestvane's Settings; then an app that runs `su` gets root
   once you allow it in an iOS prompt, and the answer can be changed in Settings.
 - **The device's storage.** Android's Storage page shows the size of the volume Nestvane is on and what is free on it.
+- **Clearing background apps.** Touch and hold Home in Nestvane's bar to close the apps in the background.
 
 ## What does not work yet
 
@@ -140,7 +141,7 @@ On an iPhone 15 Pro unless noted. The running record, with every measurement, is
 
 - iOS 17 or later, on an iPhone or iPad with at least 6 GB of memory. Tested on iPhone 14 (iOS 17), iPhone 15 Pro, iPhone 17 Pro and iPad Air (M3).
 - Android needs about 2.3–2.6 GB of memory, more than an iPhone 11 gives one app.
-- The newer the phone, the faster it runs: Android starts in about 7 seconds on an iPhone 17 Pro, about 8 on an iPhone 15 Pro, and 12 to 20 on an iPhone 14.
+- The newer the phone, the faster it runs: Android starts in about 7 seconds on an iPhone 17 Pro, about 8 on an iPhone 15 Pro, and 9 to 13 on an iPhone 14.
 - The [releases](https://github.com/atomsprout/nestvane/releases) carry an IPA with no signature. You sign it
   with your own Apple developer identity; [docs/installing.md](docs/installing.md) says how, and which
   sideloading tools there are. Nestvane is not on the App Store.
