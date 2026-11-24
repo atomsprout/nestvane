@@ -10,7 +10,7 @@ else
 fi
 mkdir -p generated
 xcrun clang++ -O2 -std=c++20 -Wall -Wextra -Werror -Iruntime \
-    runtime/Runtime.cpp runtime/GuestSpace.cpp runtime/NativeCode.cpp runtime/NativeEntry.S runtime/NoNativeCode.cpp runtime/AArch64.cpp runtime/DynamicProbe.cpp runtime/ProbeLinux.cpp \
+    runtime/Runtime.cpp runtime/GuestSpace.cpp runtime/NativeCode.cpp runtime/NativeEntry.S runtime/NoNativeCode.cpp runtime/AArch64.cpp runtime/FastPath.cpp runtime/DynamicProbe.cpp runtime/ProbeLinux.cpp \
     runtime/ProbeData.cpp runtime/ProbeBinder.cpp runtime/Ext4.cpp tools/no-aot.cpp tools/probe-dynamic.cpp \
     -lsqlite3 -lresolv -o generated/probe-dynamic
 generated/probe-dynamic "$@"

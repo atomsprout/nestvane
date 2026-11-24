@@ -5,6 +5,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <sys/mman.h>
+#include <sys/mount.h>
 
 #include "BpfProgram.hpp"
 #include "BpfTypes.hpp"
@@ -516,6 +517,59 @@ void ProbeLinux::mount(std::string path, std::span<const uint8_t> bytes) {
 
 void ProbeLinux::alias(std::string path, std::string target) {
     links.emplace(std::move(path), Link{std::move(target), {}});
+}
+
+namespace {
+std::mutex rootPolicyLock;
+ProbeLinux::RootPolicy configuredRootPolicy;
+}
+
+void ProbeLinux::setRootPolicy(RootPolicy policy) {
+    std::lock_guard guard(rootPolicyLock);
+    configuredRootPolicy = std::move(policy);
+}
+
+ProbeLinux::RootPolicy ProbeLinux::rootPolicy() {
+    std::lock_guard guard(rootPolicyLock);
+    return configuredRootPolicy;
+}
+
+void ProbeLinux::addToyboxLinks() {
+    // Called while the root is being set up, before the system image is there to look in: a link
+    // to a command the image does have is the same program.
+    static constexpr std::string_view commands[] = {
+        "basename", "cat", "chgrp", "chmod", "chown", "cmp", "cp", "cut", "date", "dd", "df", "diff", "dirname",
+        "dmesg", "du", "echo", "env", "file", "find", "free", "getenforce", "getprop", "grep", "head",
+        "hostname", "id", "ifconfig", "kill", "killall", "ln", "log", "ls", "lsof", "md5sum", "mkdir", "mount",
+        "mv", "netstat", "nproc", "pgrep", "pidof", "pkill", "printf", "ps", "pwd", "readlink", "realpath",
+        "rm", "rmdir", "sed", "setenforce", "setprop", "sha256sum", "sleep", "sort", "stat", "tail", "tar",
+        "tee", "timeout", "top", "touch", "tr", "umount", "uname", "uptime", "wc", "which", "whoami", "xargs"};
+    for (const auto command : commands) {
+        auto path = "/system/bin/" + std::string(command);
+        if (!links.contains(path)) alias(std::move(path), "/system/bin/toybox");
+    }
+}
+
+void ProbeLinux::enableRoot() {
+    rootOn = true;
+    alias("/system/bin/su", "/system/bin/sh");
+    if (!find("/system/xbin", 0)) addDirectory("/system/xbin", 0755);
+    alias("/system/xbin/su", "/system/bin/sh");
+}
+
+std::string ProbeLinux::packageOfUid(uint32_t uid) const {
+    const auto list = find("/data/system/packages.list", 0);
+    if (!list) return {};
+    const auto bytes = list->contents();
+    std::istringstream lines(std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+    std::string line;
+    while (std::getline(lines, line)) {
+        std::istringstream fields(line);
+        std::string package;
+        uint64_t owner = 0;
+        if ((fields >> package >> owner) && owner == uid % 100000) return package;
+    }
+    return {};
 }
 
 std::string ProbeLinux::absolutePath(std::string_view path) const {
@@ -1140,6 +1194,61 @@ std::string ProbeLinux::mountList(const MountNamespace& group) {
     return list;
 }
 
+namespace {
+ProbeLinux::HostVolume statfsVolume() {
+    struct statfs status{};
+    const char* home = std::getenv("HOME");
+    if (::statfs(home && *home ? home : "/", &status) != 0) return {};
+    return {uint64_t(status.f_blocks) * status.f_bsize, uint64_t(status.f_bavail) * status.f_bsize};
+}
+std::atomic<ProbeLinux::HostVolume (*)()> hostVolumeSource{statfsVolume};
+}
+
+void ProbeLinux::setHostVolumeSource(HostVolume (*source)()) {
+    hostVolumeSource = source ? source : statfsVolume;
+}
+
+// Asked at most once every few seconds: statfs asks for every library the linker opens, and the
+// question to iOS is not free. Each new answer has a new generation.
+ProbeLinux::HostVolume ProbeLinux::hostVolume() {
+    static std::mutex lock;
+    static HostVolume cached;
+    static std::chrono::steady_clock::time_point asked;
+    static HostVolume (*askedSource)() = nullptr;
+    static uint64_t generation = 0;
+    std::lock_guard guard(lock);
+    const auto now = std::chrono::steady_clock::now();
+    const auto source = hostVolumeSource.load();
+    if (source != askedSource || now - asked > std::chrono::seconds(5) || !cached.total) {
+        cached = source();
+        cached.generation = ++generation;
+        asked = now;
+        askedSource = source;
+    }
+    return cached;
+}
+
+// What was free when the host was last asked, less what /data has grown by since: the host's number
+// only catches up with the guest's writes at the next ask.
+// A volume holds a little more than the size it is sold as, and Android rounds a total up to the next
+// power of two: 128 GB and a bit showed as 256 GB. Within 5% above a size, the size is what is shown.
+static uint64_t nominalCapacity(uint64_t bytes) {
+    for (uint64_t size = 16'000'000'000ULL; size <= 64'000'000'000'000ULL; size *= 2)
+        if (bytes > size && bytes <= size + size / 20) return size;
+    return bytes;
+}
+
+uint64_t ProbeLinux::persistentLimit(uint64_t used) const {
+    const auto volume = hostVolume();
+    // No answer from the host: the old fixed budget.
+    if (!volume.total) return maxTransientBytes;
+    if (volume.generation != volumeGeneration) {
+        volumeGeneration = volume.generation;
+        volumeUsed = used;
+    }
+    return volumeUsed + (volume.available > hostReserveBytes ? volume.available - hostReserveBytes : 0);
+}
+
 uint64_t ProbeLinux::writableAllocation(bool persistent) const {
     uint64_t bytes = 0;
     for (const auto& [path, file] : writableFiles) {
@@ -1178,8 +1287,12 @@ uint64_t ProbeLinux::statFilesystem(Machine& machine, uint64_t address, std::str
         stat[5] = view->ext4->nodes.size();
     }
     if (dataPath(backingPath(path))) {
-        stat[2] = maxWritableBytes / pageSize;
-        stat[3] = stat[4] = (maxWritableBytes - writableAllocation(true)) / pageSize;
+        // The host's volume: Settings shows its size and what is free, as the device's own Settings does.
+        const auto volume = hostVolume();
+        const auto used = writableAllocation(true);
+        const auto limit = persistentLimit(used);
+        stat[2] = (volume.total ? nominalCapacity(volume.total) : limit) / pageSize;
+        stat[3] = stat[4] = (limit - std::min(limit, used)) / pageSize;
         const auto filesUsed = std::ranges::count_if(writableFiles, [](const auto& entry) {
             return entry.second->persistent;
         });
@@ -1661,7 +1774,8 @@ uint64_t ProbeLinux::resize(const WritableFile& file, uint64_t size) {
         } else {
             allocated = writableAllocation(file.persistent);
         }
-        const auto limit = file.memoryFile ? std::max(maxWritableBytes, memoryLimit / 2) : maxWritableBytes;
+        const auto limit = file.memoryFile ? std::max(maxTransientBytes, memoryLimit / 2)
+                         : file.persistent ? persistentLimit(allocated) : maxTransientBytes;
         if (pages - file.storage->pages.size() + allocated > limit) return uint64_t(-28);
     }
     const uint64_t before = file.storage->pages.size();
@@ -6130,6 +6244,13 @@ uint64_t ProbeLinux::writeDescriptor(Machine& machine, const Descriptor& fd, uin
             if (!(query >> std::hex >> mask) || (query >> trailing)) return invalid;
             const auto access = accessClasses.find(type);
             if (access == accessClasses.end() || !mask || (mask & ~access->second.mask)) return uint64_t(-95);
+            // Root's shell may do anything.
+            if (source == rootContext) {
+                std::ostringstream reply;
+                reply << std::hex << access->second.mask << " ffffffff 0 0 1 0";
+                *fd.securityReply = reply.str();
+                return size;
+            }
             auto decision = access->second.decisions.find({source, object});
             if (decision == access->second.decisions.end() && access->second.applicationService &&
                 validAppProcessContext(source)) {
@@ -6159,8 +6280,8 @@ uint64_t ProbeLinux::writeDescriptor(Machine& machine, const Descriptor& fd, uin
         const auto& subject = current->process->context;
         const auto decision = access.decisions.find({subject, subject});
         uint32_t allowed = 0;
-        if (decision == access.decisions.end() ||
-            !(std::istringstream(decision->second) >> std::hex >> allowed) || !(allowed & (socket ? socketCreatePermission : fsCreatePermission)))
+        if (subject != rootContext && (decision == access.decisions.end() ||
+            !(std::istringstream(decision->second) >> std::hex >> allowed) || !(allowed & (socket ? socketCreatePermission : fsCreatePermission))))
             return uint64_t(-13);
         std::string_view label;
         if (size) {
@@ -6521,11 +6642,22 @@ bool ProbeLinux::switchThread(Machine& machine, std::chrono::steady_clock::time_
             runnable = true;
         }
     };
+    // Until the home screen is shown, apps the user installed run only when nothing of Android's own
+    // can: their start at BOOT_COMPLETED (a chat app's sync, say) used to take the CPU from the boot.
+    const bool holdApps = appsHeld.load(std::memory_order_relaxed) && now < appsHeldUntil;
+    if (!holdApps && appsHeld.load(std::memory_order_relaxed)) appsHeld = false;
+    const auto held = [&](const Thread& thread) {
+        return holdApps && thread.process->context.starts_with("u:r:untrusted_app");
+    };
     const auto pickNext = [&]() -> bool {
         auto next = threads.upper_bound(currentTid);
-        for (size_t tested = 0; tested < threads.size(); ++tested) {
+        bool skippedHeld = false;
+        for (size_t tested = 0; tested < 2 * threads.size(); ++tested) {
             if (next == threads.end()) next = threads.begin();
             if (next->second.wait != Wait::none || next->second.nextSliceAfter) { ++next; continue; }
+            // The first round passes over held apps; the second takes them, when nothing else could run.
+            if (tested < threads.size() && held(next->second)) { skippedHeld = true; ++next; continue; }
+            if (tested >= threads.size() && !skippedHeld) break;
             if (next->first != currentTid) {
                 ++threadSwitches;
                 accountGuestCpu();
@@ -6642,8 +6774,13 @@ bool ProbeLinux::suspendChild() {
 bool ProbeLinux::forkProcess(Machine& machine) {
     auto& cpu = machine.cpu;
     auto& x = cpu.x;
-    // Bionic fork uses SIGCHLD, CLONE_CHILD_SETTID and CLONE_CHILD_CLEARTID.
-    if (x[0] != 0x1200011 || x[1]) return false;
+    // Bionic fork uses SIGCHLD, CLONE_CHILD_SETTID and CLONE_CHILD_CLEARTID. vfork uses CLONE_VM and
+    // CLONE_VFORK, and Java's Runtime.exec and ProcessBuilder start every program with it: here the
+    // child gets a copy-on-write copy as from fork, which is all a child that only sets up and execs
+    // needs, and the parent goes on at once.
+    constexpr uint64_t cloneVm = 0x100, cloneVfork = 0x4000, childSetTid = 0x1000000, childClearTid = 0x200000;
+    const bool vfork = (x[0] & ~uint64_t(0xff)) == (cloneVm | cloneVfork) && (x[0] & 0xff) == 17;
+    if (!vfork && (x[0] != 0x1200011 || x[1])) return false;
     const auto retry = [&](std::string_view reason, uint64_t requested, int mappingError = 0) {
         if (androidLogObserver) {
             std::ostringstream event;
@@ -6727,18 +6864,19 @@ bool ProbeLinux::forkProcess(Machine& machine) {
     child.nice = current->nice;
     child.name = current->name;
     child.alternateStack = current->alternateStack;
-    child.clearTid = x[4];
+    child.clearTid = x[0] & childClearTid ? x[4] : 0;
     child.saved = cpu;
     child.saved.output.clear();
     child.saved.pc += 4;
     child.saved.x[0] = 0;
     child.saved.exclusiveSize = 0;
+    if (vfork && x[1]) child.saved.sp = x[1];
     // The child TID is written only to its private memory view.
     auto parent = std::move(machine.segments);
     auto parentSpace = std::move(machine.space);
     machine.segments = std::move(child.process->segments);
     machine.space = childSpace;
-    const bool wrote = writeGuest(machine, x[4], uint32_t(nextTid));
+    const bool wrote = !(x[0] & childSetTid) || writeGuest(machine, x[4], uint32_t(nextTid));
     child.process->segments = std::move(machine.segments);
     machine.segments = std::move(parent);
     machine.space = std::move(parentSpace);
@@ -7450,6 +7588,22 @@ bool ProbeLinux::execProcess(Machine& machine) {
     const auto filename = readPath(machine, x[0]);
     if (!filename) { x[0] = uint64_t(-14); return true; }
     if (filename->empty()) { x[0] = uint64_t(-2); return true; }
+    // Built-in root: su is the shell, started with root's credentials for an app the person allowed.
+    bool becomesRoot = false;
+    if (rootOn) {
+        const auto requested = absolutePath(*filename);
+        if (requested == "/system/bin/su" || requested == "/system/xbin/su") {
+            const auto uid = current->process->userIds[0];
+            const int decision = uid == 0 ? 1 : rootDecision ? rootDecision(uid, packageOfUid(uid)) : 0;
+            if (decision < 0) {
+                // The person has not answered yet: the start is tried again in a moment.
+                current->hostEventRetry = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+                return waitForEvents();
+            }
+            if (!decision) { x[0] = uint64_t(-13); return true; }
+            becomesRoot = true;
+        }
+    }
     const auto hasSiblings = std::any_of(threads.begin(), threads.end(), [&](const auto& entry) {
         return entry.first != currentTid && entry.second.process == current->process && entry.second.wait != Wait::exited;
     });
@@ -7492,6 +7646,35 @@ bool ProbeLinux::execProcess(Machine& machine) {
         if (!interpreter) { x[0] = uint64_t(-2); return true; }
         std::vector<std::string> arguments;
         if (!argv.empty()) arguments.assign(std::next(argv.begin()), argv.end());
+        if (becomesRoot) {
+            // What su takes and the shell does not: the user to become (root is the only one here)
+            // and the options of the common su programs. "-c <command>" is the shell's own.
+            std::vector<std::string> shell;
+            bool command = false;
+            for (auto& argument : arguments) {
+                if (command) { shell.push_back(std::move(argument)); continue; }
+                if (argument == "-c" || argument == "--command") { shell.push_back("-c"); command = true; continue; }
+                if (argument == "-" || argument == "-l" || argument == "--login" || argument == "-m" ||
+                    argument == "-p" || argument == "--preserve-environment" || argument == "-mm" ||
+                    argument == "--mount-master" || argument == "root" || argument == "0") continue;
+                if (argument.starts_with("--")) continue;
+                shell.push_back(std::move(argument));
+            }
+            arguments = std::move(shell);
+            auto& process = *current->process;
+            process.userIds.fill(0);
+            process.groupIds.fill(0);
+            process.groups = {0};
+            // An app's bounding set is empty (zygote drops it): root's shell gets every capability back,
+            // as su gives them, so that it can read and change any app's files.
+            process.capabilityBound = Process::allCapabilities;
+            process.inheritableCaps = Process::allCapabilities;
+            process.secureBits = 0;
+            process.pendingContext = std::string(rootContext);
+            current->seccomp.reset();
+            current->noNewPrivileges = false;
+            if (androidLogObserver) androidLogObserver("Nestvane: root granted to uid " + std::to_string(current->process->userIds[1]));
+        }
         auto image = loadDynamicELF(executableBytes, interpreter->contents(), executablePath, interpreterPath,
                                     std::move(arguments), userId());
         image.startup->argv0 = argv.empty() ? std::string{} : argv.front();
@@ -11612,6 +11795,13 @@ bool ProbeLinux::syscall(Machine& machine) {
                 const auto size = fd.temporary ? fd.temporary->storage->size : fd.contentSize();
                 x[0] = fd.pathOnly() ? uint64_t(-9) :
                     writeGuest(machine, x[2], uint32_t(size - *fd.offset)) ? 0 : uint64_t(-14);
+                break;
+            }
+            // How much a pipe holds: Java's Process streams ask (available()) before they read a child's
+            // output. Without it the asking thread was suspended, and Runtime.exec never returned.
+            if (x[1] == 0x541b && descriptor->second.pipe && descriptor->second.node == Node::pipeRead) {
+                x[0] = writeGuest(machine, x[2], uint32_t(std::min<size_t>(descriptor->second.pipe->data.size(), INT32_MAX)))
+                     ? 0 : uint64_t(-14);
                 break;
             }
             if (descriptor->second.node == Node::touchDevice) x[0] = touchIoctl(machine, descriptor->second);

@@ -1065,6 +1065,59 @@ size_t Machine::searchSegment(uint64_t address, size_t size, unsigned flags, siz
     return hint;
 }
 
+bool Machine::codeWindow(uint64_t address, uint64_t& start, uint64_t& end, const uint8_t*& base) const {
+    constexpr unsigned writableFlag = 2;
+    size_t hint = codeHint;
+    const auto index = findSegment(address, sizeof(uint32_t), executable, hint);
+    if (index == segments.size()) return false;
+    const auto& segment = segments[index];
+    if (segment.flags & writableFlag) return false;
+    if (segment.imageView || (!segment.shared && !segment.anonymousPages)) {
+        start = segment.address;
+        end = segment.address + (segment.accessibleSize() & ~uint64_t{3});
+        base = segment.imageView ? segment.imageView : segment.data();
+        return end > start;
+    }
+    // Pages of their own: the page at `address`, which is contiguous.
+    const uint64_t page = address & ~(pageSize - 1);
+    if (!segment.contains(page, pageSize)) return false;
+    const auto* bytes = read(page, pageSize, executable);
+    if (!bytes) return false;
+    start = page;
+    end = page + pageSize;
+    base = bytes;
+    return true;
+}
+
+bool Machine::dataWindow(uint64_t address, bool forWrite, uint64_t& start, uint64_t& end, uint8_t*& base) const {
+    if (dataAddress(address) != address) return false;
+    size_t hint = dataHint;
+    const auto index = findSegment(address, 1, forWrite ? writable : readable, hint);
+    if (index == segments.size()) return false;
+    const auto& segment = segments[index];
+    const auto limit = segment.address + segment.accessibleSize();
+    if (segment.anonymousPages && segment.anonymousPages->guestSpace() && !segment.shared) {
+        const auto& guestSpace = *segment.anonymousPages->guestSpace();
+        // Guest address of the store at `address`, and the 1 MiB chunk it is in: host memory is
+        // contiguous within a chunk, and a chunk has host pages behind it as a whole.
+        const auto toStore = segment.anonymousPages->guestBase() + segment.fileOffset - segment.address;
+        const auto stored = address + toStore;
+        if (!guestSpace.backed(stored)) return false;
+        const auto chunkStart = stored & ~(GuestSpace::chunk - 1);
+        start = std::max(segment.address, chunkStart - toStore);
+        end = std::min(limit, chunkStart + GuestSpace::chunk - toStore);
+        base = guestSpace.host(start + toStore);
+        return base && end > start;
+    }
+    if (!forWrite && !(segment.flags & writable) && (segment.imageView || (!segment.shared && !segment.anonymousPages))) {
+        start = segment.address;
+        end = limit;
+        base = const_cast<uint8_t*>(segment.imageView ? segment.imageView : segment.data());
+        return end > start;
+    }
+    return false;
+}
+
 const uint8_t* Machine::read(uint64_t address, size_t size, unsigned flags,
                              std::vector<uint8_t>& scratch) const {
     if (const auto* bytes = read(address, size, flags)) return bytes;

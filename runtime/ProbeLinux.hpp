@@ -19,7 +19,9 @@
 #include <unordered_map>
 #include <mutex>
 #include <condition_variable>
+#include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <functional>
 #include <map>
 #include <set>
@@ -184,6 +186,30 @@ struct ProbeLinux {
     // The call that is about to wait does so for a host socket, which cannot wake it: it looks again soon.
     bool hostSocketWait = false;
     std::function<void(std::string_view)> androidLogObserver, watchdogObserver;
+    // Built-in root, off unless the person turns it on. Then /system/bin/su and /system/xbin/su are
+    // the shell, and starting one gives the app root once rootDecision allows it: 1 allows, 0 refuses,
+    // -1 is no answer yet (the start waits for one). Root's shell runs in rootContext, which SELinux
+    // allows everything, without the app's seccomp filter.
+    void enableRoot();
+    // The commands that are toybox under other names (ls, id, cp, ps...): the image has toybox but
+    // not its links, and apps that run a command, as root or not, expect them in /system/bin.
+    void addToyboxLinks();
+    // What the app has set for the next start of Android: whether root is on, and who decides.
+    struct RootPolicy {
+        bool enabled = false;
+        std::function<int(uint32_t uid, const std::string& package)> decision;
+    };
+    static void setRootPolicy(RootPolicy policy);
+    static RootPolicy rootPolicy();
+    bool rootEnabled() const { return rootOn; }
+    std::function<int(uint32_t uid, const std::string& package)> rootDecision;
+    static constexpr std::string_view rootContext = "u:r:su:s0";
+    // The package that has a uid, from Android's own list; "" for none.
+    std::string packageOfUid(uint32_t uid) const;
+    // Apps the user installed run only when nothing else can, until the home screen is shown (the
+    // starter clears this) or a minute has passed. NESTVANE_HOLD_APPS=0 turns it off.
+    std::atomic_bool appsHeld{!std::getenv("NESTVANE_HOLD_APPS") || std::string_view(std::getenv("NESTVANE_HOLD_APPS")) != "0"};
+    std::chrono::steady_clock::time_point appsHeldUntil = std::chrono::steady_clock::now() + std::chrono::seconds(60);
     size_t exportFiles(ProbeLinux& reader, std::string_view prefix) const;
     bool exportExt4Mount(ProbeLinux& reader, std::string_view path) const;
     std::span<const uint8_t> bootGuestFile(std::string_view path) const;
@@ -819,8 +845,22 @@ private:
     bool compactData = false;
     int64_t dataGeneration = 0;
     static constexpr uint64_t maxDataFileBytes = 1024ULL * 1024 * 1024;
-    // Persistent data and transient filesystem writes each have their own budget.
-    static constexpr uint64_t maxWritableBytes = 8192ULL * 1024 * 1024;
+    // Transient filesystem writes (tmpfs and the like, kept in memory) have a fixed budget. Persistent data
+    // has the host's: Android sees the volume the app is on, its size and what is free on it for the app
+    // (less a reserve, so that Android never fills the device).
+    static constexpr uint64_t maxTransientBytes = 8192ULL * 1024 * 1024;
+    static constexpr uint64_t hostReserveBytes = 1024ULL * 1024 * 1024;
+public:
+    struct HostVolume { uint64_t total = 0, available = 0, generation = 0; };
+    // Where the volume's numbers come from. By default statfs of $HOME; the iOS app sets the one that
+    // asks for the space available for important use, the number the device's Settings shows.
+    static void setHostVolumeSource(HostVolume (*source)());
+    static HostVolume hostVolume();
+private:
+    // What the persistent data may grow to: what it uses now and what is free on the host.
+    uint64_t persistentLimit(uint64_t used) const;
+    mutable uint64_t volumeGeneration = 0, volumeUsed = 0;
+    bool rootOn = false;
     // How many files and directories the guest's data may hold. With some thirty apps installed the
     // earlier limits (4096 files, 2048 directories) were reached, and Android could start no new app:
     // zygote could not make the app's profile directory and aborted.

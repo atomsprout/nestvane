@@ -124,6 +124,8 @@ void ProbeLinux::mountData(const std::string& databasePath) {
     decltype(links) loadedLinks;
     std::set<uint64_t> inodes;
     uint64_t bytesTotal = 0, nextPersistentInode = nextInode;
+    // What is already stored is loaded whatever is free now: only more than the whole volume is wrong.
+    const uint64_t maxWritableBytes = std::max(maxTransientBytes, hostVolume().total);
     unsigned count = 0;
     int result = 0;
     while ((result = sqlite3_step(records.get())) == SQLITE_ROW) {

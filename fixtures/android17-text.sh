@@ -12,7 +12,8 @@
 # the phone is hot. The display keeps its rate; Android draws every second or fourth frame. 0 puts
 # back what the system image sets.
 #
-# "launch", package name: opens that app, as tapping its icon does. The app's tests use it.
+# "launch", package name: opens that app, as tapping its icon does; or an action of Settings, which
+# opens that page. The app's tests use it.
 #
 # "uninstall", package name: removes that app, as dragging its icon to Uninstall does. For tests.
 #
@@ -50,6 +51,13 @@ while true; do
         esac
         ;;
     launch)
+        # An action of Settings opens that page, such as android.settings.INTERNAL_STORAGE_SETTINGS.
+        case "$sender" in
+        android.settings.*)
+            /system/bin/cmd activity start-activity -a "$sender" > /dev/null 2>&1
+            continue
+            ;;
+        esac
         activity=$(/system/bin/cmd package resolve-activity --brief -c android.intent.category.LAUNCHER "$sender" 2> /dev/null | /system/bin/toybox tail -n 1)
         /system/bin/toybox log -t Nestvane "launch $sender: $activity"
         case "$activity" in

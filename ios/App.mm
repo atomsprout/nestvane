@@ -10,6 +10,7 @@
 #include "GuestAudio.hpp"
 #include "GuestBattery.hpp"
 #include "DynamicProbe.hpp"
+#include "ProbeLinux.hpp"
 #include "GfxstreamPipe.hpp"
 #include "CodePrefetch.hpp"
 #include "GfxstreamSession.hpp"
@@ -392,6 +393,10 @@ void AppendMemoryUsage(std::string& report) {
 // the overlay in fixtures/overlay-framework lifts its default of 60. NESTVANE_DISPLAY_HZ, when the app
 // was launched with it, overrides both; Android reads the rate once, as it starts.
 static NSString* const Display120HzKey = @"Display120Hz";
+// Built-in root: whether it is on (from the next start of Android), and each app's answer, kept as
+// RootGrantPrefix + package name. Apps are asked the first time they start su.
+static NSString* const RootEnabledKey = @"RootEnabled";
+static NSString* const RootGrantPrefix = @"RootGrant:";
 static NSInteger GuestDisplayRate() {
     static const NSInteger launchedWith = std::atoi(getenv("NESTVANE_DISPLAY_HZ") ?: "");
     if (launchedWith) return launchedWith;
@@ -923,6 +928,55 @@ static void FollowGuestAudio() {
 }
 @end
 
+static NSString* RootFooter() {
+    return @"Apps in Android can then ask for root with su, and each one is asked about once. An app with root can read and change "
+           @"every app's data. It takes effect the next time Android starts. Below are the apps that have asked; turn one off to refuse it.";
+}
+
+// A switch for each app that has asked for root.
+static NSArray<NSDictionary*>* RootGrantRows() {
+    NSMutableArray* rows = [NSMutableArray array];
+    NSArray* keys = [NSUserDefaults.standardUserDefaults.dictionaryRepresentation.allKeys sortedArrayUsingSelector:@selector(compare:)];
+    for (NSString* key in keys) {
+        if (![key hasPrefix:RootGrantPrefix]) continue;
+        [rows addObject:@{@"symbol": @"app", @"title": [key substringFromIndex:RootGrantPrefix.length], @"detail": @"",
+                          @"url": @"", @"switch": key}];
+    }
+    return rows;
+}
+
+// Asks the person whether an app may have root, once at a time for each app. The answer is kept.
+static void AskForRoot(NSString* name) {
+    static NSMutableSet<NSString*>* asking = [NSMutableSet set];
+    @synchronized (asking) {
+        if ([asking containsObject:name]) return;
+        [asking addObject:name];
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIViewController* top = nil;
+        for (UIScene* scene in UIApplication.sharedApplication.connectedScenes) {
+            if (![scene isKindOfClass:UIWindowScene.class]) continue;
+            for (UIWindow* window in static_cast<UIWindowScene*>(scene).windows)
+                if (window.isKeyWindow) top = window.rootViewController;
+        }
+        while (top.presentedViewController) top = top.presentedViewController;
+        const auto answer = ^(BOOL allowed) {
+            [NSUserDefaults.standardUserDefaults setBool:allowed forKey:[RootGrantPrefix stringByAppendingString:name]];
+            @synchronized (asking) { [asking removeObject:name]; }
+        };
+        UIAlertController* alert = [UIAlertController alertControllerWithTitle:@"Allow root?"
+            message:[NSString stringWithFormat:@"%@ asks for root. With root it can read and change every app's data in Android. "
+                                                @"You can change this later in Settings.", name]
+            preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"Don't Allow" style:UIAlertActionStyleCancel
+                                                handler:^(UIAlertAction*) { answer(NO); }]];
+        [alert addAction:[UIAlertAction actionWithTitle:@"Allow" style:UIAlertActionStyleDestructive
+                                                handler:^(UIAlertAction*) { answer(YES); }]];
+        if (top) [top presentViewController:alert animated:YES completion:nil];
+        else @synchronized (asking) { [asking removeObject:name]; }
+    });
+}
+
 // The app's settings: what it is and which version, where Android's shared files are, and where to
 // find the people who make it. Reached from the More menu.
 @interface SettingsViewController : UITableViewController
@@ -958,6 +1012,9 @@ static void FollowGuestAudio() {
               arrayByAddingObjectsFromArray:[(fast ? @[@{@"symbol": @"gauge.with.dots.needle.67percent", @"title": @"120 Hz",
                                                         @"detail": @"", @"url": @"", @"switch": Display120HzKey}] : @[])
               arrayByAddingObject:row(@"folder", @"Shared files", @"Open in Files", files)]]},
+        @{@"title": @"Root", @"footer": RootFooter(),
+          @"rows": [@[@{@"symbol": @"lock.open", @"title": @"Allow root", @"detail": @"", @"url": @"", @"switch": RootEnabledKey}]
+              arrayByAddingObjectsFromArray:RootGrantRows()]},
         @{@"title": @"Updates", @"footer": @"Once a day Nestvane asks GitHub which version is the latest. It does not install anything itself.",
           @"rows": [(AvailableUpdate() ? @[row(@"arrow.down.circle", [NSString stringWithFormat:@"Version %@ available", AvailableUpdate()],
                                                @"See the release", UpdateReleaseAddress)] : @[])
@@ -2071,7 +2128,37 @@ static void FollowGuestAudio() {
 @implementation AppDelegate
 @end
 
+// Android's storage is the device's: the size of the volume the app is on and the space iOS has for
+// important use on it, the numbers the device's Settings shows (statfs leaves out purgeable space).
+static nestvane::ProbeLinux::HostVolume deviceVolume() {
+    @autoreleasepool {
+        // A new URL each time: resource values are cached on the URL.
+        NSURL* home = [NSURL fileURLWithPath:NSHomeDirectory() isDirectory:YES];
+        NSDictionary* values = [home resourceValuesForKeys:@[NSURLVolumeTotalCapacityKey,
+                                                             NSURLVolumeAvailableCapacityForImportantUsageKey]
+                                                     error:nil];
+        NSNumber* total = values[NSURLVolumeTotalCapacityKey];
+        NSNumber* available = values[NSURLVolumeAvailableCapacityForImportantUsageKey];
+        if (!total || !available || available.longLongValue < 0) return {};
+        return {total.unsignedLongLongValue, available.unsignedLongLongValue};
+    }
+}
+
 int main(int argc, char* argv[]) {
+    nestvane::ProbeLinux::setHostVolumeSource(deviceVolume);
+    // NESTVANE_TEST_ROOT=allow or =deny answers for every app without asking, for the app's tests.
+    nestvane::ProbeLinux::setRootPolicy({
+        [NSUserDefaults.standardUserDefaults boolForKey:RootEnabledKey] || getenv("NESTVANE_TEST_ROOT"),
+        [](uint32_t uid, const std::string& package) -> int {
+            if (const char* test = getenv("NESTVANE_TEST_ROOT")) return std::string_view(test) == "allow" ? 1 : 0;
+            @autoreleasepool {
+                NSString* name = package.empty() ? [NSString stringWithFormat:@"uid %u", uid] : @(package.c_str());
+                NSNumber* answer = [NSUserDefaults.standardUserDefaults objectForKey:[RootGrantPrefix stringByAppendingString:name]];
+                if (answer) return answer.boolValue ? 1 : 0;
+                AskForRoot(name);
+                return -1;
+            }
+        }});
     @autoreleasepool {
         return UIApplicationMain(argc, argv, nil, NSStringFromClass(AppDelegate.class));
     }

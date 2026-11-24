@@ -1,0 +1,14 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="dev.nestvane.root">
+    <uses-sdk android:minSdkVersion="23" android:targetSdkVersion="37" />
+    <!-- Asks for root the way root apps do, with su, and shows and logs what it got: the output of
+         "su -c id", and whether it can read another app's private data. For testing built-in root. -->
+    <application android:label="AAA Root Test" android:theme="@android:style/Theme.Material.Light.NoActionBar"
+                 android:allowBackup="false">
+        <activity android:name=".MainActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

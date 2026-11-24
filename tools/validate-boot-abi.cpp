@@ -7370,7 +7370,10 @@ int main() {
                 assert(freeBlocks == load(fsStat + 4 * sizeof(uint64_t)));
                 return freeBlocks;
             };
+            // What is free for /data is what is free on the host's volume, less a reserve.
+            ProbeLinux::setHostVolumeSource([] { return ProbeLinux::HostVolume{64ULL << 30, 5ULL << 30}; });
             const auto initialFree = dataFreeBlocks();
+            assert(initialFree == (4ULL << 30) / pageSize);
             for (unsigned i = 0; i < 8192; ++i) {
                 const auto path = "/metadata/" + std::to_string(i);
                 put(base, path.c_str());
@@ -7386,6 +7389,15 @@ int main() {
             const auto persistent = invoke(quota, 56, {cwd, base, 0xc1, 0600});
             assert(persistent < 256 && invoke(quota, 46, {persistent, pageSize}) == 0);
             assert(dataFreeBlocks() + 1 == initialFree);
+            // Almost nothing free on the host: /data cannot grow past it.
+            ProbeLinux::setHostVolumeSource([] {
+                return ProbeLinux::HostVolume{64ULL << 30, (1ULL << 30) + 4 * 16384};
+            });
+            assert(dataFreeBlocks() == 4 * 16384 / pageSize);
+            assert(invoke(quota, 46, {persistent, pageSize + 4 * 16384}) == 0);
+            assert(dataFreeBlocks() == 0);
+            assert(invoke(quota, 46, {persistent, pageSize + 4 * 16384 + pageSize}) == uint64_t(-28));
+            ProbeLinux::setHostVolumeSource(nullptr);
             assert(invoke(quota, 57, {persistent}) == 0 && quota.syncData());
         }
         {
@@ -7843,10 +7855,18 @@ int main() {
         constexpr char rootLabel[] = "u:object_r:system_data_root_file:s0";
         assert(invoke(writer, 9, {firstPath, payload, base + 0x480, 128}) == sizeof(rootLabel));
         assert(std::memcmp(machine.read(base + 0x480, sizeof(rootLabel), 4), rootLabel, sizeof(rootLabel)) == 0);
+        // /data shows the host's volume: its size, and what is free on it less a reserve of 1 GiB.
+        ProbeLinux::setHostVolumeSource([] { return ProbeLinux::HostVolume{128ULL << 30, 21ULL << 30}; });
         assert(invoke(writer, 43, {firstPath, base + 0x450}) == 0);
         const auto quotaBlocks = load(base + 0x460);
-        assert(quotaBlocks == (8192ULL * 1024 * 1024) / pageSize);  // ProbeLinux::maxWritableBytes
-        assert(load(base + 0x468) == quotaBlocks && load(base + 0x470) == quotaBlocks);
+        assert(quotaBlocks == (128ULL << 30) / pageSize);
+        const auto freeBlocks = load(base + 0x468);
+        assert(freeBlocks == load(base + 0x470));
+        assert(freeBlocks <= (20ULL << 30) / pageSize && freeBlocks > (19ULL << 30) / pageSize);
+        ProbeLinux::setHostVolumeSource([] { return ProbeLinux::HostVolume{128ULL << 30, 9ULL << 30}; });
+        assert(invoke(writer, 43, {firstPath, base + 0x450}) == 0);
+        assert(load(base + 0x468) <= (8ULL << 30) / pageSize && load(base + 0x468) > (7ULL << 30) / pageSize);
+        ProbeLinux::setHostVolumeSource(nullptr);
         constexpr auto markerName = base + 0x530, markerValue = base + 0x590;
         put(markerName, "user.restorecon_in_progress");
         assert(machine.store64(markerValue, 1));
@@ -8197,6 +8217,14 @@ int main() {
     assert(call(62, {memoryFile, pageSize, 0}) == pageSize);
     assert(call(29, {memoryFile, 0x541b, base + 0x400}) == 0 && load(base + 0x400) == 3 * 1024 * 1024 - pageSize);
     assert(call(29, {memoryFile, 0x541b, 0xdead}) == uint64_t(-14));
+    // FIONREAD on a pipe: what it holds, as Java's Process streams ask before they read.
+    assert(call(59, {base + 0x408, 0}) == 0);
+    const auto pipeRead = uint32_t(load(base + 0x408)), pipeWrite = uint32_t(load(base + 0x408) >> 32);
+    put(base + 0x420, "plain");
+    assert(call(64, {pipeWrite, base + 0x420, 5}) == 5);
+    assert(machine.store64(base + 0x400, 0));
+    assert(call(29, {pipeRead, 0x541b, base + 0x400}) == 0 && uint32_t(load(base + 0x400)) == 5);
+    assert(call(57, {pipeRead}) == 0 && call(57, {pipeWrite}) == 0);
     const auto mappedMemoryFile = call(222, {0, pageSize, 3, 1, memoryFile, 0});
     assert(mappedMemoryFile > base && mappedMemoryFile < (uint64_t{1} << 45));
     assert(load(mappedMemoryFile) == 0 && machine.store64(mappedMemoryFile, 42));

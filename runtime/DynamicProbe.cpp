@@ -1,5 +1,6 @@
 #include "DynamicProbe.hpp"
 #include "AArch64.hpp"
+#include "FastPath.hpp"
 #include "NativeCode.hpp"
 #include "AndroidBootAot.hpp"
 #include "ProbeLinux.hpp"
@@ -156,6 +157,24 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
         Instruction instruction;
     };
     std::array<DecodedWord, 2048> decodedWords{};
+    // The common instructions decoded once into a form that runs directly (FastPath.hpp), by the same
+    // reasoning keyed by the word alone.
+    struct FastWord {
+        uint64_t word = UINT64_MAX;
+        FastInstruction instruction;
+    };
+    std::vector<FastWord> fastWords(8192);
+    // NESTVANE_NO_FAST_PATH=1 leaves every instruction to the interpreter and fetches each one by
+    // itself, for comparison.
+    static const bool fastPath = !std::getenv("NESTVANE_NO_FAST_PATH");
+    const auto fastWord = [&](uint32_t value) -> const FastInstruction& {
+        auto& entry = fastWords[((value ^ (value >> 16)) * 0x9e3779b9U) >> 19];
+        if (entry.word != value) {
+            entry.word = value;
+            entry.instruction = fastPath ? decodeFast(value) : FastInstruction{};
+        }
+        return entry.instruction;
+    };
     uint64_t syscallCount = 0;
     const unsigned traceLimit = init
         ? initLimit("NESTVANE_INIT_TRACE_SYSCALLS", interactive ? 0 : 100000, 1000000, 0)
@@ -462,17 +481,30 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
             // of its own up to the next thing the code around this loop looks after: a system call,
             // the end of the thread's turn, translated code, a fault.
             bool ran = false;
+            // Instructions are fetched from a window onto the code, looked up again when pc leaves
+            // it: nothing in this loop changes the mappings (a system call ends it).
+            uint64_t windowStart = 0, windowEnd = 0;
+            const uint8_t* window = nullptr;
+            // Likewise the memory loads and stores go to.
+            MemoryWindows dataWindows;
             for (;;) {
-                const auto* code = machine.readInstruction(cpu.pc);
+                const uint8_t* code;
+                if (cpu.pc - windowStart < windowEnd - windowStart && !(cpu.pc & 3)) {
+                    code = window + (cpu.pc - windowStart);
+                } else if (fastPath && machine.codeWindow(cpu.pc, windowStart, windowEnd, window)) {
+                    code = window + (cpu.pc - windowStart);
+                } else {
+                    windowStart = windowEnd = 0;
+                    code = machine.readInstruction(cpu.pc);
+                }
                 if (!code) break;
                 std::memcpy(&word, code, sizeof(word));
-                auto& decoded = decodedWords[((word ^ (word >> 16)) * 0x9e3779b9U) >> 21];
-                if (decoded.word != word) {
-                    decoded.word = word;
-                    decoded.instruction = decode(word);
-                }
-                if (decoded.instruction.op == Op::unsupported || decoded.instruction.op == Op::svc) break;
-                executeDecoded(machine, decoded.instruction);
+                // The common instructions from their decoded form; the rest from the full interpreter,
+                // here too: going round the outer loop for each, through the scheduler and its checks,
+                // cost more than the instruction itself. A system call, or an instruction the
+                // interpreter does not have (false, nothing done), goes round, where the app gets SIGILL.
+                if (const auto& fast = fastWord(word); fast.kind != FastInstruction::none) executeFast(machine, fast, &dataWindows);
+                else if (word == 0xd4000001 || !executeStartupInstruction(machine, word)) break;
                 ran = true;
                 if (cpu.stop != Stop::running || !(cpu.retired & 4095) || !linux.hasSliceBudget(cpu.retired, 1) ||
                     machine.space->hasCode(cpu.pc)) break;
@@ -526,6 +558,10 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
                 runNativeLoop.operator()<AndroidBionicFillLoop>(bionicFillAot, bytes)) continue;
             if (word == AndroidBionicCopyLoop::words.front() &&
                 runNativeLoop.operator()<AndroidBionicCopyLoop>(bionicCopyAot, bytes)) continue;
+        }
+        if (const auto& fast = fastWord(word); fast.kind != FastInstruction::none) {
+            executeFast(machine, fast);
+            continue;
         }
         auto& decoded = decodedWords[((word ^ (word >> 16)) * 0x9e3779b9U) >> 21];
         if (decoded.word != word) {
@@ -1035,6 +1071,12 @@ service nestvane-trim /system/bin/sh /system/etc/nestvane/trim.sh
             linux.mount("/system/etc/init/nestvane-apk-install.rc",
                         {reinterpret_cast<const uint8_t*>(installer.data()), installer.size()});
             linux.alias("/dev/kmsg_debug", "/dev/kmsg");
+            if (!std::getenv("NESTVANE_NO_TOYBOX_LINKS")) linux.addToyboxLinks();
+            // Built-in root, when the person has turned it on.
+            if (auto root = ProbeLinux::rootPolicy(); root.enabled) {
+                linux.enableRoot();
+                linux.rootDecision = std::move(root.decision);
+            }
         }
         for (const bool directory : {false, true}) {
             const auto manifest = directory ? "/nestvane-metadata/selinux-package-relabel-dir.txt" :
@@ -1056,6 +1098,14 @@ service nestvane-trim /system/bin/sh /system/etc/nestvane/trim.sh
             if (viewportChanged) displayInactive = line.ends_with("isActive: false");
             if (line.starts_with(bootBroadcast)) bootBroadcastCompleted = true;
             if (line.starts_with(launcherDisplay) && !displayInactive) launcherDrawn = true;
+            if (line.starts_with(launcherDisplay)) {
+                linux.appsHeld = false;
+                if (progress) {
+                    const auto volume = ProbeLinux::hostVolume();
+                    progress("Nestvane: host volume " + std::to_string(volume.total) + " bytes, " +
+                             std::to_string(volume.available) + " available");
+                }
+            }
             const bool queueWake = startupTouch && !wakeSent && !launcherDrawn && bootBroadcastCompleted &&
                 displayInactive && (viewportChanged || line.starts_with(bootBroadcast));
             if (queueWake && startupTouch->press(GuestTouch::Key::wake)) {
