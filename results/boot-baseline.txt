@@ -1,0 +1,4 @@
+# Start to the Android home screen, by kind of device: the bar each release has to clear (tools/boot-check.sh).
+# The last line of a device is its baseline. A release may only make it faster.
+# model version median-ms-of-five-warm-starts memory-GB date commit
+iPhone14,7 1.6 11075 2.56 2026-11-24 35a8fab

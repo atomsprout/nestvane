@@ -197,6 +197,8 @@ Usage: embed-ios-graphics.sh input.app gfxstream.dylib angle-build-directory out
 
 `tools/package-ipa.sh <app> <ipa> <NOTICE.txt of the AOSP build>` packs the app, with the licenses it is distributed under (WebView's from `generated/webview/NOTICE-WEBVIEW.html`), into the unsigned IPA that a release carries. Installing on a device and producing TestFlight builds are not scripted in the repository.
 
+Before every release, [`tools/boot-check.sh`](../tools/boot-check.sh) `<device UDID> [--record]` measures Android's start on a test device with the build installed: six starts, the median of the last five against the baseline of that kind of device in [`results/boot-baseline.txt`](../results/boot-baseline.txt). A release may only make the start faster: a slower median fails the check, and the cause is found and fixed before releasing. The device has to be cooled down (the script refuses to measure a hot one) and have the same apps installed as when the baseline was taken. `--record` adds the result as the new baseline.
+
 ## Checking the runtime on the Mac
 
 ```
