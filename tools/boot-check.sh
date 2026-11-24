@@ -10,6 +10,9 @@
 # is not measured: numbers from a hot device say nothing. It rests a minute between starts; the whole
 # check takes about ten minutes.
 #
+# BOOT_CHECK_ENV='"NAME":"value",...' adds settings to every start, for comparing one change on and off
+# with the same build; such a run is not a release check and is never recorded.
+#
 # Compare like with like: the same device, the same apps installed (more apps, slower start), the device
 # cooled down and left alone during the run. Build and install the app first (tools/regress-device.sh
 # does both). The phone has to be unlocked and has to stay so.
@@ -36,7 +39,7 @@ for start in 1 2 3 4 5 6; do
         sleep 60
     fi
     xcrun devicectl device process launch --device $device --terminate-existing \
-        --environment-variables '{"NESTVANE_INIT_SNAPSHOT_SECONDS":"25"}' $bundle > $out/launch.log 2>&1 ||
+        --environment-variables "{\"NESTVANE_INIT_SNAPSHOT_SECONDS\":\"25\"${BOOT_CHECK_ENV:+,$BOOT_CHECK_ENV}}" $bundle > $out/launch.log 2>&1 ||
         { echo "launch failed (is the device unlocked?): see $out/launch.log"; exit 2; }
     sleep 36
     for file in boot-milestones.txt guest-live.txt; do
@@ -71,7 +74,9 @@ if [[ -n "$previous" ]]; then
 else
     echo "no baseline for $model yet"
 fi
-if [[ "$record" == "--record" ]]; then
+if [[ -n "${BOOT_CHECK_ENV:-}" ]]; then
+    echo "with $BOOT_CHECK_ENV: not recorded"
+elif [[ "$record" == "--record" ]]; then
     echo "$model $version $median $memory $(date +%Y-%m-%d) $commit" >> $baseline
     echo "recorded in $baseline"
 fi

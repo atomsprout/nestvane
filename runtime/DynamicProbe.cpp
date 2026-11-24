@@ -490,7 +490,9 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
                     interpretNext = true;
                     // NESTVANE_NO_STRETCH=1 goes back to native code after one instruction, for comparison.
                     static const bool stretches = !std::getenv("NESTVANE_NO_STRETCH");
-                    if (left == native::Exit::fault && stretches) {
+                    // Only in apps: in Android's own processes a fault is mostly a single one, and a
+                    // stretch there ran their translated code in the interpreter while Android started.
+                    if (left == native::Exit::fault && stretches && linux.currentIsApp()) {
                         const auto now = steady_clock::now();
                         const bool again = linux.threadId() == stretchThread && now - lastNativeFault < milliseconds(2);
                         stretchLength = again ? std::min(stretchLength * 2, 65536U) : 256;

@@ -88,6 +88,8 @@ struct ProbeLinux {
     bool deliverIllegalInstruction(Machine& machine);
     bool restoredSignalContext() { return std::exchange(signalContextRestored, false); }
     uint64_t threadId() const { return currentTid; }
+    // Whether the current process is an app the person installed (SELinux domain untrusted_app).
+    bool currentIsApp() const;
     uint64_t processId() const;
     uint64_t parentProcessId() const { return current->process->parent; }
     bool suspendChild();
@@ -114,6 +116,7 @@ struct ProbeLinux {
     // Hands the current thread to a worker that interprets it in `code` (native::offloadInterpreter),
     // when it keeps using whole turns there. False when it stays.
     bool offloadInterpreter(Machine& machine, const SpaceCode& code);
+
     // How the current thread's run on a worker ended, once, at the thread's next turn.
     std::optional<native::Result> takeNativeResult();
     // The current thread's native code ran until its turn was over.
@@ -211,10 +214,10 @@ struct ProbeLinux {
     static constexpr std::string_view rootContext = "u:r:su:s0";
     // The package that has a uid, from Android's own list; "" for none.
     std::string packageOfUid(uint32_t uid) const;
-    // Apps the user installed run only when nothing else can, until the home screen is shown (the
-    // starter clears this) or a minute has passed. NESTVANE_HOLD_APPS=0 turns it off.
+    // Apps the user installed do not run until the home screen is shown (the starter clears this) or
+    // half a minute has passed. NESTVANE_HOLD_APPS=0 turns it off.
     std::atomic_bool appsHeld{!std::getenv("NESTVANE_HOLD_APPS") || std::string_view(std::getenv("NESTVANE_HOLD_APPS")) != "0"};
-    std::chrono::steady_clock::time_point appsHeldUntil = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+    std::chrono::steady_clock::time_point appsHeldUntil = std::chrono::steady_clock::now() + std::chrono::seconds(30);
     size_t exportFiles(ProbeLinux& reader, std::string_view prefix) const;
     bool exportExt4Mount(ProbeLinux& reader, std::string_view path) const;
     std::span<const uint8_t> bootGuestFile(std::string_view path) const;
@@ -867,6 +870,9 @@ private:
     uint64_t persistentLimit(uint64_t used) const;
     mutable uint64_t volumeGeneration = 0, volumeUsed = 0;
     bool rootOn = false;
+    // An app the person installed, which waits while Android starts (appsHeld).
+    bool heldApp(const Thread& thread) const;
+    bool appsHeldNow() const;
     // How many files and directories the guest's data may hold. With some thirty apps installed the
     // earlier limits (4096 files, 2048 directories) were reached, and Android could start no new app:
     // zygote could not make the app's profile directory and aborted.

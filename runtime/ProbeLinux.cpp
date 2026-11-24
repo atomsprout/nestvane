@@ -558,9 +558,11 @@ void ProbeLinux::enableRoot() {
 }
 
 std::string ProbeLinux::packageOfUid(uint32_t uid) const {
-    const auto list = find("/data/system/packages.list", 0);
-    if (!list) return {};
-    const auto bytes = list->contents();
+    // Android writes the list to /data, whose files are the kernel layer's own.
+    const auto list = writableFiles.find(backingPath("/data/system/packages.list"));
+    if (list == writableFiles.end()) return {};
+    const auto& storage = *list->second->storage;
+    const auto bytes = std::span(storage.pages).first(storage.size);
     std::istringstream lines(std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
     std::string line;
     while (std::getline(lines, line)) {
@@ -6560,7 +6562,20 @@ bool ProbeLinux::switchThread(Machine& machine, std::chrono::steady_clock::time_
     auto now = steady_clock::now();
     std::optional<steady_clock::time_point> nextDeadline;
     bool runnable = false;
+    // Until the home screen is shown, apps the user installed do not run: their start at BOOT_COMPLETED
+    // (a chat app's sync, say) took the CPU from Android's start, on the main loop and on the workers.
+    // Run only when nothing else could, a held app still kept the main loop for whole turns. After
+    // half a minute they run anyway, in case the home screen waits for one of them (and before Android
+    // gives up on an app process that does not start).
+    bool holdApps = false;
+    const auto refreshHold = [&] {
+        holdApps = appsHeld.load(std::memory_order_relaxed) && now < appsHeldUntil;
+        if (!holdApps && appsHeld.load(std::memory_order_relaxed)) appsHeld = false;
+    };
+    refreshHold();
+    const auto held = [&](const Thread& thread) { return holdApps && heldApp(thread); };
     const auto updateTimers = [&]() {
+        refreshHold();
         nextDeadline = refreshTimers(now);
         fireAlarms(now, nextDeadline);
         for (auto& [tid, thread] : threads) {
@@ -6644,25 +6659,19 @@ bool ProbeLinux::switchThread(Machine& machine, std::chrono::steady_clock::time_
                 continue;
             }
             thread.nextSliceAfter.reset();
+            // A held app is not one that can run: the wait is until the hold ends at the latest.
+            if (held(thread)) {
+                if (!nextDeadline || appsHeldUntil < *nextDeadline) nextDeadline = appsHeldUntil;
+                continue;
+            }
             runnable = true;
         }
     };
-    // Until the home screen is shown, apps the user installed run only when nothing of Android's own
-    // can: their start at BOOT_COMPLETED (a chat app's sync, say) used to take the CPU from the boot.
-    const bool holdApps = appsHeld.load(std::memory_order_relaxed) && now < appsHeldUntil;
-    if (!holdApps && appsHeld.load(std::memory_order_relaxed)) appsHeld = false;
-    const auto held = [&](const Thread& thread) {
-        return holdApps && thread.process->context.starts_with("u:r:untrusted_app");
-    };
     const auto pickNext = [&]() -> bool {
         auto next = threads.upper_bound(currentTid);
-        bool skippedHeld = false;
-        for (size_t tested = 0; tested < 2 * threads.size(); ++tested) {
+        for (size_t tested = 0; tested < threads.size(); ++tested) {
             if (next == threads.end()) next = threads.begin();
-            if (next->second.wait != Wait::none || next->second.nextSliceAfter) { ++next; continue; }
-            // The first round passes over held apps; the second takes them, when nothing else could run.
-            if (tested < threads.size() && held(next->second)) { skippedHeld = true; ++next; continue; }
-            if (tested >= threads.size() && !skippedHeld) break;
+            if (next->second.wait != Wait::none || next->second.nextSliceAfter || held(next->second)) { ++next; continue; }
             if (next->first != currentTid) {
                 ++threadSwitches;
                 accountGuestCpu();
@@ -8007,9 +8016,21 @@ void ProbeLinux::recallNativeThreads(const Process* process) {
     }
 }
 
+bool ProbeLinux::heldApp(const Thread& thread) const {
+    return thread.process->context.starts_with("u:r:untrusted_app");
+}
+
+bool ProbeLinux::currentIsApp() const { return heldApp(*current); }
+
+bool ProbeLinux::appsHeldNow() const {
+    return appsHeld.load(std::memory_order_relaxed) && std::chrono::steady_clock::now() < appsHeldUntil;
+}
+
 bool ProbeLinux::offloadNative(Machine& machine) {
     if (!current->cpuBound || !native::workers() || !current->pendingSignals.empty() ||
         !current->process->pendingSignals.empty()) return false;
+    // A held app does not get a core of its own either: on workers it took them from Android's start.
+    if (heldApp(*current) && appsHeldNow()) return false;
     const uint64_t ticket = nextNativeTicket++;
     if (!native::offload(machine, ticket)) return false;
     current->nativeTicket = ticket;
@@ -8023,7 +8044,8 @@ bool ProbeLinux::offloadNative(Machine& machine) {
 bool ProbeLinux::offloadInterpreter(Machine& machine, const SpaceCode& code) {
     // NESTVANE_NO_INTERPRET_WORKERS=1 keeps interpreting on the main loop, for comparison.
     static const bool allowed = !std::getenv("NESTVANE_NO_INTERPRET_WORKERS");
-    if (!allowed || !native::workers() || !current->pendingSignals.empty() || !current->process->pendingSignals.empty())
+    if (!allowed || !native::workers() || !current->pendingSignals.empty() || !current->process->pendingSignals.empty() ||
+        (heldApp(*current) && appsHeldNow()))
         return false;
     // A thread whose runs there keep ending at once (its code calls out all the time) stays, mostly.
     if (current->briefInterpreted >= 4) {
