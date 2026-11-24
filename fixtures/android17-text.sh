@@ -14,6 +14,8 @@
 #
 # "launch", package name: opens that app, as tapping its icon does. The app's tests use it.
 #
+# "uninstall", package name: removes that app, as dragging its icon to Uninstall does. For tests.
+#
 # "rotate", quarter turns: which way up Android holds its display, sent when the person turns the
 # device. An app that asks for one orientation still gets it.
 
@@ -38,6 +40,9 @@ while true; do
         else
             /system/bin/cmd settings delete system peak_refresh_rate > /dev/null 2>&1
         fi
+        ;;
+    uninstall)
+        /system/bin/toybox log -t Nestvane "uninstall $sender: $(/system/bin/cmd package uninstall "$sender" 2>&1)"
         ;;
     rotate)
         case "$sender" in

@@ -105,12 +105,14 @@ public:
         broadcasts.erase(broadcasts.begin());
         return true;
     }
-    bool submitLaunch(std::string_view package) {
+    // "uninstall", package name, nothing: removes that app. For tests.
+    bool submitUninstall(std::string_view package) { return submitLaunch(package, "uninstall"); }
+    bool submitLaunch(std::string_view package, std::string_view kind = "launch") {
         std::lock_guard lock(mutex);
         if (stopped || texts.size() >= 16 || package.empty() || package.size() > 200) return false;
         for (const char c : package)
             if (!(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z') && !(c >= '0' && c <= '9') && c != '.' && c != '_') return false;
-        const auto message = "launch\n" + std::string(package) + "\n\n";
+        const auto message = std::string(kind) + "\n" + std::string(package) + "\n\n";
         texts.emplace_back(message.begin(), message.end());
         textKinds.push_back(false);
         return true;

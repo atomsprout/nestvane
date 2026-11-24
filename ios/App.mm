@@ -1819,6 +1819,9 @@ static void FollowGuestAudio() {
                                 if ([fields[0] isEqualToString:@"launch"]) {
                                     // "launch:<package>:0:wait" opens that app without finding its icon.
                                     if (apkInbox) apkInbox->submitLaunch(fields[1].UTF8String);
+                                } else if ([fields[0] isEqualToString:@"uninstall"]) {
+                                    // "uninstall:<package>:0:wait" removes that app.
+                                    if (apkInbox) apkInbox->submitUninstall(fields[1].UTF8String);
                                 } else if ([fields[0] hasPrefix:@"view"]) {
                                     // "view<x>:<y>:0:wait" taps a place in the app's view of the display, in
                                     // thousandths of the view: through the same reckoning as a finger's
