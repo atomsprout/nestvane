@@ -231,6 +231,14 @@ WebView 的原生库现在只能交给解释器，约每秒四千万条指令，
 - Chromium 对内核的要求多（共享内存、futex、信号、线程数、`memfd`、`/proc` 的内容），会冒出一串内核层的缺口，第 2 步就会遇到。
 - 内存：一个打开网页的应用可能多用几百 MB，iPhone 14（6 GB）可能放不下。
 
+## GitHub issues 的安排（2026-11-24）
+
+| Issue | 问的事 | 排到哪 | 说明 |
+| --- | --- | --- | --- |
+| [atomsprout/nestvane#2](https://github.com/atomsprout/nestvane/issues/2) | 存储能不能跟随设备的本地存储 | 1.7 第 0 步 | Android 现在看到写死的 8 GiB 上限，显示成“共 16 GB”。改成总量取 App 所在卷、剩余取 iOS 的“重要用途可用空间”减去余量。做完在 issue 里附截图后关闭 |
+| [atomsprout/nestvane#3](https://github.com/atomsprout/nestvane/issues/3) | 还需要付费开发者账号吗 | 1.8 | 需要，原因是扩展地址权限只给付费账号。1.8 做软件 MMU，连同代码表、翻译产物、镜像映射这些固定占用一起压到约 7 GiB 以内，验收是免费账号签名的包 30 秒内到桌面。动手前先量到桌面时宿主地址各块的占用。风险最高，可能做不成，issue 保持打开，进展更新在里面 |
+| [atomsprout/nestvane#4](https://github.com/atomsprout/nestvane/issues/4) | 怎么在 iOS 16 上跑 | 不做 | 最低系统 iOS 17（2026-11-23 定）。只能停在 iOS 16 的设备是 iPhone 8、8 Plus、X，内存 2–3 GB，而 Android 到桌面就要 2.2–2.6 GB；能装 iOS 17 的设备升级系统即可。试验版在 iPhone XR 上也没跑起来。回复说明原因后关闭 |
+
 ## 1.7 详细计划（2026-11-24 定）
 
 目标：用户自己装的应用里，自带原生库的那部分不再慢得不能用；可以在设置里打开内置 root。每一步单独验收，做不下去时停在上一步也能发。
