@@ -146,7 +146,7 @@ struct ProbeLinux {
     // The guest's sound card: a control device with no controls, /dev/snd/controlC0, and one playback
     // device, /dev/snd/pcmC0D0p, of the kind Android's audio service plays through. What is played goes to runtime/GuestAudio.hpp. Nothing or a wait.
     void enableSound();
-    std::optional<uint64_t> soundIoctl(Machine& machine, bool nonblocking);
+    std::optional<uint64_t> soundIoctl(Machine& machine, bool nonblocking, bool capture);
     uint64_t soundPending();
     uint64_t soundRoom();
     // /dev/dma_heap/system, where the codecs get the memory of their buffers: each allocation is a
@@ -157,6 +157,13 @@ struct ProbeLinux {
     // With nobody taking the sound: the frame the card had played at a moment, from which the clock plays on.
     uint64_t soundClockFrames = 0;
     std::chrono::steady_clock::time_point soundClockStart{};
+    // The card's capture device, /dev/snd/pcmC0D0c: what the host's microphone hears
+    // (GuestMicrophone in runtime/GuestAudio.hpp), or silence at the pace of the clock.
+    uint64_t microphoneAvailable();
+    uint32_t microphoneFrameBytes = 2, microphoneRate = 48000, microphoneBufferFrames = 4096, microphoneAvailableMinimum = 1;
+    uint64_t microphoneFrames = 0, microphoneClockFrames = 0;
+    bool microphoneFromHost = false;
+    std::chrono::steady_clock::time_point microphoneClockStart{};
     // Gives the guest the host's battery (runtime/GuestBattery.hpp) as a power supply of its own, and
     // a charger beside it. Without it Android shows a battery of unknown state.
     void enableBattery();
@@ -556,6 +563,7 @@ private:
         std::weak_ptr<GuestTouch::Reader> touchReader{};
         std::weak_ptr<BpfMap> ring{};
         std::optional<PollNotifications> deliveredNotifications{};
+        uint64_t pipeWritesSeen = ~uint64_t{0};  // Pipe::writes when this watch last reported, if it reports only changes
     };
     struct EventState {
         struct Timer {
@@ -597,6 +605,7 @@ private:
         std::deque<uint8_t> data;
         std::weak_ptr<int> reader, writer;
         size_t capacity = 65536;
+        uint64_t writes = 0;  // goes up with each write, for watches that report only changes
         uint16_t pollEvents(bool readEnd) const;
     };
     struct Pty {
@@ -717,6 +726,7 @@ private:
         std::shared_ptr<std::string> snapshot = {};
         std::shared_ptr<Pipe> pipe{};
         std::shared_ptr<int> pipeEnd{};
+        std::shared_ptr<int> pipeOtherEnd{}; // the writing end too, when a named pipe is open for both
         std::shared_ptr<std::string> securityReply{};
         uint64_t targetProcess = 0;
         std::shared_ptr<Pty> pty{};
@@ -806,9 +816,9 @@ private:
     // The database still has the content of files that have moved out of it: it is packed after the next sync.
     bool compactData = false;
     int64_t dataGeneration = 0;
-    static constexpr uint64_t maxDataFileBytes = 256 * 1024 * 1024;
+    static constexpr uint64_t maxDataFileBytes = 1024ULL * 1024 * 1024;
     // Persistent data and transient filesystem writes each have their own budget.
-    static constexpr uint64_t maxWritableBytes = 2048ULL * 1024 * 1024;
+    static constexpr uint64_t maxWritableBytes = 8192ULL * 1024 * 1024;
     // How many files and directories the guest's data may hold. With some thirty apps installed the
     // earlier limits (4096 files, 2048 directories) were reached, and Android could start no new app:
     // zygote could not make the app's profile directory and aborted.
@@ -984,6 +994,12 @@ private:
         uint32_t mode, uid, gid;
     };
     std::map<std::string, BoundSocket, std::less<>> socketPaths;
+    // Named pipes (mkfifo), by path. They live as long as this run: nothing writes them to storage.
+    struct NamedPipe {
+        std::shared_ptr<Pipe> pipe;
+        uint32_t mode, uid, gid;
+    };
+    std::map<std::string, NamedPipe, std::less<>> fifoPaths;
     std::map<std::string, std::shared_ptr<WritableFile>, std::less<>> writableFiles;
     struct Directory {
         // Stored with the directory across rename, mount aliases and guest restarts.
@@ -1031,6 +1047,8 @@ private:
     struct AccessClass {
         uint32_t mask = 0;
         bool applicationService = false;
+        // What an app's process may do with its own keys in the keystore; empty for every other class.
+        std::string applicationKeys;
         std::map<std::pair<std::string, std::string>, std::string> decisions;
     };
     std::map<uint32_t, AccessClass> accessClasses;

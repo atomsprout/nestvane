@@ -40,12 +40,21 @@ int main() {
     const std::vector<dnsproxy::Record> both{alias, address};
     const auto plain = dnsproxy::parse(query(7, {"www", "example", "com"}, 1));
     const auto built = dnsproxy::respond(*plain, both, 0);
-    check(built.size() == 12 + plain->wire.size() + (17 + 10 + 5) + (5 + 10 + 4) && built[0] == 0 && built[1] == 7 &&
+    // Both names are in the packet already, the alias's as the question and the address's as what the
+    // alias leads to: each is written as a two-byte pointer.
+    check(built.size() == 12 + plain->wire.size() + (2 + 10 + 5) + (2 + 10 + 4) && built[0] == 0 && built[1] == 7 &&
+          built[12 + plain->wire.size()] == 0xc0 && built[12 + plain->wire.size() + 1] == 12 &&
           (built[2] & 0x80) && dnsproxy::read16(built, 6) == 2 && !std::memcmp(built.data() + built.size() - 4, "\xc0\x00\x02\x07", 4),
           "an answer carries the records");
     std::vector<dnsproxy::Record> many(40, dnsproxy::Record{"www.example.com.", 16, 1, 1, std::vector<uint8_t>(40, 'x')});
     const auto cut = dnsproxy::respond(*plain, many, 0);
     check(cut.size() <= 512 && (cut[2] & 0x02) && dnsproxy::read16(cut, 6) < 40, "an answer too long is cut and says so");
+    // When some of what was asked for is in it, it is cut without saying so: the asker would try again
+    // by TCP, which is not served, and it has addresses to use.
+    std::vector<dnsproxy::Record> addresses(60, dnsproxy::Record{"www.example.com.", 1, 1, 1, std::vector<uint8_t>{192, 0, 2, 1}});
+    const auto some = dnsproxy::respond(*plain, addresses, 0);
+    check(some.size() <= 512 && !(some[2] & 0x02) && dnsproxy::read16(some, 6) > 20 && dnsproxy::read16(some, 6) < 60,
+          "addresses that do not all fit are cut without a mark");
 
     // Names of the local network are not looked up at all.
     const auto local = dnsproxy::answer(query(9, {"printer", "local"}, 1));

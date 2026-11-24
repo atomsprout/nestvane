@@ -22,6 +22,10 @@ constexpr uint32_t brRelease = 0x80107209, brDecrefs = 0x8010720a;
 constexpr uint32_t brDeadBinder = 0x8008720f, brClearDeath = 0x80087210;
 // Android 17 service managers keep references to hundreds of registered objects.
 constexpr size_t binderObjectLimit = 4096;
+// How many packets may wait for one thread. A transaction that hands over many objects at once puts
+// two there for each: an app with dozens of content providers publishes them all in one call, and at
+// 64 that call failed (Douyin stopped as it started).
+constexpr size_t directedLimit = 4096;
 
 template <class T>
 bool readGuest(Machine& machine, uint64_t address, T& value) {
@@ -328,7 +332,7 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
             return invalid;
     }
     auto& notices = connection.directed[currentTid];
-    if (notices.size() >= 64) return uint64_t(-28);
+    if (notices.size() >= directedLimit) return uint64_t(-28);
     const bool replying = command == bcReply || command == bcReplySg;
     auto& outstanding = connection.replies[currentTid];
     const auto fail = [&](uint32_t status) {
@@ -551,7 +555,7 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
         const auto handle = knownHandles.at(node.get());
         translations.push_back({size_t(offset), {binderHandle, object.flags, handle, 0}, handle});
     }
-    if (notices.size() + 2 * newNodes.size() + 1 > 64) return fail(brFailedReply);
+    if (notices.size() + 2 * newNodes.size() + 1 > directedLimit) return fail(brFailedReply);
     const auto address = storeBinderBuffer(*target, {bytes, size_t(transaction.dataSize)},
                                           {offsets, size_t(transaction.offsetsSize)}, extra, label,
                                           asynchronous);

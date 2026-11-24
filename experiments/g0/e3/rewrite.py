@@ -445,8 +445,62 @@ class Rewriter:
             if len(self.pending) > 8:
                 self.cache = None
 
+    def reserved(self, pc, w):
+        """Hand-written assembly that uses x25-x28 as ordinary registers, in the three forms the
+        software codecs' routines do: saved to the stack, taken back, and copied to or from another
+        register. The guest's value of each lives in its slot of the context (x25 + 8 * n), which is
+        where the interpreter's registers go on the way in and come from on the way out. Returns True
+        when the instruction was one of these and has been emitted."""
+        guest = (25, 26, 27, 28)
+        if w & 0x7FE0FFE0 == 0x2A0003E0:  # mov: orr rd, zr, rm
+            wide, rd, rm = w >> 31, w & 31, w >> 16 & 31
+            if rd not in guest and rm not in guest:
+                return False
+            size = "x" if wide else "w"
+            if rm in guest and rd in guest:
+                self.emit("ldr %s28, [x25, #%d]" % (size, 8 * rm))
+                self.emit("str x28, [x25, #%d]" % (8 * rd))
+            elif rm in guest:
+                if rd != 31:
+                    self.emit("ldr %s%d, [x25, #%d]" % (size, rd, 8 * rm))
+            else:
+                source = "xzr" if rm == 31 else "x%d" % rm
+                if wide:
+                    self.emit("str %s, [x25, #%d]" % (source, 8 * rd))
+                else:  # the upper half is cleared, as a write to a w register clears it
+                    self.emit("str %s, [x25, #%d]" % (source.replace("x", "w", 1), 8 * rd))
+                    self.emit("str wzr, [x25, #%d]" % (8 * rd + 4))
+            self.count("reserved_register", 1)
+            return True
+        if w & 0xFE0003E0 == 0xA80003E0:  # stp or ldp of x registers at sp
+            mode, load, first, second = w >> 23 & 3, w >> 22 & 1, w & 31, w >> 10 & 31
+            if (first not in guest and second not in guest) or mode == 0:
+                return False
+            offset = signed(w >> 15 & 0x7F, 7) * 8
+            if mode == 3:  # pre-index
+                self.emit("%s sp, sp, #%d" % ("add" if offset >= 0 else "sub", abs(offset)))
+            at = offset if mode == 2 else 0
+            assert 0 <= at < 4096, "offset out of reach"
+            for register, position in ((first, at), (second, at + 8)):
+                if register in guest:
+                    if load:
+                        self.emit("ldr x28, [sp, #%d]" % position)
+                        self.emit("str x28, [x25, #%d]" % (8 * register))
+                    else:
+                        self.emit("ldr x28, [x25, #%d]" % (8 * register))
+                        self.emit("str x28, [sp, #%d]" % position)
+                elif register != 31 or not load:
+                    self.emit("%s %s, [sp, #%d]" % ("ldr" if load else "str", "xzr" if register == 31 else "x%d" % register, position))
+            if mode == 1:  # post-index
+                self.emit("%s sp, sp, #%d" % ("add" if offset >= 0 else "sub", abs(offset)))
+            self.count("reserved_register", 4)
+            return True
+        return False
+
     def translate(self, pc, w):
         if self.branch(pc, w):
+            return
+        if self.reserved(pc, w):
             return
         if w in PAC_HINTS:
             self.word(0xD503201F)

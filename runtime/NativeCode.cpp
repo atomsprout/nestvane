@@ -520,6 +520,9 @@ Result enter(Running& running) {
 // The registers the guest can see, back from a context.
 void store(const NativeContext& context, CPU& cpu) {
     std::memcpy(cpu.x.data(), context.x, sizeof(uint64_t) * 25);
+    // x25 to x28 are the runtime's own in rewritten code. Hand-written assembly that uses them all the
+    // same has their guest values kept in the context's slots (Rewriter.reserved in rewrite.py).
+    std::memcpy(cpu.x.data() + 25, context.x + 25, sizeof(uint64_t) * 4);
     cpu.x[29] = context.x[29];
     cpu.x[30] = context.x[30];
     std::memcpy(cpu.v.data(), context.q, sizeof(context.q));

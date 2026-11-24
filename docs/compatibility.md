@@ -34,6 +34,77 @@ channel, and a frame was saved 15 to 18 seconds later.
 
 Twenty-one of the twenty-two open.
 
+## Thirty-two more, tried for 1.5
+
+Tried on 23 November 2026 on an iPad Air 11-inch (M3, iPadOS 27.0.1) with builds of version 1.5 as it was being
+made, each app again after the fix it led to; Telegram and Element last on an iPhone 14 (iOS 17.3.1). From F-Droid, except Telegram, Signal, Toutiao and Douyin, which
+are the builds their makers offer on their own sites. A frame was saved 16 to 30 seconds after opening, and up
+to two minutes for the slow ones.
+
+| App | Version | Its own native libraries | Result |
+| --- | --- | --- | --- |
+| App Manager | 4.1.1 | 4 | Opens, and asks for a permission |
+| Aurora Store | 4.8.4 | 1 | Opens, at its welcome screen |
+| Binary Eye | 1.75.7 | 3 | Opens, at its welcome screen |
+| Breezy Weather | 6.2.2 | 3 | Opens |
+| Fennec (Firefox from F-Droid) | 160.0.0 | 15 | Opens, at its welcome screen, after one and a half to two minutes |
+| FairEmail | 1.2341 | 1 | Opens, at its welcome screen |
+| Fossify Calculator | 1.4.0 | 1 | Opens |
+| Fossify Camera | 1.5.0 | 3 | Opens, and asks for a permission |
+| Fossify Messages | 1.10.2 | 1 | Opens, and asks to be the SMS app |
+| Fossify Music Player | 1.8.5 | 1 | Opens, and asks for a permission |
+| Fossify Phone | 1.11.1 | 1 | Opens, and asks to be the phone app |
+| Fossify Voice Recorder | 1.7.4 | 2 | Opens and records, from the device's microphone once iOS has been allowed to give it |
+| Joplin | 3.7.14 | 26 | Opens; its list of notes shows within two minutes |
+| LibreTube | 32.1 | none | Opens, and shows what is trending |
+| Luanti | 5.18.0 | 2 | Opens, in landscape |
+| Mastodon | 2.13.7 | none | Opens, at its welcome screen |
+| Mindustry | 8, build 160.8 | 2 | Opens, at its loading screen, in landscape |
+| MuPDF viewer | 1.28.5a | 1 | Opens, and asks for a file |
+| Nextcloud | 35.1.0 | 6 | Opens, at its welcome screen |
+| Organic Maps | 2026.11.11 | 1 | Opens, and asks for a permission |
+| OsmAnd~ | 5.4.11 | 7 | Opens, at its welcome screen |
+| PPSSPP | 1.19.3 | 5 | Opens, in landscape |
+| Shattered Pixel Dungeon | 4.0.2 | 2 | Opens, at its title screen |
+| Signal | 8.36.3 | 12 | Opens, at its welcome screen. Before 1.5 it could not make a key: see below |
+| Telegram | 13.3.1 | 4 | Opens, at its welcome screen. Before 1.5 it stopped as it started: see below |
+| Telegram X | 0.28.11 | 8 | Opens, at its welcome screen |
+| Element Classic | 1.6.62 | 21 | Opens, at its first screen, after about a minute. Before 1.5 it stopped as it started: see below |
+| Toutiao (今日头条) | 19.2.0 | 161 | Opens, with its tabs and bars; the feed stays empty: its network library needs a WebView |
+| Douyin (抖音) | 32.2.6 | 204 | Opens, with its tabs and bars; no video loads, for the same reason. Needs about 5 GB of memory: an iPad |
+| AnkiDroid | 2.25.3 | 2 | Does not show a screen within a minute; it uses a WebView |
+| Jellyfin | 2.7.3 | 2 | Opens only to say that a WebView is needed |
+| KDE Connect | 1.37.3 | 1 | Stops as it starts: it asks for the Wi-Fi service, which this Android does not have |
+
+Twenty-nine of the thirty-two open; of all fifty-four, fifty.
+
+Not tried: TikTok and YouTube. Neither maker offers an APK to download, and YouTube needs Google Play services.
+
+## What changed in 1.5
+
+**Keys.** An app could not make a key in Android's keystore: the keystore asked whether the app was allowed, and
+the answer was no for every app, because the table of answers had been taken for the system's own processes
+only. Apps now get what Android's policy gives every app. Signal and Element stopped on this as they started,
+and so would any app that keeps its settings encrypted.
+
+**Named pipes.** `mkfifo` was refused. Element's database library makes one in the app's own folder, and
+watches it for changes, which a pipe could not be watched for either.
+
+**Instructions.** Telegram stopped on an instruction the interpreter did not have. The native libraries of all
+these apps were searched for more (`tools/scan-interpreter-coverage.py`), and what ordinary code among them
+uses was added: about seventy vector and floating-point instructions, the conversion to and from half
+precision, and the cache instructions a program uses after writing code of its own. Each vector instruction is
+run on a Mac's processor and in the interpreter with the same operands (557 cases).
+
+**Large apps.** Douyin's package is 271 MB and it starts several hundred threads. The limits it met were raised:
+the size of a package (to 1 GiB), the threads Android may have (to 4,096), the memory an app's Java code may use
+(to 256 MB), and how many requests may wait for one thread of a system service.
+
+**Names of hosts.** A lookup whose answer went through several aliases came back cut short, and the app was told
+the host did not exist. Answers are now packed the way the protocol allows.
+
+**Landscape.** An app that asks for landscape is shown the right way up, and turning the device turns Android.
+
 ## What changed after 1.3
 
 **Apps that stopped Android.** DuckDuckGo and Feeder each bring a library written in Go, and in 1.3 opening
@@ -62,5 +133,9 @@ the kernel layer no longer refuses memory that gains execute permission, which t
 - **Native libraries are interpreted,** at about forty million instructions a second. An app that does real work
   in its own library is slow.
 - **No Google Play services.** Apps that need them were not tried.
+- **No Wi-Fi service.** Android here reaches the network through a wired interface. An app that asks for the
+  Wi-Fi service and does not expect to be told there is none stops (KDE Connect).
+- **Large apps start slowly.** Their Java code is not compiled ahead of time here. Firefox takes up to two
+  minutes to its first screen.
 
 Not in the list: VLC, because the APK at hand was built for x86 only and cannot run on a phone.

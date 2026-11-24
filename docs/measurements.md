@@ -134,11 +134,15 @@ shows the launcher 6.84 seconds after its kernel starts.
 | A finger kept moving on the same list, at 60 Hz | 60 frames a second composed and shown | iPhone 15 Pro |
 | The same at 120 Hz | 120 composed, 86 to 120 shown | iPhone 15 Pro |
 | 1280×720 H.264 video with AAC sound | 28 to 31 frames a second of 30, position one second a second | iPhone 15 Pro |
+| 1920×1080 H.264 video (High profile, 6 Mbit/s) with AAC sound | 30 frames a second composed and shown, position one second a second, half of one processor core | iPhone 14 |
+| 1920×1080 HEVC video (4 Mbit/s) with AAC sound | position one second a second; 29 to 31 frames a second once settled, 14 to 25 in the first seconds after starting right at boot | iPhone 14 |
 | Opening Settings | 0.4 to 0.8 s | iPhone 15 Pro |
 | Opening a Settings sub-page | 0.15 to 0.35 s | iPhone 15 Pro |
 
-Video is decoded by Android's software codecs. Sound was measured on the samples that reach the phone's output,
-at the level they have in the file; nobody has yet judged it by ear.
+Video is decoded by Android's software codecs. They are part of the system, so they run as translated code, at
+the processor's own speed; that is enough for 1080p at 30 frames a second, and the phone's hardware decoder is
+not used. Sound was measured on the samples that reach the phone's output, at the level they have in the file;
+nobody has yet judged it by ear.
 
 ## Where it is slow
 
@@ -147,12 +151,13 @@ the device, so an app's own native libraries are interpreted, at about 40 millio
 ScriptWidget shows the cost. Its interface is Java, run by translated code, and opens in under a second; its
 script engine is a native library, and the first widget preview took about two minutes on an iPhone 15 Pro.
 
-Fifteen open-source apps have been installed. Most open to a usable screen. AntennaPod crashed at start at an
-earlier stage and DuckDuckGo showed no window within 25 seconds; neither has been tried again.
+Fifty-four apps have been installed and opened once each, and fifty open to a usable screen: the list, with
+what stops the other four, is in [Apps that were tried](compatibility.md).
 
 ## What has not been measured
 
-- Sound by ear, and video above 720p.
+- Sound by ear, video above 1080p or 30 frames a second, and what the microphone records: Android reads its
+  capture device and iOS asks for the microphone, and nobody has yet allowed it and listened.
 - Sideloading tools. Signed without the two capabilities, as a free Apple ID would sign it, Android had not reached
   its home screen after five minutes on an iPhone 15 Pro.
 - Long sessions: battery use, heat over an hour, memory over a day.

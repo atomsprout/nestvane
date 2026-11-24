@@ -13,6 +13,9 @@
 # back what the system image sets.
 #
 # "launch", package name: opens that app, as tapping its icon does. The app's tests use it.
+#
+# "rotate", quarter turns: which way up Android holds its display, sent when the person turns the
+# device. An app that asks for one orientation still gets it.
 
 # Android's content tool, without its wrapper script: the guest root has no app_process link.
 content() {
@@ -35,6 +38,11 @@ while true; do
         else
             /system/bin/cmd settings delete system peak_refresh_rate > /dev/null 2>&1
         fi
+        ;;
+    rotate)
+        case "$sender" in
+        0|1|2|3) /system/bin/cmd window user-rotation lock "$sender" > /dev/null 2>&1 ;;
+        esac
         ;;
     launch)
         activity=$(/system/bin/cmd package resolve-activity --brief -c android.intent.category.LAUNCHER "$sender" 2> /dev/null | /system/bin/toybox tail -n 1)
