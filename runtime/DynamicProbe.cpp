@@ -705,11 +705,34 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
             // SIGILL and Android goes on. It used to end the whole run, and the screen stood still.
             const auto pc = cpu.pc;
             const auto process = linux.processId(), thread = linux.threadId();
+            // The callers, by the frame records, before the signal frame changes the registers.
+            std::ostringstream callers;
+            callers << std::hex << " LR=0x" << cpu.x[30];
+            for (uint64_t frame = cpu.x[29], depth = 0; frame && depth < 8; ++depth) {
+                std::array<uint64_t, 2> record{};
+                if (!machine.readInto(frame, {reinterpret_cast<uint8_t*>(record.data()), sizeof(record)})) break;
+                callers << " <- 0x" << record[1];
+                if (record[0] <= frame) break;
+                frame = record[0];
+            }
+            // NESTVANE_TRAP_DUMP=[*]<address>:<bytes> adds guest memory to the report, at the address or,
+            // with *, at the address read from there.
+            if (const char* dump = std::getenv("NESTVANE_TRAP_DUMP")) {
+                const bool indirect = *dump == '*';
+                uint64_t address = std::strtoull(dump + indirect, nullptr, 16);
+                const char* colon = std::strchr(dump, ':');
+                const uint64_t bytes = std::min<uint64_t>(colon ? std::strtoull(colon + 1, nullptr, 10) : 16, 64);
+                if (indirect && !machine.readInto(address, {reinterpret_cast<uint8_t*>(&address), sizeof(address)})) address = 0;
+                std::vector<uint8_t> memory(bytes);
+                callers << " memory@0x" << address << ":";
+                if (address && machine.readInto(address, memory))
+                    for (const auto byte : memory) callers << ' ' << unsigned(byte);
+            }
             if (init && linux.deliverIllegalInstruction(machine)) {
                 std::ostringstream message;
                 message << ((word & 0xffe0001f) == 0xd4200000 || (word & 0xffe0001f) == 0xd4400000 ? "native execution: breakpoint instruction, SIGTRAP to PID="
                                                                : "native execution: no such instruction in the interpreter, SIGILL to PID=") << process
-                        << " TID=" << thread << std::hex << " PC=0x" << pc << " word=0x" << word << std::dec;
+                        << " TID=" << thread << std::hex << " PC=0x" << pc << " word=0x" << word << std::dec << callers.str();
                 if (illegalInstructions++ < 32) report << "  " << message.str() << '\n';
                 if (linux.androidLogObserver) linux.androidLogObserver(message.str());
                 continue;

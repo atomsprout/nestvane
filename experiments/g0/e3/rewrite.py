@@ -45,6 +45,93 @@ import sys
 BASE, SCRATCH, TABLE, CONTEXT = 27, 28, 26, 25
 TPIDR_OFFSET = 784
 BASE_OFFSET, MEMORY_TABLE_OFFSET, SPARE_OFFSET = 800, 824, 848
+# NativeContext::borrowed and ::lent (runtime/NativeCode.cpp). Code built without x18 and x25-x28 set
+# aside uses them as ordinary registers. Their guest values live in the context's slots (x25 + 8 * n),
+# and an instruction that names one runs with a register of x9-x17 lent in its place: the lent
+# register's own value is kept in `lent`, and while the instruction can fault, `borrowed` says which
+# registers stand for which, so that the runtime can put the guest's registers back together.
+BORROWED_OFFSET, LENT_OFFSET = 904, 912
+# NativeContext::svcEntry and trapEntry: entered through the context, as _guest_svc and _guest_trap in
+# tools/build-native-code.py do, inline, because from a large module a branch to those does not reach.
+SVC_ENTRY_OFFSET, TRAP_ENTRY_OFFSET = 864, 872
+GUEST_ONLY = (18, 25, 26, 27, 28)
+LENDERS = (9, 10, 11, 12, 13, 14, 15, 16, 17)
+
+
+def register_fields(w):
+    """The bit positions of the fields of an instruction that name general registers, or None for an
+    encoding this does not know. A field that is 31 names sp or zr, never a register of GUEST_ONLY."""
+    if w & 0x1C000000 == 0x10000000:  # data processing, immediate
+        kind = w >> 23 & 7
+        return ([0], [0], [0, 5], [0, 5], [0, 5], [0], [0, 5], [0, 5, 16])[kind]
+    if w & 0x1C000000 == 0x14000000:  # branches, exceptions, system
+        if w & 0x7C000000 == 0x14000000 or w & 0xFF000010 == 0x54000000 or w & 0xFF000000 == 0xD4000000:
+            return []
+        if w & 0x7E000000 in (0x34000000, 0x36000000):  # cbz, cbnz, tbz, tbnz
+            return [0]
+        if w & 0xFE000000 == 0xD6000000:  # br, blr, ret and their authenticating forms
+            return [5, 0] if w >> 11 & 1 else [5]
+        if w & 0xFFC00000 == 0xD5000000:  # system: hints, barriers, msr, mrs, sys
+            if w & 0xFFF80000 == 0xD5000000 or w & 0xFFFFF000 in (0xD5032000, 0xD5033000):
+                return []  # PSTATE, hints, barriers
+            return [0]
+        return None
+    if w & 0x0A000000 == 0x08000000:  # loads and stores
+        vector = w >> 26 & 1
+        if w & 0xBF000000 in (0x0C000000, 0x0D000000):  # AdvSIMD structures
+            return [5, 16] if w >> 23 & 1 else [5]
+        if w & 0x3F000000 == 0x08000000:  # exclusive, ordered, compare and swap
+            return [0, 5, 10, 16]
+        if w & 0x3B000000 == 0x18000000:  # literal
+            return [] if vector or w >> 30 == 3 else [0]  # the last is prfm
+        if w & 0x3B200C00 == 0x19000000:  # ldapr, stlur and their kin
+            return [0, 5]
+        if w & 0x3A000000 == 0x28000000:  # pairs
+            return [5] if vector else [0, 5, 10]
+        if w & 0x3B000000 in (0x38000000, 0x39000000):
+            prefetch = not vector and w >> 22 in (0x3E2, 0x3E6)  # prfm and prfum: the first field is an operation
+            fields = [5] if vector or prefetch else [0, 5]
+            if w & 0x3B200C00 == 0x38200800:  # register offset
+                fields.append(16)
+            elif w & 0x3B200C00 == 0x38200000:  # atomic memory operations
+                fields.append(16)
+            return fields
+        return None
+    if w & 0x0E000000 == 0x0A000000:  # data processing, register
+        if w & 0x1F000000 in (0x0A000000, 0x0B000000):  # logical, add and subtract
+            return [0, 5, 16]
+        if w & 0x1F000000 == 0x1B000000:  # three sources
+            return [0, 5, 10, 16]
+        if w & 0x1FE00000 == 0x1A000000:  # with carry
+            return [0, 5, 16]
+        if w & 0x1FE00000 == 0x1A400000:  # conditional compare: a register or an immediate
+            return [5] if w >> 11 & 1 else [5, 16]
+        if w & 0x1FE00000 == 0x1A800000:  # conditional select
+            return [0, 5, 16]
+        if w & 0x5FE00000 == 0x1AC00000:  # two sources
+            return [0, 5, 16]
+        if w & 0x5FE00000 == 0x5AC00000:  # one source
+            return [0, 5]
+        return None
+    if w & 0x0E000000 == 0x0E000000:  # SIMD and floating point
+        if w & 0x5F20FC00 == 0x1E200000:  # conversion between floating point and integer
+            opcode, mode = w >> 16 & 7, w >> 19 & 3
+            if opcode in (2, 3) or opcode == 7:  # scvtf, ucvtf; fmov from a general register
+                return [5]
+            return [0]  # fcvt*, fmov to a general register, fjcvtzs
+        if w & 0x5F200000 == 0x1E000000:  # conversion between floating point and fixed point
+            return [5] if w >> 16 & 7 in (2, 3) else [0]
+        if w & 0x9FE08400 == 0x0E000400:  # AdvSIMD copy
+            form = w >> 11 & 15
+            if w >> 29 & 1:
+                return []  # ins (element)
+            return {1: [5], 3: [5], 5: [0], 7: [0]}.get(form, [])
+        return []
+    return []  # reserved and unallocated encodings: data in the code
+
+
+def can_fault(w):
+    return w & 0x0A000000 == 0x08000000
 ADDRESS_BITS = 39  # of a guest address, with --table
 CHUNK_SHIFT = int(sys.argv[sys.argv.index("--chunk-shift") + 1]) if "--chunk-shift" in sys.argv else 24  # 16 MiB chunks
 CHUNK_BITS = ADDRESS_BITS - CHUNK_SHIFT
@@ -52,6 +139,7 @@ CONDITIONS = "eq ne hs lo mi pl vs vc hi ls ge lt gt le al nv".split()
 # Conditional branches reach 1 MiB and test-and-branch 32 KiB of host code. Translated code is up to
 # about 2.5 times larger overall and more in places, so guest distances beyond these get a long form.
 FAR_CONDITIONAL, FAR_TEST = 0x30000, 0x1000
+FAR_DIRECT = 0x1800000
 # xpaclri, pacia1716 ... autibsp: the hint-space pointer authentication instructions.
 PAC_HINTS = {0xD50320FF, 0xD503211F, 0xD503215F, 0xD503219F, 0xD50321DF, 0xD503231F, 0xD503233F, 0xD503235F,
              0xD503237F, 0xD503239F, 0xD50323BF, 0xD50323DF, 0xD50323FF}
@@ -333,7 +421,9 @@ class Rewriter:
         """Returns True when the instruction was a branch and has been emitted."""
         if w & 0x7C000000 == 0x14000000:
             target = pc + signed(w & 0x3FFFFFF, 26) * 4
-            if not self.is_code(target):
+            # A host b reaches 128 MiB. Rewritten code is about twice as large and in places five times,
+            # so a target further than FAR_DIRECT in a large library (WebView's) is reached through the table.
+            if not self.is_code(target) or abs(target - pc) >= FAR_DIRECT:
                 # Into another module: compiled boot class path code calls thunks in the first oat file
                 # of its image. Where it leads is only known once both are mapped, so go through the table.
                 if not 0 <= target < 1 << 48 or target % 4:
@@ -454,7 +544,7 @@ class Rewriter:
         guest = (25, 26, 27, 28)
         if w & 0x7FE0FFE0 == 0x2A0003E0:  # mov: orr rd, zr, rm
             wide, rd, rm = w >> 31, w & 31, w >> 16 & 31
-            if rd not in guest and rm not in guest:
+            if (rd not in guest and rm not in guest) or 18 in (rd, rm):
                 return False
             size = "x" if wide else "w"
             if rm in guest and rd in guest:
@@ -474,13 +564,14 @@ class Rewriter:
             return True
         if w & 0xFE0003E0 == 0xA80003E0:  # stp or ldp of x registers at sp
             mode, load, first, second = w >> 23 & 3, w >> 22 & 1, w & 31, w >> 10 & 31
-            if (first not in guest and second not in guest) or mode == 0:
+            if (first not in guest and second not in guest) or mode == 0 or 18 in (first, second):
                 return False
             offset = signed(w >> 15 & 0x7F, 7) * 8
+            at = offset if mode == 2 else 0
+            if not 0 <= at < 4096:  # a negative offset: the general way, Rewriter.lent
+                return False
             if mode == 3:  # pre-index
                 self.emit("%s sp, sp, #%d" % ("add" if offset >= 0 else "sub", abs(offset)))
-            at = offset if mode == 2 else 0
-            assert 0 <= at < 4096, "offset out of reach"
             for register, position in ((first, at), (second, at + 8)):
                 if register in guest:
                     if load:
@@ -497,10 +588,73 @@ class Rewriter:
             return True
         return False
 
-    def translate(self, pc, w):
-        if self.branch(pc, w):
-            return
+    def interpret(self, pc):
+        """Leaves native code at this instruction: the interpreter runs it."""
+        self.constant(SCRATCH, pc)
+        self.emit("ldr x27, [x25, #%d]" % TRAP_ENTRY_OFFSET)
+        self.emit("br x27")
+        self.count("interpreted", 0)
+
+    def lent(self, pc, w):
+        """An instruction that names x18 or x25-x28 as guest registers. Returns True when emitted."""
+        fields = register_fields(w)
+        if not fields:
+            return False
+        used = [field for field in fields if w >> field & 31 in GUEST_ONLY]
+        if not used:
+            return False
         if self.reserved(pc, w):
+            return True
+        self.cache = None
+        guests = sorted({w >> field & 31 for field in used})
+        # Compare and swap of a pair names two registers each and uses the next one too: it is left to
+        # the interpreter, as are branches that authenticate a pointer.
+        casp = w & 0xBFA07C00 == 0x08207C00
+        authenticated = w & 0xFE000000 == 0xD6000000 and w >> 11 & 1
+        if casp or authenticated or (len(guests) > 1 and w & 0x7E000000 in (0x34000000, 0x36000000)):
+            self.interpret(pc)
+            return True
+        # Conditional and indirect branches: the guest value goes to x28, which they may use.
+        if w & 0x7E000000 in (0x34000000, 0x36000000) or w & 0xFE000000 == 0xD6000000:
+            field = used[0]
+            self.emit("ldr x28, [x25, #%d]" % (8 * guests[0]))
+            if not self.branch(pc, w & ~(31 << field) | SCRATCH << field):
+                raise ValueError("a branch form this does not translate")
+            self.count("lent_register", 1)
+            return True
+        named = {w >> field & 31 for field in (0, 5, 10, 16)}
+        lenders = [register for register in LENDERS if register not in named]
+        lent = dict(zip(guests, lenders))
+        substituted = w
+        for field in used:
+            substituted = substituted & ~(31 << field) | lent[w >> field & 31] << field
+        faults = can_fault(w)
+        before = len(self.out)
+        if faults:
+            value = 0
+            for index, (guest, lender) in enumerate(lent.items()):
+                value |= (lender | guest << 5) << (10 * index)
+            self.constant(SCRATCH, value)
+            self.emit("str x28, [x25, #%d]" % BORROWED_OFFSET)
+        for index, (guest, lender) in enumerate(lent.items()):
+            self.emit("str x%d, [x25, #%d]" % (lender, LENT_OFFSET + 8 * index))
+            self.emit("ldr x%d, [x25, #%d]" % (lender, 8 * guest))
+        self.translate(pc, substituted)
+        self.cache = None
+        for index, (guest, lender) in enumerate(lent.items()):
+            self.emit("str x%d, [x25, #%d]" % (lender, 8 * guest))
+            self.emit("ldr x%d, [x25, #%d]" % (lender, LENT_OFFSET + 8 * index))
+        if faults:
+            self.emit("str xzr, [x25, #%d]" % BORROWED_OFFSET)
+        self.count("lent_register", len(self.out) - before)
+        return True
+
+    def translate(self, pc, w):
+        if w & 0xFF200400 == 0xF8200400:  # ldraa, ldrab: the pointer is signed with the guest's keys
+            return self.interpret(pc)
+        if self.lent(pc, w):
+            return
+        if self.branch(pc, w):
             return
         if w in PAC_HINTS:
             self.word(0xD503201F)
@@ -508,7 +662,8 @@ class Rewriter:
             return self.count("pac_hint", 0)
         if w & 0xFFE0001F == 0xD4000001:  # svc
             self.emit("adr x28, 1f")
-            self.emit("b _guest_svc")
+            self.emit("ldr x27, [x25, #%d]" % SVC_ENTRY_OFFSET)
+            self.emit("br x27")
             self.out.append("1:")
             return self.count("svc", 1)
         if w & 0xFFFFFFE0 == 0xD53BD040:
@@ -593,7 +748,8 @@ class Rewriter:
         # Where a jump to the program's entry point leaves native code, when the runtime asks for it.
         out.append("Lguest_trap_%s:" % name)
         self.constant(SCRATCH, self.entry)
-        self.emit("b _guest_trap")
+        self.emit("ldr x27, [x25, #%d]" % TRAP_ENTRY_OFFSET)
+        self.emit("br x27")
         out.append(".section __TEXT,__const")
         out.append(".p2align 2")
         out.append("Lguest_marks_%s:" % name)
