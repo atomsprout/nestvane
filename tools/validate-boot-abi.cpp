@@ -746,6 +746,16 @@ int main() {
         };
         decision("activity_service", '2');
         decision("vold_service", '0');
+
+        // Keys in the keystore: an app may make and rebind its own (AOSP's app.te gives every app
+        // domain delete, use, get_info, grant, rebind and update); an isolated process may not.
+        assert(guest.loadKeystorePolicy("9 1 2 3 4 5 6 7 8 9 10 11\n"
+                                        "u:r:system_server:s0 u:r:keystore:s0 7ff ffffffff 0 ffffffff 1 0\n", true));
+        const auto keyQuery = std::string(target) + " u:r:keystore:s0 9 40";  // keystore2_key rebind
+        assert(write(access, keyQuery) == keyQuery.size() + 1);
+        assert(call(63, {access, reply, 128}) > 6);
+        assert(std::memcmp(task.read(reply, 4, 4), "35a ", 4) == 0);
+        assert(write(access, "u:r:isolated_app:s0:c512,c768 u:r:keystore:s0 9 40") == uint64_t(-95));
     }
     {
         ProbeLinux guest(1, 0);
@@ -7401,6 +7411,25 @@ int main() {
             assert(invoke(quota, 46, {persistent, pageSize + 4 * 16384 + pageSize}) == uint64_t(-28));
             ProbeLinux::setHostVolumeSource(nullptr);
             assert(invoke(quota, 57, {persistent}) == 0 && quota.syncData());
+            // A named pipe: mkfifo, an open for reading that does not wait, a writer, and an edge-triggered
+            // epoll, which reports new data once and then not again until more comes.
+            put(base + 0x440, "/metadata/nestvane-fifo");
+            assert(invoke(quota, 33, {uint32_t(-100), base + 0x440, 0010644, 0}) == 0);
+            const auto fifoRead = invoke(quota, 56, {uint32_t(-100), base + 0x440, 0x800, 0});  // O_RDONLY | O_NONBLOCK
+            const auto fifoWrite = invoke(quota, 56, {uint32_t(-100), base + 0x440, 1, 0});     // O_WRONLY: there is a reader
+            assert(fifoRead < 256 && fifoWrite < 256);
+            const auto fifoPoll = invoke(quota, 20, {0});
+            assert(fifoPoll < 256);
+            assert(machine.store64(base + 0x480, (uint64_t{1} << 31) | 1) && machine.store64(base + 0x488, 7)); // EPOLLET | EPOLLIN
+            assert(invoke(quota, 21, {fifoPoll, 1, fifoRead, base + 0x480}) == 0);
+            assert(invoke(quota, 22, {fifoPoll, base + 0x4a0, 4, 0, 0, 8}) == 0);
+            assert(invoke(quota, 64, {fifoWrite, base + 0x420, 3}) == 3);
+            assert(invoke(quota, 22, {fifoPoll, base + 0x4a0, 4, 0, 0, 8}) == 1 && load(base + 0x4a8) == 7);
+            assert(invoke(quota, 22, {fifoPoll, base + 0x4a0, 4, 0, 0, 8}) == 0);  // edge-triggered: nothing new
+            assert(invoke(quota, 64, {fifoWrite, base + 0x420, 2}) == 2);
+            assert(invoke(quota, 22, {fifoPoll, base + 0x4a0, 4, 0, 0, 8}) == 1);
+            assert(invoke(quota, 63, {fifoRead, base + 0x4c0, 16}) == 5);
+            assert(invoke(quota, 57, {fifoPoll}) == 0 && invoke(quota, 57, {fifoRead}) == 0 && invoke(quota, 57, {fifoWrite}) == 0);
         }
         {
             ProbeLinux maps(1, 0);
