@@ -76,6 +76,8 @@ for the app** gives that code the system it expects.
   right way up. The home screen keeps the way it was started.
 - **The microphone.** An Android app that records is given the device's microphone, once you allow it in iOS.
   New, and so far only seen as far as Android starting to record.
+- **Web pages inside apps.** Android System WebView 128 from AOSP is part of the system, translated ahead of time
+  like the rest: a Wikipedia article loads in a WebView in 4 to 8 seconds. JavaScript runs without a JIT.
 
 ## What does not work yet
 
@@ -128,7 +130,7 @@ On an iPhone 15 Pro unless noted. The running record, with every measurement, is
 | A finger kept moving on a list | 58–60 frames a second; with 120 Hz on, 111–120 (iPhone 17 Pro) |
 | Playing a 1280×720 H.264 video | 30 frames a second, in step with the clock |
 | Translated modules | about 1,230, in 12 frameworks |
-| Apps that open, of 54 installed from APK | 50 |
+| Apps that open, of 54 installed from APK | 51 |
 
 ## Requirements
 

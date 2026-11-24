@@ -36,6 +36,11 @@ uint64_t signalReturnPage();
 // such code faults at the look-up and goes on in the interpreter, and the rest of the process stays
 // native. The kernel layer puts the dynamic linker's reservations here.
 inline constexpr uint64_t foreignLow = 0x1'0000'0000, foreignHigh = 0x1'4000'0000;
+// Where Android System WebView's library goes. The zygote reserves 1 GiB for it once (WebViewLibraryLoader)
+// and every app loads it there. The kernel layer puts that reservation here, just above the addresses
+// for code without a translation, and the table of translated code spans it too: the library's code
+// runs in place in the interpreter while the rest of the process stays native.
+inline constexpr uint64_t webViewBase = foreignHigh, webViewSize = 0x4000'0000;
 // Whether the table spans these guest addresses: native code may jump there without harm.
 bool covers(uint64_t start, uint64_t end);
 uint64_t contentKey(std::span<const uint8_t> file);

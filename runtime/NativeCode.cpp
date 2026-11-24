@@ -48,6 +48,12 @@ struct NativeContext {
     uint64_t signalReturn;  // the guest pc of the signal return trampoline
     // Filled by the signal handler.
     uint64_t faultPc, faultAddress;
+    // Code built without x18 and x25-x28 set aside runs each instruction that names one of them with a
+    // register of x9-x17 lent in its place (rewrite.py, Rewriter.lent). While that instruction can
+    // fault, `borrowed` holds up to four 10-bit entries, the lent register and above it the guest
+    // register it stands for, and `lent` holds the lent registers' own values, in the same order.
+    uint64_t borrowed = 0;
+    uint64_t lent[4];
 };
 int nestvane_native_enter(NativeContext*);
 void nestvane_native_exit();
@@ -63,6 +69,7 @@ static_assert(offsetof(NativeContext, table) == 808 && offsetof(NativeContext, h
 static_assert(offsetof(NativeContext, memoryTable) == 824 && offsetof(NativeContext, spare) == 848 && offsetof(NativeContext, fpsr) == 856);
 static_assert(offsetof(NativeContext, svcEntry) == 864 && offsetof(NativeContext, trapEntry) == 872);  // tools/build-native-code.py
 static_assert(offsetof(NativeContext, signalReturn) == 880);  // NativeEntry.S
+static_assert(offsetof(NativeContext, borrowed) == 904 && offsetof(NativeContext, lent) == 912);  // rewrite.py
 
 namespace nestvane::native {
 namespace {
@@ -119,7 +126,9 @@ Registry& registry() {
         result.wanted = std::getenv("NESTVANE_NATIVE") != nullptr;
 #endif
         if (!result.wanted || nestvane_native_module_count == 0) return result;
-        uint64_t low = UINT64_MAX, high = 0;
+        // `high` is where the prelinked modules end; WebView's library is translated for an address of
+        // its own above the addresses for code without a translation (webViewBase), and `top` takes it in.
+        uint64_t low = UINT64_MAX, high = 0, top = 0;
         for (int index = 0; index < nestvane_native_module_count; ++index) {
             const auto& module = nestvane_native_modules[index];
             result.modules.push_back({&module, reinterpret_cast<const uint16_t*>(module.info[3]),
@@ -127,7 +136,10 @@ Registry& registry() {
                                       (module.info[1] - module.info[0]) / 4, module.info[5], module.info[6],
                                       module.info[7], module.info[8], reinterpret_cast<const uint32_t*>(module.info[9])});
             low = std::min(low, module.info[0]);
-            high = std::max(high, module.info[1]);
+            if (module.info[0] >= webViewBase && module.info[1] <= webViewBase + webViewSize)
+                top = std::max(top, module.info[1]);
+            else
+                high = std::max(high, module.info[1]);
         }
         std::sort(result.modules.begin(), result.modules.end(),
                   [](const Loaded& a, const Loaded& b) { return a.codeStart < b.codeStart; });
@@ -156,7 +168,7 @@ Registry& registry() {
             result.failure = "the translations leave no room for the signal return page";
             return result;
         }
-        high = foreignLow;
+        high = std::max<uint64_t>(foreignLow, (top + 0xffff) & ~uint64_t{0xffff});
         result.low = low;
         result.high = high;
         // Only address space: a module's table is mapped in when a process first maps the module, and
@@ -164,7 +176,7 @@ Registry& registry() {
         // The table also spans the addresses of code without a translation. Its pages are made when
         // they are first looked up in (see makePage), and they are pages of a file: the system can
         // write them out and take them back, which it cannot do with memory that has no file.
-        result.covered = std::max(high, foreignHigh);
+        result.covered = std::max(high, webViewBase + webViewSize);
         const size_t bytes = (result.covered - low) * 2;
         std::string path = std::string(std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp") + "/nestvane-code-table.XXXXXX";
         result.tableFile = mkstemp(path.data());
@@ -269,7 +281,9 @@ void onSignal(int number, siginfo_t* info, void* raw) {
         return;
     }
     auto& context = mine->context;
-    std::memcpy(context.x, state.__x, sizeof(uint64_t) * 25);
+    // x18 is the system's on iOS: the guest's is kept in its slot, as NativeEntry.S keeps it.
+    std::memcpy(context.x, state.__x, sizeof(uint64_t) * 18);
+    std::memcpy(context.x + 19, state.__x + 19, sizeof(uint64_t) * 6);
     context.x[29] = state.__fp;
     context.x[30] = state.__lr;
     context.sp = state.__sp;
@@ -278,6 +292,14 @@ void onSignal(int number, siginfo_t* info, void* raw) {
     context.fpsr = user->uc_mcontext->__ns.__fpsr;
     context.faultPc = pc;
     context.faultAddress = reinterpret_cast<uint64_t>(info->si_addr);
+    // A fault while registers were lent: each lent register holds the guest register it stands for,
+    // and its own value is in `lent`. Put them back where the guest has them.
+    for (unsigned index = 0; index < 4 && (context.borrowed >> (10 * index) & 0x3ff); ++index) {
+        const unsigned lender = context.borrowed >> (10 * index) & 31, guest = context.borrowed >> (10 * index + 5) & 31;
+        context.x[guest] = context.x[lender];
+        context.x[lender] = context.lent[index];
+    }
+    context.borrowed = 0;
     mine->signal = number;
     mine->active.store(false, std::memory_order_relaxed);
     state.__x[0] = uint64_t(reason);
@@ -377,6 +399,20 @@ const Module* moduleFor(std::span<const uint8_t> file, unsigned copy) {
 }
 
 const Module* mappedCode(std::span<const uint8_t> file, uint64_t address, uint64_t offset) {
+    // A library stored uncompressed in an APK is mapped from the APK, at its place there: WebView's.
+    // Its bytes run from that offset to the end of its section headers, which come last.
+    if (offset && offset < file.size() && file.size() - offset >= 64 && std::memcmp(file.data() + offset, "\x7f" "ELF", 4) == 0 &&
+        std::memcmp(file.data(), "\x7f" "ELF", 4) != 0) {
+        const uint8_t* elf = file.data() + offset;
+        uint64_t sections;
+        uint16_t entrySize, count;
+        std::memcpy(&sections, elf + 40, 8);
+        std::memcpy(&entrySize, elf + 58, 2);
+        std::memcpy(&count, elf + 60, 2);
+        const uint64_t size = sections + uint64_t{entrySize} * count;
+        if (sections > file.size() - offset || size > file.size() - offset) return nullptr;
+        return mappedCode(file.subspan(offset, size), address, 0);
+    }
     if (!moduleFor(file)) return nullptr;
     uint64_t headers;
     uint16_t entrySize, count;

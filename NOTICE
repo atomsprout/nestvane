@@ -2,10 +2,12 @@ Nestvane
 Copyright 2026 AtomSprout
 
 This product is built on the Android Open Source Project and uses gfxstream,
-ANGLE and SQLite. Those works are not part of this repository and keep their
-own licenses.
+ANGLE, SQLite and Android System WebView (Chromium). Those works are not part of
+this repository and keep their own licenses.
 
-A built app contains an Android system image, gfxstream and ANGLE. The notices
-of the graphics libraries are in ios/Licenses/THIRD-PARTY-NOTICES.txt, and each
-release carries them, with the notices of the Android system image, inside the
-app (Licenses/) and beside it.
+A built app contains an Android system image, Android System WebView, gfxstream
+and ANGLE. The notices of the graphics libraries are in
+ios/Licenses/THIRD-PARTY-NOTICES.txt, and each release carries them, with the
+notices of the Android system image and of WebView (NOTICE-WEBVIEW.html, taken
+from the WebView package by tools/extract-webview-credits.py), inside the app
+(Licenses/) and beside it.

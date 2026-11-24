@@ -92,7 +92,10 @@ def translate(job):
     assembly, output, record = (os.path.join(objects, symbol + suffix) for suffix in (".S", ".o", ".stamp"))
     if os.path.exists(output) and os.path.exists(record) and open(record).read() == stamp:
         return symbol, "kept"
-    result = subprocess.run([sys.executable, REWRITER, *OPTIONS, "--base", hex(base), "--name", symbol, path, assembly],
+    # The entry stubs of --reuse follow all of a module's code, and from the code of a library as large
+    # as WebView's (`--extra`, named ..._x) a branch back from them does not reach.
+    options = [option for option in OPTIONS if option != "--reuse"] if symbol.endswith("_x") else OPTIONS
+    result = subprocess.run([sys.executable, REWRITER, *options, "--base", hex(base), "--name", symbol, path, assembly],
                             capture_output=True, text=True)
     if result.returncode:
         return symbol, "FAILED " + result.stderr.strip().splitlines()[-1]
@@ -104,7 +107,10 @@ def translate(job):
 
 def main():
     arguments = [argument for index, argument in enumerate(sys.argv[1:], 1)
-                 if not argument.startswith("--") and sys.argv[index - 1] not in ("--only", "--used")]
+                 if not argument.startswith("--") and sys.argv[index - 1] not in ("--only", "--used", "--extra")]
+    # --extra <ELF file>@<address>: a library that is not in the trees, translated for an address the
+    # runtime gives it: WebView's (webViewBase in runtime/NativeCode.hpp), which is stored in its APK.
+    extras = [sys.argv[index + 1].rsplit("@", 1) for index, argument in enumerate(sys.argv) if argument == "--extra"]
     used = None
     if "--used" in sys.argv:
         used = set()
@@ -175,6 +181,11 @@ def main():
             addresses[(key, copy)] = (start, base)
         symbol = "m%016x_%d" % (key, copy)
         jobs.append((symbol, path, start, objects, "%s %x %x" % (version, key, start), guest, key, os.path.getsize(path)))
+    for path, address in extras:
+        key = content_key(path)
+        symbol = "m%016x_x" % key
+        jobs.append((symbol, os.path.abspath(path), int(address, 16), objects,
+                     "%s %x %s" % (version, key, address), "/extra/" + os.path.basename(path), key, os.path.getsize(path)))
     if base > LIMIT:
         sys.exit("the modules need 0x%x bytes of guest addresses and 0x%x are set aside" % (base - FIRST_BASE, LIMIT - FIRST_BASE))
     with open(address_file, "w") as file:

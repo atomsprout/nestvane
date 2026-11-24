@@ -625,6 +625,23 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
                               !handled ? "not handled " : linux.blocked() ? "waits " : "", static_cast<unsigned long long>(cpu.x[0]));
                 linux.androidLogObserver(line);
             }
+            // NESTVANE_TRACE_FAILED=<part of an SELinux domain> puts the calls that fail in processes of
+            // that domain into the Android log, such as isolated_app for WebView's renderers.
+            if (static const char* const failedDomain = std::getenv("NESTVANE_TRACE_FAILED");
+                failedDomain && handled && !linux.blocked() && linux.androidLogObserver &&
+                (cpu.x[0] >= uint64_t(-4095) || ((syscall == 222 || syscall == 215 || syscall == 216 || syscall == 226 ||
+                                                  syscall == 233) && callArguments[1] >= 1024 * 1024)) &&
+                linux.currentContext().find(failedDomain) != std::string::npos) {
+                char line[200];
+                std::snprintf(line, sizeof(line), "native execution: traced call %llu(0x%llx, 0x%llx, 0x%llx, 0x%llx) in PID %llu -> 0x%llx",
+                              static_cast<unsigned long long>(syscall), static_cast<unsigned long long>(callArguments[0]),
+                              static_cast<unsigned long long>(callArguments[1]), static_cast<unsigned long long>(callArguments[2]),
+                              static_cast<unsigned long long>(callArguments[3]), static_cast<unsigned long long>(linux.processId()),
+                              static_cast<unsigned long long>(cpu.x[0]));
+                // A Unix socket's path, for connect and bind.
+                const auto path = (syscall == 203 || syscall == 200) ? pathArgument(machine, callArguments[1] + 2) : std::string();
+                linux.androidLogObserver(path.empty() ? std::string(line) : std::string(line) + " " + path);
+            }
             // NESTVANE_TRACE_DENIED=1: the calls that end in "permission denied", with where the path leads.
             if (static const bool traced = std::getenv("NESTVANE_TRACE_DENIED"); traced && cpu.x[0] == uint64_t(-13) && linux.androidLogObserver) {
                 const auto path = pathArgument(machine, cpu.x[1]);
@@ -688,11 +705,34 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
             // SIGILL and Android goes on. It used to end the whole run, and the screen stood still.
             const auto pc = cpu.pc;
             const auto process = linux.processId(), thread = linux.threadId();
+            // The callers, by the frame records, before the signal frame changes the registers.
+            std::ostringstream callers;
+            callers << std::hex << " LR=0x" << cpu.x[30];
+            for (uint64_t frame = cpu.x[29], depth = 0; frame && depth < 8; ++depth) {
+                std::array<uint64_t, 2> record{};
+                if (!machine.readInto(frame, {reinterpret_cast<uint8_t*>(record.data()), sizeof(record)})) break;
+                callers << " <- 0x" << record[1];
+                if (record[0] <= frame) break;
+                frame = record[0];
+            }
+            // NESTVANE_TRAP_DUMP=[*]<address>:<bytes> adds guest memory to the report, at the address or,
+            // with *, at the address read from there.
+            if (const char* dump = std::getenv("NESTVANE_TRAP_DUMP")) {
+                const bool indirect = *dump == '*';
+                uint64_t address = std::strtoull(dump + indirect, nullptr, 16);
+                const char* colon = std::strchr(dump, ':');
+                const uint64_t bytes = std::min<uint64_t>(colon ? std::strtoull(colon + 1, nullptr, 10) : 16, 64);
+                if (indirect && !machine.readInto(address, {reinterpret_cast<uint8_t*>(&address), sizeof(address)})) address = 0;
+                std::vector<uint8_t> memory(bytes);
+                callers << " memory@0x" << address << ":";
+                if (address && machine.readInto(address, memory))
+                    for (const auto byte : memory) callers << ' ' << unsigned(byte);
+            }
             if (init && linux.deliverIllegalInstruction(machine)) {
                 std::ostringstream message;
                 message << ((word & 0xffe0001f) == 0xd4200000 || (word & 0xffe0001f) == 0xd4400000 ? "native execution: breakpoint instruction, SIGTRAP to PID="
                                                                : "native execution: no such instruction in the interpreter, SIGILL to PID=") << process
-                        << " TID=" << thread << std::hex << " PC=0x" << pc << " word=0x" << word << std::dec;
+                        << " TID=" << thread << std::hex << " PC=0x" << pc << " word=0x" << word << std::dec << callers.str();
                 if (illegalInstructions++ < 32) report << "  " << message.str() << '\n';
                 if (linux.androidLogObserver) linux.androidLogObserver(message.str());
                 continue;

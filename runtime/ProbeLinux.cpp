@@ -30,7 +30,10 @@ namespace nestvane {
 
 namespace {
 
-constexpr uint64_t maxReservation = 16ULL * 1024 * 1024 * 1024;
+// The largest single mapping. In a WebView renderer Chromium's allocator reserves 16 GiB aligned to 16 GiB
+// (it asks for 32 and gives back the ends), and V8's sandbox asks for about 196 GiB, or 68 if that fails.
+// A reservation costs addresses, not memory.
+constexpr uint64_t maxReservation = 256ULL * 1024 * 1024 * 1024;
 constexpr uint64_t mappingFloor = 0x1'0000'0000;
 // The settings of the guest's Ethernet interface under /proc/sys/net, which the network daemon and
 // the address configuration write as they bring the interface up. The host's network takes no notice.
@@ -42,7 +45,10 @@ static bool isInterfaceSetting(std::string_view path) {
 }
 
 constexpr uint64_t lowMappingFloor = 0x10000;
-constexpr uint64_t mappingLimit = 0x20'0000'0000; // 128 GiB guest arena; includes 24 randomized page bits.
+// The guest arena: 384 GiB of the 512 GiB a guest address space has, with 24 randomized page bits.
+// A WebView renderer reserves tens of GiB up front (Chromium's allocator 32 GiB to get 16 aligned,
+// V8 and Blink's heap cages more); with 128 GiB, Blink's heap found no room and the renderer stopped.
+constexpr uint64_t mappingLimit = 0x60'0000'0000;
 constexpr uint64_t maxGuestFileBytes = 2 * 1024 * 1024;
 constexpr size_t maxBpfPins = 2048;
 // Even the reference system_server alone exceeds 256 threads after boot.
@@ -2495,7 +2501,7 @@ bool ProbeLinux::eventCall(Machine& machine) {
 }
 
 uint64_t ProbeLinux::socketRead(Machine& machine, const Descriptor& fd, uint64_t address, uint64_t size,
-                                bool reportPacketSize) {
+                                bool reportPacketSize, bool peek) {
     auto& endpoint = *fd.socket;
     if (!size && (!reportPacketSize || endpoint.type == 1)) return 0;
     if (endpoint.inetDatagram()) return receiveInetDatagram(machine, endpoint, address, size);
@@ -2505,7 +2511,7 @@ uint64_t ProbeLinux::socketRead(Machine& machine, const Descriptor& fd, uint64_t
         if (!endpoint.connected) return uint64_t(-107);
         if (endpoint.receiveShutdown) return 0;
         std::vector<uint8_t> bytes(std::min<uint64_t>(size, 256 * 1024));
-        const auto received = hostnet::receive(endpoint.hostFd, bytes);
+        const auto received = hostnet::receive(endpoint.hostFd, bytes, peek);
         if (received == -11) hostSocketWait = true;
         if (received <= 0) return uint64_t(received);
         return machine.write(address, std::span(bytes).first(size_t(received))) ? uint64_t(received) : uint64_t(-14);
@@ -3889,7 +3895,8 @@ bool ProbeLinux::socketCall(Machine& machine) {
     const auto writeUnixAddress = [&](std::string_view name) {
         std::array<uint8_t, 111> address{1, 0};
         std::copy(name.begin(), name.end(), address.begin() + 2);
-        return writeAddress(std::span(address).first(name.empty() ? 2 : 3 + name.size()));
+        // An abstract name (a zero byte first) has no terminating zero: its length is the address's.
+        return writeAddress(std::span(address).first(name.empty() ? 2 : (name[0] ? 3 : 2) + name.size()));
     };
     switch (x[8]) {
         case 198: case 199: { // socket, socketpair
@@ -4048,12 +4055,28 @@ bool ProbeLinux::socketCall(Machine& machine) {
             const auto* bytes = machine.read(x[1], x[2], 4, bytesScratch);
             if (!bytes) { x[0] = uint64_t(-14); break; }
             if (bytes[0] != 1 || bytes[1]) { x[0] = uint64_t(-97); break; }
-            if (!bytes[2]) return false; // Abstract Unix socket namespace.
-            const auto* nul = static_cast<const uint8_t*>(std::memchr(bytes + 2, 0, x[2] - 2));
+            // An abstract name starts with a zero byte and is all the bytes of the address, with no file
+            // behind it. It is kept with the paths, which it cannot be mistaken for, and is free again
+            // once its socket is closed. WebView's zygote listens on one.
+            const bool abstract = !bytes[2];
+            const auto* nul = abstract ? nullptr : static_cast<const uint8_t*>(std::memchr(bytes + 2, 0, x[2] - 2));
             const size_t length = nul ? nul - bytes - 2 : x[2] - 2;
             const std::string_view name(reinterpret_cast<const char*>(bytes + 2), length);
-            const auto path = absolutePath(name);
-            if (x[8] == 200) {
+            const auto path = abstract ? std::string(name) : absolutePath(name);
+            if (x[8] == 200 && abstract) {
+                if (!fd->second.socket->localAddress.empty()) { x[0] = invalid; break; }
+                if (const auto taken = socketPaths.find(path); taken != socketPaths.end()) {
+                    if (!taken->second.endpoint.expired()) { x[0] = uint64_t(-98); break; }
+                    socketPaths.erase(taken);
+                }
+                std::erase_if(socketPaths, [](const auto& entry) {
+                    return entry.first.starts_with('\0') && entry.second.endpoint.expired();
+                });
+                if (socketPaths.size() >= 256) { x[0] = uint64_t(-28); break; }
+                socketPaths.emplace(path, BoundSocket{fd->second.socket, 0777, userId(), groupId()});
+                fd->second.socket->localAddress = name;
+                x[0] = 0;
+            } else if (x[8] == 200) {
                 if (!fd->second.socket->localAddress.empty()) { x[0] = invalid; break; }
                 if (!directoryExists(path.substr(0, path.rfind('/')))) { x[0] = uint64_t(-2); break; }
                 if (!writablePath(path)) { x[0] = uint64_t(-30); break; }
@@ -4072,7 +4095,7 @@ bool ProbeLinux::socketCall(Machine& machine) {
                 }
                 if (javaDumpsToLog && path == "/dev/socket/tombstoned_java_trace") { x[0] = uint64_t(-111); break; }
                 const auto bound = socketPaths.find(path);
-                if (bound == socketPaths.end()) { x[0] = uint64_t(-2); break; }
+                if (bound == socketPaths.end()) { x[0] = abstract ? uint64_t(-111) : uint64_t(-2); break; }
                 auto endpoint = bound->second.endpoint.lock();
                 if (!endpoint) { x[0] = uint64_t(-111); break; }
                 if (endpoint->type != fd->second.socket->type) { x[0] = uint64_t(-91); break; }
@@ -4213,7 +4236,11 @@ bool ProbeLinux::socketCall(Machine& machine) {
                 break;
             }
             constexpr uint64_t truncate = 0x20; // MSG_TRUNC, ignored for UNIX streams.
-            const auto receiveFlags = 0x140ULL | (socket->family == 1 ? truncate : 0);
+            // MSG_PEEK on a TCP connection: Chromium looks at one byte to learn whether the connection is
+            // still open before it uses it again.
+            constexpr uint64_t peek = 0x2;
+            const bool hostStream = socket->hostFd >= 0 && !socket->inetDatagram();
+            const auto receiveFlags = 0x140ULL | (socket->family == 1 ? truncate : 0) | (hostStream ? peek : 0);
             if (x[4] || x[5] || (x[3] & ~(send ? 0x4040ULL : receiveFlags))) return false;
             const auto& endpoint = *socket;
             const auto peer = endpoint.peer.lock();
@@ -4223,7 +4250,7 @@ bool ProbeLinux::socketCall(Machine& machine) {
                 !peer->sendShutdown && !endpoint.receiveShutdown;
             if (waitAll && waitForSocketTimeout(endpoint.receiveTimeout)) return true;
             const auto result = send ? socketWrite(machine, fd->second, x[1], x[2])
-                                     : socketRead(machine, fd->second, x[1], x[2], x[3] & truncate);
+                                     : socketRead(machine, fd->second, x[1], x[2], x[3] & truncate, x[3] & peek);
             if (result == uint64_t(-11) && blocking &&
                 (!waitAll && waitForSocketTimeout(send ? endpoint.sendTimeout : endpoint.receiveTimeout))) return true;
             current->deadline.reset();
@@ -4638,6 +4665,13 @@ bool ProbeLinux::socketCall(Machine& machine) {
                 break;
             }
             const bool timestamp = name == 29 && endpoint.netlink;
+            // SO_BROADCAST: Java's DatagramSocket sets it on every socket it makes (Jellyfin looks for
+            // servers that way). Nothing here is broadcast, so it changes nothing.
+            if (name == 6 && endpoint.storageIdentity) {
+                uint32_t enabled = 0;
+                x[0] = size < 4 ? invalid : readOption({reinterpret_cast<uint8_t*>(&enabled), sizeof(enabled)}) ? 0 : uint64_t(-14);
+                break;
+            }
             if (name != 2 && name != 16 && name != 7 && name != 8 && (name != 33 || !endpoint.netlink) && !timestamp) {
                 if (!endpoint.storageIdentity) return false;
                 x[0] = uint64_t(-92);
@@ -5068,7 +5102,12 @@ bool ProbeLinux::fileCall(Machine& machine) {
             } else if (x[8] == 53 || x[8] == 54) { // fchmodat, fchownat
                 if (!entry) { x[0] = uint64_t(-2); break; }
                 const auto changeMetadata = [&](auto& node) {
-                    if (userId() != 0 && (x[8] != 53 || userId() != node.uid)) return uint64_t(-1);
+                    // CAP_CHOWN may give a file away, CAP_FOWNER change the mode of one it does not own:
+                    // system_server hands each new process its cgroup with the first.
+                    const auto caps = current->process->effectiveCaps;
+                    const bool may = userId() == 0 || (x[8] == 53 ? userId() == node.uid || (caps & (1u << 3)) :
+                                                       (caps & 1u) || ownerMayChown(node.uid, uint32_t(x[2]), uint32_t(x[3])));
+                    if (!may) return uint64_t(-1);
                     if (x[8] == 53) node.mode = x[2] & 0777;
                     else {
                         if (uint32_t(x[2]) != UINT32_MAX) node.uid = uint32_t(x[2]);
@@ -5521,13 +5560,14 @@ bool ProbeLinux::fileCall(Machine& machine) {
             if (x[8] == 55 && entry.socket) { x[0] = userId() == 0 ? 0 : uint64_t(-1); break; }
             const auto& file = entry.temporary;
             if (!file) { x[0] = uint64_t(-30); break; }
-            if (userId() != 0 && userId() != file->uid) { x[0] = uint64_t(-1); break; }
+            const auto caps = current->process->effectiveCaps;
+            if (userId() != 0 && userId() != file->uid && !(caps & (x[8] == 52 ? 1u << 3 : 1u))) { x[0] = uint64_t(-1); break; }
             if (x[8] == 52) {
                 file->mode = x[1] & 0777;
                 file->accessAcl.updateMode(file->mode, false);
             }
             else {
-                if (userId() != 0) { x[0] = uint64_t(-1); break; }
+                if (userId() != 0 && !(caps & 1u) && !ownerMayChown(file->uid, uint32_t(x[1]), uint32_t(x[2]))) { x[0] = uint64_t(-1); break; }
                 if (uint32_t(x[1]) != UINT32_MAX) file->uid = uint32_t(x[1]);
                 if (uint32_t(x[2]) != UINT32_MAX) file->gid = uint32_t(x[2]);
             }
@@ -5685,7 +5725,7 @@ uint64_t ProbeLinux::randomMappingBase() const {
     // With native execution the first addresses are for code without a translation (native::foreignLow).
     // The random part stays in the lower half of the arena whatever the page size is: a base beyond the
     // arena would make every mapping of the process a search for free addresses from the floor.
-    const uint64_t floor = native::enabled() ? native::foreignHigh : mappingFloor;
+    const uint64_t floor = native::enabled() ? native::webViewBase + native::webViewSize : mappingFloor;
     return floor + pages(entropy) * pageSize % ((mappingLimit - floor) / 2);
 }
 
@@ -5693,7 +5733,7 @@ uint64_t ProbeLinux::randomMappingBase() const {
 // must still be able to reuse unmapped addresses after reaching the arena end.
 static uint64_t freeMappingAddress(const Machine& machine, uint64_t next, uint64_t length) {
     if (next <= mappingLimit - length) return next;
-    auto candidate = native::enabled() ? native::foreignHigh : mappingFloor;
+    auto candidate = native::enabled() ? native::webViewBase + native::webViewSize : mappingFloor;
     for (const auto& segment : machine.segments) {
         if (candidate > mappingLimit - length) return 0;
         if (segment.address >= candidate + length) return candidate;
@@ -5740,7 +5780,15 @@ uint64_t ProbeLinux::map(Machine& machine) {
     // if it has no translation: a prelinked library is mapped at an address of its own instead.
     const uint64_t forLibrary = !atAddress && !lowHint && anon && !(x[2] & 7) && machine.space && !machine.space->interpreted() &&
         machine.space->inLinker(machine.cpu.pc) ? freeForeignAddress(machine, length) : 0;
-    const auto start = atAddress ? x[0] : lowHint ? hint : forLibrary ? forLibrary : freeMappingAddress(machine, nextMapping, length);
+    // A hint in the arena is taken when the range is free, as Linux takes it. V8 places its code range
+    // near its own code this way, and gives up when every mapping lands somewhere else.
+    const uint64_t arenaFloor = native::enabled() ? native::webViewBase + native::webViewSize : mappingFloor;
+    const bool highHint = !atAddress && !lowHint && !forLibrary && hint >= arenaFloor && length <= mappingLimit - hint &&
+                          !overlaps(hint, false);
+    const bool webView = !atAddress && anon && !(x[2] & 7) && length == native::webViewSize && machine.space &&
+                         native::covers(native::webViewBase, native::webViewBase + length) && !overlaps(native::webViewBase, false);
+    const auto start = atAddress ? x[0] : webView ? native::webViewBase : lowHint || highHint ? hint :
+                       forLibrary ? forLibrary : freeMappingAddress(machine, nextMapping, length);
     if (static const bool trace = std::getenv("NESTVANE_NATIVE_TRACE"); trace && machine.space && !(x[2] & 7) && anon)
         std::fprintf(stderr, "[native] pid %llu reserves 0x%llx bytes hint 0x%llx flags 0x%llx pc 0x%llx: linker %d interpreted %d -> 0x%llx\n",
                      static_cast<unsigned long long>(processId()), static_cast<unsigned long long>(length),
@@ -6908,14 +6956,30 @@ bool ProbeLinux::validAppProcessContext(std::string_view label) const {
         validAppMlsRange(label.substr(end + 1));
 }
 
+// Without CAP_CHOWN the owner of a file may still "change" its owner to itself and its group to one of
+// its own groups. libprocessgroup does that for each new process's cgroup, from system_server.
+bool ProbeLinux::ownerMayChown(uint32_t owner, uint32_t uid, uint32_t gid) const {
+    if (userId() != owner || (uid != UINT32_MAX && uid != owner)) return false;
+    if (gid == UINT32_MAX || gid == groupId()) return true;
+    const auto& groups = current->process->groups;
+    return std::find(groups.begin(), groups.end(), gid) != groups.end();
+}
+
 bool ProbeLinux::canSpecializeApp(std::string_view label) const {
-    constexpr std::string_view zygote = "u:r:zygote:s0";
+    constexpr std::string_view zygote = "u:r:zygote:s0", webViewZygote = "u:r:webview_zygote:s0";
     const auto& process = *current->process;
-    if (process.context != zygote || !validAppProcessContext(label)) return false;
+    if (!validAppProcessContext(label)) return false;
     const auto parent = threads.find(process.parent);
-    if (parent == threads.end() || parent->second.process->context != zygote || parent->second.process->userIds[0] != 0)
-        return false;
+    if (parent == threads.end()) return false;
     const auto uid = userId();
+    if (process.context == webViewZygote) {
+        // WebView's zygote starts renderers, each an isolated app with an isolated uid.
+        if (parent->second.process->context != webViewZygote || !label.starts_with("u:r:isolated_app:") ||
+            uid % 100000 < 90000) return false;
+    } else if (process.context != zygote || parent->second.process->context != zygote ||
+               parent->second.process->userIds[0] != 0) {
+        return false;
+    }
     if (!uid || !std::ranges::all_of(process.userIds, [uid](auto id) { return id == uid; })) return false;
 
     constexpr unsigned userOffset = 100000, appStart = 10000, sdkStart = 20000, pccStart = 30000,
@@ -8393,7 +8457,9 @@ std::string ProbeLinux::memoryReport(const Machine& machine) const {
 std::string ProbeLinux::workerReport(const Machine& machine, uint64_t observedProcess) const {
     std::string report;
     for (const auto& [path, tid] : propertyPollers) {
-        report += "  guest worker " + std::to_string(tid) + " waited in epoll for " + path + "\n";
+        // An abstract socket's name starts with a zero byte: shown with "@", as Linux tools show it.
+        const std::string shown = path.starts_with('\0') ? "@" + std::string(path).substr(1) : std::string(path);
+        report += "  guest worker " + std::to_string(tid) + " waited in epoll for " + shown + "\n";
     }
     std::ostringstream tasks;
     const auto snapshotTime = std::chrono::steady_clock::now();
@@ -9232,8 +9298,24 @@ bool ProbeLinux::enforceSeccomp(Machine& machine) {
         cpu.x[0] = uint64_t(-38);
         return true;
     }
-    // The probe supports fatal SIGSYS. A guest SIGSYS handler needs signal-frame delivery.
-    const bool wholeProcess = action != 0 && action != 0x00030000;
+    if (action == 0x00030000) { // TRAP: SIGSYS to the thread, before its next instruction
+        // The call is not made. The handler reads which call it was from the signal's information and
+        // can give the call a result through the saved registers: Chromium's sandbox works that way.
+        // Without a handler, SIGSYS ends the process.
+        SignalWords info{};
+        info[0] = 31;                     // SIGSYS
+        info[1] = result & 0xffff;        // SECCOMP_RET_DATA, in si_errno
+        info[2] = 1;                      // SYS_SECCOMP
+        const auto callAddress = cpu.pc + 4;
+        std::memcpy(&info[4], &callAddress, sizeof(callAddress));
+        info[6] = uint32_t(cpu.x[8]);     // si_syscall
+        info[7] = 0xc00000b7;             // si_arch: AUDIT_ARCH_AARCH64
+        current->pendingSignals.emplace(31, info);
+        current->signalMask &= ~(1ULL << 30); // a seccomp SIGSYS is not held back by the mask
+        sliceEnd = 0;
+        return true;
+    }
+    const bool wholeProcess = action != 0;
     const auto process = current->process;
     if (wholeProcess) removeSiblingThreads();
     current->wait = Wait::exited;
@@ -11765,14 +11847,17 @@ bool ProbeLinux::syscall(Machine& machine) {
                 if (real != UINT32_MAX || (effective != UINT32_MAX && effective != ids[0]))
                     updated[2] = updated[1];
             } else {
+                // CAP_SETUID or CAP_SETGID, not only root, may set any id. WebView's zygote runs as its own
+                // user with both, and gives each renderer it starts an id of its range.
+                const bool privileged = userId() == 0 || (process.effectiveCaps & (uint64_t{1} << (users ? 7 : 6)));
                 for (unsigned i = 0; i < 3; ++i) {
                     const auto value = uint32_t(x[triple ? i : 0]);
                     if (triple && value == UINT32_MAX) continue;
-                    if (value == UINT32_MAX || (userId() != 0 && std::find(ids.begin(), ids.end(), value) == ids.end())) {
+                    if (value == UINT32_MAX || (!privileged && std::find(ids.begin(), ids.end(), value) == ids.end())) {
                         allowed = false;
                         break;
                     }
-                    if (triple || userId() == 0 || i == 1) updated[i] = value;
+                    if (triple || privileged || i == 1) updated[i] = value;
                 }
             }
             if (allowed) {
@@ -11795,7 +11880,7 @@ bool ProbeLinux::syscall(Machine& machine) {
         case 158: case 159: { // getgroups, setgroups
             auto& groups = current->process->groups;
             if (number == 159) {
-                if (userId() != 0) { x[0] = uint64_t(-1); break; }
+                if (userId() != 0 && !(current->process->effectiveCaps & (uint64_t{1} << 6))) { x[0] = uint64_t(-1); break; }
                 if (x[0] > 64) { x[0] = invalid; break; }
                 std::vector<uint32_t> updated(x[0]);
                 const auto size = updated.size() * sizeof(uint32_t);
@@ -12208,7 +12293,17 @@ bool ProbeLinux::syscall(Machine& machine) {
             break;
         }
         case 222: { // mmap
+            const std::array<uint64_t, 6> asked{x[0], x[1], x[2], x[3], x[4], x[5]};
             const auto result = map(machine);
+            // A large reservation that fails ends a program that cannot do without it (Chromium's
+            // allocator, V8's code range): say what was asked.
+            if (androidLogObserver && result >= uint64_t(-4095) && asked[1] >= 32 * 1024 * 1024) {
+                std::ostringstream event;
+                event << "native execution: mmap of 0x" << std::hex << asked[1] << " bytes failed with errno=" << std::dec
+                      << -int64_t(result) << std::hex << " hint=0x" << asked[0] << " prot=0x" << asked[2]
+                      << " flags=0x" << asked[3] << " pid " << std::dec << processId();
+                androidLogObserver(event.str());
+            }
             if (androidLogObserver && result >= uint64_t(-4095) && !(x[3] & 0x20)) {
                 const auto file = descriptors().find(uint32_t(x[4]));
                 if (file != descriptors().end() && file->second.path.ends_with(".apk")) {
@@ -12560,6 +12655,36 @@ bool ProbeLinux::syscall(Machine& machine) {
                 ? 0 : uint64_t(-14);
             break;
         }
+        case 277: { // seccomp. Chromium's sandbox uses it rather than prctl.
+            constexpr uint64_t threadSync = 1, logged = 2, speculation = 4;
+            if (x[0] == 1) { // SECCOMP_SET_MODE_FILTER
+                if (x[1] & ~(threadSync | logged | speculation)) { x[0] = invalid; break; }
+                const auto result = installSeccomp(machine, x[2]);
+                // TSYNC: every thread of the process gets the filter just installed.
+                if (!result && (x[1] & threadSync)) {
+                    for (auto& [tid, thread] : threads) {
+                        if (thread.process != current->process || &thread == current || thread.wait == Wait::exited) continue;
+                        thread.seccomp = current->seccomp;
+                        thread.noNewPrivileges = thread.noNewPrivileges || current->noNewPrivileges;
+                    }
+                }
+                x[0] = result;
+            } else if (x[0] == 2) { // SECCOMP_GET_ACTION_AVAIL
+                if (x[1]) { x[0] = invalid; break; }
+                uint32_t action = 0;
+                if (!machine.readInto(x[2], {reinterpret_cast<uint8_t*>(&action), sizeof(action)})) { x[0] = uint64_t(-14); break; }
+                // The actions enforceSeccomp carries out (KILL_PROCESS, KILL_THREAD, TRAP, ERRNO, LOG, ALLOW);
+                // with no listener and no tracer, USER_NOTIF and TRACE are not offered.
+                constexpr uint32_t known[] = {0x80000000, 0, 0x00030000, 0x00050000, 0x7ffc0000, 0x7fff0000};
+                x[0] = std::ranges::find(known, action) != std::end(known) ? 0 : uint64_t(-95);
+            } else {
+                x[0] = invalid; // STRICT mode and notification sizes are not offered.
+            }
+            break;
+        }
+        case 223: // fadvise64: advice about how a file will be read, which there is no cache here to act on.
+            x[0] = descriptors().contains(uint32_t(x[0])) ? (x[3] > 5 ? invalid : 0) : uint64_t(-9);
+            break;
         case 167: { // Guest process controls.
             auto& process = *current->process;
             if (x[0] == 21) { x[0] = current->seccomp ? 2 : 0; break; } // PR_GET_SECCOMP

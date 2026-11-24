@@ -3190,7 +3190,7 @@ int main() {
     }
     {
         ProbeLinux guest(1, 0);
-        constexpr uint64_t floor = 0x1'0000'0000, limit = 0x20'0000'0000;
+        constexpr uint64_t floor = 0x1'0000'0000, limit = 0x60'0000'0000;
         constexpr uint64_t fixedPrivate = 0x100022;
         Machine task(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
         const auto invoke = [&](uint64_t number, std::array<uint64_t, 6> args) {
@@ -3463,7 +3463,7 @@ int main() {
         assert(call(222, {0, 2 * pageSize, 1, 1, map, pageSize}) == uint64_t(-22));
         const auto rw = call(222, {0, 2 * pageSize, 3, 1, map, 0});
         const auto ro = call(222, {0, pageSize, 1, 1, map, pageSize});
-        assert(rw < ro && ro < 0x20'0000'0000);
+        assert(rw < ro && ro < 0x60'0000'0000);
         assert(call(226, {ro, pageSize, 3}) == uint64_t(-13)); // A read-only VMA cannot gain write permission.
         const std::array<uint8_t, 3> initial{12, 34, 56}, updated{7, 8, 9};
         const std::array<uint64_t, 4> element{map, key, value, 0};

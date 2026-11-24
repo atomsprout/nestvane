@@ -9,7 +9,11 @@ cd "$(dirname "$0")/.."
 root="${1:?guest root}"
 NESTVANE_PAGE_SIZE=16384 tools/prepare-property-reader.sh "$root"
 tools/build-fixtures.sh
-python3 tools/build-native-code.py generated/native-code "$root" "${@:2}" --ios | tail -1
+# Android System WebView, and its library translated for the address the runtime gives it
+# (webViewBase in runtime/NativeCode.hpp).
+tools/add-webview.sh "$root"
+python3 tools/build-native-code.py generated/native-code "$root" "${@:2}" --ios \
+    --extra generated/webview/lib/arm64-v8a/libwebviewchromium.so@0x140000000 | tail -1
 rm -rf generated/native-app
 mkdir -p generated/native-app
 cp -cR "$root" generated/native-app/android17-init-root

@@ -26,3 +26,7 @@ generated/validate-dns-proxy
 xcrun clang++ -O2 -std=c++20 -Wall -Wextra -Werror -Iruntime \
     runtime/GuestSpace.cpp tools/validate-guest-space.cpp -o generated/validate-guest-space
 generated/validate-guest-space
+
+# The rewriter, on instructions that name x25-x28 as ordinary registers: each run as written and as
+# translated on this Mac's processor.
+python3 tools/validate-rewriter.py generated/validate-rewriter
