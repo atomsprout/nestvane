@@ -365,6 +365,9 @@ struct Machine {
     // `start` to `end` they are at `base` onward. Only code that cannot be written, which nothing
     // short of a change of mappings moves; false otherwise, and the caller fetches one at a time.
     bool codeWindow(uint64_t address, uint64_t& start, uint64_t& end, const uint8_t*& base) const;
+    // The code segment around `address` when it is in the guest address space and cannot be written:
+    // a worker can then fetch its instructions through the space (FastPath.hpp, SpaceCode).
+    bool codeInSpace(uint64_t address, uint64_t& start, uint64_t& end) const;
     // Where the data around `address` is in host memory, for loads and stores straight from there:
     // from `start` to `end` it is at `base` onward. Only private memory of the guest address space
     // that has host pages behind it, and, for reading, data that cannot be written. Valid until the

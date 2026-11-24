@@ -352,7 +352,16 @@ bool GuestSpace::move(uint64_t from, uint64_t to, uint64_t length) {
 
 bool GuestSpace::touch(uint64_t address) {
     if (address >= size || !mapped(address)) return false;
-    return backed(address) || backRange(address >> chunkShift, (address >> chunkShift) + 1);
+    if (backed(address)) return true;
+    // The chunks after it that have mapped pages and no host memory yet get theirs in the same run,
+    // a few at a time. Given one by one, the next chunk often found the host addresses after the run
+    // taken and went to a run of its own, and code reaching across the boundary faulted on every
+    // access. Host memory is only address space until it is written, so this costs no memory.
+    constexpr uint64_t ahead = 8;
+    const uint64_t first = address >> chunkShift;
+    uint64_t last = first + 1;
+    while (last < chunks && last < first + ahead && offsets_[last] == voidOffset && !chunkEmpty(last)) ++last;
+    return backRange(first, last);
 }
 
 bool GuestSpace::guestAddress(uint64_t hostAddress, uint64_t& address, bool* inRun) const {

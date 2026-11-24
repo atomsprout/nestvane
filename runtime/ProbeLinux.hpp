@@ -35,6 +35,8 @@ struct sqlite3;
 
 namespace nestvane {
 
+struct SpaceCode;
+
 class BpfProgram;
 struct BpfMap;
 class BpfTypes;
@@ -109,6 +111,9 @@ struct ProbeLinux {
     // Hands the current thread's native code to a worker if it has shown to compute for long. The
     // scheduler goes on with other threads and the thread has its next turn when the run has ended.
     bool offloadNative(Machine& machine);
+    // Hands the current thread to a worker that interprets it in `code` (native::offloadInterpreter),
+    // when it keeps using whole turns there. False when it stays.
+    bool offloadInterpreter(Machine& machine, const SpaceCode& code);
     // How the current thread's run on a worker ended, once, at the thread's next turn.
     std::optional<native::Result> takeNativeResult();
     // The current thread's native code ran until its turn was over.
@@ -299,6 +304,7 @@ private:
         std::optional<native::Result> nativeResult; // how that run ended, until the thread has its next turn
         bool cpuBound = false;                      // its native code used up a whole turn: worth a worker
         unsigned briefRuns = 0;                     // runs on a worker in a row that ended at once
+        unsigned briefInterpreted = 0;              // the same for runs of the interpreter on a worker
         uint64_t signalMask = 0;
         uint64_t signalWaitMask = 0;
         std::optional<uint64_t> suspendSignalMask;

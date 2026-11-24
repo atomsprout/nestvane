@@ -18,6 +18,6 @@ for name in arithmetic memory; do
     arguments+=("$name" "$elf" "$start" "$end")
 done
 
-xcrun clang++ -O2 -std=c++20 -Iruntime runtime/Runtime.cpp runtime/GuestSpace.cpp runtime/NativeCode.cpp runtime/NativeEntry.S runtime/NoNativeCode.cpp tools/no-aot.cpp tools/aot.cpp     -o generated/aot
+xcrun clang++ -O2 -std=c++20 -Iruntime runtime/Runtime.cpp runtime/GuestSpace.cpp runtime/NativeCode.cpp runtime/FastPath.cpp runtime/NativeEntry.S runtime/NoNativeCode.cpp tools/no-aot.cpp tools/aot.cpp     -o generated/aot
 generated/aot "${arguments[@]}" > generated/AOT.cpp.tmp
 mv generated/AOT.cpp.tmp generated/AOT.cpp

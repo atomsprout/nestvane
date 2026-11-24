@@ -28,12 +28,15 @@ int main() {
     check("host address back to guest", space.guestAddress(reinterpret_cast<uint64_t>(space.host(base + 12345)), guest, &inRun) && guest == base + 12345 && inRun);
     check("void address back to guest", space.guestAddress(reinterpret_cast<uint64_t>(space.host(0x1234567)), guest, &inRun) && guest == 0x1234567 && !inRun);
 
-    // A large mapping gets host memory chunk by chunk, in the order it is touched.
+    // A large mapping gets host memory as it is touched: the touched chunk and up to seven mapped ones
+    // after it, in one run, so that they are contiguous in host memory too.
     const uint64_t large = base + 8 * chunk;
     check("map lazily", space.mapAnonymous(large, 16 * chunk, 3, false) && space.mapped(large + 5 * chunk) && !space.backed(large + 5 * chunk));
     check("touch out of order", space.touch(large + 3 * chunk) && space.touch(large + chunk) && space.touch(large + 2 * chunk) && space.touch(large));
     space.host(large + 3 * chunk)[7] = 1;
-    check("untouched chunk stays unbacked", !space.backed(large + 9 * chunk) && space.backed(large + 2 * chunk));
+    check("untouched chunk stays unbacked", !space.backed(large + 12 * chunk) && space.backed(large + 2 * chunk) &&
+                                                space.backed(large + 10 * chunk) && !space.backed(large + 11 * chunk));
+    check("chunks backed together are contiguous", space.host(large + 10 * chunk) == space.host(large + 3 * chunk) + 7 * chunk);
     std::vector<uint8_t> pattern(3 * chunk + 999);
     for (size_t index = 0; index < pattern.size(); ++index) pattern[index] = uint8_t(index * 31 + index / 4096);
     std::vector<uint8_t> copy(pattern.size());
@@ -47,8 +50,8 @@ int main() {
     child->host(base)[100] = 1;
     space.host(base)[101] = 2;
     check("fork copies on write", space.host(base)[100] == 0x5a && child->host(base)[101] == 0x5a);
-    check("fork keeps lazy mappings", child->mapped(large + 9 * chunk) && !child->backed(large + 9 * chunk) && child->touch(large + 9 * chunk) &&
-                                        !space.backed(large + 9 * chunk));
+    check("fork keeps lazy mappings", child->mapped(large + 12 * chunk) && !child->backed(large + 12 * chunk) && child->touch(large + 12 * chunk) &&
+                                        !space.backed(large + 12 * chunk));
     child->unmap(base, 4 * page);
     check("unmap in the child only", !child->mapped(base) && space.mapped(base) && space.host(base)[100] == 0x5a);
 

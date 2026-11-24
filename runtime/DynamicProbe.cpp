@@ -562,6 +562,16 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
             }
             inPlaceTime += steady_clock::now() - inPlaceStart;
             inPlaceInstructions += cpu.retired - retiredBefore;
+            // A thread that used its whole turn here goes on on a worker, beside the main loop, for as
+            // long as its code is the kind a worker can interpret (FastPath.hpp, interpretInSpace).
+            if (ran && cpu.stop == Stop::running && !linux.hasSliceBudget(cpu.retired, 1) && !machine.space->hasCode(cpu.pc)) {
+                // The whole code segment when the worker can fetch it through the address space; else the window.
+                uint64_t segmentStart = 0, segmentEnd = 0;
+                const auto code = machine.codeInSpace(cpu.pc, segmentStart, segmentEnd) ? SpaceCode{segmentStart, segmentEnd, nullptr}
+                                : window && cpu.pc - windowStart < windowEnd - windowStart ? SpaceCode{windowStart, windowEnd, window}
+                                : SpaceCode{};
+                if (code.end > code.start && linux.offloadInterpreter(machine, code)) continue;
+            }
             if (ran || stretchEnded) continue;
         }
         const auto* bytes = machine.readInstruction(cpu.pc);

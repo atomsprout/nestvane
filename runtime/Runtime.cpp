@@ -1065,6 +1065,19 @@ size_t Machine::searchSegment(uint64_t address, size_t size, unsigned flags, siz
     return hint;
 }
 
+bool Machine::codeInSpace(uint64_t address, uint64_t& start, uint64_t& end) const {
+    size_t hint = codeHint;
+    const auto index = findSegment(address, sizeof(uint32_t), executable, hint);
+    if (index == segments.size()) return false;
+    const auto& segment = segments[index];
+    if ((segment.flags & writable) || !segment.anonymousPages || !segment.anonymousPages->guestSpace() || segment.shared ||
+        segment.anonymousPages->guestBase() + segment.fileOffset != segment.address)
+        return false;
+    start = segment.address;
+    end = segment.address + (segment.accessibleSize() & ~uint64_t{3});
+    return end > start;
+}
+
 bool Machine::codeWindow(uint64_t address, uint64_t& start, uint64_t& end, const uint8_t*& base) const {
     constexpr unsigned writableFlag = 2;
     size_t hint = codeHint;
@@ -1076,6 +1089,23 @@ bool Machine::codeWindow(uint64_t address, uint64_t& start, uint64_t& end, const
         start = segment.address;
         end = segment.address + (segment.accessibleSize() & ~uint64_t{3});
         base = segment.imageView ? segment.imageView : segment.data();
+        return end > start;
+    }
+    // Code placed in the guest address space (a library's text, copied there): as far as the run of host
+    // memory it is in goes, within the segment.
+    if (segment.anonymousPages && segment.anonymousPages->guestSpace() && !segment.shared) {
+        const auto& guestSpace = *segment.anonymousPages->guestSpace();
+        const auto toStore = segment.anonymousPages->guestBase() + segment.fileOffset - segment.address;
+        const auto stored = address + toStore;
+        if (!guestSpace.backed(stored)) return false;
+        const auto offset = guestSpace.offsets()[stored >> GuestSpace::chunkShift];
+        uint64_t low = stored & ~(GuestSpace::chunk - 1), high = low + GuestSpace::chunk;
+        while (low && guestSpace.offsets()[(low - 1) >> GuestSpace::chunkShift] == offset) low -= GuestSpace::chunk;
+        while (high < GuestSpace::size && guestSpace.offsets()[high >> GuestSpace::chunkShift] == offset) high += GuestSpace::chunk;
+        const auto limit = segment.address + segment.accessibleSize();
+        start = low >= segment.address + toStore ? low - toStore : segment.address;
+        end = (high - toStore < limit ? high - toStore : limit) & ~uint64_t{3};
+        base = guestSpace.host(start + toStore);
         return end > start;
     }
     // Pages of their own: the page at `address`, which is contiguous.

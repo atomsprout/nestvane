@@ -6,6 +6,7 @@
 //   tools/bench-interpreter.sh [scale]
 #include "AArch64.hpp"
 #include "FastPath.hpp"
+#include "GuestSpace.hpp"
 #include "Runtime.hpp"
 
 #include <chrono>
@@ -91,5 +92,52 @@ int main(int argc, char** argv) {
         return 1;
     }
     std::printf("results agree\n");
+
+    // The same as a worker runs it (interpretInSpace): memory only through a guest address space.
+    GuestSpace space;
+    constexpr uint64_t guestBuffer = 0x4000'0000, guestStack = 0x5000'0000, stackSize = 0x10000;
+    if (!space.mapAnonymous(guestBuffer, bufferSize, GuestSpace::read | GuestSpace::write, true) ||
+        !space.mapAnonymous(guestStack - stackSize, stackSize, GuestSpace::read | GuestSpace::write, true)) {
+        std::printf("FAIL: no guest address space\n");
+        return 1;
+    }
+    CPU worker;
+    worker.pc = reinterpret_cast<uint64_t>(&interpreter_bench);
+    worker.x[0] = guestBuffer;
+    worker.x[1] = uint64_t(scale);
+    worker.x[30] = returnAddress;
+    worker.sp = guestStack;
+    // The code too, at the address it has here, fetched through the space as a worker fetches a library's.
+    const uint64_t spaceCodeStart = reinterpret_cast<uint64_t>(&benchStart) & ~(GuestSpace::page - 1);
+    const uint64_t spaceCodeEnd = (reinterpret_cast<uint64_t>(&benchEnd) + GuestSpace::page - 1) & ~(GuestSpace::page - 1);
+    if (!space.mapAnonymous(spaceCodeStart, spaceCodeEnd - spaceCodeStart, GuestSpace::read | GuestSpace::write, true) ||
+        !space.copyIn(reinterpret_cast<uint64_t>(&benchStart), &benchStart, size_t(&benchEnd - &benchStart))) {
+        std::printf("FAIL: no code in the guest address space\n");
+        return 1;
+    }
+    space.protect(spaceCodeStart, spaceCodeEnd - spaceCodeStart, GuestSpace::read);
+    const SpaceCode workerCode{reinterpret_cast<uint64_t>(&benchStart), reinterpret_cast<uint64_t>(&benchEnd), nullptr};
+    std::atomic<bool> stop{false};
+    uint64_t ran = 0;
+    started = std::chrono::steady_clock::now();
+    while (worker.pc != returnAddress) {
+        const auto count = interpretInSpace(worker, space, workerCode, UINT64_MAX, stop);
+        ran += count;
+        if (worker.pc != returnAddress) {
+            uint32_t word = 0;
+            std::memcpy(&word, reinterpret_cast<const void*>(worker.pc), sizeof(word));
+            std::printf("FAIL: a worker stops at 0x%llx (%08x) after %llu instructions\n", (unsigned long long)worker.pc,
+                        word, (unsigned long long)ran);
+            return 1;
+        }
+    }
+    const auto workerTime = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+    std::printf("on a worker's terms %.3f s, %llu instructions, %.1f million a second\n", workerTime,
+                (unsigned long long)ran, double(ran) / workerTime / 1e6);
+    if (int64_t(worker.x[0]) != expected) {
+        std::printf("FAIL: worker result %lld, expected %lld\n", (long long)worker.x[0], (long long)expected);
+        return 1;
+    }
+    std::printf("worker results agree\n");
     return 0;
 }

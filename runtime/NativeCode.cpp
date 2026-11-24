@@ -1,4 +1,7 @@
 #include "NativeCode.hpp"
+#include "FastPath.hpp"
+
+#include <csetjmp>
 
 #include "GuestSpace.hpp"
 #include "Runtime.hpp"
@@ -74,7 +77,8 @@ static_assert(offsetof(NativeContext, borrowed) == 904 && offsetof(NativeContext
 namespace nestvane::native {
 namespace {
 
-constexpr int leftBySyscall = 1, leftByFault = 2, leftByPreemption = 3, leftByTrap = 4, leftByStray = 5;
+constexpr int leftBySyscall = 1, leftByFault = 2, leftByPreemption = 3, leftByTrap = 4, leftByStray = 5,
+              leftByInterpreter = 6;
 constexpr uint64_t sliceNanoseconds = 1'000'000;
 constexpr int preemptionSignal = SIGUSR2;
 
@@ -255,9 +259,16 @@ struct Counters {
     uint64_t unmapped = 0, backed = 0;
     uint64_t sliceSignals = 0, sliceOutside = 0;
     uint64_t offloads = 0;
+    uint64_t interpreterOffloads = 0, workerInterpreted = 0;
+    std::atomic<uint64_t> workerEnds[8] = {};  // how runs of the interpreter on a worker ended: by native reason, 0 in the interpreter
 } counters;
 
 void onSignal(int number, siginfo_t* info, void* raw) {
+    // A worker interpreting (interpretInSpace) touched memory that another thread unmapped meanwhile:
+    // the run ends before that instruction.
+    if (number == SIGSEGV || number == SIGBUS) {
+        if (auto* jump = static_cast<sigjmp_buf*>(interpreterFaultJump())) siglongjmp(*jump, 1);
+    }
     auto* user = static_cast<ucontext_t*>(raw);
     auto& state = user->uc_mcontext->__ss;
     Running* const mine = self;
@@ -509,16 +520,14 @@ namespace {
 
 // Puts the thread's registers into a context that enters native code at cpu.pc. False if the
 // instruction there is not entered natively.
-bool load(Machine& machine, NativeContext& context) {
+// The context for entering native code at cpu.pc, whose page of the table exists. False if pc is not
+// the start of translated code.
+bool loadContext(const CPU& cpu, const GuestSpace& space, uint64_t stack, NativeContext& context) {
     auto& all = registry();
-    auto& cpu = machine.cpu;
-    auto& space = *machine.space;
-    if (cpu.pc < all.low || cpu.pc >= all.high || cpu.pc % 4 || !makePage(cpu.pc)) return false;
     const uint64_t entry = all.table[(cpu.pc - all.low) / 4];
     if (!entry || entry == reinterpret_cast<uint64_t>(&nestvane_native_stray) || all.traps.contains(entry)) return false;
     std::memcpy(context.x, cpu.x.data(), sizeof(context.x));
     std::memcpy(context.q, cpu.v.data(), sizeof(context.q));
-    const uint64_t stack = machine.dataAddress(cpu.sp);
     context.base = stack < GuestSpace::size ? space.offsets()[stack >> GuestSpace::chunkShift] : GuestSpace::voidOffset;
     context.sp = cpu.sp + context.base;
     context.nzcv = uint64_t{cpu.nzcv} << 28;
@@ -531,6 +540,21 @@ bool load(Machine& machine, NativeContext& context) {
     context.trapEntry = reinterpret_cast<uint64_t>(&nestvane_native_trap);
     context.signalReturn = all.signalPage + 4;
     return true;
+}
+
+bool load(Machine& machine, NativeContext& context) {
+    auto& all = registry();
+    auto& cpu = machine.cpu;
+    if (cpu.pc < all.low || cpu.pc >= all.high || cpu.pc % 4 || !makePage(cpu.pc)) return false;
+    return loadContext(cpu, *machine.space, machine.dataAddress(cpu.sp), context);
+}
+
+// The same on a worker, which does not make pages of the table: only the main loop does.
+bool loadOnWorker(const CPU& cpu, const GuestSpace& space, NativeContext& context) {
+    auto& all = registry();
+    if (cpu.pc < all.low || cpu.pc >= all.high || cpu.pc % 4) return false;
+    if (!all.made[(cpu.pc - all.low) * 2 / GuestSpace::page]) return false;
+    return loadContext(cpu, space, cpu.sp & 0x00ff'ffff'ffff'ffffULL, context);
 }
 
 // Runs the context on this host thread until guest code leaves, and tells how it left.
@@ -577,6 +601,10 @@ Exit settle(Machine& machine, const Result& result) {
     auto& all = registry();
     auto& cpu = machine.cpu;
     auto& space = *machine.space;
+    if (result.reason == leftByInterpreter) {
+        counters.workerInterpreted += result.interpreted;
+        return Exit::interpret;
+    }
     counters.nativeTime += result.ran;
     ++counters.runs;
     uint64_t guestPc = 0;
@@ -656,6 +684,10 @@ struct Worker {
     uint64_t ticket = 0;
     Result result;
     std::shared_ptr<GuestSpace> space;  // keeps the memory the guest code runs in
+    // A run of the interpreter instead (offloadInterpreter): the thread's registers and its code.
+    bool interpreting = false;
+    CPU cpu;
+    SpaceCode code;
 };
 
 struct Pool {
@@ -677,7 +709,43 @@ void work(Worker* worker) {
             std::unique_lock lock(pool.mutex);
             pool.assigned.wait(lock, [&] { return worker->state == Worker::State::assigned; });
         }
-        const Result result = enter(worker->running);
+        Result result;
+        if (worker->interpreting) {
+            // The thread's code without a translation is interpreted here, and what it calls that has one
+            // runs natively here too, as the main loop would do, for about 25 ms. The run ends at
+            // anything else: what the interpreter here does not do, a system call, a fault. When it ends
+            // in native code, the main loop takes the registers from the native context.
+            const uint64_t until = mach_absolute_time() + machTime(25'000'000);
+            const auto& code = worker->code;
+            uint64_t interpreted = 0;
+            for (;;) {
+                interpreted += interpretInSpace(worker->cpu, *worker->space, code, 2'000'000, worker->running.recall);
+                const uint64_t pc = worker->cpu.pc;
+                if (pc - code.start < code.end - code.start || worker->running.recall.load(std::memory_order_relaxed) ||
+                    mach_absolute_time() >= until || !loadOnWorker(worker->cpu, *worker->space, worker->running.context)) {
+                    counters.workerEnds[pc - code.start < code.end - code.start ? 0 : 7].fetch_add(1, std::memory_order_relaxed);
+                    result = {};
+                    result.reason = leftByInterpreter;
+                    result.pc = pc;
+                    break;
+                }
+                result = enter(worker->running);
+                if (result.reason == leftByTrap && result.pc - code.start < code.end - code.start &&
+                    !worker->running.recall.load(std::memory_order_relaxed) && mach_absolute_time() < until) {
+                    // Back in the code being interpreted.
+                    store(worker->running.context, worker->cpu);
+                    worker->cpu.pc = result.pc;
+                    continue;
+                }
+                counters.workerEnds[std::min(result.reason, 6)].fetch_add(1, std::memory_order_relaxed);
+                worker->interpreting = false;
+                break;
+            }
+            result.interpreter = true;
+            result.interpreted = interpreted;
+        } else {
+            result = enter(worker->running);
+        }
         {
             std::lock_guard lock(pool.mutex);
             worker->result = result;
@@ -738,6 +806,27 @@ bool offload(Machine& machine, uint64_t ticket) {
     return false;
 }
 
+bool offloadInterpreter(Machine& machine, uint64_t ticket, const SpaceCode& code) {
+    if (pool.outstanding.load(std::memory_order_relaxed) == pool.workers.size() || !machine.space) return false;
+    std::lock_guard lock(pool.mutex);
+    for (auto& worker : pool.workers) {
+        if (worker->state != Worker::State::idle) continue;
+        worker->interpreting = true;
+        worker->cpu = machine.cpu;
+        worker->cpu.output.clear();
+        worker->code = code;
+        worker->ticket = ticket;
+        worker->space = machine.space;
+        worker->running.recall.store(false, std::memory_order_relaxed);
+        worker->state = Worker::State::assigned;
+        pool.outstanding.fetch_add(1, std::memory_order_relaxed);
+        ++counters.interpreterOffloads;
+        pool.assigned.notify_all();
+        return true;
+    }
+    return false;
+}
+
 bool finished(uint64_t& ticket) {
     if (!pool.done.load(std::memory_order_acquire)) return false;
     std::lock_guard lock(pool.mutex);
@@ -750,7 +839,17 @@ bool take(uint64_t ticket, CPU* cpu, Result& result) {
     std::lock_guard lock(pool.mutex);
     Worker* const worker = workerFor(ticket);
     if (!worker || worker->state != Worker::State::finished) return false;
-    if (cpu) store(worker->running.context, *cpu);
+    if (cpu && worker->interpreting) {
+        // The main loop's count of instructions and output stay its own.
+        const auto retired = cpu->retired;
+        auto output = std::move(cpu->output);
+        *cpu = worker->cpu;
+        cpu->retired = retired;
+        cpu->output = std::move(output);
+    } else if (cpu) {
+        store(worker->running.context, *cpu);
+    }
+    worker->interpreting = false;
     result = worker->result;
     worker->space.reset();
     worker->state = Worker::State::idle;
@@ -785,7 +884,14 @@ std::string statistics() {
         << ", SIGILL " << counters.faultsBySignal[SIGILL] << ", SIGTRAP " << counters.faultsBySignal[SIGTRAP]
         << "), preemptions " << counters.preemptions << " of " << counters.ticks << " signals ("
         << counters.sliceSignals << " handled, " << counters.sliceOutside << " outside guest code), traps " << counters.traps
-        << ", lost " << counters.lost << ", runs on " << pool.workers.size() << " workers " << counters.offloads << '\n';
+        << ", lost " << counters.lost << ", runs on " << pool.workers.size() << " workers " << counters.offloads
+        << ", interpreted on workers " << counters.workerInterpreted << " instructions in " << counters.interpreterOffloads << " runs\n";
+    if (counters.interpreterOffloads) {
+        out << interpreterStops() << "  and ended: in the interpreter " << counters.workerEnds[0] << ", native for a system call "
+            << counters.workerEnds[leftBySyscall] << ", a fault " << counters.workerEnds[leftByFault] << ", preemption "
+            << counters.workerEnds[leftByPreemption] << ", a trap elsewhere " << counters.workerEnds[leftByTrap]
+            << ", stray " << counters.workerEnds[leftByStray] << ", not entered natively " << counters.workerEnds[7] << '\n';
+    }
     static const mach_timebase_info_data_t base = [] { mach_timebase_info_data_t value; mach_timebase_info(&value); return value; }();
     const auto milliseconds = [&](uint64_t time) { return time * base.numer / base.denom / 1'000'000; };
     out << "  native execution time: " << milliseconds(counters.nativeTime) << " ms in guest code, "

@@ -5846,6 +5846,11 @@ uint64_t ProbeLinux::randomMappingBase() const {
 // Keep the randomized bump allocator on the fast path. Long-lived processes
 // must still be able to reuse unmapped addresses after reaching the arena end.
 static uint64_t freeMappingAddress(const Machine& machine, uint64_t next, uint64_t length) {
+    // A mapping of at most a chunk of the guest address space that would reach into the next chunk
+    // starts there instead: its two parts could get host memory in different runs (GuestSpace), and
+    // translated code that reached across faulted on every access.
+    constexpr uint64_t chunk = GuestSpace::chunk;
+    if (length <= chunk && (next & (chunk - 1)) + length > chunk) next = (next + chunk - 1) & ~(chunk - 1);
     if (next <= mappingLimit - length) return next;
     auto candidate = native::enabled() ? native::webViewBase + native::webViewSize : mappingFloor;
     for (const auto& segment : machine.segments) {
@@ -8015,8 +8020,32 @@ bool ProbeLinux::offloadNative(Machine& machine) {
     return true;
 }
 
+bool ProbeLinux::offloadInterpreter(Machine& machine, const SpaceCode& code) {
+    // NESTVANE_NO_INTERPRET_WORKERS=1 keeps interpreting on the main loop, for comparison.
+    static const bool allowed = !std::getenv("NESTVANE_NO_INTERPRET_WORKERS");
+    if (!allowed || !native::workers() || !current->pendingSignals.empty() || !current->process->pendingSignals.empty())
+        return false;
+    // A thread whose runs there keep ending at once (its code calls out all the time) stays, mostly.
+    if (current->briefInterpreted >= 4) {
+        --current->briefInterpreted;
+        return false;
+    }
+    const uint64_t ticket = nextNativeTicket++;
+    if (!native::offloadInterpreter(machine, ticket, code)) return false;
+    current->nativeTicket = ticket;
+    nativeTickets[ticket] = currentTid;
+    current->wait = Wait::native;
+    ++nativeOffloads;
+    sliceEnd = 0;
+    return true;
+}
+
 std::optional<native::Result> ProbeLinux::takeNativeResult() {
     auto result = std::exchange(current->nativeResult, std::nullopt);
+    if (result && result->interpreter) {
+        current->briefInterpreted = result->interpreted < 20000 ? current->briefInterpreted + 1 : 0;
+        return result;
+    }
     if (result) {
         // A thread that keeps coming back at once for a system call is better off without the detour.
         current->briefRuns = result->brief ? current->briefRuns + 1 : 0;

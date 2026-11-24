@@ -9,6 +9,7 @@ namespace nestvane {
 
 struct Machine;
 struct CPU;
+struct SpaceCode;
 
 // Guest code that was translated ahead of time into host code (tools/build-native-code.py) and is
 // linked into this program. A translation is for one load address, so the kernel layer loads each
@@ -74,6 +75,8 @@ struct Result {
     uint64_t pc = 0, faultPc = 0, faultAddress = 0, preemptedPc = 0;
     uint64_t ran = 0;  // mach time in guest code
     bool brief = false; // it left again within a fraction of a millisecond
+    uint64_t interpreted = 0; // instructions a worker interpreted (offloadInterpreter)
+    bool interpreter = false; // a run of the interpreter on a worker
 };
 // Host threads that run guest threads' native code beside the main loop, which goes on with other
 // threads meanwhile.
@@ -88,6 +91,10 @@ unsigned outstanding();
 // Hands the machine's current thread to a free worker, which runs it natively from cpu.pc. False if
 // there is none, or the instruction at pc is not entered natively. `ticket` names the run.
 bool offload(Machine& machine, uint64_t ticket);
+// Hands the machine's current thread to a free worker that interprets it there (FastPath.hpp,
+// interpretInSpace) in `code`, as long as it can. False if there is no free worker. Taken back like a
+// native run; settle then says Exit::interpret, with pc at the instruction the worker did not run.
+bool offloadInterpreter(Machine& machine, uint64_t ticket, const SpaceCode& code);
 // A run that has ended and has not been taken back.
 bool finished(uint64_t& ticket);
 // Takes a finished run back: the thread's registers go to `cpu` unless it is null. False if the run

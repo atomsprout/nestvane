@@ -1,4 +1,9 @@
 #include "FastPath.hpp"
+#include "GuestSpace.hpp"
+
+#include <csetjmp>
+#include <cstdio>
+#include <vector>
 
 #include <algorithm>
 #include <array>
@@ -143,6 +148,54 @@ bool store(Machine& machine, MemoryWindows* windows, uint64_t address, unsigned 
         windows->write[0] = found;
     }
     return true;
+}
+
+// Loads and stores of one SIMD and floating-point register: B, H, S, D or Q. A load writes the whole
+// register, zeros above what it loads.
+FastInstruction decodeVectorLoadStore(uint32_t word) {
+    FastInstruction f;
+    const unsigned size = word >> 30, opc = (word >> 22) & 3;
+    if (opc >= 2 && size) return f;              // only Q has the high bit of opc
+    f.size = uint8_t(opc >= 2 ? 16 : 1U << size);
+    f.op = opc & 1;                               // 1: load
+    f.rd = word & 31;
+    f.rn = (word >> 5) & 31;
+    const unsigned scale = f.size == 16 ? 4 : size;
+    if ((word & 0x3b000000) == 0x39000000) {
+        f.immediate = int64_t(((word >> 10) & 0xfff) << scale);
+    } else if ((word & 0x3b200000) == 0x38000000) {
+        f.immediate = int64_t(signExtend((word >> 12) & 0x1ff, 9));
+        const unsigned mode = (word >> 10) & 3;
+        if (mode == 2) return {};
+        f.writeback = mode == 1 ? 1 : mode == 3 ? 2 : 0;
+    } else if ((word & 0x3b200c00) == 0x38200800) {
+        const unsigned option = (word >> 13) & 7;
+        if (option != 2 && option != 3 && option != 6 && option != 7) return {};
+        f.rm = (word >> 16) & 31;
+        f.shift = uint8_t(option);
+        f.amount = ((word >> 12) & 1) ? uint8_t(scale) : 0;
+        f.op |= 2;
+    } else {
+        return {};
+    }
+    f.kind = FastInstruction::vectorLoadStore;
+    return f;
+}
+
+FastInstruction decodeVectorPair(uint32_t word) {
+    FastInstruction f;
+    const unsigned opc = word >> 30, mode = (word >> 23) & 3;
+    if (opc == 3 || mode == 0) return f;          // non-temporal pairs: left to the interpreter
+    f.size = uint8_t(4U << opc);
+    f.op = (word >> 22) & 1;
+    f.rd = word & 31;
+    f.ra = (word >> 10) & 31;
+    f.rn = (word >> 5) & 31;
+    f.immediate = int64_t(signExtend((word >> 15) & 0x7f, 7)) * f.size;
+    f.writeback = mode == 1 ? 1 : mode == 3 ? 2 : 0;
+    if (f.op && f.rd == f.ra) return {};
+    f.kind = FastInstruction::vectorPair;
+    return f;
 }
 
 FastInstruction decodeLoadStore(uint32_t word) {
@@ -299,6 +352,16 @@ FastInstruction decodeFast(uint32_t word) {
         f.shift = uint8_t((word >> 12) & 15);
         return f;
     }
+    if ((word & 0xff000000) == 0x9b000000 && ((word >> 21) & 7) != 0) { // SMADDL, SMSUBL, SMULH, UMADDL, UMSUBL, UMULH
+        const unsigned op31 = (word >> 21) & 7, o0 = (word >> 15) & 1;
+        if (op31 != 1 && op31 != 2 && op31 != 5 && op31 != 6) return {};
+        if ((op31 == 2 || op31 == 6) && (o0 || ((word >> 10) & 31) != 31)) return {};
+        f.kind = FastInstruction::multiplyLong;
+        f.op = uint8_t(op31);
+        f.sign = o0; // subtract, for the long forms
+        f.ra = (word >> 10) & 31;
+        return f;
+    }
     if ((word & 0x7fe00000) == 0x1b000000) { // MADD, MSUB
         f.kind = FastInstruction::multiplyAdd;
         f.op = (word >> 15) & 1;
@@ -346,6 +409,36 @@ FastInstruction decodeFast(uint32_t word) {
         f.op = form == 0xd63f0000;
         return f;
     }
+    if ((word & 0xfffff01f) == 0xd503201f) { // every hint: NOP, YIELD, BTI, the PAC hints
+        f.kind = FastInstruction::hint;
+        return f;
+    }
+    if ((word & 0xfffff01f) == 0xd503301f && ((word >> 5) & 7) >= 4 && ((word >> 5) & 7) <= 6) { // DSB, DMB, ISB
+        f.kind = FastInstruction::barrier;
+        return f;
+    }
+    if ((word & 0xffffffe0) == 0xd53bd040 || (word & 0xffffffe0) == 0xd51bd040) { // MRS, MSR TPIDR_EL0
+        f.kind = FastInstruction::threadPointer;
+        f.op = (word >> 21) & 1; // 1: read
+        return f;
+    }
+    if ((word & 0x3fe00410) == 0x3a400000) { // CCMN, CCMP (register or immediate)
+        f.kind = FastInstruction::conditionalCompare;
+        f.op = (word >> 30) & 1; // 1: CCMP
+        f.shift = uint8_t((word >> 12) & 15);
+        f.amount = uint8_t(word & 15);
+        f.setFlags = (word >> 11) & 1; // 1: the immediate form
+        return f;
+    }
+    if ((word & 0x7fff0000) == 0x5ac00000) { // RBIT, REV16, REV32, REV, CLZ, CLS
+        const unsigned opcode = (word >> 10) & 63;
+        if (opcode > 5 || (!wide && opcode == 3)) return {};
+        f.kind = FastInstruction::singleSource;
+        f.op = uint8_t(opcode);
+        return f;
+    }
+    if ((word & 0x3a000000) == 0x38000000 && ((word >> 26) & 1)) return decodeVectorLoadStore(word);
+    if ((word & 0x3a000000) == 0x28000000 && ((word >> 26) & 1)) return decodeVectorPair(word);
     if ((word & 0x3a000000) == 0x38000000) return decodeLoadStore(word);
     if ((word & 0x3a000000) == 0x28000000) return decodePair(word);
     if ((word & 0x3b000000) == 0x18000000) { // LDR (literal), LDRSW (literal)
@@ -361,8 +454,21 @@ FastInstruction decodeFast(uint32_t word) {
     return {};
 }
 
-void executeFast(Machine& machine, const FastInstruction& f, MemoryWindows* windows) {
-    auto& cpu = machine.cpu;
+namespace {
+
+// Memory as the interpreter's Machine has it, with windows for what can be reached directly.
+struct MachineMemory {
+    Machine& machine;
+    MemoryWindows* windows;
+    bool load(uint64_t address, unsigned size, uint64_t& value) { return nestvane::load(machine, windows, address, size, value); }
+    bool store(uint64_t address, unsigned size, uint64_t value) { return nestvane::store(machine, windows, address, size, value); }
+    bool loadBytes(uint64_t address, unsigned size, uint8_t* bytes) { return machine.readInto(address, {bytes, size}); }
+    bool storeBytes(uint64_t address, unsigned size, const uint8_t* bytes) { return machine.write(address, {bytes, size}); }
+    void fault(uint64_t pc, uint64_t address) { machine.fault(pc, address); }
+};
+
+template <class Memory>
+void runFast(CPU& cpu, Memory& memory, const FastInstruction& f) {
     const unsigned bits = f.bits;
     uint64_t next = cpu.pc + 4;
     switch (f.kind) {
@@ -475,6 +581,26 @@ void executeFast(Machine& machine, const FastInstruction& f, MemoryWindows* wind
             writeZero(cpu, f.rd, f.op ? readZero(cpu, f.ra) - product : readZero(cpu, f.ra) + product, bits);
             break;
         }
+        case FastInstruction::multiplyLong: {
+            const uint64_t a = readZero(cpu, f.rn), b = readZero(cpu, f.rm);
+            uint64_t result;
+            switch (f.op) {
+                case 1: { // SMADDL, SMSUBL
+                    const uint64_t product = uint64_t(int64_t(int32_t(a)) * int64_t(int32_t(b)));
+                    result = f.sign ? readZero(cpu, f.ra) - product : readZero(cpu, f.ra) + product;
+                    break;
+                }
+                case 5: { // UMADDL, UMSUBL
+                    const uint64_t product = uint64_t(uint32_t(a)) * uint64_t(uint32_t(b));
+                    result = f.sign ? readZero(cpu, f.ra) - product : readZero(cpu, f.ra) + product;
+                    break;
+                }
+                case 2: result = uint64_t((__int128)int64_t(a) * (__int128)int64_t(b) >> 64); break; // SMULH
+                default: result = uint64_t((unsigned __int128)a * b >> 64); break;                   // UMULH
+            }
+            writeZero(cpu, f.rd, result, 64);
+            break;
+        }
         case FastInstruction::divide: {
             const uint64_t a = readZero(cpu, f.rn) & ones(bits), b = readZero(cpu, f.rm) & ones(bits);
             uint64_t result = 0;
@@ -517,16 +643,16 @@ void executeFast(Machine& machine, const FastInstruction& f, MemoryWindows* wind
             const uint64_t address = f.writeback == 1 ? base : base + offset;
             if (f.op & 1) {
                 uint64_t value = 0;
-                if (!load(machine, windows, address, f.size, value)) {
-                    machine.fault(cpu.pc, address);
+                if (!memory.load(address, f.size, value)) {
+                    memory.fault(cpu.pc, address);
                     return;
                 }
                 if (f.writeback) writeStack(cpu, f.rn, base + offset, 64);
                 writeZero(cpu, f.rd, f.sign ? signExtend(value, f.size * 8) : value, bits);
             } else {
                 const uint64_t value = readZero(cpu, f.rd);
-                if (!store(machine, windows, address, f.size, value)) {
-                    machine.fault(cpu.pc, address);
+                if (!memory.store(address, f.size, value)) {
+                    memory.fault(cpu.pc, address);
                     return;
                 }
                 if (f.writeback) writeStack(cpu, f.rn, base + offset, 64);
@@ -543,15 +669,105 @@ void executeFast(Machine& machine, const FastInstruction& f, MemoryWindows* wind
                 const uint64_t at = address + i * f.size;
                 if (f.op) {
                     uint64_t value = 0;
-                    if (!load(machine, windows, at, f.size, value)) {
-                        machine.fault(cpu.pc, at);
+                    if (!memory.load(at, f.size, value)) {
+                        memory.fault(cpu.pc, at);
                         return;
                     }
                     writeZero(cpu, registers[i], f.sign ? signExtend(value, 32) : value, bits);
                 } else {
                     const uint64_t value = readZero(cpu, registers[i]);
-                    if (!store(machine, windows, at, f.size, value)) {
-                        machine.fault(cpu.pc, at);
+                    if (!memory.store(at, f.size, value)) {
+                        memory.fault(cpu.pc, at);
+                        return;
+                    }
+                }
+            }
+            if (f.writeback) writeStack(cpu, f.rn, base + uint64_t(f.immediate), 64);
+            break;
+        }
+        case FastInstruction::hint:
+            break;
+        case FastInstruction::barrier:
+            std::atomic_thread_fence(std::memory_order_seq_cst);
+            break;
+        case FastInstruction::threadPointer:
+            if (f.op) writeZero(cpu, f.rd, cpu.threadPointer, 64);
+            else cpu.threadPointer = readZero(cpu, f.rd);
+            break;
+        case FastInstruction::conditionalCompare:
+            if (condition(cpu.nzcv, f.shift)) {
+                const uint64_t a = readZero(cpu, f.rn), b = f.setFlags ? f.rm : readZero(cpu, f.rm);
+                if (f.op) addWithCarry(cpu, a, ~b, true, bits, true);
+                else addWithCarry(cpu, a, b, false, bits, true);
+            } else {
+                cpu.nzcv = f.amount;
+            }
+            break;
+        case FastInstruction::singleSource: {
+            const uint64_t value = readZero(cpu, f.rn) & ones(bits);
+            uint64_t result = 0;
+            switch (f.op) {
+                case 0: // RBIT
+                    for (unsigned bit = 0; bit < bits; ++bit) result |= ((value >> bit) & 1) << (bits - 1 - bit);
+                    break;
+                case 1: // REV16
+                    result = ((value & 0x00ff00ff00ff00ffULL) << 8) | ((value >> 8) & 0x00ff00ff00ff00ffULL);
+                    break;
+                case 2: // REV32 of a 64-bit register, REV of a 32-bit one
+                    result = bits == 64 ? (uint64_t(__builtin_bswap32(uint32_t(value >> 32))) << 32) | __builtin_bswap32(uint32_t(value))
+                                        : __builtin_bswap32(uint32_t(value));
+                    break;
+                case 3: result = __builtin_bswap64(value); break;
+                case 4: result = value ? unsigned(__builtin_clzll(value)) - (64 - bits) : bits; break;
+                default: { // CLS: the bits after the top one that are the same as it
+                    // Bit i of `changes` (i >= 1) says whether bits i and i - 1 differ.
+                    const uint64_t changes = (value ^ (value << 1)) & ones(bits) & ~uint64_t{1};
+                    result = changes ? unsigned(__builtin_clzll(changes)) - (64 - bits) : bits - 1;
+                    break;
+                }
+            }
+            writeZero(cpu, f.rd, result, bits);
+            break;
+        }
+        case FastInstruction::vectorLoadStore: {
+            const uint64_t base = readStack(cpu, f.rn);
+            const uint64_t offset = (f.op & 2) ? extended(readZero(cpu, f.rm), f.shift, f.amount, 64) : uint64_t(f.immediate);
+            const uint64_t address = f.writeback == 1 ? base : base + offset;
+            if (f.op & 1) {
+                std::array<uint8_t, 16> bytes{};
+                if (!memory.loadBytes(address, f.size, bytes.data())) {
+                    memory.fault(cpu.pc, address);
+                    return;
+                }
+                if (f.writeback) writeStack(cpu, f.rn, base + offset, 64);
+                cpu.v[f.rd] = bytes;
+            } else {
+                const auto bytes = cpu.v[f.rd];
+                if (!memory.storeBytes(address, f.size, bytes.data())) {
+                    memory.fault(cpu.pc, address);
+                    return;
+                }
+                if (f.writeback) writeStack(cpu, f.rn, base + offset, 64);
+            }
+            break;
+        }
+        case FastInstruction::vectorPair: {
+            const uint64_t base = readStack(cpu, f.rn);
+            const uint64_t address = f.writeback == 1 ? base : base + uint64_t(f.immediate);
+            const unsigned registers[2] = {f.rd, f.ra};
+            for (unsigned i = 0; i < 2; ++i) {
+                const uint64_t at = address + i * f.size;
+                if (f.op) {
+                    std::array<uint8_t, 16> bytes{};
+                    if (!memory.loadBytes(at, f.size, bytes.data())) {
+                        memory.fault(cpu.pc, at);
+                        return;
+                    }
+                    cpu.v[registers[i]] = bytes;
+                } else {
+                    const auto bytes = cpu.v[registers[i]];
+                    if (!memory.storeBytes(at, f.size, bytes.data())) {
+                        memory.fault(cpu.pc, at);
                         return;
                     }
                 }
@@ -562,8 +778,8 @@ void executeFast(Machine& machine, const FastInstruction& f, MemoryWindows* wind
         case FastInstruction::loadLiteral: {
             const uint64_t address = cpu.pc + uint64_t(f.immediate);
             uint64_t value = 0;
-            if (!machine.readInto(address, {reinterpret_cast<uint8_t*>(&value), f.size})) {
-                machine.fault(cpu.pc, address);
+            if (!memory.load(address, f.size, value)) {
+                memory.fault(cpu.pc, address);
                 return;
             }
             writeZero(cpu, f.rd, f.sign ? signExtend(value, 32) : value, bits);
@@ -572,6 +788,164 @@ void executeFast(Machine& machine, const FastInstruction& f, MemoryWindows* wind
     }
     cpu.pc = next;
     ++cpu.retired;
+}
+
+} // namespace
+
+void executeFast(Machine& machine, const FastInstruction& instruction, MemoryWindows* windows) {
+    MachineMemory memory{machine, windows};
+    runFast(machine.cpu, memory, instruction);
+}
+
+namespace {
+
+// Memory through the guest address space's tables alone, for a worker thread: only an access within
+// one page that is mapped with the permission it needs and has host memory. Anything else makes the
+// instruction stop the run, with nothing of it done.
+struct SpaceMemory {
+    const GuestSpace& space;
+    bool failed = false;
+    uint8_t* at(uint64_t address, unsigned size, int access) const {
+        address &= 0x00ff'ffff'ffff'ffffULL; // top byte ignored, as Android's tagged pointers have it
+        if (address >= GuestSpace::size || size > GuestSpace::page - (address & (GuestSpace::page - 1))) return nullptr;
+        if (!space.mapped(address) || !(space.protection(address) & access) || !space.backed(address)) return nullptr;
+        return space.host(address);
+    }
+    bool load(uint64_t address, unsigned size, uint64_t& value) {
+        const auto* bytes = at(address, size, GuestSpace::read);
+        if (!bytes) return !(failed = true);
+        std::memcpy(&value, bytes, size);
+        return true;
+    }
+    bool store(uint64_t address, unsigned size, uint64_t value) {
+        auto* bytes = at(address, size, GuestSpace::write);
+        if (!bytes) return !(failed = true);
+        std::memcpy(bytes, &value, size);
+        return true;
+    }
+    bool loadBytes(uint64_t address, unsigned size, uint8_t* bytes) {
+        const auto* source = at(address, size, GuestSpace::read);
+        if (!source) return !(failed = true);
+        std::memcpy(bytes, source, size);
+        return true;
+    }
+    bool storeBytes(uint64_t address, unsigned size, const uint8_t* bytes) {
+        auto* target = at(address, size, GuestSpace::write);
+        if (!target) return !(failed = true);
+        std::memcpy(target, bytes, size);
+        return true;
+    }
+    void fault(uint64_t, uint64_t) { failed = true; }
+};
+
+thread_local sigjmp_buf* faultJump = nullptr;
+
+// Why runs ended: outside the code, a word that is no decoded instruction, memory, a pair, the budget
+// or a stop, a host fault. And a small table of the words, by their top 12 bits (the encoding group).
+std::array<std::atomic<uint64_t>, 6> stopReasons{};
+std::array<std::atomic<uint64_t>, 4096> stopWords{};
+
+struct CachedWord {
+    uint64_t word = UINT64_MAX;
+    FastInstruction instruction;
+};
+
+} // namespace
+
+void* interpreterFaultJump() { return faultJump; }
+
+std::string interpreterStops() {
+    static constexpr const char* names[] = {"left the code", "not decoded", "memory", "pair", "budget or stop", "host fault"};
+    std::string out = "  interpreter runs on workers ended:";
+    for (size_t i = 0; i < stopReasons.size(); ++i)
+        out += std::string(" ") + names[i] + " " + std::to_string(stopReasons[i].load(std::memory_order_relaxed)) + ",";
+    std::array<std::pair<uint64_t, unsigned>, 4096> words{};
+    for (unsigned i = 0; i < words.size(); ++i) words[i] = {stopWords[i].load(std::memory_order_relaxed), i};
+    std::partial_sort(words.begin(), words.begin() + 10, words.end(), [](auto a, auto b) { return a.first > b.first; });
+    out += " commonest words not decoded (top 12 bits):";
+    char buffer[32];
+    for (unsigned i = 0; i < 10 && words[i].first; ++i) {
+        std::snprintf(buffer, sizeof(buffer), " %03xxxxxx:%llu", words[i].second, (unsigned long long)words[i].first);
+        out += buffer;
+    }
+    return out + "\n";
+}
+
+uint64_t interpretInSpace(CPU& cpu, const GuestSpace& space, const SpaceCode& code, uint64_t budget,
+                          const std::atomic<bool>& stop) {
+    thread_local std::vector<CachedWord> cache(4096);
+    SpaceMemory memory{space};
+    // What a fault in the middle of an instruction has to undo: the registers a pair loads into.
+    struct State {
+        uint64_t ran = 0;
+        unsigned first = 32, second = 32;
+        uint64_t firstValue = 0, secondValue = 0;
+    };
+    static thread_local State state;
+    state = {};
+    sigjmp_buf jump;
+    if (sigsetjmp(jump, 0)) {
+        faultJump = nullptr;
+        stopReasons[5].fetch_add(1, std::memory_order_relaxed);
+        if (state.first < 31) cpu.x[state.first] = state.firstValue;
+        if (state.second < 31) cpu.x[state.second] = state.secondValue;
+        return state.ran;
+    }
+    faultJump = &jump;
+    unsigned reason = 4;
+    // Without a base, instructions come from the page of the address space pc is in.
+    uint64_t pageStart = 0, pageEnd = 0;
+    const uint8_t* pageBytes = nullptr;
+    while (state.ran < budget) {
+        if (!(state.ran & 1023) && stop.load(std::memory_order_relaxed)) break;
+        const uint64_t pc = cpu.pc;
+        if (pc - code.start >= code.end - code.start || (pc & 3)) { reason = 0; break; }
+        uint32_t word;
+        if (code.base) {
+            std::memcpy(&word, code.base + (pc - code.start), sizeof(word));
+        } else {
+            if (pc - pageStart >= pageEnd - pageStart) {
+                const auto* bytes = memory.at(pc, sizeof(word), GuestSpace::read);
+                if (!bytes) { reason = 2; break; }
+                pageStart = pc & ~(GuestSpace::page - 1);
+                pageEnd = pageStart + GuestSpace::page;
+                pageBytes = bytes - (pc - pageStart);
+            }
+            std::memcpy(&word, pageBytes + (pc - pageStart), sizeof(word));
+        }
+        auto& entry = cache[((word ^ (word >> 16)) * 0x9e3779b9U) >> 20];
+        if (entry.word != word) {
+            entry.word = word;
+            entry.instruction = decodeFast(word);
+        }
+        const auto& f = entry.instruction;
+        if (f.kind == FastInstruction::none) {
+            reason = 1;
+            stopWords[word >> 20].fetch_add(1, std::memory_order_relaxed);
+            break;
+        }
+        state.first = state.second = 32;
+        if (f.kind == FastInstruction::loadStorePair || f.kind == FastInstruction::vectorPair) {
+            // Both halves have to be there before either is done: a pair that stopped half way would
+            // run again whole on the main loop.
+            const uint64_t base = f.rn < 31 ? cpu.x[f.rn] : cpu.sp;
+            const uint64_t address = f.writeback == 1 ? base : base + uint64_t(f.immediate);
+            const int access = f.op ? GuestSpace::read : GuestSpace::write;
+            if (!memory.at(address, f.size, access) || !memory.at(address + f.size, f.size, access)) { reason = 3; break; }
+            if (f.op && f.kind == FastInstruction::loadStorePair) {
+                state.first = f.rd;
+                state.firstValue = f.rd < 31 ? cpu.x[f.rd] : 0;
+                state.second = f.ra;
+                state.secondValue = f.ra < 31 ? cpu.x[f.ra] : 0;
+            }
+        }
+        runFast(cpu, memory, f);
+        if (memory.failed) { reason = 2; break; }
+        ++state.ran;
+    }
+    faultJump = nullptr;
+    stopReasons[reason].fetch_add(1, std::memory_order_relaxed);
+    return state.ran;
 }
 
 } // namespace nestvane

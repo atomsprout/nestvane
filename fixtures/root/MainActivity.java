@@ -8,8 +8,9 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.InputStreamReader;
 
-// Runs "su -c id" and "su -c ls /data/data/com.android.settings" on a thread of its own, and shows and
-// logs (tag NestvaneRoot) what came back and how long it took. Without root, su is missing or refused.
+// Runs a plain shell command, then "su -c id" and commands only root can run (listing /data/data, reading
+// the system's package list) on a thread of its own, and shows and logs (tag NestvaneRoot) what came
+// back and how long it took. Without root, su is missing or refused.
 public class MainActivity extends Activity {
     private static final String TAG = "NestvaneRoot";
     private TextView text;
@@ -26,7 +27,8 @@ public class MainActivity extends Activity {
             exec(new String[] {"sh", "-c", "echo plain"});
             run("echo builtin");
             run("id");
-            run("ls /data/data/com.android.settings");
+            run("ls /data/data | wc -l");
+            run("head -c 48 /data/system/packages.list");
         }).start();
     }
 

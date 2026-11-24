@@ -25,12 +25,16 @@ constexpr Template templates[] = {
     {0x1f800000, 0x12000000, "logic immediate"},    {0x1f800000, 0x12800000, "move wide"},
     {0x1f000000, 0x10000000, "adr/adrp"},           {0x1f800000, 0x13000000, "bitfield"},
     {0x3fe00000, 0x1a800000, "conditional select"}, {0x7fe00000, 0x1b000000, "multiply-add"},
-    {0x7fe00000, 0x1ac00000, "divide/shift"},       {0x7c000000, 0x14000000, "b/bl"},
+    {0x7fe00000, 0x1ac00000, "divide/shift"},       {0xff000000, 0x9b000000, "multiply long/high"},       {0x7c000000, 0x14000000, "b/bl"},
     {0xff000010, 0x54000000, "b.cond"},             {0x7e000000, 0x34000000, "cbz/cbnz"},
     {0x7e000000, 0x36000000, "tbz/tbnz"},           {0xfffffc1f, 0xd61f0000, "br"},
     {0xfffffc1f, 0xd63f0000, "blr"},                {0xfffffc1f, 0xd65f0000, "ret"},
     {0x3a000000, 0x38000000, "load/store"},         {0x3a000000, 0x28000000, "load/store pair"},
     {0x3b000000, 0x18000000, "load literal"},
+    {0xfffff01f, 0xd503201f, "hint"},               {0xfffff01f, 0xd503301f, "barrier"},
+    {0xffdfffe0, 0xd51bd040, "tpidr_el0"},          {0x3fe00410, 0x3a400000, "ccmp/ccmn"},
+    {0x7fff0000, 0x5ac00000, "one source"},         {0x3e000000, 0x3c000000, "vector load/store"},
+    {0x3e000000, 0x2c000000, "vector pair"},
 };
 
 Machine makeMachine(uint32_t word, const std::vector<uint8_t>& code, const std::vector<uint8_t>& data) {

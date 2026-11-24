@@ -3,7 +3,9 @@
 #include "Runtime.hpp"
 
 #include <array>
+#include <atomic>
 #include <cstdint>
+#include <string>
 
 namespace nestvane {
 
@@ -18,9 +20,11 @@ struct FastInstruction {
         none,
         addImmediate, addShifted, addExtended, // with op set: subtraction
         logicImmediate, logicShifted,
-        moveWide, address, bitfield, select, multiplyAdd, divide, shiftVariable,
+        moveWide, address, bitfield, select, multiplyAdd, multiplyLong, divide, shiftVariable,
         branch, branchCondition, compareBranch, testBranch, branchRegister,
         loadStore, loadStorePair, loadLiteral,
+        hint, barrier, threadPointer, conditionalCompare, singleSource,
+        vectorLoadStore, vectorPair,
     };
     Kind kind = none;
     uint8_t rd = 0, rn = 0, rm = 0, ra = 0; // ra: the third source, or the second register of a pair
@@ -46,6 +50,27 @@ struct MemoryWindows {
     std::array<Window, 4> read{}, write{};
     void clear() { read = {}; write = {}; }
 };
+
+class GuestSpace;
+
+// Code a worker thread may interpret: immutable instructions from `start` to `end`, at `base` in host
+// memory, or, with no base, in the guest address space, fetched through its tables.
+struct SpaceCode {
+    uint64_t start = 0, end = 0;
+    const uint8_t* base = nullptr;
+};
+// Interprets the decoded instructions on a worker thread, beside the main loop, with memory reached
+// only through the tables of the guest address space: from cpu.pc for up to `budget` instructions,
+// until an instruction that is not one of them, memory the space cannot give directly, code outside
+// `code`, or `stop`. Returns how many ran; cpu.pc is at the first one that did not. A host fault in
+// memory unmapped meanwhile by another thread ends the run before the instruction it happened in.
+uint64_t interpretInSpace(CPU& cpu, const GuestSpace& space, const SpaceCode& code, uint64_t budget,
+                          const std::atomic<bool>& stop);
+// The jump a fault signal on a thread that runs interpretInSpace takes, or null. For the signal handler.
+void* interpreterFaultJump();
+// Why runs of interpretInSpace ended, for the statistics: counts by reason and the commonest words
+// that were not decoded instructions.
+std::string interpreterStops();
 
 FastInstruction decodeFast(uint32_t word);
 // Runs a decoded instruction (kind is not none) as the interpreter would: the registers, the flags,
