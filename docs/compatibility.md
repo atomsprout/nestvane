@@ -37,7 +37,7 @@ Twenty-one of the twenty-two open.
 ## Thirty-two more, tried for 1.5
 
 Tried on 23 November 2026 on an iPad Air 11-inch (M3, iPadOS 27.0.1) with builds of version 1.5 as it was being
-made, each app again after the fix it led to. From F-Droid, except Telegram, Signal, Toutiao and Douyin, which
+made, each app again after the fix it led to; Telegram and Element last on an iPhone 14 (iOS 17.3.1). From F-Droid, except Telegram, Signal, Toutiao and Douyin, which
 are the builds their makers offer on their own sites. A frame was saved 16 to 30 seconds after opening, and up
 to two minutes for the slow ones.
 
@@ -67,16 +67,16 @@ to two minutes for the slow ones.
 | PPSSPP | 1.19.3 | 5 | Opens, in landscape |
 | Shattered Pixel Dungeon | 4.0.2 | 2 | Opens, at its title screen |
 | Signal | 8.36.3 | 12 | Opens, at its welcome screen. Before 1.5 it could not make a key: see below |
+| Telegram | 13.3.1 | 4 | Opens, at its welcome screen. Before 1.5 it stopped as it started: see below |
 | Telegram X | 0.28.11 | 8 | Opens, at its welcome screen |
+| Element Classic | 1.6.62 | 21 | Opens, at its first screen, after about a minute. Before 1.5 it stopped as it started: see below |
 | Toutiao (今日头条) | 19.2.0 | 161 | Opens, with its tabs and bars; the feed stays empty: its network library needs a WebView |
 | Douyin (抖音) | 32.2.6 | 204 | Opens, with its tabs and bars; no video loads, for the same reason. Needs about 5 GB of memory: an iPad |
 | AnkiDroid | 2.25.3 | 2 | Does not show a screen within a minute; it uses a WebView |
-| Element Classic | 1.6.62 | 21 | Stays at its splash screen. Before 1.5 it stopped as it started: see below |
 | Jellyfin | 2.7.3 | 2 | Opens only to say that a WebView is needed |
 | KDE Connect | 1.37.3 | 1 | Stops as it starts: it asks for the Wi-Fi service, which this Android does not have |
-| Telegram | 13.3.1 | 4 | Its window stays black. Before 1.5 it stopped as it started: see below |
 
-Twenty-seven of the thirty-two open; of all fifty-four, forty-eight.
+Twenty-nine of the thirty-two open; of all fifty-four, fifty.
 
 Not tried: TikTok and YouTube. Neither maker offers an APK to download, and YouTube needs Google Play services.
 
@@ -87,7 +87,8 @@ the answer was no for every app, because the table of answers had been taken for
 only. Apps now get what Android's policy gives every app. Signal and Element stopped on this as they started,
 and so would any app that keeps its settings encrypted.
 
-**Named pipes.** `mkfifo` was refused. Element's database library makes one in the app's own folder.
+**Named pipes.** `mkfifo` was refused. Element's database library makes one in the app's own folder, and
+watches it for changes, which a pipe could not be watched for either.
 
 **Instructions.** Telegram stopped on an instruction the interpreter did not have. The native libraries of all
 these apps were searched for more (`tools/scan-interpreter-coverage.py`), and what ordinary code among them

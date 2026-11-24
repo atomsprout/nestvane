@@ -2351,7 +2351,10 @@ bool ProbeLinux::eventCall(Machine& machine) {
             const auto mask = uint32_t(event[0]);
             // EPOLLWAKEUP requires no power-management action while the guest is scheduled.
             const auto& socket = target->second.socket;
-            const bool edgeSupported = target->second.node == Node::event ||
+            // A pipe may be watched for changes only: it is reported once for each time something was
+            // written to it. Realm watches its named pipes this way and never reads them, so reporting
+            // them for as long as they can be read keeps its thread running without end.
+            const bool edgeSupported = target->second.node == Node::event || target->second.pipe ||
                 (socket && socket->family == 1 && !(mask & ~unixReadEdge));
             const auto supported = 0x2000205fU | (edgeSupported ? epollEdge : 0);
             if (mask & ~supported) return false;
@@ -2379,7 +2382,8 @@ bool ProbeLinux::eventCall(Machine& machine) {
                 const auto state = watch.source.lock();
                 const auto endpoint = watch.socket.lock();
                 watchesListener |= endpoint && endpoint->listening && (watch.mask & epollIn);
-                const bool edge = watch.mask & epollEdge;
+                const bool pipeEdge = (watch.mask & epollEdge) && watch.pipe.lock();
+                const bool edge = (watch.mask & epollEdge) && !pipeEdge;
                 const PollNotifications* notifications = nullptr;
                 if (edge) {
                     if (!state && !endpoint) continue;
@@ -2399,7 +2403,8 @@ bool ProbeLinux::eventCall(Machine& machine) {
                 watchesHostEvents |= bool(graphics) || bool(touch);
                 const auto graphicsEvents = graphics ? graphics->pollEvents() : 0;
                 const auto pipe = watch.pipeEnd.expired() ? nullptr : watch.pipe.lock();
-                const auto pipeEvents = pipe ? pipe->pollEvents(watch.pipeReader) : 0;
+                const auto pipeEvents = !pipe || (pipeEdge && watch.pipeWritesSeen == pipe->writes) ? 0
+                    : pipe->pollEvents(watch.pipeReader);
                 const auto ring = watch.ring.lock();
                 const auto ringEvents = ring && ring->ringReadable() ? 0x41 : 0;
                 const bool guestReceiveEnded = endpoint && (endpoint->receiveShutdown ||
@@ -2435,6 +2440,7 @@ bool ProbeLinux::eventCall(Machine& machine) {
                 const uint64_t mask = (taskEvents & watch.mask) | errors |
                     ((graphicsEvents | pipeEvents | ringEvents) & (watch.mask | epollError | epollHangup));
                 if (mask) {
+                    if (pipeEdge && pipe) watch.pipeWritesSeen = pipe->writes;
                     ready.push_back({mask, watch.data});
                     if (notifications) readyEdges.emplace_back(&watch, *notifications);
                     if (mask & 2) readNotifications.push_back(state);
@@ -6153,6 +6159,7 @@ uint64_t ProbeLinux::writeDescriptor(Machine& machine, const Descriptor& fd, uin
         const auto* data = machine.read(address, count, 4, dataScratch);
         if (!data) return uint64_t(-14);
         fd.pipe->data.insert(fd.pipe->data.end(), data, data + count);
+        ++fd.pipe->writes;
         wakePollers();
         return count;
     }

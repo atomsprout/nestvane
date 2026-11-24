@@ -10,7 +10,7 @@ Unless noted, the build is a development-signed Release build.
 ## Requirements
 
 - iOS 17 or later, and at least 6 GB of memory.
-- Tested on iPhone 14 (iOS 17.3.1), iPhone 15 Pro, iPhone 17 Pro and iPad Air 11-inch (M3). On an iPad the display is sharp and fills the screen, upright only, laid out as on a phone. Earlier stages were also run on an iPhone 11 and an iPad Air (M3).
+- Tested on iPhone 14 (iOS 17.3.1), iPhone 15 Pro, iPhone 17 Pro and iPad Air 11-inch (M3). On an iPad the display is sharp and fills the screen, laid out as on a phone; it turns with the device. Earlier stages were also run on an iPhone 11 and an iPad Air (M3).
 - The app needs the Extended Virtual Addressing and Increased Memory Limit entitlements.
 
 ## What works
@@ -34,10 +34,15 @@ Unless noted, the build is a development-signed Release build.
 - **Submit a Bug** in the More menu opens a new GitHub issue with the versions of Nestvane and iOS and the phone's model written in.
 - **An update notice.** Once a day the app asks GitHub which release is the latest and says so when it is newer; it installs nothing itself, and the question can be turned off in the app's Settings.
 - **Video and sound.** Android's `MediaPlayer` plays a 1280×720 H.264 video with AAC sound: the position advances one second a second, about 30 frames a second are composed (the video has 30), and the sound reaches the phone's output at the level it has in the file. NewPipe opens, lists videos and plays a YouTube live stream with sound. Measured on the samples that arrive at the phone's output; how it sounds has not been judged by ear, and resolutions above 720p have not been measured.
+- **1080p video.** A 1920×1080 H.264 video at 6 Mbit/s plays at its 30 frames a second on an iPhone 14, and a 1080p HEVC video plays in time, at 29 to 31 frames a second once it has settled. Before 1.5 an HEVC video stopped the codec process: its decoder has routines written by hand in assembly that use registers the translated code keeps for itself.
+- **Landscape.** Android's display turns with the device, and an app that asks for landscape is shown the right way up, with touches landing where they are made (checked on an iPhone 14 with Android a quarter turn round).
+- **The microphone.** The sound card Android sees has a capture device, fed from the device's microphone while an Android app records. iOS asks for the microphone the first time. Seen: a voice recorder starts recording and Android reads the device. Not yet checked: what it records once the microphone is allowed.
 
 ## What does not work yet
 
-- **Hardware video decoding, recording and the microphone.** Video is decoded by Android's software codecs, which costs processor time that a hardware decoder would not. There is no sound input and no camera recording.
+- **Hardware video decoding and camera recording.** Video is decoded by Android's software codecs, which costs processor time that a hardware decoder would not: 1080p at 30 frames a second takes half of one core on an iPhone 14. Using the phone's decoder needs a codec component built into Android.
+- **A tablet's layout on an iPad.** At a tablet's density this build of Android does not work: the launcher stops as it starts, and after it restarts, apps' windows are not drawn. An iPad gets the phone's layout. In landscape it is 920 units wide, and apps that lay themselves out by width use their wide layout.
+- **The home screen does not turn.** The launcher of this Android keeps a phone's home screen the way the display was made, so it stays as it was when Nestvane started; apps turn.
 - **Google apps and Play services.** The system is AOSP. Apps that need Google's services will not run.
 - **IPv6.** The guest network is IPv4 only.
 - **Live changes to the shared folder from iOS.** They show up only after Android restarts.

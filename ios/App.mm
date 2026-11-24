@@ -484,6 +484,7 @@ static NSURL* BugReportAddress(bool androidRunning) {
 // Which way up Android holds its display, in quarter turns (GuestApkInbox::rotation). The frames are
 // always the display as it was made; this turns the picture, and the touches, to match.
 - (void)setRotation:(int)quarterTurns;
+- (void)tapAtX:(int)x y:(int)y;
 - (void)setTouchDevice:(std::shared_ptr<nestvane::GuestTouch>)device;
 - (void)pressKey:(nestvane::GuestTouch::Key)key;
 @end
@@ -562,6 +563,24 @@ static NSURL* BugReportAddress(bool androidRunning) {
 }
 
 - (BOOL)sendTouch:(UITouch*)touch down:(BOOL)down {
+    return [self sendLocation:[touch locationInView:self] down:down];
+}
+
+// For tests: a tap at a place in this view, in thousandths of its width and height, sent the way a
+// finger's touch is.
+- (void)tapAtX:(int)x y:(int)y {
+    const CGPoint place = CGPointMake(self.bounds.size.width * x / 1000, self.bounds.size.height * y / 1000);
+    UITouch* held = _activeTouch;
+    _activeTouch = nil;
+    if ([self sendLocation:place down:YES]) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 80 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+            [self sendLocation:place down:NO];
+        });
+    }
+    _activeTouch = held;
+}
+
+- (BOOL)sendLocation:(CGPoint)place down:(BOOL)down {
     const CGSize imageSize = _frameSize;
     const CGRect bounds = self.bounds;
     if (!_touchDevice || imageSize.width <= 0 || imageSize.height <= 0 ||
@@ -570,7 +589,7 @@ static NSURL* BugReportAddress(bool androidRunning) {
     // own: the layer takes the turn out.
     const CGSize size = _content.bounds.size;
     if (size.width <= 0 || size.height <= 0) return NO;
-    const CGPoint location = [_content convertPoint:[touch locationInView:self] fromLayer:self.layer];
+    const CGPoint location = [_content convertPoint:place fromLayer:self.layer];
     const CGFloat x = location.x / size.width;
     const CGFloat y = location.y / size.height;
     if (!_activeTouch && (x < 0 || x > 1 || y < 0 || y > 1)) return NO;
@@ -678,6 +697,9 @@ static void FollowGuestMicrophone() {
         [AVAudioSession.sharedInstance setCategory:AVAudioSessionCategoryPlayback error:nil];
         return;
     }
+    // AVAudioEngine reports a format it cannot tap by raising an exception, which must not end the app
+    // and Android with it: without the microphone Android goes on recording silence.
+    @try {
     [made.inputNode installTapOnBus:0 bufferSize:1024 format:heard block:^(AVAudioPCMBuffer* buffer, AVAudioTime*) {
         const AVAudioFrameCount room = AVAudioFrameCount(buffer.frameLength * asked.sampleRate / heard.sampleRate) + 64;
         AVAudioPCMBuffer* out = [[AVAudioPCMBuffer alloc] initWithPCMFormat:asked frameCapacity:room];
@@ -695,6 +717,12 @@ static void FollowGuestMicrophone() {
     if (![made startAndReturnError:&error]) {
         [made.inputNode removeTapOnBus:0];
         GuestMicrophoneState = [NSString stringWithFormat:@"starting: %@", error.localizedDescription];
+        [AVAudioSession.sharedInstance setCategory:AVAudioSessionCategoryPlayback error:nil];
+        return;
+    }
+    } @catch (NSException* exception) {
+        GuestMicrophoneState = [NSString stringWithFormat:@"refused: %@", exception.reason];
+        refused = true;
         [AVAudioSession.sharedInstance setCategory:AVAudioSessionCategoryPlayback error:nil];
         return;
     }
@@ -1791,6 +1819,12 @@ static void FollowGuestAudio() {
                                 if ([fields[0] isEqualToString:@"launch"]) {
                                     // "launch:<package>:0:wait" opens that app without finding its icon.
                                     if (apkInbox) apkInbox->submitLaunch(fields[1].UTF8String);
+                                } else if ([fields[0] hasPrefix:@"view"]) {
+                                    // "view<x>:<y>:0:wait" taps a place in the app's view of the display, in
+                                    // thousandths of the view: through the same reckoning as a finger's
+                                    // touch, which the other taps go round.
+                                    const int viewX = [fields[0] substringFromIndex:4].intValue, viewY = fields[1].intValue;
+                                    dispatch_async(dispatch_get_main_queue(), ^{ [self.display tapAtX:viewX y:viewY]; });
                                 } else if ([fields[0] isEqualToString:@"home"]) {
                                     // "home:0:0:wait" presses Android's Home key.
                                     device->press(nestvane::GuestTouch::Key::home);

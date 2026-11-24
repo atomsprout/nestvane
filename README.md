@@ -70,12 +70,18 @@ for the app** gives that code the system it expects.
   shows it as an incoming message. Apps that wait for an SMS, to read a code for example, receive it too. Nothing is
   sent to anyone: Android has no phone number and no radio.
 - **An update notice.** Once a day Nestvane asks GitHub which release is the latest and tells you when there is a newer one.
-- **Video and sound.** Android's software decoders play a 720p video at its 30 frames a second, and the sound
-  comes out of the phone. NewPipe plays a YouTube stream.
+- **Video and sound.** Android's software decoders play 1080p video, H.264 and HEVC, at its 30 frames a second,
+  and the sound comes out of the phone. NewPipe plays a YouTube stream.
+- **Landscape.** Turn the device and Android's apps turn with it; an app that asks for landscape is shown the
+  right way up. The home screen keeps the way it was started.
+- **The microphone.** An Android app that records is given the device's microphone, once you allow it in iOS.
+  New, and so far only seen as far as Android starting to record.
 
 ## What does not work yet
 
-- **Hardware video decoding, recording and the microphone.** Video is decoded in software; nothing records.
+- **Hardware video decoding and camera recording.** Video is decoded in software, which is enough for 1080p at
+  30 frames a second.
+- **A tablet's layout on an iPad.** Android is laid out as on a phone there, sharp and filling the screen.
 - **Google apps and Play services.** This is AOSP. Apps that need them will not run.
 - **Apps with heavy native code are slow**: an app's own native libraries are interpreted.
 - IPv6, and live updates of the shared folder (changes made from iOS appear when Android next starts).
@@ -122,7 +128,7 @@ On an iPhone 15 Pro unless noted. The running record, with every measurement, is
 | A finger kept moving on a list | 58–60 frames a second; with 120 Hz on, 111–120 (iPhone 17 Pro) |
 | Playing a 1280×720 H.264 video | 30 frames a second, in step with the clock |
 | Translated modules | about 1,230, in 12 frameworks |
-| Open-source apps installed from APK | 15 |
+| Apps that open, of 54 installed from APK | 50 |
 
 ## Requirements
 

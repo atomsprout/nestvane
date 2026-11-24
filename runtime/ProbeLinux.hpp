@@ -563,6 +563,7 @@ private:
         std::weak_ptr<GuestTouch::Reader> touchReader{};
         std::weak_ptr<BpfMap> ring{};
         std::optional<PollNotifications> deliveredNotifications{};
+        uint64_t pipeWritesSeen = ~uint64_t{0};  // Pipe::writes when this watch last reported, if it reports only changes
     };
     struct EventState {
         struct Timer {
@@ -604,6 +605,7 @@ private:
         std::deque<uint8_t> data;
         std::weak_ptr<int> reader, writer;
         size_t capacity = 65536;
+        uint64_t writes = 0;  // goes up with each write, for watches that report only changes
         uint16_t pollEvents(bool readEnd) const;
     };
     struct Pty {
