@@ -1,0 +1,16 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="dev.nestvane.mic">
+    <uses-sdk android:minSdkVersion="23" android:targetSdkVersion="37" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Records three seconds from the microphone and logs how loud it was (tag NestvaneMic): the
+         peak and the RMS of the samples. Real sound, even a quiet room, is not all zeros. With root
+         allowed it grants itself the permission first, so that a test needs no tap. -->
+    <application android:label="AAA Mic Test" android:theme="@android:style/Theme.Material.Light.NoActionBar"
+                 android:allowBackup="false">
+        <activity android:name=".MainActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

@@ -4,6 +4,7 @@
 #
 #   tools/build-fixture-apk.sh webview   shows a page in a WebView and logs how long each stage takes
 #   tools/build-fixture-apk.sh root      asks for root with su and logs what it got
+#   tools/build-fixture-apk.sh mic       records three seconds and logs how loud it was
 set -euo pipefail
 cd "$(dirname "$0")/.."
 name="${1:?usage: build-fixture-apk.sh <fixture name>}"
