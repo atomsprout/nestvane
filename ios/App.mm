@@ -24,6 +24,8 @@
 #include <cstring>
 #include <chrono>
 #include <mach/mach.h>
+#include <map>
+extern "C" int proc_regionfilename(int pid, uint64_t address, void* buffer, uint32_t size);
 #include <memory>
 #include <new>
 #include <thread>
@@ -367,6 +369,80 @@ void WriteGuestDisplayPNG(NSData* png, NSURL* destination) {
         NSLog(@"Unable to export display capture: %@", error);
 }
 
+// For measuring whether Android could fit a free developer account's address space (PLAN.md, "先量 2.0"):
+// every host region, summed by what it is. File mappings go by file name, the rest by their VM tag;
+// untagged anonymous memory is split into what can be accessed and what is only reserved (no access:
+// guard pages and the address space the runtime holds for later).
+void AppendAddressMap(std::string& report) {
+    struct Sum { uint64_t bytes = 0, resident = 0; unsigned regions = 0; };
+    std::map<std::string, Sum> sums;
+    uint64_t highest = 0, total = 0;
+    unsigned regions = 0;
+    const auto started = std::chrono::steady_clock::now();
+    bool timedOut = false;
+    uint64_t namingMs = 0;  // microseconds, despite the name until printed
+    std::map<uint32_t, std::string> names;
+    vm_address_t address = 0;
+    for (;;) {
+        if ((++regions & 15) == 0 && std::chrono::steady_clock::now() - started > std::chrono::seconds(240)) {
+            timedOut = true;
+            break;
+        }
+        vm_size_t size = 0;
+        natural_t depth = 0;
+        vm_region_submap_info_data_64_t info{};
+        mach_msg_type_number_t infoCount = VM_REGION_SUBMAP_INFO_COUNT_64;
+        if (vm_region_recurse_64(mach_task_self(), &address, &size, &depth,
+                                   reinterpret_cast<vm_region_recurse_info_t>(&info), &infoCount) != KERN_SUCCESS)
+            break;
+        char path[1024] = {};
+        std::string key;
+        // A submap is the system's shared code (dyld's cache): counted whole, not walked into.
+        if (info.is_submap) {
+            key = "submap";
+        } else if (info.protection != VM_PROT_NONE && info.share_mode != SM_EMPTY && [&] {
+                       if (const auto known = names.find(info.object_id); known != names.end()) {
+                           key = known->second;
+                           return !key.empty();
+                       }
+                       const auto naming = std::chrono::steady_clock::now();
+                       std::string name;
+                       if (proc_regionfilename(getpid(), address, path, sizeof(path)) > 0) {
+                           std::string_view whole(path);
+                           if (const auto slash = whole.rfind('/'); slash != std::string_view::npos) whole.remove_prefix(slash + 1);
+                           name = "file " + std::string(whole);
+                       }
+                       namingMs += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - naming).count();
+                       if (info.object_id) names[info.object_id] = name;
+                       key = name;
+                       return !key.empty();
+                   }()) {
+        } else if (info.user_tag) {
+            key = "tag " + std::to_string(info.user_tag);
+        } else {
+            key = info.protection == VM_PROT_NONE ? "anonymous, no access" : "anonymous";
+        }
+        auto& sum = sums[key];
+        sum.bytes += size;
+        sum.resident += uint64_t(info.pages_resident) * vm_page_size;
+        ++sum.regions;
+        total += size;
+        highest = std::max<uint64_t>(highest, address + size);
+        address += size;
+    }
+    std::vector<std::pair<std::string, Sum>> sorted(sums.begin(), sums.end());
+    std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.second.bytes > b.second.bytes; });
+    report += "  address map: " + std::to_string(total) + " bytes in " + std::to_string(regions) + " regions, highest address " +
+              std::to_string(highest) + ", " + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                  std::chrono::steady_clock::now() - started).count()) + " ms" + (timedOut ? ", stopped at 240 s" : "") + ", " + std::to_string(namingMs / 1000) + " ms naming files" + "\n";
+    size_t shown = 0;
+    for (const auto& [key, sum] : sorted) {
+        if (++shown > 60) break;
+        report += "    " + std::to_string(sum.bytes) + " bytes, " + std::to_string(sum.resident) + " resident, " +
+                  std::to_string(sum.regions) + " regions: " + key + "\n";
+    }
+}
+
 void AppendMemoryUsage(std::string& report) {
     rusage usage{};
     if (getrusage(RUSAGE_SELF, &usage) == 0)
@@ -385,6 +461,9 @@ void AppendMemoryUsage(std::string& report) {
     report += "  iOS memory bytes: internal " + std::to_string(memory.internal) + ", compressed " +
               std::to_string(memory.compressed) + ", external " + std::to_string(memory.external) +
               ", reusable " + std::to_string(memory.reusable) + ", resident " + std::to_string(memory.resident_size) + "\n";
+    if (count >= TASK_VM_INFO_REV1_COUNT && count >= TASK_VM_INFO_REV2_COUNT)
+        report += "  iOS address range: " + std::to_string(memory.min_address) + " to " + std::to_string(memory.max_address) +
+                  ", virtual size " + std::to_string(memory.virtual_size) + "\n";
 }
 } // namespace
 
@@ -1832,6 +1911,17 @@ static void AskForRoot(NSString* name) {
                     report += '\n';
                     AppendMemoryUsage(report);
                     exportReport(launcherURL, report);
+                    // NESTVANE_ADDRESS_MAP=1: what fills the host address space, ten seconds on (PLAN.md, "先量 2.0").
+                    if ([NSProcessInfo.processInfo.environment[@"NESTVANE_ADDRESS_MAP"] isEqualToString:@"1"]) {
+                        NSURL* mapURL = [documents URLByAppendingPathComponent:@"address-map.txt"];
+                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                            std::string map;
+                            AppendMemoryUsage(map);
+                            AppendAddressMap(map);
+                            NSData* data = [NSData dataWithBytes:map.data() length:map.size()];
+                            [data writeToURL:mapURL atomically:YES];
+                        });
+                    }
                     // A few seconds on, when the home screen has drawn: which code pages this start used.
                     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
                         NSString* list = [NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject
@@ -2182,6 +2272,24 @@ static nestvane::ProbeLinux::HostVolume deviceVolume() {
 }
 
 int main(int argc, char* argv[]) {
+    // NESTVANE_ADDRESS_MAP=1: before Android starts, the limits iOS gave this process (memory, address
+    // range) and how much address space can still be reserved, in 64 MiB pieces, given back at once.
+    if (const char* map = getenv("NESTVANE_ADDRESS_MAP"); map && std::string_view(map) == "1") {
+        std::string report;
+        AppendMemoryUsage(report);
+        std::vector<vm_address_t> pieces;
+        for (;;) {
+            vm_address_t piece = 0;
+            if (vm_allocate(mach_task_self(), &piece, 64ull << 20, VM_FLAGS_ANYWHERE) != KERN_SUCCESS) break;
+            pieces.push_back(piece);
+            if (pieces.size() >= 16384) break;
+        }
+        report += "  reservable before Android: " + std::to_string(pieces.size() * (64ull << 20)) + " bytes\n";
+        for (const auto piece : pieces) vm_deallocate(mach_task_self(), piece, 64ull << 20);
+        NSURL* documents = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
+        [[NSData dataWithBytes:report.data() length:report.size()]
+            writeToURL:[documents URLByAppendingPathComponent:@"memory-limits.txt"] atomically:YES];
+    }
     nestvane::ProbeLinux::setHostVolumeSource(deviceVolume);
     // NESTVANE_TEST_ROOT=allow or =deny answers for every app without asking, for the app's tests.
     nestvane::ProbeLinux::setRootPolicy({
