@@ -3,3 +3,4 @@
 # model version median-ms-of-five-warm-starts memory-GB date commit
 iPhone14,7 1.6 11075 2.56 2026-11-24 35a8fab
 iPhone14,7 1.7 10916 2.61 2026-11-24 ee19229
+iPhone18,1 1.7 7341 3.35 2026-11-24 1299273
