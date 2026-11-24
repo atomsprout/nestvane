@@ -1290,11 +1290,19 @@ uint64_t ProbeLinux::statFilesystem(Machine& machine, uint64_t address, std::str
     }
     if (dataPath(backingPath(path))) {
         // The host's volume: Settings shows its size and what is free, as the device's own Settings does.
+        // Android takes the total as /data's and /system's together, rounded up to a power of two, so
+        // /data is the volume less what statfs says /system holds: a 256 GB phone showed 512 GB.
         const auto volume = hostVolume();
         const auto used = writableAllocation(true);
         const auto limit = persistentLimit(used);
-        stat[2] = (volume.total ? nominalCapacity(volume.total) : limit) / pageSize;
-        stat[3] = stat[4] = (limit - std::min(limit, used)) / pageSize;
+        uint64_t systemBytes = total.blocks * pageSize;
+        if (const auto* system = mountFor("/system"); system && system->ext4)
+            systemBytes = system->ext4->blockCount * system->ext4->blockSize;
+        const auto shown = volume.total ? nominalCapacity(volume.total) : limit;
+        const auto dataTotal = shown > systemBytes ? shown - systemBytes : shown;
+        const auto room = std::min(limit, dataTotal);
+        stat[2] = dataTotal / pageSize;
+        stat[3] = stat[4] = (room - std::min(room, used)) / pageSize;
         const auto filesUsed = std::ranges::count_if(writableFiles, [](const auto& entry) {
             return entry.second->persistent;
         });

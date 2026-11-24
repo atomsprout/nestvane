@@ -7859,7 +7859,17 @@ int main() {
         ProbeLinux::setHostVolumeSource([] { return ProbeLinux::HostVolume{128ULL << 30, 21ULL << 30}; });
         assert(invoke(writer, 43, {firstPath, base + 0x450}) == 0);
         const auto quotaBlocks = load(base + 0x460);
-        assert(quotaBlocks == (128ULL << 30) / pageSize);
+        // Android adds /system's size to /data's for the total it shows: together they are the volume.
+        // (Without a /system here, what the root's files take, which is what the kernel layer counts then.)
+        put(base + 0x4c0, "/system");
+        if (invoke(writer, 43, {base + 0x4c0, base + 0x600}) != 0) {
+            put(base + 0x4c0, "/");
+            assert(invoke(writer, 43, {base + 0x4c0, base + 0x600}) == 0);
+        }
+        const auto systemBytes = load(base + 0x610) * load(base + 0x608);
+        assert(quotaBlocks * pageSize <= (128ULL << 30) - systemBytes &&
+               quotaBlocks * pageSize + pageSize > (128ULL << 30) - systemBytes);
+        put(firstPath, "/data");
         const auto freeBlocks = load(base + 0x468);
         assert(freeBlocks == load(base + 0x470));
         assert(freeBlocks <= (20ULL << 30) / pageSize && freeBlocks > (19ULL << 30) / pageSize);
