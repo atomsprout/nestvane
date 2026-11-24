@@ -15,6 +15,7 @@
 #include <mutex>
 #include <cstdlib>
 #include <cstring>
+#include <string_view>
 #include <mach/mach.h>
 #include <mach/mach_time.h>
 #include <pthread.h>
@@ -63,6 +64,7 @@ void nestvane_native_exit();
 void nestvane_native_svc();
 void nestvane_native_trap();
 void nestvane_native_signal_return();
+void nestvane_native_interpreter_return();
 void nestvane_native_stray();
 }
 
@@ -198,6 +200,10 @@ Registry& registry() {
         if (mmap(entries, GuestSpace::page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0) != MAP_FAILED) {
             entries[1] = reinterpret_cast<uint64_t>(&nestvane_native_signal_return);
             result.traps.insert(entries[1]);
+            // The trampoline's last instruction, a brk, stands for return addresses in interpreted code.
+            entries[3] = reinterpret_cast<uint64_t>(&nestvane_native_interpreter_return);
+            result.traps.insert(entries[3]);
+            interpreterReturnPc = result.signalPage + 12;
             result.made[(result.signalPage - low) * 2 / GuestSpace::page] = true;
         } else {
             result.signalPage = 0;
@@ -260,7 +266,19 @@ struct Counters {
     uint64_t sliceSignals = 0, sliceOutside = 0;
     uint64_t offloads = 0;
     uint64_t interpreterOffloads = 0, workerInterpreted = 0;
-    std::atomic<uint64_t> workerEnds[8] = {};  // how runs of the interpreter on a worker ended: by native reason, 0 in the interpreter
+    std::atomic<uint64_t> workerEnds[8] = {};
+    std::atomic<uint64_t> workerReentered{0};
+    std::atomic<uint64_t> workerReturned{0};  // returns from native code into the interpreted code, without a fault  // runs of native code on a worker that went back into the interpreted code  // how runs of the interpreter on a worker ended: by native reason, 0 in the interpreter
+    // What the faults that native code could not get past were: at a guest address in the first
+    // 64 KiB (null pointers, ART's implicit checks), across from one run of chunks into another that
+    // has the guest address backed, at a guest address that is not mapped, inside a run (a page's
+    // protection), or at a host address that is no guest memory.
+    uint64_t faultKinds[5] = {};
+    // The guest code addresses that fault most (a small table, kept by count).
+    struct FaultPc { uint64_t pc = 0, count = 0, host = 0; uint32_t word = 0, kind = 0; };
+    std::array<FaultPc, 512> faultPcs{};
+    // A few examples of faults at no guest memory: guest pc, the instruction, the host address.
+    std::array<std::array<uint64_t, 3>, 8> strayExamples{};
 } counters;
 
 void onSignal(int number, siginfo_t* info, void* raw) {
@@ -622,7 +640,7 @@ Exit settle(Machine& machine, const Result& result) {
     }
     if (result.reason == leftByTrap) {
         ++counters.traps;
-        cpu.pc = result.pc;  // the entry trap puts the guest pc there
+        cpu.pc = branchTarget(cpu, result.pc);  // the entry trap puts the guest pc there
         return Exit::interpret;
     }
     if (result.reason == leftByPreemption) {
@@ -655,6 +673,29 @@ Exit settle(Machine& machine, const Result& result) {
         }
         ++counters.faults;
         ++counters.faultsBySignal[result.signal & 31];
+        {
+            bool inRun = false;
+            unsigned kind = 4;
+            if (space.guestAddress(result.faultAddress, address, &inRun))
+                kind = address < 0x10000 ? 0 : inRun ? 3 : !space.mapped(address) ? 2 : space.backed(address) ? 1 : 2;
+            ++counters.faultKinds[kind];
+            if (kind == 4)
+                for (auto& example : counters.strayExamples) {
+                    if (example[0] == guestPc) break;
+                    if (example[0]) continue;
+                    uint32_t word = 0;
+                    if (space.backed(guestPc)) std::memcpy(&word, space.host(guestPc), 4);
+                    example = {guestPc, word, result.faultAddress};
+                    break;
+                }
+            auto& slot = counters.faultPcs[(guestPc >> 2) % counters.faultPcs.size()];
+            if (slot.pc == guestPc) ++slot.count;
+            else if (!slot.count || !--slot.count) {
+                uint32_t word = 0;
+                if (space.backed(guestPc)) std::memcpy(&word, space.host(guestPc), 4);
+                slot = {guestPc, 1, result.faultAddress, word, kind};
+            }
+        }
         return Exit::fault;
     }
     // A jump to something that is no translated code. (On iOS the system kills the process for it
@@ -700,6 +741,45 @@ struct Pool {
     std::atomic<unsigned> outstanding{0}, done{0};
 } pool;
 
+// Whether the instruction before a return address in the interpreted code is a call (BL or BLR): the
+// interpreter has just made it, and native code is to return there.
+bool calledFrom(const SpaceCode& code, const GuestSpace& space, uint64_t returnAddress) {
+    const uint64_t call = returnAddress - 4;
+    if (call - code.start >= code.end - code.start || call % 4) return false;
+    uint32_t word = 0;
+    if (code.base) std::memcpy(&word, code.base + (call - code.start), 4);
+    else if (space.backed(call) && (call & (GuestSpace::chunk - 1)) <= GuestSpace::chunk - 4) std::memcpy(&word, space.host(call), 4);
+    else return false;
+    return (word & 0xfc000000) == 0x94000000 || (word & 0xfffffc1f) == 0xd63f0000;
+}
+
+// Whether the translated function at a guest pc may look at its own return address, which a return
+// into interpreted code would give it as interpreterReturnPc: bionic's dlopen and dlsym choose the
+// linker namespace of their caller by it.
+bool readsReturnAddress(uint64_t pc) {
+    const auto& all = registry();
+    const auto next = std::upper_bound(all.byGuest.begin(), all.byGuest.end(), pc, [&](uint64_t address, size_t index) {
+        return address < all.modules[index].module->info[0];
+    });
+    if (next == all.byGuest.begin()) return true;
+    const std::string_view name = all.modules[*std::prev(next)].module->name;
+    return name.find("/libdl.so") != std::string_view::npos || name.find("/libdl_android.so") != std::string_view::npos ||
+           name.find("/linker") != std::string_view::npos;
+}
+
+// Whether native code faulted looking up a target in the interpreted code, and if so the guest pc of
+// the instruction that looked it up.
+bool intoInterpreted(const Result& result, const SpaceCode& code, uint64_t& guestPc) {
+    const auto& all = registry();
+    if (result.faultPc < all.codeStart || result.faultPc >= all.codeEnd) return false;
+    const uint64_t tableStart = reinterpret_cast<uint64_t>(all.table);
+    if (result.faultAddress < tableStart) return false;
+    const uint64_t target = all.low + (result.faultAddress - tableStart) / 2;
+    if (target - code.start >= code.end - code.start) return false;
+    bool atStart = false;
+    return guestCode(result.faultPc, guestPc, atStart);
+}
+
 void work(Worker* worker) {
     pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
     // A worker has a core to itself, so its turn is long: it ends for the main loop's sake.
@@ -719,10 +799,25 @@ void work(Worker* worker) {
             const auto& code = worker->code;
             uint64_t interpreted = 0;
             for (;;) {
-                interpreted += interpretInSpace(worker->cpu, *worker->space, code, 2'000'000, worker->running.recall);
+                const uint64_t ran = interpretInSpace(worker->cpu, *worker->space, code, 2'000'000, worker->running.recall);
+                interpreted += ran;
                 const uint64_t pc = worker->cpu.pc;
-                if (pc - code.start < code.end - code.start || worker->running.recall.load(std::memory_order_relaxed) ||
-                    mach_absolute_time() >= until || !loadOnWorker(worker->cpu, *worker->space, worker->running.context)) {
+                auto& cpu = worker->cpu;
+                bool leave = pc - code.start < code.end - code.start || worker->running.recall.load(std::memory_order_relaxed) ||
+                             mach_absolute_time() >= until;
+                // Native code is to return into the code interpreted here: it returns to
+                // interpreterReturnPc instead, which leaves without a fault, and the real address waits.
+                static const bool returnTrap = !std::getenv("NESTVANE_NO_RETURN_TRAP");
+                const bool redirect = !leave && returnTrap && interpreterReturnPc && cpu.returnCount < cpu.returns.size() &&
+                                      ran && cpu.x[30] - code.start < code.end - code.start && calledFrom(code, *worker->space, cpu.x[30]) &&
+                                      !readsReturnAddress(pc);
+                if (redirect) {
+                    cpu.returns[cpu.returnCount++] = {cpu.x[30], cpu.sp};
+                    cpu.x[30] = interpreterReturnPc;
+                }
+                if (!leave && !loadOnWorker(cpu, *worker->space, worker->running.context)) leave = true;
+                if (leave && redirect) cpu.x[30] = cpu.returns[--cpu.returnCount][0];
+                if (leave) {
                     counters.workerEnds[pc - code.start < code.end - code.start ? 0 : 7].fetch_add(1, std::memory_order_relaxed);
                     result = {};
                     result.reason = leftByInterpreter;
@@ -730,11 +825,29 @@ void work(Worker* worker) {
                     break;
                 }
                 result = enter(worker->running);
+                if (result.reason == leftByTrap && result.pc == interpreterReturnPc && interpreterReturnPc) {
+                    store(worker->running.context, worker->cpu);
+                    worker->cpu.pc = branchTarget(worker->cpu, result.pc);
+                    counters.workerReturned.fetch_add(1, std::memory_order_relaxed);
+                    continue;
+                }
                 if (result.reason == leftByTrap && result.pc - code.start < code.end - code.start &&
                     !worker->running.recall.load(std::memory_order_relaxed) && mach_absolute_time() < until) {
                     // Back in the code being interpreted.
                     store(worker->running.context, worker->cpu);
                     worker->cpu.pc = result.pc;
+                    continue;
+                }
+                // A return or a call from translated code into the code being interpreted: the look-up
+                // of its target faults in the code table, where nothing was made for code without a
+                // translation. The instruction has done nothing yet; the interpreter here does it again.
+                uint64_t from = 0;
+                static const bool reenter = !std::getenv("NESTVANE_NO_REENTER");
+                if (result.reason == leftByFault && reenter && intoInterpreted(result, code, from) &&
+                    !worker->running.recall.load(std::memory_order_relaxed) && mach_absolute_time() < until) {
+                    store(worker->running.context, worker->cpu);
+                    worker->cpu.pc = from;
+                    counters.workerReentered.fetch_add(1, std::memory_order_relaxed);
                     continue;
                 }
                 counters.workerEnds[std::min(result.reason, 6)].fetch_add(1, std::memory_order_relaxed);
@@ -848,6 +961,10 @@ bool take(uint64_t ticket, CPU* cpu, Result& result) {
         cpu->output = std::move(output);
     } else if (cpu) {
         store(worker->running.context, *cpu);
+        if (worker->result.interpreter) {
+            cpu->returns = worker->cpu.returns;
+            cpu->returnCount = worker->cpu.returnCount;
+        }
     }
     worker->interpreting = false;
     result = worker->result;
@@ -886,11 +1003,27 @@ std::string statistics() {
         << counters.sliceSignals << " handled, " << counters.sliceOutside << " outside guest code), traps " << counters.traps
         << ", lost " << counters.lost << ", runs on " << pool.workers.size() << " workers " << counters.offloads
         << ", interpreted on workers " << counters.workerInterpreted << " instructions in " << counters.interpreterOffloads << " runs\n";
+    out << "  native faults: null " << counters.faultKinds[0] << ", across runs " << counters.faultKinds[1] << ", not mapped "
+        << counters.faultKinds[2] << ", in a run " << counters.faultKinds[3] << ", no guest memory " << counters.faultKinds[4]
+        << "; commonest guest pcs:";
+    {
+        auto pcs = counters.faultPcs;
+        std::partial_sort(pcs.begin(), pcs.begin() + 12, pcs.end(), [](auto a, auto b) { return a.count > b.count; });
+        for (unsigned i = 0; i < 12 && pcs[i].count; ++i)
+            out << std::hex << " 0x" << pcs[i].pc << " (word 0x" << pcs[i].word << ", host 0x" << pcs[i].host << std::dec
+                << ", kind " << pcs[i].kind << "):" << pcs[i].count << ";";
+        out << "; at no guest memory:";
+        for (const auto& example : counters.strayExamples)
+            if (example[0]) out << std::hex << " pc 0x" << example[0] << " word 0x" << example[1] << " host 0x" << example[2] << std::dec << ";";
+    }
+    out << '\n';
     if (counters.interpreterOffloads) {
         out << interpreterStops() << "  and ended: in the interpreter " << counters.workerEnds[0] << ", native for a system call "
             << counters.workerEnds[leftBySyscall] << ", a fault " << counters.workerEnds[leftByFault] << ", preemption "
             << counters.workerEnds[leftByPreemption] << ", a trap elsewhere " << counters.workerEnds[leftByTrap]
-            << ", stray " << counters.workerEnds[leftByStray] << ", not entered natively " << counters.workerEnds[7] << '\n';
+            << ", stray " << counters.workerEnds[leftByStray] << ", not entered natively " << counters.workerEnds[7]
+            << "; went back into the interpreted code after a fault " << counters.workerReentered.load(std::memory_order_relaxed)
+            << ", by returning " << counters.workerReturned.load(std::memory_order_relaxed) << '\n';
     }
     static const mach_timebase_info_data_t base = [] { mach_timebase_info_data_t value; mach_timebase_info(&value); return value; }();
     const auto milliseconds = [&](uint64_t time) { return time * base.numer / base.denom / 1'000'000; };

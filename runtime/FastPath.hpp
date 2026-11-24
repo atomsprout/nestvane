@@ -25,6 +25,8 @@ struct FastInstruction {
         loadStore, loadStorePair, loadLiteral,
         hint, barrier, threadPointer, conditionalCompare, singleSource,
         vectorLoadStore, vectorPair,
+        floatArithmetic, // scalar FADD, FSUB, FMUL, FDIV, the fused forms, FCMP: op says which, size 4 or 8
+        registers, // any other instruction that changes only registers: run by the interpreter's own code (registerInstruction)
     };
     Kind kind = none;
     uint8_t rd = 0, rn = 0, rm = 0, ra = 0; // ra: the third source, or the second register of a pair

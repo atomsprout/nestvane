@@ -35,6 +35,13 @@ constexpr Template templates[] = {
     {0xffdfffe0, 0xd51bd040, "tpidr_el0"},          {0x3fe00410, 0x3a400000, "ccmp/ccmn"},
     {0x7fff0000, 0x5ac00000, "one source"},         {0x3e000000, 0x3c000000, "vector load/store"},
     {0x3e000000, 0x2c000000, "vector pair"},
+    {0x0e000000, 0x0e000000, "simd/fp data"},       {0x1f800000, 0x13800000, "extract"},
+    {0x0e000000, 0x0a000000, "register data"},       {0x1c000000, 0x10000000, "immediate data"},
+    {0xff200c00, 0x1e200800, "fp two source s"},     {0xff200c00, 0x1e600800, "fp two source d"},
+    {0xff207c00, 0x1e204000, "fp one source"},       {0x7f3ffc00, 0x1e220000, "fp from integer"},
+    {0x7f3ffc00, 0x1e380000, "fp to integer"},       {0xff203c1f, 0x1e202000, "fcmp"},
+    {0xbf200400, 0x0e200400, "simd three same"},     {0x9ff80400, 0x0f000400, "simd modified immediate"},
+    {0x9f800400, 0x0f000400, "simd shift immediate"}, {0x9fe08400, 0x0e000400, "simd copy"},
 };
 
 Machine makeMachine(uint32_t word, const std::vector<uint8_t>& code, const std::vector<uint8_t>& data) {
@@ -71,6 +78,23 @@ int main(int argc, char** argv) {
                     case 2: value = uint64_t(-int64_t(random() & 0xff)); break;
                     case 3: value = dataAddress + dataSize - (random() & 0x3f); break; // near the end
                     default: value = dataAddress + (random() % dataSize); break;
+                }
+            }
+            for (auto& vector : state.v) {
+                switch (random() % 4) {
+                    case 0: for (auto& byte : vector) byte = uint8_t(random()); break;
+                    case 1: { // doubles, small and of either sign
+                        const double values[2] = {double(int64_t(random() % 2001) - 1000) / 8, double(random() % 100000) * 1e-3};
+                        std::memcpy(vector.data(), values, 16);
+                        break;
+                    }
+                    case 2: { // floats
+                        float values[4];
+                        for (auto& value : values) value = float(int64_t(random() % 2001) - 1000) / 4;
+                        std::memcpy(vector.data(), values, 16);
+                        break;
+                    }
+                    default: break; // zero
                 }
             }
             state.sp = dataAddress + ((random() % dataSize) & ~uint64_t{15});

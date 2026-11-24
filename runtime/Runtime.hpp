@@ -311,9 +311,30 @@ struct CPU {
     int exitCode = 0;
     Stop stop = Stop::running;
     std::string output;
+    // Return addresses into interpreted code that native code was given interpreterReturnPc in place
+    // of, each with the stack pointer at the call (NativeCode.cpp, the worker's loop).
+    std::array<std::array<uint64_t, 2>, 16> returns{};
+    uint8_t returnCount = 0;
 
     bool operator==(const CPU&) const = default;
 };
+
+// The guest address native code returns to instead of an address in code that is interpreted: its
+// entry in the code table leaves native code without a fault (NativeEntry.S,
+// nestvane_native_interpreter_return). 0 when there is none.
+inline uint64_t interpreterReturnPc = 0;
+
+// Where a branch to `target` goes: to itself, or for interpreterReturnPc to the return address it
+// stands for, which x30 then holds again. Entries of calls deeper than the stack is now, left by a
+// longjmp, are dropped.
+inline uint64_t branchTarget(CPU& cpu, uint64_t target) {
+    if (target != interpreterReturnPc || !target) return target;
+    while (cpu.returnCount && cpu.returns[cpu.returnCount - 1][1] < cpu.sp) --cpu.returnCount;
+    if (!cpu.returnCount) return target;
+    const uint64_t real = cpu.returns[--cpu.returnCount][0];
+    cpu.x[30] = real;
+    return real;
+}
 
 struct Machine {
     explicit Machine(const Image& image, const std::shared_ptr<AnonymousBudget>& budget = {},

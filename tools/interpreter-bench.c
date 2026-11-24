@@ -66,6 +66,42 @@ BENCH static int64_t walk_list(struct node* nodes, int64_t count, int64_t rounds
     return total;
 }
 
+// Floating point, as in a physics step or a mixer: a few bodies pulled together, in double, and a
+// filter over float samples.
+BENCH static int64_t step_bodies(double* state, float* samples, int64_t rounds) {
+    for (int i = 0; i < 16; ++i) {
+        state[i * 4] = i * 0.5;
+        state[i * 4 + 1] = (i * 7 % 5) * 0.25;
+        state[i * 4 + 2] = state[i * 4 + 3] = 0;
+    }
+    for (int64_t round = 0; round < rounds; ++round) {
+        for (int i = 0; i < 16; ++i) {
+            double fx = 0, fy = 0;
+            for (int j = 0; j < 16; ++j) {
+                const double dx = state[j * 4] - state[i * 4], dy = state[j * 4 + 1] - state[i * 4 + 1];
+                const double d = dx * dx + dy * dy + 0.01;
+                fx += dx / d;
+                fy += dy / d;
+            }
+            state[i * 4 + 2] += fx * 0.001;
+            state[i * 4 + 3] += fy * 0.001;
+        }
+        for (int i = 0; i < 16; ++i) {
+            state[i * 4] += state[i * 4 + 2];
+            state[i * 4 + 1] += state[i * 4 + 3];
+        }
+    }
+    float level = 0;
+    for (int64_t i = 0; i < 4096 * rounds / 8; ++i) {
+        const float sample = (float)((i * 37) % 200 - 100) * 0.01f;
+        level = level * 0.95f + sample * 0.05f;
+        samples[i & 4095] = level;
+    }
+    int64_t sum = (int64_t)(level * 1000);
+    for (int i = 0; i < 64; ++i) sum += (int64_t)(state[i] * 1000);
+    return sum;
+}
+
 // The whole benchmark on a buffer of at least 1 MiB. Returns a number that depends on every part.
 BENCH int64_t interpreter_bench(uint8_t* buffer, int64_t scale) {
     uint8_t* code = buffer;
@@ -97,5 +133,6 @@ BENCH int64_t interpreter_bench(uint8_t* buffer, int64_t scale) {
 
     struct node* nodes = (struct node*)(buffer + 262144);
     result += walk_list(nodes, 4096, 4 * scale);
+    result += step_bodies((double*)(buffer + 196608), (float*)(buffer + 229376), 4 * scale);
     return result;
 }

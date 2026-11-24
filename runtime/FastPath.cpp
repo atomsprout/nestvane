@@ -1,10 +1,14 @@
 #include "FastPath.hpp"
+#include "AArch64.hpp"
 #include "GuestSpace.hpp"
 
 #include <csetjmp>
 #include <cstdio>
+#include <cstdlib>
 #include <vector>
 
+#include <bit>
+#include <cmath>
 #include <algorithm>
 #include <array>
 #include <cstring>
@@ -451,7 +455,43 @@ FastInstruction decodeFast(uint32_t word) {
         f.immediate = int64_t(signExtend((word >> 5) & 0x7ffff, 19)) * 4;
         return f;
     }
-    return {};
+    // Scalar floating point, as the interpreter does it (AArch64.cpp, floatInstruction): the host's
+    // arithmetic, rounding to nearest, no status flags.
+    if ((word & 0xffa00c00) == 0x1e200800 && ((word >> 12) & 15) < 4) { // FMUL, FDIV, FADD, FSUB
+        f.kind = FastInstruction::floatArithmetic;
+        f.op = uint8_t((word >> 12) & 3);
+        f.size = (word & 0x400000) ? 8 : 4;
+        return f;
+    }
+    if ((word & 0xff800000) == 0x1f000000) { // FMADD, FMSUB, FNMADD, FNMSUB
+        f.kind = FastInstruction::floatArithmetic;
+        f.op = uint8_t(4 + (((word >> 21) & 1) << 1) + ((word >> 15) & 1));
+        f.ra = uint8_t((word >> 10) & 31);
+        f.size = (word & 0x400000) ? 8 : 4;
+        return f;
+    }
+    if ((word & 0xff20fc07) == 0x1e202000 && !(word & 0x800000)) { // FCMP, FCMPE, with a register or with zero
+        f.kind = FastInstruction::floatArithmetic;
+        f.op = (word & 8) ? 9 : 8;
+        f.size = (word & 0x400000) ? 8 : 4;
+        return f;
+    }
+    // The rest of data processing, of the general registers and of the SIMD and floating-point ones
+    // (EXTR, FMOV, the arithmetic of both kinds of register): the interpreter's own code runs it. It is
+    // taken only when that code has the encoding, which does not depend on the registers' values.
+    switch ((word >> 25) & 15) {
+        case 5: case 7: case 8: case 9: case 13: case 15: {
+            static const bool off = std::getenv("NESTVANE_NO_FAST_REGISTERS");
+            if (off) return {};
+            CPU scratch;
+            if (!registerInstruction(scratch, word)) return {};
+            f.kind = FastInstruction::registers;
+            f.immediate = word;
+            return f;
+        }
+        default:
+            return {};
+    }
 }
 
 namespace {
@@ -466,6 +506,37 @@ struct MachineMemory {
     bool storeBytes(uint64_t address, unsigned size, const uint8_t* bytes) { return machine.write(address, {bytes, size}); }
     void fault(uint64_t pc, uint64_t address) { machine.fault(pc, address); }
 };
+
+template <class Float, class UInt>
+void floatOp(CPU& cpu, const FastInstruction& f) {
+    const auto get = [&](unsigned index) {
+        UInt bits;
+        std::memcpy(&bits, cpu.v[index].data(), sizeof(UInt));
+        return std::bit_cast<Float>(bits);
+    };
+    const auto store = [&](Float value) {
+        cpu.v[f.rd].fill(0);
+        const UInt bits = std::bit_cast<UInt>(value);
+        std::memcpy(cpu.v[f.rd].data(), &bits, sizeof(UInt));
+    };
+    switch (f.op) {
+        case 0: store(get(f.rn) * get(f.rm)); break;
+        case 1: store(get(f.rn) / get(f.rm)); break;
+        case 2: store(get(f.rn) + get(f.rm)); break;
+        case 3: store(get(f.rn) - get(f.rm)); break;
+        case 8: case 9: { // FCMP
+            const Float a = get(f.rn), b = f.op == 9 ? Float(0) : get(f.rm);
+            cpu.nzcv = std::isunordered(a, b) ? 3 : a < b ? 8 : a == b ? 6 : 2;
+            break;
+        }
+        default: { // the fused forms: bit 1 of op - 4 negates, bit 0 subtracts
+            const bool negate = (f.op - 4) & 2, subtract = (f.op - 4) & 1;
+            const Float left = get(f.rn), addend = get(f.ra);
+            store(std::fma(negate != subtract ? -left : left, get(f.rm), negate ? -addend : addend));
+            break;
+        }
+    }
+}
 
 template <class Memory>
 void runFast(CPU& cpu, Memory& memory, const FastInstruction& f) {
@@ -632,7 +703,7 @@ void runFast(CPU& cpu, Memory& memory, const FastInstruction& f) {
             if (bool((readZero(cpu, f.rd) >> f.amount) & 1) == bool(f.op)) next = cpu.pc + uint64_t(f.immediate);
             break;
         case FastInstruction::branchRegister: {
-            const uint64_t target = readZero(cpu, f.rn);
+            const uint64_t target = branchTarget(cpu, readZero(cpu, f.rn));
             if (f.op) cpu.x[30] = next;
             next = target;
             break;
@@ -775,6 +846,17 @@ void runFast(CPU& cpu, Memory& memory, const FastInstruction& f) {
             if (f.writeback) writeStack(cpu, f.rn, base + uint64_t(f.immediate), 64);
             break;
         }
+        case FastInstruction::floatArithmetic:
+            if (f.size == 8) floatOp<double, uint64_t>(cpu, f);
+            else floatOp<float, uint32_t>(cpu, f);
+            break;
+        case FastInstruction::registers:
+            // The interpreter would not have it either, and the app would get SIGILL there.
+            if (!registerInstruction(cpu, uint32_t(f.immediate))) {
+                memory.fault(cpu.pc, cpu.pc);
+                return;
+            }
+            break;
         case FastInstruction::loadLiteral: {
             const uint64_t address = cpu.pc + uint64_t(f.immediate);
             uint64_t value = 0;

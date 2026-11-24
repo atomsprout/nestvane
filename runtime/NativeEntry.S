@@ -150,6 +150,15 @@ _nestvane_native_signal_return:
 	ldr x28, [x25, #CTX_SIGNAL_RETURN]
 	b _nestvane_native_trap
 
+// What the table of translated code holds for interpreterReturnPc (Runtime.hpp), the last instruction
+// of the signal return page: native code returning there leaves, and the runtime goes on at the return
+// address it stands for, in code that is interpreted.
+.globl _nestvane_native_interpreter_return
+_nestvane_native_interpreter_return:
+	ldr x28, [x25, #CTX_SIGNAL_RETURN]
+	add x28, x28, #8
+	b _nestvane_native_trap
+
 // Leaves guest code with the reason in w0 and the context in x25. The guest's registers are in the
 // context already: SAVE_GUEST put them there, or the signal handler did before it sent the thread here.
 .globl _nestvane_native_exit

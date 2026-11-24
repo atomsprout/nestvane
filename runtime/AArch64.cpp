@@ -181,7 +181,7 @@ bool branches(CPU& cpu, uint32_t word, uint64_t& next) {
     } else {
         const uint32_t op = word & 0xfffffc1f;
         if (op != 0xd61f0000 && op != 0xd63f0000 && op != 0xd65f0000) return false;
-        const uint64_t target = reg(cpu, (word >> 5) & 31);
+        const uint64_t target = branchTarget(cpu, reg(cpu, (word >> 5) & 31));
         if (op == 0xd63f0000) cpu.x[30] = next;
         next = target;
     }
@@ -1905,8 +1905,7 @@ bool sha256(CPU& cpu, uint32_t word, unsigned rd, unsigned rn, unsigned rm) {
 }
 #endif
 
-bool vectors(Machine& m, uint32_t word) {
-    auto& cpu = m.cpu;
+bool vectors(Machine& m, CPU& cpu, uint32_t word) {
     unsigned rd = word & 31, rn = (word >> 5) & 31, rm = (word >> 16) & 31;
 #if defined(__APPLE__) && defined(__aarch64__)
     if ((word & 0xff000000) == 0x5e000000 && hasNativeSha256() && sha256(cpu, word, rd, rn, rm)) return true;
@@ -2308,6 +2307,29 @@ bool values(CPU& cpu, uint32_t word) {
 
 } // namespace
 
+bool registerInstruction(CPU& cpu, uint32_t word) {
+    switch ((word >> 25) & 15) {
+        case 5: return (word & 0x01000000) ? arithmetic(cpu, word) : logic(cpu, word);
+        case 8: case 13: return arithmetic(cpu, word) || values(cpu, word);
+        case 9: return logic(cpu, word) || values(cpu, word);
+        case 7: case 15: {
+            if ((word & 0xfffffc00) == 0x9eae0000) { // FMOV Xd, Vn.D[1]
+                put(cpu, word & 31, lane(cpu.v[(word >> 5) & 31], 1, 8), 64);
+                return true;
+            }
+            if ((word & 0xfffffc00) == 0x9eaf0000) { // FMOV Vd.D[1], Xn
+                setLane(cpu.v[word & 31], 1, 8, reg(cpu, (word >> 5) & 31));
+                return true;
+            }
+            // Data processing of the SIMD and floating-point registers: vectors() reaches memory only
+            // for the loads and stores of groups 6 and 14, so its machine is never used here.
+            static Machine none(Image{0, {}, {}});
+            return vectors(none, cpu, word);
+        }
+        default: return false;
+    }
+}
+
 bool executeStartupInstruction(Machine& machine, uint32_t word) {
     auto& cpu = machine.cpu;
     uint64_t next = cpu.pc + 4;
@@ -2325,7 +2347,7 @@ bool executeStartupInstruction(Machine& machine, uint32_t word) {
                 setLane(cpu.v[word & 31], 1, 8, reg(cpu, (word >> 5) & 31));
                 handled = true;
             } else {
-                handled = vectors(machine, word);
+                handled = vectors(machine, cpu, word);
             }
             break;
         case 5:
