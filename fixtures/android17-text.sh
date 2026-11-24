@@ -16,6 +16,9 @@
 # opens that page. The app's tests use it.
 #
 # "uninstall", package name: removes that app, as dragging its icon to Uninstall does. For tests.
+
+#
+# "labels", anything: tells Nestvane the names of the installed apps (tools/app-labels).
 #
 # "rotate", quarter turns: which way up Android holds its display, sent when the person turns the
 # device. An app that asks for one orientation still gets it.
@@ -45,6 +48,10 @@ while true; do
     uninstall)
         /system/bin/toybox log -t Nestvane "uninstall $sender: $(/system/bin/cmd package uninstall "$sender" 2>&1)"
         ;;
+    labels)
+        # The names of the installed apps, for Nestvane's root prompt and Settings.
+        CLASSPATH=/system/framework/nestvane-labels.jar /system/bin/app_process64 /system/bin AppLabels > /dev/null 2>&1
+        ;;
     rotate)
         case "$sender" in
         0|1|2|3) /system/bin/cmd window user-rotation lock "$sender" > /dev/null 2>&1 ;;
@@ -58,8 +65,12 @@ while true; do
             continue
             ;;
         esac
-        activity=$(/system/bin/cmd package resolve-activity --brief -c android.intent.category.LAUNCHER "$sender" 2> /dev/null | /system/bin/toybox tail -n 1)
-        /system/bin/toybox log -t Nestvane "launch $sender: $activity"
+        resolved=$(/system/bin/cmd package resolve-activity --brief -c android.intent.category.LAUNCHER "$sender" 2>&1)
+        activity=$(echo "$resolved" | /system/bin/toybox tail -n 1)
+        case "$activity" in
+        */*) /system/bin/toybox log -t Nestvane "launch $sender: $activity" ;;
+        *) /system/bin/toybox log -t Nestvane "launch $sender: not resolved: $resolved" ;;
+        esac
         case "$activity" in
         # With the action and the category of a launcher's tap: a start by name alone is refused
         # for an activity whose filter it does not match.

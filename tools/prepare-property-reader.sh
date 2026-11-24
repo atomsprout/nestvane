@@ -28,6 +28,8 @@ if [[ -f "$root/system/bin/cmd" ]]; then
     cp fixtures/android17-sms.sh "$root/system/etc/nestvane/sms.sh"
     cp fixtures/android17-rotation.sh "$root/system/etc/nestvane/rotation.sh"
     tools/build-sms-broadcast.sh "$root"
+    tools/build-clean-background.sh "$root"
+    tools/build-app-labels.sh "$root"
     tools/build-rotation-watch.sh "$root"
     tools/build-phone-permissions.sh "$root"
 fi

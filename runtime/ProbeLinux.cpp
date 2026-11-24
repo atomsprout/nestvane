@@ -5024,7 +5024,7 @@ bool ProbeLinux::fileCall(Machine& machine) {
                     x[0] = fd;
                     break;
                 }
-                if (path == GuestApkInbox::rotationDevice && apkInbox) {
+                if ((path == GuestApkInbox::rotationDevice || path == GuestApkInbox::labelsDevice) && apkInbox) {
                     if (userId() != 2000 || current->process->context != "u:r:shell:s0" ||
                         current->process->executable != GuestApkInbox::rotationWriter || (x[2] & 3) != 1) {
                         x[0] = uint64_t(-13);
@@ -6197,6 +6197,14 @@ uint64_t ProbeLinux::writeDescriptor(Machine& machine, const Descriptor& fd, uin
     if (fd.pathOnly() || !(fd.flags & 3)) return uint64_t(-9);
     if (position && !fd.temporary) return uint64_t(-29);
     if (fd.graphics) return writeGraphics(machine, *fd.graphics, address, size);
+    if (fd.path == GuestApkInbox::labelsDevice && apkInbox) { // "package<TAB>name" lines from the label tool
+        if (size > 64 * 1024) return invalid;
+        std::vector<uint8_t> dataScratch;
+        const auto* data = size ? machine.read(address, size, 4, dataScratch) : nullptr;
+        if (!data) return size ? uint64_t(-14) : 0;
+        GuestApkInbox::addLabels({reinterpret_cast<const char*>(data), size});
+        return size;
+    }
     if (fd.path == GuestApkInbox::rotationDevice && apkInbox) { // one digit from Android's rotation watcher
         std::vector<uint8_t> dataScratch;
         const auto* data = size ? machine.read(address, 1, 4, dataScratch) : nullptr;

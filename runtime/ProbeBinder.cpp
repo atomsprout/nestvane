@@ -213,8 +213,13 @@ void ProbeLinux::refreshBinderDeaths() {
             if (death.sent) continue;
             const auto target = death.target.lock();
             if (target && processAlive(target->owner)) continue;
+            // Process work, as Linux queues it, which only a thread that waits for nothing takes. Given
+            // to the thread that asked for it while that thread waited in a call to the process that
+            // died, it ran the death handler inside the call, and the call's own answer then came to
+            // the handler's next call: system_server aborted ("Unexpected BR_REPLY"). A process with no
+            // looper threads still gets it on the thread that asked.
             const auto receiver = threads.find(death.thread);
-            auto& queue = receiver != threads.end() && receiver->second.wait != Wait::exited
+            auto& queue = connection->loopers.empty() && receiver != threads.end() && receiver->second.wait != Wait::exited
                 ? connection->directed[death.thread] : connection->incoming;
             if (queue.size() >= 32) {
                 *binderDeathsDirty = true;
@@ -367,6 +372,17 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
     if (replying) {
         if (outstanding.empty()) return fail(brFailedReply);
         auto route = outstanding.back();
+        // A caller told that its callee died (BR_DEAD_REPLY, as soon as the process counts as gone)
+        // has gone on. A thread of the dying process can still reply: that reply answers nothing the
+        // caller waits for now, and given to it, system_server aborted ("Unexpected BR_REPLY").
+        if (const auto caller = route.connection.lock(); caller && route.call) {
+            const auto calls = caller->pendingCalls.find(route.thread);
+            if (calls == caller->pendingCalls.end() || calls->second.empty() || calls->second.back().call != route.call) {
+                outstanding.pop_back();
+                notices.push_back({brComplete});
+                return uint64_t{0};
+            }
+        }
         target = route.connection.lock();
         replyThread = route.thread;
         acceptsFiles = route.acceptsFiles;
@@ -641,10 +657,15 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
     if (synchronousCall) {
         auto parent = outstanding.empty() ? std::shared_ptr<const BinderRoute>{}
                                           : std::make_shared<const BinderRoute>(outstanding.back());
-        packet.reply = BinderRoute{fd.binder, currentTid, bool(transaction.flags & acceptReplyFiles), std::move(parent)};
+        packet.reply = BinderRoute{fd.binder, currentTid, bool(transaction.flags & acceptReplyFiles), std::move(parent),
+                                   ++nextBinderCall};
     }
     packet.files = std::move(files);
     packet.completesCall = replying;
+    if (replying) {
+        packet.answers = outstanding.back().call;
+        packet.sender = processId();
+    }
     const auto fileCount = packet.files.size();
     if (asynchronous) {
         // Other worker threads may handle synchronous work or a different node.
@@ -658,7 +679,7 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
     }
     if (synchronousCall)
         connection.pendingCalls[currentTid].push_back({target, target->owner, transaction.code,
-            binderInterface({bytes, size_t(transaction.dataSize)})});
+            binderInterface({bytes, size_t(transaction.dataSize)}), nextBinderCall});
     if (binderTrace.size() < 8192) {
         binderTrace += "  guest binder " + std::string(replying ? "reply" : "transaction") +
             " sender=" + std::to_string(processId()) + " target=" + std::to_string(target->owner) +
@@ -706,6 +727,26 @@ uint64_t ProbeLinux::binderWriteRead(Machine& machine, const Descriptor& fd) {
         return writeGuest(machine, argument, request) ? uint64_t(-11) : fault;
     }
     auto& directed = connection.directed[currentTid];
+    // A reply is only for a thread that waits for that very call. One that has no call or another
+    // one, say because it was told its callee died before the reply came, would take it for the
+    // answer to something else, or abort ("Unexpected BR_REPLY", in system_server). It is dropped.
+    while (!directed.empty() && directed.front().command == brReply) {
+        const auto calls = connection.pendingCalls.find(currentTid);
+        const auto& reply = directed.front();
+        const bool waiting = calls != connection.pendingCalls.end() && !calls->second.empty() &&
+                             (!reply.answers || calls->second.back().call == reply.answers);
+        if (waiting) break;
+        if (androidLogObserver && binderStaleReplies++ < 16)
+            androidLogObserver("Binder: dropped a reply from PID " + std::to_string(reply.sender) + " to PID " +
+                               std::to_string(processId()) + " thread " + std::to_string(currentTid) +
+                               " for call " + std::to_string(reply.answers) + ", which it does not wait for (" +
+                               (calls == connection.pendingCalls.end() || calls->second.empty()
+                                    ? std::string("no call") : "call " + std::to_string(calls->second.back().call)) + ")");
+        freeBinderBuffer(connection, reply.transaction.buffer, false);
+        directed.pop_front();
+    }
+    if (!binderReadable(connection, processId(), currentTid))
+        return writeGuest(machine, argument, request) ? uint64_t(-11) : fault;
     if (directed.empty() && binderCallLostPeer(connection, currentTid)) {
         BinderPacket failed{brDeadReply};
         failed.completesCall = true;

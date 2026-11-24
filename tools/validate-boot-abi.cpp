@@ -7112,10 +7112,12 @@ int main() {
     call(94, {0});
     assert(linux.schedule(machine) && linux.processId() == 1);
 
+    // The call ends first (BR_DEAD_REPLY); the death notice is process work, which the thread takes
+    // once it waits for nothing, as Linux has it.
+    assert(bindRequest(manager, 0, 0, "", true) == 0 && uint32_t(load(base + 0x720)) == 0x7205);
     assert(bindRequest(manager, 0, 0, "", true) == 0);
     assert(uint32_t(load(base + 0x720)) == 0x8008720f && load(base + 0x724) == 0);
     assert(bindRequest(manager, 0x40086310, 0, "", false) == 0);
-    assert(bindRequest(manager, 0, 0, "", true) == 0 && uint32_t(load(base + 0x720)) == 0x7205);
     assert(bindRequest(manager, 0x40046306, 0, "", false, {}, handle) == 0);
 
     put(base + 260, "/dev/binder-abi/binder");
@@ -7201,9 +7203,9 @@ int main() {
     assert(linux.schedule(machine) && linux.processId() == 1);
     assert(call(129, {registeringPeer, 0}) == 0);
     assert(bindRequest(manager, 0, 0, "", true) == 0);
-    assert(uint32_t(load(base + 0x720)) == 0x8008720f);
-    assert(bindRequest(manager, 0, 0, "", true) == 0);
     assert(uint32_t(load(base + 0x720)) == 0x7205); // The held Binder call lost its peer.
+    assert(bindRequest(manager, 0, 0, "", true) == 0);
+    assert(uint32_t(load(base + 0x720)) == 0x8008720f); // and then, waiting for nothing, the death notice
     assert(call(25, {manager, 4, 0x800}) == 0);
     assert(bindRequest(manager, 0, 0, "", true) == uint64_t(-11));
     assert(call(25, {manager, 4, 0}) == 0);

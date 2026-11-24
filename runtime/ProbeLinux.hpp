@@ -663,6 +663,8 @@ private:
         bool ownerStrong = false, ownerWeak = false;
         bool pendingStrong = false, pendingWeak = false;
     };
+    uint64_t nextBinderCall = 0;
+    unsigned binderStaleReplies = 0;
     using BinderReferenceChanges = std::set<std::weak_ptr<BinderNode>, std::owner_less<>>;
     struct BinderReference {
         std::shared_ptr<BinderNode> node;
@@ -686,6 +688,7 @@ private:
         uint64_t thread;
         bool acceptsFiles = false;
         std::shared_ptr<const BinderRoute> parent;
+        uint64_t call = 0;  // the synchronous call this route answers (PendingCall::call)
     };
     struct BinderFileTransfer {
         size_t offset;
@@ -701,6 +704,8 @@ private:
         std::array<uint64_t, 2> reference{};
         std::vector<BinderFileTransfer> files{};
         bool completesCall = false;
+        uint64_t answers = 0;  // for a reply: the call it answers (PendingCall::call)
+        uint64_t sender = 0;   // for a reply: the process it came from, for the log
     };
     struct BinderDeath {
         std::weak_ptr<BinderConnection> target;
@@ -728,6 +733,7 @@ private:
             uint64_t pid;
             uint32_t code;
             std::string descriptor;
+            uint64_t call = 0;  // which call: a reply for another one is not the one this thread waits for
         };
         std::map<uint64_t, std::vector<PendingCall>> pendingCalls;
         std::deque<BinderPacket> incoming;

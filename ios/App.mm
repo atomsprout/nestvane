@@ -928,6 +928,21 @@ static void FollowGuestAudio() {
 }
 @end
 
+// The running Android's request channel, for asking it the names of its apps (GuestApkInbox::submitLabels).
+static std::weak_ptr<nestvane::GuestApkInbox> RunningInbox;
+static NSString* const RootLabelPrefix = @"RootLabel:";
+
+// The name of an app, as Android last said: from the running Android, else as remembered.
+static NSString* AppLabel(NSString* package) {
+    const auto label = nestvane::GuestApkInbox::label(package.UTF8String);
+    if (!label.empty()) {
+        NSString* name = @(label.c_str());
+        [NSUserDefaults.standardUserDefaults setObject:name forKey:[RootLabelPrefix stringByAppendingString:package]];
+        return name;
+    }
+    return [NSUserDefaults.standardUserDefaults stringForKey:[RootLabelPrefix stringByAppendingString:package]];
+}
+
 static NSString* RootFooter() {
     return @"Apps in Android can then ask for root with su, and each one is asked about once. An app with root can read and change "
            @"every app's data. It takes effect the next time Android starts. Below are the apps that have asked; turn one off to refuse it.";
@@ -939,7 +954,9 @@ static NSArray<NSDictionary*>* RootGrantRows() {
     NSArray* keys = [NSUserDefaults.standardUserDefaults.dictionaryRepresentation.allKeys sortedArrayUsingSelector:@selector(compare:)];
     for (NSString* key in keys) {
         if (![key hasPrefix:RootGrantPrefix]) continue;
-        [rows addObject:@{@"symbol": @"app", @"title": [key substringFromIndex:RootGrantPrefix.length], @"detail": @"",
+        NSString* package = [key substringFromIndex:RootGrantPrefix.length];
+        NSString* name = AppLabel(package);
+        [rows addObject:@{@"symbol": @"app", @"title": name ?: package, @"detail": name ? package : @"",
                           @"url": @"", @"switch": key}];
     }
     return rows;
@@ -952,7 +969,10 @@ static void AskForRoot(NSString* name) {
         if ([asking containsObject:name]) return;
         [asking addObject:name];
     }
-    dispatch_async(dispatch_get_main_queue(), ^{
+    // Android is asked for the app's name, which takes it a second or two; the prompt waits that long.
+    if (auto inbox = RunningInbox.lock(); inbox && !AppLabel(name)) inbox->submitLabels();
+    const auto delay = AppLabel(name) ? 0 : 2 * NSEC_PER_SEC;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, int64_t(delay)), dispatch_get_main_queue(), ^{
         UIViewController* top = nil;
         for (UIScene* scene in UIApplication.sharedApplication.connectedScenes) {
             if (![scene isKindOfClass:UIWindowScene.class]) continue;
@@ -966,7 +986,8 @@ static void AskForRoot(NSString* name) {
         };
         UIAlertController* alert = [UIAlertController alertControllerWithTitle:@"Allow root?"
             message:[NSString stringWithFormat:@"%@ asks for root. With root it can read and change every app's data in Android. "
-                                                @"You can change this later in Settings.", name]
+                                                @"You can change this later in Settings.",
+                                                AppLabel(name) ? [NSString stringWithFormat:@"%@ (%@)", AppLabel(name), name] : name]
             preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:[UIAlertAction actionWithTitle:@"Don't Allow" style:UIAlertActionStyleCancel
                                                 handler:^(UIAlertAction*) { answer(NO); }]];
@@ -993,6 +1014,8 @@ static void AskForRoot(NSString* name) {
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = @"Settings";
+    // The names of the apps in the root list come from Android: ask it again, for the next time.
+    if (auto inbox = RunningInbox.lock()) inbox->submitLabels();
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone
                                                                                            target:self action:@selector(close)];
     NSURL* storage = [[NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject
@@ -1180,6 +1203,12 @@ static void AskForRoot(NSString* name) {
 
     self.back = ToolbarButton(@"chevron.backward", @"Android Back", self, @selector(guestBack));
     self.home = ToolbarButton(@"house", @"Android Home", self, @selector(guestHome));
+    // Touch and hold Home: clear the apps in the background, as Clear all among Android's recent apps.
+    __weak ValidationViewController* weakSelf = self;
+    self.home.menu = [UIMenu menuWithChildren:@[
+        [UIAction actionWithTitle:@"Clear Background Apps" image:[UIImage systemImageNamed:@"xmark.circle"] identifier:nil
+                          handler:^(UIAction*) { [weakSelf clearBackgroundApps]; }]]];
+    self.home.showsMenuAsPrimaryAction = NO;
     self.importApk = ToolbarButton(@"square.and.arrow.down", @"Install APK…", self, @selector(chooseApk));
     self.run = ToolbarButton(@"play.fill", @"Start Android", self, @selector(runOrStop));
     // Back and Home are used all the time and sit alone in the bar. What is used now and then, and
@@ -1413,6 +1442,10 @@ static void AskForRoot(NSString* name) {
     [self.display pressKey:nestvane::GuestTouch::Key::home];
 }
 
+- (void)clearBackgroundApps {
+    if (_apkInbox) _apkInbox->submitClean();
+}
+
 - (void)chooseApk {
     if (!_apkInbox || !self.importApk.enabled) return;
     UIDocumentPickerViewController* picker = [[UIDocumentPickerViewController alloc]
@@ -1546,6 +1579,7 @@ static void AskForRoot(NSString* name) {
         stringByAppendingPathComponent:@"android17-init-root/system/bin/nestvane-apk-install"];
     _apkInbox = [NSFileManager.defaultManager fileExistsAtPath:installer] ?
         std::make_shared<nestvane::GuestApkInbox>() : nullptr;
+    RunningInbox = _apkInbox;
     const auto apkInbox = _apkInbox;
     static dispatch_once_t heatWatched;
     dispatch_once(&heatWatched, ^{
@@ -1885,6 +1919,9 @@ static void AskForRoot(NSString* name) {
                                 if ([fields[0] isEqualToString:@"launch"]) {
                                     // "launch:<package>:0:wait" opens that app without finding its icon.
                                     if (apkInbox) apkInbox->submitLaunch(fields[1].UTF8String);
+                                } else if ([fields[0] isEqualToString:@"clean"]) {
+                                    // "clean:0:0:wait" clears the apps in the background, as Home's menu does.
+                                    if (apkInbox) apkInbox->submitClean();
                                 } else if ([fields[0] isEqualToString:@"uninstall"]) {
                                     // "uninstall:<package>:0:wait" removes that app.
                                     if (apkInbox) apkInbox->submitUninstall(fields[1].UTF8String);

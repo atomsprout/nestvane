@@ -29,6 +29,8 @@ public class MainActivity extends Activity {
             run("id");
             run("ls /data/data | wc -l");
             run("head -c 48 /data/system/packages.list");
+            interactive();
+            run("dumpsys activity recents | grep -c 'Recent #'");
         }).start();
     }
 
@@ -52,6 +54,27 @@ public class MainActivity extends Activity {
             status = -1;
         }
         show(command + " -> " + status + " in " + (System.currentTimeMillis() - started) + " ms: " + output.toString().trim());
+    }
+
+    // The way most root apps use su: one su, and commands written to it one after another.
+    private void interactive() {
+        final long started = System.currentTimeMillis();
+        StringBuilder output = new StringBuilder();
+        int status;
+        try {
+            Process process = Runtime.getRuntime().exec("su");
+            java.io.OutputStream in = process.getOutputStream();
+            in.write("id -u\necho second\nls /data/data | head -c 0; echo third\nexit\n".getBytes());
+            in.flush();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                for (String line; (line = reader.readLine()) != null; ) output.append(line).append(' ');
+            }
+            status = process.waitFor();
+        } catch (Exception e) {
+            output.append(e.getMessage());
+            status = -1;
+        }
+        show("su with commands on its input -> " + status + " in " + (System.currentTimeMillis() - started) + " ms: " + output.toString().trim());
     }
 
     private void show(String line) {

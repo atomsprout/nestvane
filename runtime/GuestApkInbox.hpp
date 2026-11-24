@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <map>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -99,10 +100,25 @@ public:
     static constexpr std::string_view broadcastDevice = "/dev/nestvane-sms";
     bool takeBroadcast(std::vector<uint8_t>& message) {
         std::lock_guard lock(mutex);
+        if (!rootRequests.empty()) {
+            message = std::move(rootRequests.front());
+            rootRequests.erase(rootRequests.begin());
+            return true;
+        }
         if (broadcasts.empty() || !announceable) return false;
         --announceable;
         message = std::move(broadcasts.front());
         broadcasts.erase(broadcasts.begin());
+        return true;
+    }
+    // Clears the apps in the background. Removing other apps' recent tasks needs more than the shell
+    // user has, so this goes to the root service (sms.sh): an empty sender, which a text message
+    // never has, and "clean".
+    bool submitClean() {
+        std::lock_guard lock(mutex);
+        if (stopped || rootRequests.size() >= 4) return false;
+        static constexpr std::string_view message = "\nclean\n";
+        rootRequests.emplace_back(message.begin(), message.end());
         return true;
     }
     // "uninstall", package name, nothing: removes that app. For tests.
@@ -128,6 +144,28 @@ public:
         textKinds.push_back(false);
         return true;
     }
+    // The names of the apps the person installed: Android's label tool (tools/app-labels), run as shell,
+    // writes "package<TAB>name" lines to labelsDevice. For the root prompt and Settings.
+    static constexpr std::string_view labelsDevice = "/dev/nestvane-labels";
+    static void addLabels(std::string_view lines) {
+        std::lock_guard lock(labelMutex());
+        while (!lines.empty()) {
+            const auto end = lines.find('\n');
+            const auto line = lines.substr(0, end);
+            lines.remove_prefix(end == std::string_view::npos ? lines.size() : end + 1);
+            const auto tab = line.find('\t');
+            if (tab == std::string_view::npos || !tab || tab > 200 || line.size() - tab > 200) continue;
+            labelMap()[std::string(line.substr(0, tab))] = std::string(line.substr(tab + 1));
+        }
+    }
+    static std::string label(const std::string& package) {
+        std::lock_guard lock(labelMutex());
+        const auto found = labelMap().find(package);
+        return found == labelMap().end() ? std::string() : found->second;
+    }
+    // "labels", "all", nothing: asks Android for the names again (an app may have been installed since).
+    bool submitLabels() { return submitLaunch("all", "labels"); }
+
     // Which way up Android's display is now, in quarter turns: its rotation watcher
     // (tools/rotation-watch) writes a digit to rotationDevice at the start and at each change.
     static constexpr std::string_view rotationDevice = "/dev/nestvane-rotation";
@@ -168,6 +206,9 @@ public:
     }
 
 private:
+    std::vector<std::vector<uint8_t>> rootRequests;
+    static std::mutex& labelMutex() { static std::mutex value; return value; }
+    static std::map<std::string, std::string>& labelMap() { static std::map<std::string, std::string> value; return value; }
     std::mutex mutex;
     std::shared_ptr<Request> pending;
     std::weak_ptr<Request> active;
