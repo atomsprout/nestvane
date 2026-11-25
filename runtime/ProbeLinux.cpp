@@ -3373,6 +3373,24 @@ std::array<uint8_t, 4> netlinkNetwork32(uint32_t value) {
 }
 } // namespace
 
+void ProbeLinux::keepDiagnosticLine(std::string_view message) {
+    static const auto began = std::chrono::steady_clock::now();
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - began).count();
+    std::string line = std::to_string(ms / 1000) + "." + std::to_string(ms % 1000 + 1000).substr(1) + " " +
+        std::to_string(processId()) + " " + std::string(message.substr(0, 8192));
+    line.push_back('\n');
+    // A quarter of a megabyte at most: some minutes of a quiet system, the last seconds of a busy one.
+    // Each line is only appended: the boot logs megabytes, and moving the kept text up for each line
+    // cost the start most of a second.
+    constexpr size_t half = 128 * 1024;
+    if (diagnosticLog.size() + line.size() > half) {
+        diagnosticLogOlder.swap(diagnosticLog);
+        diagnosticLog.clear();
+    }
+    diagnosticLog += line;
+    if (diagnosticCapturing && diagnosticCapture.size() < 4 * 1024 * 1024) diagnosticCapture += line;
+}
+
 bool ProbeLinux::requestJavaDump(std::string_view name) {
     const auto named = [](const Thread& thread) {
         return std::string_view(reinterpret_cast<const char*>(thread.name.data()),
@@ -6834,6 +6852,7 @@ bool ProbeLinux::forkProcess(Machine& machine) {
                   << " dirty=" << anonymousBudget->dirty << '/' << anonymousBudget->dirtyLimit;
             if (mappingError) event << " host memory errno=" << mappingError;
             androidLogObserver(event.str());
+            keepDiagnosticLine(event.str());
         }
         x[0] = uint64_t(-11);
         return true;
@@ -6851,7 +6870,22 @@ bool ProbeLinux::forkProcess(Machine& machine) {
     child.process->segments = machine.segments;
     // The child's address space is a copy-on-write copy. Its page stores below only point into it.
     std::shared_ptr<GuestSpace> childSpace;
-    if (machine.space && !(childSpace = machine.space->fork())) return retry("guest address space", 0);
+    // The host's address space is shared by every guest process, and a few large apps can fill it. Then
+    // a cached app goes, the one Android ranks lowest, and the copy is tried again: otherwise zygote could
+    // start no app and the one tapped never opened.
+    // NESTVANE_TEST_ROOM=<seconds>: zygote's first fork that many seconds after the home screen is up
+    // finds no room, for testing this.
+    static const char* const roomTest = std::getenv("NESTVANE_TEST_ROOM");
+    static bool roomTested = !roomTest;
+    static std::optional<std::chrono::steady_clock::time_point> homeAt;
+    if (!roomTested && !homeAt && !appsHeld.load(std::memory_order_relaxed)) homeAt = std::chrono::steady_clock::now();
+    if (!roomTested && homeAt && std::chrono::steady_clock::now() - *homeAt > std::chrono::seconds(std::atoi(roomTest)) &&
+        current->process->context == "u:r:zygote:s0") {
+        roomTested = true;
+        if (!endCachedAppForRoom()) return retry("guest address space (test)", 0);
+    }
+    for (int attempt = 0; machine.space && !(childSpace = machine.space->fork()); ++attempt)
+        if (attempt == 4 || !endCachedAppForRoom()) return retry("guest address space", 0);
     child.process->space = childSpace;
     if (childSpace) {
         for (const auto& segment : machine.segments)
@@ -7981,6 +8015,28 @@ bool ProbeLinux::futex(Machine& machine) {
     current->futexBacking = std::move(backing);
     current->futexMask = mask;
     sliceEnd = 0;
+    return true;
+}
+
+bool ProbeLinux::endCachedAppForRoom() {
+    // Android's cached apps have 900 and above (ProcessList.CACHED_APP_MIN_ADJ); the higher, the less needed.
+    Process* victim = nullptr;
+    for (const auto& [id, process] : processes)
+        if (process != current->process.get() && process->oomScoreAdjustment >= 900 &&
+            (!victim || process->oomScoreAdjustment > victim->oomScoreAdjustment)) victim = process;
+    if (!victim) return false;
+    const auto id = victim->id;
+    std::string name;
+    if (const auto main = threads.find(id); main != threads.end())
+        name.assign(reinterpret_cast<const char*>(main->second.name.data()),
+                    strnlen(reinterpret_cast<const char*>(main->second.name.data()), main->second.name.size()));
+    const std::string event = "Nestvane: ended cached app " + name + " (pid " + std::to_string(id) + ", adj " +
+        std::to_string(victim->oomScoreAdjustment) + ") to make room for a new process";
+    if (androidLogObserver) androidLogObserver(event);
+    keepDiagnosticLine(event);
+    recallNativeThreads(victim);
+    finishProcess(*victim, 9, true);
+    std::erase_if(threads, [&](const auto& task) { return task.first != currentTid && task.second.process->id == id; });
     return true;
 }
 
@@ -9894,16 +9950,19 @@ uint64_t ProbeLinux::connectHostSocket(const std::shared_ptr<SocketState>& socke
                   hostnet::ipv4(destination).empty() ? 0 : hostnet::ipv4(destination)[0], hostnet::ipv4(destination).empty() ? 0 : hostnet::ipv4(destination)[1],
                   hostnet::ipv4(destination).empty() ? 0 : hostnet::ipv4(destination)[2], hostnet::ipv4(destination).empty() ? 0 : hostnet::ipv4(destination)[3],
                   unsigned(destination[2]) << 8 | destination[3], unsigned(destination[0]), socket->hostFd);
+    const bool ipv6 = hostnet::isIpv6(destination);
     const auto setLocal = [&] {
         if (socket->localInetAddress[0] && inetPort(socket->localInetAddress)) return;
-        socket->localInetAddress = hostnet::localAddress(socket->family, nextEphemeralPort);
+        socket->localInetAddress = hostnet::localAddress(socket->family, nextEphemeralPort, ipv6);
         nextEphemeralPort = nextEphemeralPort >= 60999 ? 32768 : nextEphemeralPort + 1;
     };
-    // The guest's network is IPv4: there is no route to an IPv6 address out there.
-    if (hostnet::ipv4(destination).empty() || hostnet::unreachable(destination)) return uint64_t(-101);
+    // IPv6 destinations go out where the phone's network has IPv6; ping has only an IPv4 socket here.
+    if (hostnet::unreachable(destination) || (ipv6 && socket->icmp())) return uint64_t(-101);
     if (socket->inetDatagram()) {
         // Connecting a datagram socket to port 0 only asks whether there is a route, which is how the
-        // resolver finds out which address families the network has. The host refuses such a connect.
+        // resolver finds out which address families the network has. The host refuses such a connect,
+        // so for IPv6 the host is asked about the route another way.
+        if (!inetPort(destination) && ipv6 && !hostnet::hostRoutes(destination)) return uint64_t(-101);
         if (inetPort(destination) || socket->icmp()) {
             if (socket->hostFd < 0) socket->hostFd = hostnet::openDatagram(destination, socket->icmp());
             if (socket->hostFd < 0) return uint64_t(int64_t(std::exchange(socket->hostFd, -1)));
@@ -10248,8 +10307,8 @@ uint64_t ProbeLinux::sendInetDatagram(Machine& machine, const std::shared_ptr<So
                           hostnet::ipv4(destination).empty() ? 0 : hostnet::ipv4(destination)[2],
                           hostnet::ipv4(destination).empty() ? 0 : hostnet::ipv4(destination)[3],
                           unsigned(destination[2]) << 8 | destination[3],
-                          hostnet::ipv4(destination).empty() || hostnet::unreachable(destination) ? " (not carried)" : "");
-            if (hostnet::ipv4(destination).empty() || hostnet::unreachable(destination)) return uint64_t(-101);
+                          hostnet::unreachable(destination) ? " (not carried)" : "");
+            if (hostnet::unreachable(destination) || (hostnet::isIpv6(destination) && socket->icmp())) return uint64_t(-101);
             if (socket->hostFd < 0) socket->hostFd = hostnet::openDatagram(destination, socket->icmp());
             if (socket->hostFd < 0) return uint64_t(int64_t(std::exchange(socket->hostFd, -1)));
         } else if (const auto error = routeInetDestination(destination)) {
@@ -10269,7 +10328,7 @@ uint64_t ProbeLinux::sendInetDatagram(Machine& machine, const std::shared_ptr<So
             if (length && !machine.readInto(base, std::span(payload).subspan(offset, length))) return uint64_t(-14);
         }
         if (!socket->localInetAddress[0] || !inetPort(socket->localInetAddress)) {
-            socket->localInetAddress = hostnet::localAddress(socket->family, nextEphemeralPort);
+            socket->localInetAddress = hostnet::localAddress(socket->family, nextEphemeralPort, hostnet::isIpv6(destination));
             nextEphemeralPort = nextEphemeralPort >= 60999 ? 32768 : nextEphemeralPort + 1;
         }
         if (socket->icmp()) {
@@ -12527,6 +12586,7 @@ bool ProbeLinux::syscall(Machine& machine) {
                         if (watchdogObserver) watchdogObserver(watchdogReport);
                     }
                     if (androidLogObserver) androidLogObserver(message);
+                    keepDiagnosticLine(message);
                     message.push_back('\n');
                     captureLog(androidOutput, recentAndroidOutput, 128 * 1024, message);
                 }
@@ -12771,6 +12831,31 @@ bool ProbeLinux::syscall(Machine& machine) {
             x[0] = size > UINT64_MAX - start || !fullyMapped(machine, start, start + size) ? noMemory : 0;
             break;
         }
+        case 230: { // mlockall: lmkd's first call. It stopped there, and Android had no low-memory killer.
+            // NESTVANE_TEST_NO_LMKD=1 leaves it stopped there, as before 1.11, for comparing starts.
+            if (static const bool parked = std::getenv("NESTVANE_TEST_NO_LMKD"); parked) return false;
+            // Until the home screen is up it waits here, where it always stopped before: once lmkd listens,
+            // the activity manager talks to it, and that cost the start a few hundred milliseconds.
+            if (appsHeldNow()) {
+                current->deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+                return waitForEvents();
+            }
+            constexpr uint64_t current = 1, future = 2, onFault = 4;
+            x[0] = !x[0] || (x[0] & ~(current | future | onFault)) || x[0] == onFault ? invalid : 0;
+            break;
+        }
+        case 231: x[0] = 0; break; // munlockall
+        // process_mrelease: lmkd asks at its start whether there is one, with no process. A process
+        // that is ended gives its memory back at once here, so there is nothing more to release.
+        case 448: {
+            const auto handle = descriptors().find(uint32_t(x[0]));
+            x[0] = x[1] ? invalid : handle == descriptors().end() || handle->second.node != Node::processHandle
+                ? uint64_t(-9) : 0;
+            break;
+        }
+        // pidfd_send_signal: not here (lmkd's kills would use it). Saying so lets the caller go on, where
+        // an unknown call would stop it.
+        case 424: x[0] = uint64_t(-38); break;
         case 232: { // mincore: residency of the guest backing for each virtual page.
             if (x[0] % pageSize || x[1] > maxReservation) { x[0] = invalid; break; }
             const auto length = pageAlignedLength(x[1]);

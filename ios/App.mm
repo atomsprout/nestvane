@@ -490,6 +490,7 @@ static NSInteger GuestDisplayRate() {
 static NSString* const UpdateCheckKey = @"UpdateCheck";
 static NSString* const UpdateLatestKey = @"UpdateLatestVersion";
 static NSString* const UpdateAskedKey = @"UpdateAskedAt";
+static NSString* const UpdateToldKey = @"UpdateToldVersion";  // the version the launch notice last named
 static NSString* const UpdateReleaseAddress = @"https://github.com/atomsprout/nestvane/releases/latest";
 static NSString* AvailableUpdate() {
     NSUserDefaults* defaults = NSUserDefaults.standardUserDefaults;
@@ -734,6 +735,14 @@ static void FollowGuestMicrophone() {
     const uint64_t now = uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
     const uint64_t last = microphone.wanted.load(), generation = microphone.generation.load();
     const bool wanted = last && now - last < 3000 && microphone.rate.load();
+    // When the input changes under a recording (another app's sound, headphones, a call), the engine
+    // stops and its tap's format is stale: no more sound came, and Android's recording stood still or
+    // went on at the old rate. It is made again in the input's new format.
+    static std::atomic_bool changed{false};
+    static id observer = [NSNotificationCenter.defaultCenter addObserverForName:AVAudioEngineConfigurationChangeNotification
+        object:nil queue:nil usingBlock:^(NSNotification*) { changed = true; }];
+    (void)observer;
+    if (engine && changed.exchange(false)) recording = ~uint64_t(0);
     if (engine && (!wanted || generation != recording)) {
         [engine.inputNode removeTapOnBus:0];
         [engine stop];
@@ -1219,6 +1228,7 @@ static void AskForRoot(NSString* name) {
 - (void)installApkAtURL:(NSURL*)source;
 - (void)chooseApkWhenReady;
 - (void)composeText;
+- (void)collectDiagnostics:(void (^)(NSURL* report))done;
 @property(nonatomic, strong) UILabel* status;
 @property(nonatomic, strong) UITextView* details;
 @property(nonatomic, strong) GuestDisplayView* display;
@@ -1330,7 +1340,10 @@ static void AskForRoot(NSString* name) {
                                            identifier:nil handler:^(UIAction*) {
                 [UIApplication.sharedApplication openURL:BugReportAddress(running) options:@{} completionHandler:nil];
             }];
-            completion(@[install, text, settings, bug, power]);
+            UIAction* diagnostics = [UIAction actionWithTitle:@"Export Diagnostics…"
+                                                        image:[UIImage systemImageNamed:@"stethoscope"]
+                                                   identifier:nil handler:^(UIAction*) { [owner exportDiagnostics]; }];
+            completion(@[install, text, settings, bug, diagnostics, power]);
         }]]];
     UIStackView* controls = [[UIStackView alloc] initWithArrangedSubviews:
         @[self.back, self.home, self.recents, self.more, self.run]];
@@ -1467,8 +1480,13 @@ static void AskForRoot(NSString* name) {
     if (_started) return;
     _started = YES;
     __weak ValidationViewController* owner = self;
+    // Said once for each new version, at the bottom for a few seconds; after that only the More menu's
+    // Settings item and the top of Settings say it, until the person updates or turns the question off.
     AskForUpdate(^(NSString* version) {
-        [owner showApkStatus:[NSString stringWithFormat:@"Nestvane %@ is available. See Settings.", version] transient:YES];
+        NSUserDefaults* defaults = NSUserDefaults.standardUserDefaults;
+        if ([[defaults stringForKey:UpdateToldKey] isEqualToString:version]) return;
+        [defaults setObject:version forKey:UpdateToldKey];
+        [owner showApkStatus:[NSString stringWithFormat:@"Nestvane %@ is out. It’s in Settings when you want it.", version] transient:YES];
     });
     [self runValidation];
 }
@@ -1480,6 +1498,83 @@ static void AskForRoot(NSString* name) {
     self.run.accessibilityLabel = label;
     // While Android runs there is no button in the bar that stops it: that is in the menu.
     self.run.hidden = [symbol isEqualToString:@"stop.fill"];
+}
+
+// Export Diagnostics, for when Android seems frozen: what the runtime and Android say of where they
+// stand, with the records the app keeps, in one text file to attach to a bug report.
+- (void)exportDiagnostics {
+    UIAlertController* alert = [UIAlertController alertControllerWithTitle:@"Export Diagnostics?"
+        message:@"Nestvane writes down what Android is doing now and what it logged last, for a bug report. "
+                 "It takes a few seconds. The log can name your apps and accounts: read it before you share it."
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Export" style:UIAlertActionStyleDefault handler:^(UIAlertAction*) {
+        [self showApkStatus:@"Collecting diagnostics…" transient:NO];
+        [self collectDiagnostics:^(NSURL* report) {
+            self.apkStatus.hidden = YES;
+            UIActivityViewController* share = [[UIActivityViewController alloc] initWithActivityItems:@[report]
+                                                                                applicationActivities:nil];
+            share.popoverPresentationController.sourceView = self.more;
+            [self presentViewController:share animated:YES completion:nil];
+        }];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)collectDiagnostics:(void (^)(NSURL* report))done {
+    const bool running = _androidStop.stop_possible() && !_androidStop.stop_requested();
+    const auto finished = std::make_shared<std::atomic_bool>(false);
+    const auto finish = ^(NSString* android) {
+        if (finished->exchange(true)) return;
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            utsname system{};
+            uname(&system);
+            NSDictionary* info = NSBundle.mainBundle.infoDictionary;
+            NSDateFormatter* format = [NSDateFormatter new];
+            format.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+            format.dateFormat = @"yyyy-MM-dd HH:mm:ss ZZZZZ";
+            NSMutableString* text = [NSMutableString stringWithFormat:
+                @"Nestvane diagnostics, %@\nNestvane %@ (%@), iOS %@, %s, %.0f GB of memory, temperature %@, Android %@\n",
+                [format stringFromDate:NSDate.date], info[@"CFBundleShortVersionString"], info[@"CFBundleVersion"],
+                UIDevice.currentDevice.systemVersion, system.machine, std::round(NSProcessInfo.processInfo.physicalMemory / 1e9),
+                ThermalState(), running ? @"running" : @"not running"];
+            std::string memory;
+            AppendMemoryUsage(memory);
+            [text appendFormat:@"%s\n== Android and the runtime\n%@\n", memory.c_str(), android];
+            // What the app wrote down as it went: how the last run ended (for an Android that never got
+            // past its start screen, or stopped), the start, the first frame, the network, and the last
+            // state a watchdog saw. These are from the last run even when Android is not running now.
+            NSURL* documents = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
+            for (NSString* name in @[@"validation.txt", @"boot-milestones.txt", @"launcher-displayed.txt",
+                                     @"display-first-frame.txt", @"network-path.txt", @"network-check.txt",
+                                     @"guest-watchdog.txt", @"guest-live.txt", @"boot-progress.txt"]) {
+                NSData* data = [NSData dataWithContentsOfURL:[documents URLByAppendingPathComponent:name]];
+                if (!data.length) continue;
+                // The start's log is long: its end is what matters.
+                constexpr NSUInteger most = 128 * 1024;
+                if (data.length > most) data = [data subdataWithRange:NSMakeRange(data.length - most, most)];
+                NSString* body = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] ?: @"(not text)";
+                [text appendFormat:@"\n== %@\n%@\n", name, body];
+            }
+            [format setDateFormat:@"yyyyMMdd-HHmmss"];
+            NSURL* file = [[NSURL fileURLWithPath:NSTemporaryDirectory()] URLByAppendingPathComponent:
+                [NSString stringWithFormat:@"Nestvane-Diagnostics-%@.txt", [format stringFromDate:NSDate.date]]];
+            [text writeToURL:file atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            dispatch_async(dispatch_get_main_queue(), ^{ done(file); });
+        });
+    };
+    if (!running || !nestvane::requestDiagnostics([finish](std::string report) {
+            finish([[NSString alloc] initWithBytes:report.data() length:report.size() encoding:NSUTF8StringEncoding]
+                   ?: @"(the report was not text)");
+        })) {
+        finish(@"Android was not running.");
+        return;
+    }
+    // A runtime that is itself stuck does not answer: then what was written down before is all there is.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 15 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+        finish(@"Android did not answer within 15 seconds: the runtime itself is stuck. "
+                "Below is only what the app wrote down before.");
+    });
 }
 
 - (void)confirmStop {
@@ -2055,6 +2150,16 @@ static bool ApkContent(NSData* data) {
                                 } else if ([fields[0] isEqualToString:@"back"]) {
                                     // "back:0:0:wait" presses Android's Back key instead.
                                     device->press(nestvane::GuestTouch::Key::back);
+                                } else if ([fields[0] isEqualToString:@"diagnostics"]) {
+                                    // "diagnostics:0:0:wait" makes the report Export Diagnostics makes and
+                                    // copies it to diagnostics.txt in Documents, without the share sheet.
+                                    dispatch_async(dispatch_get_main_queue(), ^{
+                                        [self collectDiagnostics:^(NSURL* report) {
+                                            NSURL* copy = [documents URLByAppendingPathComponent:@"diagnostics.txt"];
+                                            [NSFileManager.defaultManager removeItemAtURL:copy error:nil];
+                                            [NSFileManager.defaultManager copyItemAtURL:report toURL:copy error:nil];
+                                        }];
+                                    });
                                 } else if ([fields[0] isEqualToString:@"recents"]) {
                                     // "recents:0:0:wait" presses Android's Recent Apps key.
                                     device->press(nestvane::GuestTouch::Key::recents);

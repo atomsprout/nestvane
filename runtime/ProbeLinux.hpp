@@ -152,6 +152,13 @@ struct ProbeLinux {
     std::string recentAndroidOutput;
     std::string watchdogReport;
     bool captureAndroidLogs = false;
+    // For Export Diagnostics (DynamicProbe.hpp): the last of Android's log with the time and the process
+    // of each line, in two halves that take turns (the older is dropped when the newer fills), and while
+    // a report is being made, everything logged since it was asked for.
+    std::string diagnosticLogOlder, diagnosticLog, diagnosticCapture;
+    bool diagnosticCapturing = false;
+    void keepDiagnosticLine(std::string_view message);
+    std::string diagnosticLogText() const { return diagnosticLogOlder + diagnosticLog; }
     // Whether the guest reaches the network through the host's sockets. Without it there is only loopback.
     bool hostNetwork = false;
     // The guest's sound card: a control device with no controls, /dev/snd/controlC0, and one playback
@@ -346,6 +353,9 @@ private:
     void recallNativeThreads(const Process* process);
     bool exitThread(Machine& machine);
     void finishProcess(Process& process, uint32_t status, bool killed);
+    // When a new process finds no room in the host's address space: ends the cached app that matters
+    // least, as Linux's low-memory killer would. False when there is none to end.
+    bool endCachedAppForRoom();
     bool waitChild(Machine& machine);
     Process* liveProcess(uint64_t id) const;
     bool processAlive(uint64_t id) const { return liveProcess(id) != nullptr; }

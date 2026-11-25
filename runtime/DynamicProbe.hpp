@@ -29,6 +29,12 @@ struct DynamicReport {
     std::string report;
 };
 
+// Export Diagnostics: asks the Android that runs for a report of where it stands, for when it seems
+// frozen. The report has what each guest thread waits for, memory, the stacks of the system server's
+// Java threads and the last of Android's log; it comes to `done` some seconds later, on the thread
+// that runs Android. False when no Android runs. A request while one is pending replaces it.
+bool requestDiagnostics(std::function<void(std::string)> done);
+
 DynamicReport probeArt(const std::string& directory);
 DynamicReport probeDynamic(const std::string& directory);
 using BootProgress = std::function<void(std::string_view)>;

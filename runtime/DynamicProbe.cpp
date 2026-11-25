@@ -6,6 +6,7 @@
 #include "ProbeLinux.hpp"
 
 #include <map>
+#include <atomic>
 #include <mutex>
 #include <algorithm>
 #include <charconv>
@@ -20,6 +21,21 @@
 #include <stdexcept>
 
 namespace nestvane {
+
+namespace {
+// Export Diagnostics (requestDiagnostics): the request, and whether an Android runs to answer it.
+std::mutex diagnosticsMutex;
+std::function<void(std::string)> diagnosticsDone;
+std::atomic_bool diagnosticsWanted{false}, androidRunning{false};
+} // namespace
+
+bool requestDiagnostics(std::function<void(std::string)> done) {
+    if (!androidRunning.load()) return false;
+    std::lock_guard lock(diagnosticsMutex);
+    diagnosticsDone = std::move(done);
+    diagnosticsWanted.store(true);
+    return true;
+}
 
 namespace {
 
@@ -372,6 +388,48 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
         nextSnapshot = now + snapshotInterval;
         scheduleDeadline = std::min(deadline, nextSnapshot);
     };
+    // Export Diagnostics: the state now, then the system server's Java stacks, which it logs line by
+    // line once asked; a few seconds later the report goes out with all that was logged meanwhile.
+    std::string diagnosticsReport;
+    steady_clock::time_point diagnosticsDue{};
+    const auto serveDiagnostics = [&](steady_clock::time_point now) {
+        if (diagnosticsReport.empty()) {
+            if (!diagnosticsWanted.exchange(false)) return;
+            std::ostringstream state;
+            state << "Android has run " << duration_cast<milliseconds>(now - start).count() << " ms, "
+                  << cpu.retired << " guest instructions, " << syscallCount << " guest syscalls\n";
+            if (nativeExecution) state << native::statistics() << timeReport() << linux.memoryReport(machine);
+            state << linux.workerReport(machine, linux.processId());
+            const bool dumping = linux.requestJavaDump("system_server");
+            state << "\n== Android's log before the report was asked for (seconds, process, tag: message)\n"
+                  << linux.diagnosticLogText();
+            state << "\n== Logged in the " << (dumping ? "seconds after: the system server's Java threads"
+                                                         : "seconds after (the system server could not be asked for its Java threads)")
+                  << "\n";
+            diagnosticsReport = state.str();
+            linux.diagnosticCapture.clear();
+            linux.diagnosticCapturing = true;
+            diagnosticsDue = now + seconds(4);
+            return;
+        }
+        if (now < diagnosticsDue) return;
+        diagnosticsReport += linux.diagnosticCapture;
+        linux.diagnosticCapture.clear();
+        linux.diagnosticCapturing = false;
+        std::function<void(std::string)> done;
+        {
+            std::lock_guard lock(diagnosticsMutex);
+            done = std::move(diagnosticsDone);
+            diagnosticsDone = {};
+        }
+        if (done) done(std::exchange(diagnosticsReport, {}));
+        diagnosticsReport.clear();
+    };
+    if (init) androidRunning.store(true);
+    struct RunningMark {
+        bool init;
+        ~RunningMark() { if (init) androidRunning.store(false); }
+    } runningMark{init};
     while (cpu.retired < instructionLimit) {
         if (cpu.stop == Stop::fault) {
             const auto pc = cpu.pc, address = cpu.faultAddress, lr = cpu.x[30], sp = cpu.sp;
@@ -399,6 +457,7 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
                 break;
             }
             if (now >= nextSnapshot) captureSnapshot(now);
+            serveDiagnostics(now);
         }
         // Timed after a stretch of native code only: after each interpreted instruction, reading the
         // clock twice would cost more than the instruction.
@@ -1211,7 +1270,7 @@ service nestvane-trim /system/bin/sh /system/etc/nestvane/trim.sh
                 "PackageManager: Failed to create app data", "PackageManager: reconcileAppsData",
                 "installd: Failed to restorecon", "ActivityTaskManager: Displayed com.android.launcher3/",
                 "CameraProviderManager: Adding new camera device:", "CameraService: addStates",
-                "NestvaneSmoke: ", "ActivityTaskManager: Displayed dev.nestvane.smoke/",
+                "NestvaneSmoke: ", "Nestvane: ended cached app", "ActivityTaskManager: Displayed dev.nestvane.smoke/",
                 "ActivityTaskManager: Displayed com.android.settings/.FallbackHome",
                 "SystemUIFactory: Failed to initialize WMComponent", "libc: Fatal signal ",
                 "Guest native abort: ", "InputTransport: ", "InputDispatcher: ", "InputManager-JNI: ",

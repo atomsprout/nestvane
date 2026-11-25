@@ -81,12 +81,13 @@ One Ethernet interface, `eth0`, configured the way the Android emulator's user-m
 The kernel layer answers the netlink queries, interface `ioctl`s and `/sys/class/net/eth0` files that make the interface real to Android ([`runtime/GuestRoute.hpp`](../runtime/GuestRoute.hpp)).
 On the Android side the guest root declares the Ethernet feature so that the Ethernet service starts, and a resource overlay ([`fixtures/overlay-connectivity`](../fixtures/overlay-connectivity)) gives `eth0` its fixed configuration.
 Android's connectivity service then brings the network up and validates it like any other.
+The overlay's last field makes the network a Wi-Fi one for apps (`TRANSPORT_WIFI`): many apps count only Wi-Fi and cellular as being online. Android's Wi-Fi service is not started: it cost the start 0.3 s. The old `NetworkInfo.getType()` still says Ethernet, which the Ethernet service sets.
 
 **Host sockets.**
 No packets are forwarded. Instead, each guest TCP or UDP socket whose destination is not the guest itself is paired with a host socket ([`runtime/HostSocket.hpp`](../runtime/HostSocket.hpp)).
 `connect`, `send`, `recv`, readiness for `poll` and `epoll`, `SO_ERROR` and `shutdown` are carried over to it, and host error numbers are converted to Linux ones.
 Host sockets are non-blocking; a guest thread that waits on one is checked again after a short delay, since a host socket cannot wake the guest scheduler by itself.
-Only IPv4 is supported.
+IPv6 destinations are carried too where the phone's network has IPv6. The resolver asks whether there is an IPv6 route by connecting a UDP socket to port 0; for IPv6 that question goes to the host. An IPv6 socket's own address is `fd00:10:0:2::15`, a unique local address, so where a name has both kinds of address Android tries IPv4 first.
 
 When the phone moves from Wi-Fi to cellular or back, the app ends every TCP connection the guest has open.
 A connection made over the old network does not move to the new one and gives no error either: left alone it stays silent, and an app that keeps connections for reuse waits out a timeout on each request.

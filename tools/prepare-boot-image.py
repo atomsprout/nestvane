@@ -507,6 +507,9 @@ def copy_prebuilt_code(adb, remote, guest):
 
 # Hardware services that the image declares and the guest root does not carry. A declared service that
 # never registers is waited for, five seconds at a time, with locks held that the launcher needs.
+# Not Wi-Fi either: with the feature the system starts its Wi-Fi service, which answers apps that ask
+# for the Wi-Fi state (it says off), but it cost the start 0.3 s on an iPhone 14 (1.11). Apps are told
+# the network is Wi-Fi all the same (fixtures/overlay-connectivity).
 ABSENT_HARDWARE = ("android.hardware.wifi-service.xml", "android.hardware.wifi.hostapd.xml",
                    "android.hardware.wifi.supplicant.xml", "android.hardware.biometrics.fingerprint-service.ranchu.xml",
                    "android.hardware.media.c2-service-goldfish.xml")
@@ -609,6 +612,9 @@ def make_framework_root(base, image, guest, defer_zygote_preload, hardware_timeo
         # A phone gives one app far less memory than this image expects of a device: Android's own
         # low-memory profile keeps fewer processes and caches.
         set_property(system_properties, "ro.config.low_ram", "true")
+        # Low-RAM devices get a memory cgroup for each app, which lmkd sets limits on; the guest kernel
+        # has none, and lmkd logged a failure for every app it was told of.
+        set_property(system_properties, "ro.config.per_app_memcg", "false")
         # Code that the guest compiles for itself has no translation, and a process that maps it is
         # interpreted from then on. The package manager only verifies; compiled code comes with the image.
         for reason in ("first-boot", "boot-after-ota", "boot-after-mainline-update", "post-boot", "install",

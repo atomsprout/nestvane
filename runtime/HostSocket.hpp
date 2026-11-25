@@ -102,7 +102,8 @@ inline sockaddr_in hostNameServer(uint16_t guestPort) {
 inline bool isNameServer(const Address& address);
 inline bool unreachable(const Address& address) {
     const auto four = ipv4(address);
-    if (four.empty()) return address[0] == 10 && address[8] == 0xff;
+    // IPv6: multicast, and the link's own addresses (fe80::/10), which need an interface of the host's.
+    if (four.empty()) return address[0] == 10 && (address[8] == 0xff || (address[8] == 0xfe && (address[9] & 0xc0) == 0x80));
     if (four[0] >= 224) return true;
     return four[0] == guestAddress[0] && four[1] == guestAddress[1] && four[2] == guestAddress[2] && !isNameServer(address);
 }
@@ -230,13 +231,38 @@ inline Address toGuest(const sockaddr_storage& host, uint32_t family) {
     return guest;
 }
 
-// The guest's own address with a port, as the local address of a socket of the family.
-inline Address localAddress(uint32_t family, uint16_t port) {
+// The guest's IPv6 address, for its sockets to IPv6 destinations: a unique local address (fd00::/8)
+// made like its IPv4 one. Android ranks a unique local source below IPv4 for a global destination, so
+// that where a name has both, IPv4 is tried first, as it always was here.
+inline constexpr std::array<uint8_t, 16> guestAddress6{0xfd, 0x00, 0, 0x10, 0, 0, 0, 0x02, 0, 0, 0, 0, 0, 0, 0, 0x15};
+
+// Whether a guest address is an IPv6 one, not IPv4 written as IPv6.
+inline bool isIpv6(const Address& address) { return address[0] == 10 && ipv4(address).empty(); }
+
+// Whether the host has a route to an IPv6 destination: connecting a datagram socket sends nothing.
+inline bool hostRoutes(const Address& destination) {
+    sockaddr_in6 host{};
+    host.sin6_len = sizeof(host);
+    host.sin6_family = AF_INET6;
+    host.sin6_port = htons(9);
+    std::memcpy(&host.sin6_addr, destination.data() + 8, 16);
+    const int fd = ::socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
+    if (fd < 0) return false;
+    const bool routed = ::connect(fd, reinterpret_cast<const sockaddr*>(&host), sizeof(host)) == 0;
+    ::close(fd);
+    return routed;
+}
+
+// The guest's own address with a port, as the local address of a socket of the family. For an IPv6
+// destination, the guest's IPv6 address.
+inline Address localAddress(uint32_t family, uint16_t port, bool ipv6 = false) {
     Address guest{};
     guest[0] = uint8_t(family);
     guest[2] = uint8_t(port >> 8);
     guest[3] = uint8_t(port);
-    if (family == 2) {
+    if (family == 10 && ipv6) {
+        std::memcpy(guest.data() + 8, guestAddress6.data(), 16);
+    } else if (family == 2) {
         std::memcpy(guest.data() + 4, guestAddress.data(), 4);
     } else {
         guest[18] = guest[19] = 0xff;

@@ -4,8 +4,10 @@
          host's sockets. Its address, gateway and name server are fixed, as in the Android emulator's
          user-mode network, so nothing has to be negotiated when it comes up. The capabilities are the
          ones an Ethernet interface has by default (not metered, internet, not restricted, trusted, not
-         a VPN, not managed by a VCN, not bandwidth constrained): an entry here replaces the defaults. -->
+         a VPN, not managed by a VCN, not bandwidth constrained): an entry here replaces the defaults.
+         The last field, 1, makes it a Wi-Fi network for apps (TRANSPORT_WIFI, TYPE_WIFI): many count
+         only Wi-Fi and cellular as being online, and took the Ethernet network for none. -->
     <string-array name="config_ethernet_interfaces" translatable="false">
-        <item>eth0;11,12,13,14,15,28,37;ip=10.0.2.15/24 gateway=10.0.2.2 dns=10.0.2.3;</item>
+        <item>eth0;11,12,13,14,15,28,37;ip=10.0.2.15/24 gateway=10.0.2.2 dns=10.0.2.3;1</item>
     </string-array>
 </resources>

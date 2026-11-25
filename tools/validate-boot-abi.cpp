@@ -1966,6 +1966,18 @@ int main() {
         return machine.cpu.x[0];
     };
     {
+        // What lmkd asks first (it stopped at mlockall, and Android had no low-memory killer).
+        constexpr uint64_t invalidArgument = uint64_t(-22);
+        // As once the home screen is up: before that it waits there (checked on the phone).
+        linux.appsHeld = false;
+        assert(call(230, {3}) == 0 && call(230, {7}) == 0);  // MCL_CURRENT | MCL_FUTURE, and MCL_ONFAULT
+        assert(call(230, {0}) == invalidArgument && call(230, {4}) == invalidArgument && call(230, {8}) == invalidArgument);
+        assert(call(231) == 0);
+        assert(call(448, {uint64_t(-1), 0}) == uint64_t(-9));  // process_mrelease without a process
+        assert(call(424, {0, 9, 0, 0}) == uint64_t(-38));      // pidfd_send_signal: not here
+        std::puts("lmkd's system calls: ok");
+    }
+    {
         constexpr uint64_t cwd = uint32_t(-100);
         constexpr uint64_t path = base + 256, output = base + 512;
         const auto writePath = [&](uint64_t address, const char* name) {
