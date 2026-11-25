@@ -79,7 +79,10 @@ for the app** gives that code the system it expects.
 - **Web pages inside apps.** Android System WebView 128 from AOSP is part of the system, translated ahead of time
   like the rest: a Wikipedia article loads in a WebView in 4 to 8 seconds. JavaScript runs without a JIT.
 - **Root, when you want it.** Off unless you turn it on in Nestvane's Settings; then an app that runs `su` gets root
-  once you allow it in an iOS prompt, and the answer can be changed in Settings.
+  once you allow it in an iOS prompt, and the answer can be changed in Settings. The official KernelSU Manager works
+  too: it shows KernelSU as working and allows or refuses root for each app, with the same answers. Its modules do not.
+- **Backing up Android.** Back Up Android in the More menu saves Android's apps, their data and its settings in one
+  file you keep where you like; Restore Android puts one back.
 - **The device's storage.** Android's Storage page shows the size of the volume Nestvane is on and what is free on it.
 - **Clearing background apps.** Touch and hold Home in Nestvane's bar to close the apps in the background.
 
@@ -91,7 +94,6 @@ for the app** gives that code the system it expects.
 - **Google apps and Play services.** This is AOSP. Apps that need them will not run.
 - **Apps with heavy native code are slow**: an app's own native libraries are interpreted, now about twice as fast
   as before and on a core of their own, but still far from native speed.
-- IPv6, and live updates of the shared folder (changes made from iOS appear when Android next starts).
 
 [docs/status.md](docs/status.md) has the full list with the measurements behind it.
 

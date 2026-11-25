@@ -367,7 +367,9 @@ WebView 的原生库现在只能交给解释器，约每秒四千万条指令，
 
 风险最大的是第 2 步：作废不对会执行到旧代码，出的是偶发的错，回归要多跑几遍。
 
-## KernelSU 兼容（2026-11-24 记，排在 1.12）
+## KernelSU 兼容（2026-11-24 记，排在 1.12；1.12 做完前两步）
+
+**1.12 做到的。** 接口按 KernelSU 3.3.1（UAPI 5）的 `uapi/supercall.h`、`uapi/app_profile.h` 自己实现，在 `runtime/ProbeKernelSu.cpp`：驱动是名为 `[ksu_driver]` 的匿名文件，Manager 的进程在 zygote 把它变成 Manager 的用户时拿到，其他进程用 `reboot(0xDEADBEEF, 0xCAFEBABE, 0, &fd)` 要（应用的 seccomp 放过这一个）。Manager 按两点认：`/data/data/me.weishu.kernelsu` 的属主，和 APK v2 签名第一张证书（827 字节，SHA-256 是 KernelSU Kbuild 里的那个，`runtime/ApkSignature.hpp` 读）。允许和拒绝列表、App Profile、`UID_GRANTED_ROOT` 读的都是 iOS 里的回答，Manager 改 App Profile 就是改这份回答；`GRANT_ROOT` 给 Manager 和允许的应用 root（`u:r:su:s0`），没回答过的应用照常在 iOS 里问。只在打开 root 时有。版本报 32680（官方 Manager 3.3.1 的版本号），不报 LKM，Manager 显示 GKI。iPhone 14 上用官方 Manager 3.3.1 验收通过。模块（第 3 步）没做。
 
 1.7 的 root 由内核层实现：执行 `/system/bin/su` 时把进程换成 root，谁能拿由 iOS 弹窗决定。这和 KernelSU 的思路一样（root 在内核里决定，管理器通过一个特殊的系统调用跟内核说话），所以兼容它主要是在内核层实现它的接口。选 KernelSU 不选 Magisk：Magisk 要修补启动镜像、开机先跑 `magiskinit`、常驻 `magiskd`、用 Zygisk 注入 zygote，我们的启动流程是自己的，注入还会碰到预先翻译的代码，成本高得多。
 

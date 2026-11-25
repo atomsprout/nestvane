@@ -69,7 +69,8 @@ Nestvane 走的是剩下的那条路：**把 Android 重新构建并提前翻译
 - **横屏**：转动设备，Android 里的应用跟着转；要求横屏的应用显示方向正确。桌面保持启动时的方向。
 - **麦克风**：在 iOS 里允许之后，录音的 Android 应用拿到的是设备的麦克风。新功能，目前只看到 Android 开始录音这一步。
 - **应用里的网页**：系统里带了 AOSP 的 Android System WebView 128，和其他部分一样预先翻译。WebView 里打开一篇 Wikipedia 文章 4 到 8 秒。JavaScript 不用 JIT。
-- **内置 root，需要时打开**：默认关，在 Nestvane 的设置里打开；之后应用执行 `su` 时，iOS 弹窗问你是否允许，允许后拿到 root，回答可以在设置里改。
+- **内置 root，需要时打开**：默认关，在 Nestvane 的设置里打开；之后应用执行 `su` 时，iOS 弹窗问你是否允许，允许后拿到 root，回答可以在设置里改。官方的 KernelSU Manager 也能用：显示 KernelSU 已工作，能给每个应用授权或拒绝 root，和 iOS 里的回答是同一份。它的模块还不能用。
+- **备份 Android**：More 菜单里的“Back Up Android”把 Android 的应用、应用数据和设置存成一个文件，放在你选的地方；“Restore Android”再放回去。
 - **清理后台**：长按 Nestvane 底栏的 Home 键，结束后台的应用、释放内存。
 - **设备的存储**：Android 的“存储空间”显示 Nestvane 所在卷的大小和剩余空间。
 
@@ -79,7 +80,6 @@ Nestvane 走的是剩下的那条路：**把 Android 重新构建并提前翻译
 - **iPad 上的平板布局**：在 iPad 上 Android 按手机的方式排版，画面清晰、铺满屏幕。
 - **Google 应用和 Play 服务**：这是 AOSP，依赖它们的应用跑不起来。
 - **自带大量原生代码的应用很慢**：应用自己的原生库是解释执行的，比以前快了约一倍，也能用上单独的核，但离原生的速度还很远。
-- IPv6；以及共享文件夹的实时同步（从 iOS 这边做的改动，要到 Android 下一次启动才出现）。
 
 完整的清单和背后的测量数据见 [docs/zh-CN/status.md](docs/zh-CN/status.md)。
 

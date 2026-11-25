@@ -55,6 +55,9 @@ Nestvane 是早期版本，目前只有开发者能运行：IPA 必须用付费�
 - **导出诊断信息（1.11）。** 在 More 菜单里。Android 像是卡住时用：Nestvane 写出一个文本文件，里面有每个客体线程在等什么、内存、system_server 的 Java 线程栈、Android 最近的日志，以及 App 自己记下的启动和网络情况，然后打开分享菜单。运行时本身卡住时会写明，并给出之前记下的内容。
 - **低内存清理（1.11）。** Android 的 `lmkd` 以前每个版本都停在第一个系统调用（`mlockall`）上，Android 从来不知道哪些应用可以结束。现在它在运行，从桌面出来以后开始：和 Android 一起启动的话，开机要多花几百毫秒。新进程在 iOS 给 App 的地址空间里找不到地方时，Nestvane 结束 Android 排得最靠后的缓存应用，像 Linux 的低内存清理那样，新进程就能起来。以前是起不来，点的应用打不开；开机时启动几个大应用，iPhone 14 上一分钟内就会这样。
 - **录屏和存进媒体库（1.11）。** 系统的录屏能录也能存（iPhone 14 上录 10 秒：64 帧，668 KB，媒体库里能看到）；录好的视频复制进 Movies，或者像相机应用那样直接录进去，大小都对。以前导出 0 KB 的录屏，多半就是 1.10 修好的那个媒体库一直等的问题。
+- **备份和恢复 Android（1.12）。** More 菜单里的 Back Up Android…：Android 停下，应用、应用数据、设置和 root 的回答存成一个文件（Apple Archive），你选放在哪里，然后 Android 再启动。共享文件夹不在里面，它本来就在“文件”App 里。Restore Android…：把选中的备份放回去，Android 从它启动；原来的数据一直留着，到 Android 从备份启动到桌面才删，没到桌面就停了会放回去。iPhone 14 上 507 MB 的数据备份成 331 MB；恢复不到一秒，备份之后卸载的应用和改过的文件都回来了。整台 iPhone 的备份本来就包含 Android 的数据，这个是为了回到某个时刻，或者只挪 Android。
+- **KernelSU Manager（1.12）。** root 打开时，官方的 KernelSU Manager（3.3.1，KernelSU 的 Release 里下载）显示 KernelSU 已工作，版本 32680，列出应用。它给每个应用的开关允许或拒绝 root，和 iOS 弹窗、Nestvane 设置里的回答是同一份。KernelSU 的驱动（它的 ioctl，UAPI 5）由内核层自己回答；只有 KernelSU 签名的 Manager 才被当作 Manager。iPhone 14 上测过：允许时应用经 KernelSU 的驱动拿到 root，拒绝时被挡回。
+- **应用自己文件里的程序能运行（1.12）。** `/data` 里的程序，比如应用 native 库目录里的，以前一直启动不了；现在可执行的都能运行。一个进程收到别的进程发来的 SIGTERM 而它自己处理这个信号时，发信号的一方不再卡住。
 
 ## 还不能用的
 
@@ -62,6 +65,7 @@ Nestvane 是早期版本，目前只有开发者能运行：IPA 必须用付费�
 - **iPad 上的平板布局。** 在平板的密度下这个 Android 构建不能用：桌面一启动就停止，重启后应用的窗口不显示。iPad 上用手机的布局；横屏时宽 920 个单位，按宽度排版的应用会用宽屏布局。
 - **桌面不跟着转。** 这一版 Android 的桌面在手机布局下保持显示器生成时的方向，所以它停在 Nestvane 启动时的方向上；应用会转。
 - **Google 应用和 Play 服务。** 系统是 AOSP。依赖 Google 服务的应用无法运行。
+- **KernelSU 的模块。** Manager 里没有模块，也装不上：Android 启动时没有运行 KernelSU 的 `ksud`，也没有给模块文件用的 overlay 挂载。
 - **没有 Wi-Fi 服务。** 向 Android 的 Wi-Fi 服务问 Wi-Fi 状态的应用什么也拿不到，有的会停（KDE Connect）。开着这个服务，iPhone 14 开机慢 0.3 秒，所以先不开。用老的 `NetworkInfo.getType()` 的应用仍然看到以太网。
 - **原生代码多的应用很慢**，因为 APK 里的原生库是解释执行的。有些应用启动不了。ScriptWidget 的预览出不来：脚本运行超过它自己设的截止时间就被中断，解释执行时它的脚本都会超时。
 

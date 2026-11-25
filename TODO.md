@@ -2,7 +2,7 @@
 
 2026-11-24 定，1.9 发布后，按 [#5](https://github.com/atomsprout/nestvane/issues/5) 的反馈排。版本号往下加 1.10、1.11……，2.0 留给真正的大突破。每项的做法和验收见 [PLAN.md](PLAN.md)，总览见[路线图](docs/zh-CN/roadmap.md)。做完一项就勾掉，发布时在 #5 里标出来。
 
-每个版本发布前：`tools/boot-check.sh` 开机只能更快、不能更慢（iPhone 14 基线 8747 ms），过了用 `--record` 记下，数字写进发布说明。
+每个版本发布前：`tools/boot-check.sh` 开机只能更快、不能更慢（iPhone 14 基线见 `results/boot-baseline.txt`），过了用 `--record` 记下，数字写进发布说明。
 
 ## 1.10 装应用和文件（1–2 周）
 
@@ -25,10 +25,11 @@
 - [ ] 下一步可做：`mountFor` 也按前缀查（改好了但没测开机，没带进 1.11）；mmap 和 fork 的宿主 VM 调用仍是开机里最大的一块
 - [x] 卡死的一个原因：地址空间满了新进程起不来。lmkd 以前一直停在 `mlockall`，现在桌面出来后运行（和 Android 一起启动要多几百毫秒）；满了时结束最不重要的缓存应用
 
-## 1.12 KernelSU 和备份（1–2 周）
+## 1.12 KernelSU 和备份（已发布）
 
-- [ ] KernelSU Manager 显示已工作，能给应用授权和撤销 root；模块之后再定（#5-5）
-- [ ] 备份先做精简版，排在 KernelSU 前面（#5-12）：Android 停下后把数据导出成一个文件存进“文件”，导入时整个替换，原来的数据先留一份；不带共享文件夹，不做跨版本兼容，约 1–2 天。整台 iPhone 的备份本来就包含 Android 的数据，这个只为回滚（装 KernelSU 前留存档）和只挪 Android（2026-11-25 定）
+- [x] KernelSU Manager 显示已工作，能给应用授权和撤销 root（#5-5）：内核层按 KernelSU 3.3.1 的接口（UAPI 5）回答它的驱动，官方 Manager 按签名证书认；授权就是 iOS 里的同一份回答。iPhone 14 上用官方 Manager 3.3.1 测过：已工作 32680，开关打开应用拿到 root，关掉被拒。顺带修了 `/data` 里的程序不能运行、kill 发 SIGTERM 给自己处理它的进程会卡住
+- [ ] KernelSU 模块：要在开机各阶段运行 `ksud`、做 overlay 挂载，之后再定
+- [x] 备份先做精简版，排在 KernelSU 前面（#5-12）：Android 停下后把数据导出成一个文件存进“文件”，导入时整个替换，原来的数据先留一份；不带共享文件夹，不做跨版本兼容，约 1–2 天。整台 iPhone 的备份本来就包含 Android 的数据，这个只为回滚（装 KernelSU 前留存档）和只挪 Android（2026-11-25 定）。做完：More 菜单里 Back Up / Restore Android，Apple Archive（LZ4）；原来的数据留到 Android 从备份启动到桌面，没到桌面就停了放回去。iPhone 14 上 507 MB 备份成 331 MB，恢复 0.8 秒，卸载的应用和改过的文件都回来了。文件选择器那一步没有在手机上手点过
 
 ## 1.13 相机（约 1 周）
 
