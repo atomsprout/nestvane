@@ -218,14 +218,33 @@ struct ProbeLinux {
     struct RootPolicy {
         bool enabled = false;
         std::function<int(uint32_t uid, const std::string& package)> decision;
+        // Every answer given so far, by package (or "uid <n>"), and a new one: the KernelSU Manager
+        // reads and changes the same answers the person gave (ProbeKernelSu.cpp).
+        std::function<std::vector<std::pair<std::string, bool>>()> answers;
+        std::function<void(const std::string& package, bool allowed)> remember;
     };
     static void setRootPolicy(RootPolicy policy);
     static RootPolicy rootPolicy();
     bool rootEnabled() const { return rootOn; }
     std::function<int(uint32_t uid, const std::string& package)> rootDecision;
+    std::function<std::vector<std::pair<std::string, bool>>()> rootAnswers;
+    std::function<void(const std::string& package, bool allowed)> rootRemember;
     static constexpr std::string_view rootContext = "u:r:su:s0";
-    // The package that has a uid, from Android's own list; "" for none.
+    // KernelSU's interface, for its official Manager (ProbeKernelSu.cpp). The Manager's process is
+    // given the driver when zygote makes it the Manager's user; anyone else asks for it with reboot.
+    static constexpr std::string_view kernelSuPackage = "me.weishu.kernelsu";
+    int64_t kernelSuManagerUid = -1;  // the uid whose APK carries the Manager's certificate
+    std::map<std::string, bool, std::less<>> kernelSuSignatures;  // APK path -> whether it is the Manager's
+    void kernelSuUserChanged(uint32_t uid);
+    uint64_t installKernelSu();
+    // Its answer, or none when it waits for the person to answer (the call is made again).
+    std::optional<uint64_t> kernelSuIoctl(Machine& machine, uint32_t request, uint64_t argument);
+    bool kernelSuManager() const;
+    // Root's credentials for the calling process now, as su gives them at its start.
+    void becomeRoot();
+    // The package that has a uid, from Android's own list; "" for none. And the other way.
     std::string packageOfUid(uint32_t uid) const;
+    std::optional<uint32_t> uidOfPackage(std::string_view package) const;
     // Apps the user installed do not run until the home screen is shown (the starter clears this) or
     // half a minute has passed. NESTVANE_HOLD_APPS=0 turns it off.
     std::atomic_bool appsHeld{!std::getenv("NESTVANE_HOLD_APPS") || std::string_view(std::getenv("NESTVANE_HOLD_APPS")) != "0"};
@@ -368,7 +387,7 @@ private:
     uint64_t installSeccomp(Machine& machine, uint64_t address);
     bool enforceSeccomp(Machine& machine);
 
-    enum class Node { regular, temporary, directory, symbolicLink, input, output, error, null, entropy, kernelLog, poller, event, inotify, signal, socket, keySocket, mountNamespace, pipeRead, pipeWrite, execLabel, fsCreateLabel, socketCreateLabel, securityInfo, securityCreate, securityAccess, securityValidate, loopControl, loopDevice, timer, ptyMaster, ptySlave, ueventTrigger, kernelSetting, oomScoreAdjustment, binder, processHandle, cgroupProcs, ashmem, graphicsPipe, graphicsAddressSpace, touchDevice, bpfMap, bpfProgram, bpfBtf, pressure, fuse, sound, dmaHeap };
+    enum class Node { regular, temporary, directory, symbolicLink, input, output, error, null, entropy, kernelLog, poller, event, inotify, signal, socket, keySocket, mountNamespace, pipeRead, pipeWrite, execLabel, fsCreateLabel, socketCreateLabel, securityInfo, securityCreate, securityAccess, securityValidate, loopControl, loopDevice, timer, ptyMaster, ptySlave, ueventTrigger, kernelSetting, oomScoreAdjustment, binder, processHandle, cgroupProcs, ashmem, graphicsPipe, graphicsAddressSpace, touchDevice, bpfMap, bpfProgram, bpfBtf, pressure, fuse, sound, dmaHeap, kernelSu };
     struct RecordLock {
         uint64_t owner, start, end;
         int16_t type;

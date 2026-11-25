@@ -5,6 +5,9 @@
 #   tools/build-fixture-apk.sh webview   shows a page in a WebView and logs how long each stage takes
 #   tools/build-fixture-apk.sh root      asks for root with su and logs what it got
 #   tools/build-fixture-apk.sh mic       records three seconds and logs how loud it was
+#   tools/build-fixture-apk.sh kernelsu  gets root through KernelSU's driver, as ksud does
+# A fixture's C file, if it has one, becomes an arm64 program in the APK's native libraries, as
+# lib<name>.so (fixtures/kernelsu/ksutest.c is libksutest.so), which Android unpacks for the app.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 name="${1:?usage: build-fixture-apk.sh <fixture name>}"
@@ -23,6 +26,14 @@ javac --release 8 -Xlint:-options -cp "$android_jar" -d "$temporary/classes" fix
     "$temporary/classes/dev/nestvane/$name/"*.class
 "$build_tools/aapt2" link -I "$android_jar" --manifest fixtures/$name/AndroidManifest.xml -o "$temporary/resources.apk"
 (cd "$temporary" && zip -q resources.apk classes.dex)
+for source in fixtures/$name/*.c; do
+    [[ -f "$source" ]] || continue
+    ndk="${ANDROID_NDK_HOME:-$sdk/ndk/29.0.14206865}"
+    mkdir -p "$temporary/lib/arm64-v8a"
+    "$ndk/toolchains/llvm/prebuilt/darwin-x86_64/bin/aarch64-linux-android29-clang" -O2 -Wall -Werror -fPIE -pie \
+        -o "$temporary/lib/arm64-v8a/lib$(basename "$source" .c).so" "$source"
+    (cd "$temporary" && zip -q resources.apk lib/arm64-v8a/*.so)
+done
 "$build_tools/zipalign" -f 4 "$temporary/resources.apk" "$temporary/aligned.apk"
 "$build_tools/apksigner" sign --ks "$key" --ks-pass pass:nestvane-fixture \
     --out "$temporary/signed.apk" "$temporary/aligned.apk"

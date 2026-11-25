@@ -8,7 +8,7 @@ xcrun clang++ -O3 -DNDEBUG -std=c++20 -Wall -Wextra -Werror -Iruntime \
 generated/validate generated/guests
 
 xcrun clang++ -O2 -std=c++20 -Wall -Wextra -Werror -Iruntime \
-    runtime/Runtime.cpp runtime/GuestSpace.cpp runtime/NativeCode.cpp runtime/NativeEntry.S runtime/NoNativeCode.cpp runtime/AArch64.cpp runtime/FastPath.cpp runtime/ProbeLinux.cpp runtime/ProbeData.cpp runtime/ProbeBinder.cpp \
+    runtime/Runtime.cpp runtime/GuestSpace.cpp runtime/NativeCode.cpp runtime/NativeEntry.S runtime/NoNativeCode.cpp runtime/AArch64.cpp runtime/FastPath.cpp runtime/ProbeLinux.cpp runtime/ProbeData.cpp runtime/ProbeBinder.cpp runtime/ProbeKernelSu.cpp \
     runtime/Ext4.cpp tools/no-aot.cpp tools/validate-boot-abi.cpp \
     -lsqlite3 -lresolv -o generated/validate-boot-abi
 generated/validate-boot-abi

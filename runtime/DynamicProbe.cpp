@@ -1200,6 +1200,8 @@ service nestvane-trim /system/bin/sh /system/etc/nestvane/trim.sh
             if (auto root = ProbeLinux::rootPolicy(); root.enabled) {
                 linux.enableRoot();
                 linux.rootDecision = std::move(root.decision);
+                linux.rootAnswers = std::move(root.answers);
+                linux.rootRemember = std::move(root.remember);
             }
         }
         for (const bool directory : {false, true}) {

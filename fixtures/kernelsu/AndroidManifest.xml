@@ -1,0 +1,15 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="dev.nestvane.kernelsu">
+    <uses-sdk android:minSdkVersion="23" android:targetSdkVersion="37" />
+    <!-- Talks to KernelSU's driver as KernelSU's ksud does (ksutest.c): asks for it with reboot, reads
+         what it is, and asks it for root. Logs what came back (tag NestvaneKsu). For testing the
+         kernel layer's KernelSU interface. -->
+    <application android:label="AAA KernelSU Test" android:theme="@android:style/Theme.Material.Light.NoActionBar"
+                 android:allowBackup="false" android:extractNativeLibs="true">
+        <activity android:name=".MainActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

@@ -2652,6 +2652,22 @@ int main(int argc, char* argv[]) {
                 AskForRoot(name);
                 return -1;
             }
+        },
+        // Every answer, and a new one from the KernelSU Manager: the same ones Settings lists.
+        []() {
+            __block std::vector<std::pair<std::string, bool>> answers;
+            @autoreleasepool {
+                [NSUserDefaults.standardUserDefaults.dictionaryRepresentation enumerateKeysAndObjectsUsingBlock:^(NSString* key, id value, BOOL*) {
+                    if ([key hasPrefix:RootGrantPrefix] && [value isKindOfClass:NSNumber.class])
+                        answers.emplace_back([key substringFromIndex:RootGrantPrefix.length].UTF8String, [value boolValue]);
+                }];
+            }
+            return answers;
+        },
+        [](const std::string& package, bool allowed) {
+            @autoreleasepool {
+                [NSUserDefaults.standardUserDefaults setBool:allowed forKey:[RootGrantPrefix stringByAppendingString:@(package.c_str())]];
+            }
         }});
     @autoreleasepool {
         return UIApplicationMain(argc, argv, nil, NSStringFromClass(AppDelegate.class));

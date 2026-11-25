@@ -7730,7 +7730,7 @@ bool ProbeLinux::execProcess(Machine& machine) {
         const auto requested = absolutePath(*filename);
         if (requested == "/system/bin/su" || requested == "/system/xbin/su") {
             const auto uid = current->process->userIds[0];
-            const int decision = uid == 0 ? 1 : rootDecision ? rootDecision(uid, packageOfUid(uid)) : 0;
+            const int decision = uid == 0 || kernelSuManager() ? 1 : rootDecision ? rootDecision(uid, packageOfUid(uid)) : 0;
             if (decision < 0) {
                 // The person has not answered yet: the start is tried again in a moment.
                 current->hostEventRetry = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
@@ -7749,7 +7749,11 @@ bool ProbeLinux::execProcess(Machine& machine) {
     const auto& executablePath = *resolved;
     const auto file = find(backingPath(executablePath), 0);
     if (!file) { x[0] = uint64_t(-2); return true; }
-    if (file->node != Node::regular || file->snapshot ||
+    // A program in /data is one of the files the kernel layer writes (an app's native libraries
+    // directory has some, which apps such as KernelSU's Manager run): it runs when it may be executed.
+    const bool dataProgram = file->node == Node::temporary && file->temporary && file->path.starts_with("/data/");
+    if ((file->node != Node::regular && !dataProgram) || file->snapshot ||
+        (dataProgram && !(file->temporary->mode & 0111)) ||
         (!file->path.starts_with("/data/") && file->path.find("/bin/") == std::string::npos)) {
         x[0] = uint64_t(-13);
         return true;
@@ -7773,7 +7777,9 @@ bool ProbeLinux::execProcess(Machine& machine) {
     if (auto error = strings(x[1], argv)) { x[0] = error; return true; }
     if (auto error = strings(x[2], environment)) { x[0] = error; return true; }
     try {
-        const auto executableBytes = file->contents();
+        const auto executableBytes = dataProgram
+            ? std::span<const uint8_t>(file->temporary->storage->pages).first(file->temporary->storage->size)
+            : file->contents();
         const auto interpreterPath = elfInterpreter(executableBytes);
         if (interpreterPath.empty()) return false; // Static exec has a different startup ABI.
         const auto target = followLinks(interpreterPath);
@@ -7797,18 +7803,7 @@ bool ProbeLinux::execProcess(Machine& machine) {
                 shell.push_back(std::move(argument));
             }
             arguments = std::move(shell);
-            auto& process = *current->process;
-            process.userIds.fill(0);
-            process.groupIds.fill(0);
-            process.groups = {0};
-            // An app's bounding set is empty (zygote drops it): root's shell gets every capability back,
-            // as su gives them, so that it can read and change any app's files.
-            process.capabilityBound = Process::allCapabilities;
-            process.inheritableCaps = Process::allCapabilities;
-            process.secureBits = 0;
-            process.pendingContext = std::string(rootContext);
-            current->seccomp.reset();
-            current->noNewPrivileges = false;
+            becomeRoot();
             if (androidLogObserver) androidLogObserver("Nestvane: root granted to uid " + std::to_string(current->process->userIds[1]));
         }
         auto image = loadDynamicELF(executableBytes, interpreter->contents(), executablePath, interpreterPath,
@@ -9612,6 +9607,9 @@ uint64_t ProbeLinux::installSeccomp(Machine& machine, uint64_t address) {
 bool ProbeLinux::enforceSeccomp(Machine& machine) {
     if (!current->seccomp) return false;
     auto& cpu = machine.cpu;
+    // KernelSU's request for its driver goes past an app's filter, as KernelSU lets it (reboot is
+    // not among the calls an app may make).
+    if (rootOn && cpu.x[8] == 142 && uint32_t(cpu.x[0]) == 0xDEADBEEF && uint32_t(cpu.x[1]) == 0xCAFEBABE) return false;
     constexpr uint32_t auditArm64 = 0xc00000b7;
     std::array<uint32_t, 16> data{uint32_t(cpu.x[8]), auditArm64};
     const auto nextPC = cpu.pc + 4;
@@ -11759,6 +11757,12 @@ bool ProbeLinux::syscall(Machine& machine) {
             if (descriptor == descriptors().end()) { x[0] = uint64_t(-9); break; }
             return lockWholeFile(machine, descriptor->second);
         case 29: // ioctl
+            if (descriptor != descriptors().end() && descriptor->second.node == Node::kernelSu) {
+                const auto answer = kernelSuIoctl(machine, uint32_t(x[1]), x[2]);
+                if (!answer) return waitForEvents();
+                x[0] = *answer;
+                break;
+            }
             if (descriptor != descriptors().end() && descriptor->second.node == Node::dmaHeap) {
                 x[0] = uint32_t(x[1]) == 0xc0184800 ? allocateDmaBuffer(machine) : uint64_t(-25);
                 break;
@@ -12145,6 +12149,15 @@ bool ProbeLinux::syscall(Machine& machine) {
             break;
         case 221: return execProcess(machine); // execve
         case 95: case 260: return waitChild(machine); // waitid, wait4
+        case 142: { // reboot: only KernelSU's request for its driver, whose descriptor goes to *arg4
+            if (!rootOn || uint32_t(x[0]) != 0xDEADBEEF || uint32_t(x[1]) != 0xCAFEBABE) return false;
+            const auto fd = installKernelSu();
+            const int32_t number = fd >= descriptorCapacity ? -1 : int32_t(fd);
+            if (number >= 0 && !machine.write(x[3], {reinterpret_cast<const uint8_t*>(&number), sizeof number}))
+                descriptors().erase(uint32_t(number));
+            x[0] = uint64_t(-22);  // the reboot itself does not happen
+            break;
+        }
         case 434: { // pidfd_open for guest process leaders.
             const auto target = int32_t(x[0]);
             if (target <= 0 || x[1]) { x[0] = invalid; break; }
@@ -12265,7 +12278,10 @@ bool ProbeLinux::syscall(Machine& machine) {
                     }
                 }
                 if (ids[1] != updated[1]) process.dumpable = false;
+                const bool userChanged = users && ids[0] != updated[0];
                 ids = updated;
+                // KernelSU: the Manager's process gets its driver as it becomes the Manager's user.
+                if (userChanged && rootOn) kernelSuUserChanged(updated[0]);
             }
             x[0] = allowed ? 0 : uint64_t(-1);
             break;
