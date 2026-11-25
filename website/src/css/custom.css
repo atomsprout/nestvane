@@ -1,66 +1,77 @@
 /* Colours from the app icon: a crystal N on iridescent glass, violet at its heart, magenta and pink on
-   one side, cyan and teal on the other, with orange light in the crystal. One violet accent; the rest
-   of the spectrum appears only as soft light (the hero, a strip on cards, the name). Light by default. */
+   one side, cyan and teal on the other, with orange light in the crystal. One light periwinkle accent
+   (not a deep purple); the rest of the spectrum appears only as soft light (the hero, a strip on
+   cards, the name). Backgrounds and headings stay neutral. Light by default. */
 :root {
-  --ifm-color-primary: #6b3fe0;
-  --ifm-color-primary-dark: #5f32d6;
-  --ifm-color-primary-darker: #5a2fcb;
-  --ifm-color-primary-darkest: #4a27a7;
-  --ifm-color-primary-light: #7a54e4;
-  --ifm-color-primary-lighter: #825ee6;
-  --ifm-color-primary-lightest: #9b7feb;
-  --ifm-background-color: #fcfbff;
+  --ifm-color-primary: #5b63e6;
+  --ifm-color-primary-dark: #4f57e3;
+  --ifm-color-primary-darker: #4851e2;
+  --ifm-color-primary-darkest: #2c36d0;
+  --ifm-color-primary-light: #6a71e9;
+  --ifm-color-primary-lighter: #7178ea;
+  --ifm-color-primary-lightest: #8a90ee;
+  --ifm-background-color: #fbfbfe;
   --ifm-background-surface-color: #ffffff;
-  --ifm-navbar-background-color: rgba(252, 251, 255, 0.86);
+  --ifm-navbar-background-color: rgba(251, 251, 254, 0.86);
   --ifm-code-font-size: 92%;
-  --ifm-heading-color: #1d1640;
-  --nv-spectrum: linear-gradient(90deg, #ff5fa8 0%, #b05cff 30%, #5b6cff 55%, #19c8e8 80%, #ffb15a 100%);
-  --nv-name: linear-gradient(100deg, #e0449a 0%, #8a3ff0 35%, #4c5cf2 62%, #0fa6c7 100%);
+  --ifm-heading-color: #1f2333;
+  --nv-button: #7a80f2;
+  --nv-button-hover: #6a71ee;
+  --nv-button-text: #ffffff;
+  --nv-spectrum: linear-gradient(90deg, #ff8cc0 0%, #c3a2ff 30%, #8fa0ff 55%, #6fd8ee 80%, #ffc98a 100%);
+  --nv-name: linear-gradient(100deg, #ea5c9f 0%, #9a74f2 35%, #6b7ff2 62%, #2fb3d6 100%);
   --nv-hero:
-    radial-gradient(60% 70% at 12% 8%, rgba(255, 95, 168, 0.30), transparent 70%),
-    radial-gradient(55% 65% at 88% 12%, rgba(25, 200, 232, 0.28), transparent 70%),
-    radial-gradient(60% 60% at 50% 0%, rgba(140, 92, 255, 0.30), transparent 75%),
-    radial-gradient(45% 50% at 80% 85%, rgba(255, 177, 90, 0.20), transparent 70%),
-    linear-gradient(180deg, #f3eeff 0%, #fcfbff 100%);
-  --nv-alt: #f6f2ff;
-  --nv-chip: rgba(255, 255, 255, 0.85);
-  --nv-chip-text: #5a2fcb;
-  --nv-card-border: #e6defb;
-  --nv-glow: rgba(110, 70, 230, 0.32);
+    radial-gradient(60% 70% at 12% 8%, rgba(255, 140, 192, 0.24), transparent 70%),
+    radial-gradient(55% 65% at 88% 12%, rgba(111, 216, 238, 0.26), transparent 70%),
+    radial-gradient(60% 60% at 50% 0%, rgba(160, 150, 255, 0.20), transparent 75%),
+    radial-gradient(45% 50% at 80% 85%, rgba(255, 201, 138, 0.20), transparent 70%),
+    linear-gradient(180deg, #f5f5fe 0%, #fbfbfe 100%);
+  --nv-alt: #f6f6fc;
+  --nv-chip: rgba(255, 255, 255, 0.88);
+  --nv-chip-text: #4f57e3;
+  --nv-card-border: #e5e6f5;
+  --nv-glow: rgba(110, 120, 230, 0.22);
 }
 [data-theme='dark'] {
-  --ifm-color-primary: #b59cff;
-  --ifm-color-primary-dark: #a183ff;
-  --ifm-color-primary-darker: #9777ff;
-  --ifm-color-primary-darkest: #7a52ff;
-  --ifm-color-primary-light: #c9b5ff;
-  --ifm-color-primary-lighter: #d3c2ff;
-  --ifm-color-primary-lightest: #ece5ff;
-  --ifm-background-color: #100d1f;
-  --ifm-background-surface-color: #19152e;
-  --ifm-navbar-background-color: rgba(16, 13, 31, 0.86);
-  --ifm-heading-color: #f1ecff;
-  --nv-name: linear-gradient(100deg, #ff7cc0 0%, #b98cff 35%, #8a98ff 62%, #5fe0f5 100%);
+  --ifm-color-primary: #a8b1ff;
+  --ifm-color-primary-dark: #8e99ff;
+  --ifm-color-primary-darker: #818dff;
+  --ifm-color-primary-darkest: #5a69ff;
+  --ifm-color-primary-light: #c2c9ff;
+  --ifm-color-primary-lighter: #cfd4ff;
+  --ifm-color-primary-lightest: #f0f2ff;
+  --ifm-background-color: #13151d;
+  --ifm-background-surface-color: #1b1e29;
+  --ifm-navbar-background-color: rgba(19, 21, 29, 0.86);
+  --ifm-heading-color: #eef0fa;
+  --nv-button: #a8b1ff;
+  --nv-button-hover: #bcc3ff;
+  --nv-button-text: #13151d;
+  --nv-name: linear-gradient(100deg, #ff8cc0 0%, #c3a2ff 35%, #9fb0ff 62%, #74e0f5 100%);
   --nv-hero:
-    radial-gradient(60% 70% at 12% 8%, rgba(255, 95, 168, 0.20), transparent 70%),
-    radial-gradient(55% 65% at 88% 12%, rgba(25, 200, 232, 0.18), transparent 70%),
-    radial-gradient(60% 60% at 50% 0%, rgba(140, 92, 255, 0.28), transparent 75%),
-    linear-gradient(180deg, #1a1436 0%, #100d1f 100%);
-  --nv-alt: #151129;
-  --nv-chip: rgba(40, 32, 72, 0.85);
-  --nv-chip-text: #d3c2ff;
-  --nv-card-border: #2c2550;
-  --nv-glow: rgba(150, 110, 255, 0.35);
+    radial-gradient(60% 70% at 12% 8%, rgba(255, 140, 192, 0.14), transparent 70%),
+    radial-gradient(55% 65% at 88% 12%, rgba(111, 216, 238, 0.14), transparent 70%),
+    radial-gradient(60% 60% at 50% 0%, rgba(160, 150, 255, 0.16), transparent 75%),
+    linear-gradient(180deg, #1a1d2a 0%, #13151d 100%);
+  --nv-alt: #171a24;
+  --nv-chip: rgba(36, 40, 58, 0.88);
+  --nv-chip-text: #c2c9ff;
+  --nv-card-border: #2a2e3f;
+  --nv-glow: rgba(140, 150, 255, 0.22);
 }
 .navbar { backdrop-filter: saturate(160%) blur(10px); -webkit-backdrop-filter: saturate(160%) blur(10px); }
 .navbar::after {
   content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: var(--nv-spectrum); opacity: 0.7;
 }
-.footer { --ifm-footer-background-color: #f1ecff; }
-[data-theme='dark'] .footer { --ifm-footer-background-color: #0b0917; }
+.footer { --ifm-footer-background-color: #f2f3fb; }
+[data-theme='dark'] .footer { --ifm-footer-background-color: #0f1117; }
 .navbar__logo img { border-radius: 7px; }
 /* Wide tables in the documents scroll inside themselves on a phone. */
 .markdown table { display: block; overflow-x: auto; }
 .markdown h1 { background: var(--nv-name); -webkit-background-clip: text; background-clip: text; color: transparent; width: fit-content; }
-/* The light violet of the dark theme takes dark text on buttons. */
-[data-theme='dark'] .button--primary { --ifm-button-color: #160f33; color: #160f33; }
+/* Buttons are a lighter shade than links, with white text on light and dark text on dark. */
+.button--primary {
+  --ifm-button-background-color: var(--nv-button); --ifm-button-border-color: var(--nv-button);
+  --ifm-button-color: var(--nv-button-text); color: var(--nv-button-text);
+}
+.button--primary:hover { --ifm-button-background-color: var(--nv-button-hover); --ifm-button-border-color: var(--nv-button-hover); color: var(--nv-button-text); }
