@@ -227,14 +227,10 @@ struct ProbeLinux {
     static RootPolicy rootPolicy();
     bool rootEnabled() const { return rootOn; }
     std::function<int(uint32_t uid, const std::string& package)> rootDecision;
-    std::function<std::vector<std::pair<std::string, bool>>()> rootAnswers;
-    std::function<void(const std::string& package, bool allowed)> rootRemember;
     static constexpr std::string_view rootContext = "u:r:su:s0";
     // KernelSU's interface, for its official Manager (ProbeKernelSu.cpp). The Manager's process is
     // given the driver when zygote makes it the Manager's user; anyone else asks for it with reboot.
     static constexpr std::string_view kernelSuPackage = "me.weishu.kernelsu";
-    int64_t kernelSuManagerUid = -1;  // the uid whose APK carries the Manager's certificate
-    std::map<std::string, bool, std::less<>> kernelSuSignatures;  // APK path -> whether it is the Manager's
     void kernelSuUserChanged(uint32_t uid);
     uint64_t installKernelSu();
     // Its answer, or none when it waits for the person to answer (the call is made again).
@@ -1194,6 +1190,13 @@ private:
     bool signalContextRestored = false;
     uint64_t sliceEnd = UINT64_MAX;
     std::optional<std::chrono::nanoseconds> hostCpuSample;
+public:
+    // Added after every member 1.11 had, so that those keep their places in memory (1.12's start was
+    // slower with them in the middle): the KernelSU state and the answers the Manager reads.
+    std::function<std::vector<std::pair<std::string, bool>>()> rootAnswers;
+    std::function<void(const std::string& package, bool allowed)> rootRemember;
+    int64_t kernelSuManagerUid = -1;  // the uid whose APK carries the Manager's certificate
+    std::map<std::string, bool, std::less<>> kernelSuSignatures;  // APK path -> whether it is the Manager's
 };
 
 } // namespace nestvane
