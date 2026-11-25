@@ -468,6 +468,26 @@ const Module* mappedCode(std::span<const uint8_t> file, uint64_t address, uint64
 
 namespace {
 
+// Writes into the table's file through a writable view of a window of it, moved only when a write
+// falls outside: the readable view of the table shares the same pages. A write call for each page
+// cost the start more than half a second on an iPhone 14, some 23,000 pages of 16 KiB.
+bool writeTable(int file, off_t position, const void* data, size_t size) {
+    constexpr off_t windowBytes = 2 << 20;
+    static uint8_t* window = nullptr;
+    static off_t windowStart = -1;
+    const off_t start = position & ~(windowBytes - 1);
+    if (position + off_t(size) > start + windowBytes) return pwrite(file, data, size, position) == ssize_t(size);
+    if (start != windowStart) {
+        if (window) munmap(window, windowBytes);
+        void* mapped = mmap(nullptr, windowBytes, PROT_READ | PROT_WRITE, MAP_SHARED, file, start);
+        window = mapped == MAP_FAILED ? nullptr : static_cast<uint8_t*>(mapped);
+        windowStart = window ? start : -1;
+        if (!window) return pwrite(file, data, size, position) == ssize_t(size);
+    }
+    std::memcpy(window + (position - start), data, size);
+    return true;
+}
+
 // Makes the page of the table that has the entry for guest pc, if a module that is in use has code
 // there. The entries are written to the file first and the page is made readable after, so that
 // another host thread never reads a page that is half made. Called on the main loop's thread only.
@@ -505,7 +525,7 @@ bool makePage(uint64_t pc) {
     if (loaded.trap && all.traps.contains(loaded.trap) && loaded.module->info[2] >= from && loaded.module->info[2] < to)
         buffer[(loaded.module->info[2] - first) / 4] = loaded.trap;
     const off_t position = off_t(page * GuestSpace::page);
-    if (pwrite(all.tableFile, buffer, GuestSpace::page, position) != ssize_t(GuestSpace::page) ||
+    if (!writeTable(all.tableFile, position, buffer, GuestSpace::page) ||
         mprotect(reinterpret_cast<uint8_t*>(all.table) + position, GuestSpace::page, PROT_READ)) return false;
     all.made[page] = true;
     ++all.madePages;
@@ -529,7 +549,7 @@ void trap(uint64_t pc) {
         if (!all.traps.insert(loaded.trap).second) return;
         // A page that exists already gets the entry now; one that is made later gets it then.
         const size_t page = (pc - all.low) * 2 / GuestSpace::page;
-        if (all.made[page]) pwrite(all.tableFile, &loaded.trap, 8, off_t((pc - all.low) * 2));
+        if (all.made[page]) writeTable(all.tableFile, off_t((pc - all.low) * 2), &loaded.trap, 8);
         return;
     }
 }

@@ -513,6 +513,19 @@ ProbeLinux::ProbeLinux(uint64_t pid, uint64_t uid, uint64_t memoryLimit)
 
 void ProbeLinux::mount(std::string path, std::span<const uint8_t> bytes) {
     files.emplace(std::move(path), bytes);
+    fileInodesValid = false;
+}
+
+uint64_t ProbeLinux::fileInode(std::map<std::string, std::span<const uint8_t>, std::less<>>::const_iterator file) const {
+    if (file == files.end()) return files.size() + 8;
+    if (!fileInodesValid) {
+        fileInodes.clear();
+        fileInodes.reserve(files.size());
+        uint64_t index = 0;
+        for (const auto& [path, bytes] : files) fileInodes.emplace(path, index++);
+        fileInodesValid = true;
+    }
+    return fileInodes.at(file->first) + 8;
 }
 
 void ProbeLinux::alias(std::string path, std::string target) {
@@ -669,6 +682,7 @@ void ProbeLinux::setGuestTouch(std::shared_ptr<GuestTouch> touch) {
     if (!guestTouch) {
         files.erase(configPath);
         files.erase(keyLayoutPath);
+        fileInodesValid = false;
         return;
     }
     addDirectory("/dev/input", 0755);
@@ -727,16 +741,14 @@ std::string ProbeLinux::backingPath(std::string_view path) const {
 
 std::string ProbeLinux::backingPath(std::string_view path, const MountNamespace& mountNamespace) {
     if (path.size() > 1 && path[1] == '\0') return std::string(path);
-    size_t longest = 0;
-    const MountView* view = nullptr;
-    for (const auto& [mountpoint, entry] : mountNamespace.mounts) {
-        if ((path == mountpoint || inside(path, mountpoint)) && mountpoint.size() > longest) {
-            longest = mountpoint.size();
-            view = &entry;
-        }
+    // The longest mount point that is the path or a directory above it: its prefixes are looked up from
+    // the longest, a few look-ups where going through every mount point (up to 128) took one per mount.
+    for (size_t end = path.size(); end > 0; end = path.rfind('/', end - 1)) {
+        if (const auto mount = mountNamespace.mounts.find(path.substr(0, end)); mount != mountNamespace.mounts.end())
+            return mount->second.backing + std::string(path.substr(end));
+        if (end == 0 || path.rfind('/', end - 1) == std::string_view::npos) break;
     }
-    if (!view) return std::string(path);
-    return view->backing + std::string(path.substr(longest));
+    return std::string(path);
 }
 
 bool ProbeLinux::writablePath(std::string_view path) const {
@@ -1364,7 +1376,10 @@ bool ProbeLinux::exportExt4Mount(ProbeLinux& reader, std::string_view path) cons
     const auto import = [&](const auto& node) {
         const auto& [name, inode] = node;
         reader.ext4Nodes.emplace(name, inode);
-        if (auto file = files.find(name); file != files.end()) reader.files.emplace(*file);
+        if (auto file = files.find(name); file != files.end()) {
+            reader.files.emplace(*file);
+            reader.fileInodesValid = false;
+        }
         if (auto directory = directories.find(name); directory != directories.end() &&
             reader.directories.emplace(*directory).second) ++reader.ext4DirectoryCount;
         if (auto link = links.find(name); link != links.end() &&
@@ -1505,7 +1520,7 @@ uint64_t ProbeLinux::stat(Machine& machine, uint64_t address, const Descriptor& 
     const auto file = files.find(fd.path);
     const auto mode = fd.path.starts_with("/data/") || fd.path.find("/bin/") != std::string::npos
         ? 0100555 : 0100444;
-    return result(fd.bytes.size(), std::distance(files.begin(), file) + 8, mode);
+    return result(fd.bytes.size(), fileInode(file), mode);
 }
 
 uint64_t ProbeLinux::statx(Machine& machine) const {
@@ -2673,14 +2688,25 @@ uint64_t ProbeLinux::socketRead(Machine& machine, const Descriptor& fd, uint64_t
     const size_t packetSize = packet.size();
     const auto count = std::min<uint64_t>(size, packetSize);
     if (count && !machine.write(address, std::span(packet).first(count))) return uint64_t(-14);
+    const auto queuedBefore = endpoint.queuedBytes;
+    const auto packetsBefore = endpoint.inbox.size();
     endpoint.queuedBytes -= packetSize;
     endpoint.inbox.pop_front();
-    wakePollers();
+    socketDrained(endpoint, queuedBefore, packetsBefore);
     return reportPacketSize ? packetSize : count;
+}
+
+void ProbeLinux::socketDrained(SocketState& endpoint, uint64_t queuedBefore, size_t packetsBefore) {
+    // A writer that was refused, or a connected writer that may be polling for room it did not have.
+    const auto writer = endpoint.peer.lock();
+    if (std::exchange(endpoint.writerWaiting, false) || packetsBefore >= 256 ||
+        (writer && queuedBefore >= writer->sendBuffer)) wakePollers();
 }
 
 void ProbeLinux::consumeSocketStream(SocketState& endpoint, size_t count) {
     if (!count) return;
+    const auto queuedBefore = endpoint.queuedBytes;
+    const auto packetsBefore = endpoint.inbox.size();
     endpoint.queuedBytes -= count;
     endpoint.streamOffset += count;
     while (!endpoint.rights.empty() && endpoint.rights.front().firstByte < endpoint.streamOffset)
@@ -2694,7 +2720,7 @@ void ProbeLinux::consumeSocketStream(SocketState& endpoint, size_t count) {
         count -= packet.size();
         endpoint.inbox.pop_front();
     }
-    wakePollers();
+    socketDrained(endpoint, queuedBefore, packetsBefore);
 }
 
 std::shared_ptr<ProbeLinux::GraphicsRegion> ProbeLinux::GraphicsAddressSpace::mapping(uint64_t offset, uint64_t size) const {
@@ -3121,9 +3147,15 @@ uint64_t ProbeLinux::socketWrite(Machine& machine, const Descriptor& fd, std::sp
     }
     const bool stream = fd.socket->type == 1;
     if (!stream && size > fd.socket->sendBuffer) return uint64_t(-90);
-    if (peer->queuedBytes >= fd.socket->sendBuffer || peer->inbox.size() >= 256) return uint64_t(-11);
+    if (peer->queuedBytes >= fd.socket->sendBuffer || peer->inbox.size() >= 256) {
+        peer->writerWaiting = true;
+        return uint64_t(-11);
+    }
     if (size > fd.socket->sendBuffer - peer->queuedBytes) {
-        if (!stream) return uint64_t(-11);
+        if (!stream) {
+            peer->writerWaiting = true;
+            return uint64_t(-11);
+        }
         size = fd.socket->sendBuffer - peer->queuedBytes;
     }
     if (fd.socket->inetStream())
@@ -4596,10 +4628,13 @@ bool ProbeLinux::socketCall(Machine& machine) {
             descriptors().merge(transferred);
             x[0] = (x[2] & trunc) ? packet.size() : packet.size() - remaining.size();
             if (!(x[2] & peek)) {
+                const auto queuedBefore = endpoint.queuedBytes;
+                const auto packetsBefore = endpoint.inetDatagram() ? endpoint.datagrams.size() : endpoint.inbox.size();
                 endpoint.queuedBytes -= packet.size();
                 if (endpoint.inetDatagram()) endpoint.datagrams.pop_front();
                 else endpoint.inbox.pop_front();
-                wakePollers();
+                if (endpoint.inetDatagram()) wakePollers();
+                else socketDrained(endpoint, queuedBefore, packetsBefore);
             }
             break;
         }
@@ -5363,8 +5398,31 @@ bool ProbeLinux::fileCall(Machine& machine) {
                 fileEvent(fd.path, fd.flags & 3 ? fileClosedWrite : fileClosedRead, fd.node == Node::directory);
             }
             releaseRecordLocks(descriptor->second, processId());
-            descriptors().erase(descriptor);
-            wakePollers();
+            {
+                // Only closing something a poll or an epoll can wait on changes what they wait for: a
+                // pipe's other end, a socket's peer, an event. Files, directories and kernel settings do
+                // not (epoll does not even take them). Waking every waiting thread for each of the
+                // start's tens of thousands of closes made them all ask again, for nothing: 26,000
+                // wakes of some ten threads each before the home screen.
+                const auto& fd = descriptor->second;
+                static constexpr Node pollable[] = {Node::poller, Node::event, Node::inotify, Node::signal, Node::socket,
+                    Node::keySocket, Node::pipeRead, Node::pipeWrite, Node::timer, Node::ptyMaster, Node::ptySlave,
+                    Node::binder, Node::processHandle, Node::touchDevice, Node::pressure, Node::fuse, Node::sound,
+                    Node::input, Node::kernelLog};
+                const bool watched = std::ranges::find(pollable, fd.node) != std::end(pollable) || fd.socket || fd.pipe ||
+                    fd.event || fd.binder;
+                // A whole-file lock (flock) held through it goes with its last descriptor, and waiters
+                // for that lock wait as pollers do.
+                const bool locks = std::ranges::any_of(wholeFileLocks, [&](const auto& entry) {
+                    return std::ranges::any_of(entry.second, [&](const auto& lock) { return lock.owner.lock() == fd.offset; });
+                });
+                // Nor does closing one of several descriptors of the same open description, as a child
+                // that zygote forks does with what it inherited: the pipe or socket is still open.
+                const bool shared = fd.offset && fd.offset.use_count() > 1;
+                const bool quiet = !locks && (fd.pathOnly() || shared || !watched);
+                descriptors().erase(descriptor);
+                if (!quiet) wakePollers();
+            }
             x[0] = 0;
             break;
         case 62: { // lseek

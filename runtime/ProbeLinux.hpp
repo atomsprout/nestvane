@@ -466,6 +466,8 @@ private:
         size_t backlog = 0;
         size_t queuedBytes = 0;
         uint32_t sendBuffer = 262144, receiveBuffer = 212992;
+        // A send to this socket found its queue too full: the next read has a writer to wake.
+        bool writerWaiting = false;
         std::array<int32_t, 2> linger{}; // Linux struct linger: enabled, seconds.
         std::chrono::microseconds receiveTimeout{}, sendTimeout{};
         bool connected = false;
@@ -962,6 +964,10 @@ private:
     uint64_t socketWrite(Machine& machine, const Descriptor& fd, std::span<const SocketVector> vectors,
                          SocketRights rights = {});
     void consumeSocketStream(SocketState& endpoint, size_t count);
+    // After the guest read from a socket's queue: wakes waiting threads only if a writer could have
+    // been held up by a full queue before (Linux's writability: the queue under the writer's send buffer
+    // and fewer than 256 packets). Each read used to wake every waiting thread.
+    void socketDrained(SocketState& endpoint, uint64_t queuedBefore, size_t packetsBefore);
     uint64_t readSocketRights(const Machine& machine, uint64_t control, uint64_t length, SocketRights& rights) const;
     bool writeSocketRights(Machine& machine, const SocketRights& rights, uint64_t control,
                            uint64_t capacity, bool closeOnExec, uint64_t& used, uint32_t& flags,
@@ -1025,6 +1031,11 @@ private:
     std::map<std::string, const Ext4Node*, std::less<>> ext4Nodes;
     size_t ext4DirectoryCount = 0, ext4LinkCount = 0;
     std::map<std::string, std::span<const uint8_t>, std::less<>> files;
+    // Each image file's position in `files`, which is its inode number: counting the map's entries up
+    // to it for each stat walked tens of thousands of them. Made again after `files` changes.
+    mutable std::unordered_map<std::string_view, uint64_t> fileInodes;
+    mutable bool fileInodesValid = false;
+    uint64_t fileInode(std::map<std::string, std::span<const uint8_t>, std::less<>>::const_iterator file) const;
     struct Link {
         std::string target;
         std::string securityContext;
