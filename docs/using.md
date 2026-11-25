@@ -91,6 +91,8 @@ A backup made by one version of Nestvane is meant to be restored by the same or 
 - **More → Submit a Bug…** opens a new GitHub issue with the versions filled in.
 - **More → Stop Android…** and then Start Android starts Android again without losing anything.
 
+How to report it, and where, is in [reporting.md](reporting.md).
+
 ## Text messages
 
 Android here has no phone number and no radio. **More → Send Text Message…** takes a sender and a text and hands them to Android as a message it received: Messaging shows it, and an app that waits for a code by SMS receives it. Nothing is sent to anyone.

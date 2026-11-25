@@ -78,6 +78,8 @@ Nestvane 实现了 KernelSU 自己的接口，所以官方的 KernelSU Manager �
 - **More → Submit a Bug…** 在 GitHub 上开一个新问题，版本信息已经填好。
 - **More → Stop Android…** 再 Start Android，重新启动 Android，不会丢东西。
 
+怎样反馈、发到哪里，见[反馈问题](reporting.md)。
+
 ## 短信
 
 这里的 Android 没有电话号码，也没有基带。**More → Send Text Message…** 填一个发信人和内容，交给 Android 当作收到的短信：短信应用里能看到，等短信验证码的应用也能收到。不会发给任何人。

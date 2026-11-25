@@ -175,7 +175,7 @@ export default function Home() {
         <section className={styles.section} id="community">
           <div className="container">
             <h2>{text.communityTitle}</h2>
-            <p className={styles.intro}>{text.communityIntro}</p>
+            <p className={styles.intro}>{text.communityIntro} <Link to="/docs/reporting/">{text.communityReport}</Link></p>
             <ul className={styles.cards}>
               {text.channels.map(([name, address, href, body]) => (
                 <li key={name} className={styles.card}>

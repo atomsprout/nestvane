@@ -125,6 +125,7 @@ export const content = {
     ],
     communityTitle: 'Community and support',
     communityIntro: 'Follow progress, and report what works and what does not.',
+    communityReport: 'How to report a problem, with Nestvane’s diagnostics',
     channels: [
       ['Discord', 'discord.gg/eGzEaP6TzR', 'https://discord.gg/eGzEaP6TzR', 'Ask a question, share feedback, and talk with other people who run it.'],
       ['Telegram', 't.me/atomsprout', 'https://t.me/atomsprout', 'Follow updates and chat with us on Telegram.'],
