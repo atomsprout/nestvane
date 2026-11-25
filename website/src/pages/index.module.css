@@ -3,13 +3,16 @@
   text-align: center;
   background: var(--nv-hero);
 }
-.icon { display: block; margin: 0 auto; border-radius: 28px; box-shadow: 0 12px 34px rgba(180, 110, 0, 0.25); }
+.icon { display: block; margin: 0 auto; border-radius: 28px; box-shadow: 0 14px 40px var(--nv-glow), 0 0 0 1px rgba(255, 255, 255, 0.5); }
 .status {
   display: inline-block; margin: 1.5rem 0 0.5rem; padding: 0.2rem 0.8rem; border-radius: 999px;
   font-size: 0.85rem; font-weight: 600; color: var(--nv-chip-text);
-  background: var(--nv-chip); box-shadow: 0 1px 6px rgba(120, 80, 0, 0.12);
+  background: var(--nv-chip); box-shadow: 0 1px 8px var(--nv-glow); border: 1px solid var(--nv-card-border);
 }
-.name { font-size: clamp(2.6rem, 8vw, 4.2rem); margin: 0; letter-spacing: -0.02em; }
+.name {
+  font-size: clamp(2.6rem, 8vw, 4.2rem); margin: 0; letter-spacing: -0.02em; width: fit-content; margin-inline: auto;
+  background: var(--nv-name); -webkit-background-clip: text; background-clip: text; color: transparent;
+}
 .tagline { font-size: clamp(1.2rem, 3vw, 1.6rem); font-weight: 600; margin: 0.5rem 0 1rem; }
 .lede { max-width: 44rem; margin: 0 auto 1.75rem; font-size: 1.1rem; color: var(--ifm-color-emphasis-800); }
 .actions { display: flex; flex-wrap: wrap; gap: 0.75rem; justify-content: center; }
@@ -27,7 +30,7 @@
 .shot { flex: 0 0 auto; width: min(62vw, 230px); margin: 0; scroll-snap-align: start; }
 .shot img {
   display: block; width: 100%; height: auto; border-radius: 22px;
-  border: 1px solid var(--ifm-color-emphasis-300); background: #000;
+  border: 1px solid var(--nv-card-border); background: #000; box-shadow: 0 10px 28px var(--nv-glow);
 }
 .shot figcaption { margin-top: 0.6rem; font-size: 0.9rem; text-align: center; color: var(--ifm-color-emphasis-700); }
 
@@ -37,8 +40,11 @@
 }
 .card {
   padding: 1.1rem 1.25rem; border-radius: 14px; background: var(--ifm-background-surface-color);
-  border: 1px solid var(--nv-card-border);
+  border: 1px solid var(--nv-card-border); position: relative; overflow: hidden;
+  box-shadow: 0 1px 2px rgba(30, 20, 70, 0.04);
 }
+/* A thin strip of the icon's spectrum along the top of each card. */
+.card::before { content: ''; position: absolute; left: 0; right: 0; top: 0; height: 3px; background: var(--nv-spectrum); opacity: 0.85; }
 .card h3 { font-size: 1.05rem; margin-bottom: 0.4rem; }
 .card p { margin: 0; color: var(--ifm-color-emphasis-800); }
 .card p + p { margin-top: 0.6rem; }
@@ -49,7 +55,10 @@
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));
 }
 .figures dt { font-size: 0.9rem; color: var(--ifm-color-emphasis-700); }
-.figures dd { margin: 0.15rem 0 0; font-size: 1.6rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.figures dd {
+  margin: 0.15rem 0 0; font-size: 1.6rem; font-weight: 700; font-variant-numeric: tabular-nums; width: fit-content;
+  background: var(--nv-name); -webkit-background-clip: text; background-clip: text; color: transparent;
+}
 
 .diagram { display: block; width: 100%; max-width: 60rem; margin: 2rem auto 0; height: auto; }
 
@@ -62,7 +71,7 @@
 .videoWrap { max-width: 320px; margin: 0 auto; text-align: center; }
 .video {
   position: relative; aspect-ratio: 9 / 16; border-radius: 22px; overflow: hidden; background: #000;
-  border: 1px solid var(--nv-card-border); box-shadow: 0 14px 36px rgba(120, 80, 0, 0.18);
+  border: 1px solid var(--nv-card-border); box-shadow: 0 16px 40px var(--nv-glow);
 }
 .video iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
 .videoButton { display: block; width: 100%; height: 100%; padding: 0; border: 0; background: none; cursor: pointer; position: relative; }

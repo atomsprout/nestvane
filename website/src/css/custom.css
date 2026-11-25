@@ -1,42 +1,66 @@
-/* A sunny look: warm white surfaces and one orange accent. The site opens in the light theme.
-   The violet belongs to the app icon and stays there. */
+/* Colours from the app icon: a crystal N on iridescent glass, violet at its heart, magenta and pink on
+   one side, cyan and teal on the other, with orange light in the crystal. One violet accent; the rest
+   of the spectrum appears only as soft light (the hero, a strip on cards, the name). Light by default. */
 :root {
-  --ifm-color-primary: #d9480f;
-  --ifm-color-primary-dark: #c3410e;
-  --ifm-color-primary-darker: #b83d0d;
-  --ifm-color-primary-darkest: #98320b;
-  --ifm-color-primary-light: #ee5216;
-  --ifm-color-primary-lighter: #f05c24;
-  --ifm-color-primary-lightest: #f37d50;
-  --ifm-background-color: #fffdf8;
+  --ifm-color-primary: #6b3fe0;
+  --ifm-color-primary-dark: #5f32d6;
+  --ifm-color-primary-darker: #5a2fcb;
+  --ifm-color-primary-darkest: #4a27a7;
+  --ifm-color-primary-light: #7a54e4;
+  --ifm-color-primary-lighter: #825ee6;
+  --ifm-color-primary-lightest: #9b7feb;
+  --ifm-background-color: #fcfbff;
   --ifm-background-surface-color: #ffffff;
-  --ifm-navbar-background-color: #fffdf8;
+  --ifm-navbar-background-color: rgba(252, 251, 255, 0.86);
   --ifm-code-font-size: 92%;
-  --nv-hero: linear-gradient(180deg, #ffe9b8 0%, #fff3d6 38%, #fffdf8 100%);
-  --nv-alt: #fff6e3;
-  --nv-chip: #ffffff;
-  --nv-chip-text: #b83d0d;
-  --nv-card-border: #f3e3c3;
+  --ifm-heading-color: #1d1640;
+  --nv-spectrum: linear-gradient(90deg, #ff5fa8 0%, #b05cff 30%, #5b6cff 55%, #19c8e8 80%, #ffb15a 100%);
+  --nv-name: linear-gradient(100deg, #e0449a 0%, #8a3ff0 35%, #4c5cf2 62%, #0fa6c7 100%);
+  --nv-hero:
+    radial-gradient(60% 70% at 12% 8%, rgba(255, 95, 168, 0.30), transparent 70%),
+    radial-gradient(55% 65% at 88% 12%, rgba(25, 200, 232, 0.28), transparent 70%),
+    radial-gradient(60% 60% at 50% 0%, rgba(140, 92, 255, 0.30), transparent 75%),
+    radial-gradient(45% 50% at 80% 85%, rgba(255, 177, 90, 0.20), transparent 70%),
+    linear-gradient(180deg, #f3eeff 0%, #fcfbff 100%);
+  --nv-alt: #f6f2ff;
+  --nv-chip: rgba(255, 255, 255, 0.85);
+  --nv-chip-text: #5a2fcb;
+  --nv-card-border: #e6defb;
+  --nv-glow: rgba(110, 70, 230, 0.32);
 }
 [data-theme='dark'] {
-  --ifm-color-primary: #ffb454;
-  --ifm-color-primary-dark: #ffa533;
-  --ifm-color-primary-darker: #ff9d22;
-  --ifm-color-primary-darkest: #f08400;
-  --ifm-color-primary-light: #ffc375;
-  --ifm-color-primary-lighter: #ffcb86;
-  --ifm-color-primary-lightest: #ffe1b8;
-  --ifm-background-color: #1b1b1d;
-  --ifm-background-surface-color: #242526;
-  --ifm-navbar-background-color: #1f1f21;
-  --nv-hero: linear-gradient(180deg, #2a2620 0%, #1b1b1d 100%);
-  --nv-alt: #202022;
-  --nv-chip: #2e2b26;
-  --nv-chip-text: #ffc375;
-  --nv-card-border: #34353a;
+  --ifm-color-primary: #b59cff;
+  --ifm-color-primary-dark: #a183ff;
+  --ifm-color-primary-darker: #9777ff;
+  --ifm-color-primary-darkest: #7a52ff;
+  --ifm-color-primary-light: #c9b5ff;
+  --ifm-color-primary-lighter: #d3c2ff;
+  --ifm-color-primary-lightest: #ece5ff;
+  --ifm-background-color: #100d1f;
+  --ifm-background-surface-color: #19152e;
+  --ifm-navbar-background-color: rgba(16, 13, 31, 0.86);
+  --ifm-heading-color: #f1ecff;
+  --nv-name: linear-gradient(100deg, #ff7cc0 0%, #b98cff 35%, #8a98ff 62%, #5fe0f5 100%);
+  --nv-hero:
+    radial-gradient(60% 70% at 12% 8%, rgba(255, 95, 168, 0.20), transparent 70%),
+    radial-gradient(55% 65% at 88% 12%, rgba(25, 200, 232, 0.18), transparent 70%),
+    radial-gradient(60% 60% at 50% 0%, rgba(140, 92, 255, 0.28), transparent 75%),
+    linear-gradient(180deg, #1a1436 0%, #100d1f 100%);
+  --nv-alt: #151129;
+  --nv-chip: rgba(40, 32, 72, 0.85);
+  --nv-chip-text: #d3c2ff;
+  --nv-card-border: #2c2550;
+  --nv-glow: rgba(150, 110, 255, 0.35);
 }
-.footer { --ifm-footer-background-color: #fff3d6; }
-[data-theme='dark'] .footer { --ifm-footer-background-color: #151516; }
+.navbar { backdrop-filter: saturate(160%) blur(10px); -webkit-backdrop-filter: saturate(160%) blur(10px); }
+.navbar::after {
+  content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: var(--nv-spectrum); opacity: 0.7;
+}
+.footer { --ifm-footer-background-color: #f1ecff; }
+[data-theme='dark'] .footer { --ifm-footer-background-color: #0b0917; }
 .navbar__logo img { border-radius: 7px; }
 /* Wide tables in the documents scroll inside themselves on a phone. */
 .markdown table { display: block; overflow-x: auto; }
+.markdown h1 { background: var(--nv-name); -webkit-background-clip: text; background-clip: text; color: transparent; width: fit-content; }
+/* The light violet of the dark theme takes dark text on buttons. */
+[data-theme='dark'] .button--primary { --ifm-button-color: #160f33; color: #160f33; }
