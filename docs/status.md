@@ -45,6 +45,10 @@ Unless noted, the build is a development-signed Release build.
 - **Apps' own native libraries keep running beside Android (1.9).** A thread that interprets an app's library on a core of its own used to hand itself back at every floating-point or SIMD instruction and at every return from a system library; it now runs all of those itself. On a Mac benchmark the interpreter runs 195 million instructions a second on the main loop instead of 168 million, and 242 million instead of 210 million on a worker.
 - **Clearing background apps (1.8).** Touch and hold Home in Nestvane's bar and choose Clear Background Apps: recent tasks other than what is on the screen go, the person's own apps in the background are ended, and cached processes with them. On an iPad Air memory went from 4.42 GB to 2.83 GB.
 - **Root shells and app names (1.8).** An app can keep `su` open and write commands to it, as terminal apps do. The root prompt and the list in Settings show the app's name, not only its package.
+- **Installing an APK from Android's own file manager (1.10).** Tapping an APK in Files opens Android's installer, which asks to confirm and installs it. Before, nothing happened: the media library, through which apps open shared files, waited forever on a kind of file lock (`F_OFD_GETLK`) that Nestvane did not answer. Opening any shared file through it was affected.
+- **A shared folder that follows the Files app (1.10).** Files and folders put into Nestvane's shared folder, or removed from it, from the Files app or a computer show up or go in Android within a few seconds, without a restart, and the media library is told. Nestvane looks every three seconds once the home screen is up.
+- **Pictures, videos and sounds open (1.10).** The system had no app for them, so tapping one did nothing. A small built-in viewer, not on the home screen, opens them from a file manager: a picture can be pinched and moved, and a 1080p HEVC video plays.
+- **Recent apps (1.10).** A key in Nestvane's bar opens Android's recent apps. An APK handed over from iOS is judged by its content, so one shared under another name installs too.
 
 ## What does not work yet
 
@@ -53,7 +57,6 @@ Unless noted, the build is a development-signed Release build.
 - **The home screen does not turn.** The launcher of this Android keeps a phone's home screen the way the display was made, so it stays as it was when Nestvane started; apps turn.
 - **Google apps and Play services.** The system is AOSP. Apps that need Google's services will not run.
 - **IPv6.** The guest network is IPv4 only.
-- **Live changes to the shared folder from iOS.** They show up only after Android restarts.
 - **Apps with heavy native code are slow**, because the native libraries inside an APK are interpreted. Some apps do not start. ScriptWidget's previews do not appear: it stops a script that runs past its deadline, and interpreted, its scripts do.
 
 ## Measured numbers
@@ -143,7 +146,7 @@ From the record, on an iPhone 15 Pro. "Opens" means the app reached a usable scr
 - **Large files after power loss.** The content of a file of 1 MiB or more is not flushed to disk in step with the snapshot; after a power loss it can be older than the snapshot ([devices.md](devices.md)).
 - **Storage limits.** 1 GiB per file; `/data` as a whole up to what the device has free, less 1 GiB. Larger files in the shared folder do not appear in Android.
 - **SELinux decisions are captured, not computed.** Services added after the capture run under rules written by hand.
-- **A paid developer account is required**, because each Android process takes host address space of its own and the total needs the Extended Virtual Addressing entitlement. A developer of Twoyi suggested the way out, a software MMU with one pool of memory shared by all processes, with our thanks; it is planned and not started ([PLAN.md](../PLAN.md), in Chinese).
+- **A paid developer account is required**, because each Android process takes host address space of its own and the total needs the Extended Virtual Addressing entitlement. A developer of Twoyi suggested the way out, a software MMU with one pool of memory shared by all processes, with our thanks; it was measured in 1.9 and is not planned for now: without the entitlement iOS gives an app 5 to 6 GiB of addresses, and Android uses about 34 GiB by the home screen ([PLAN.md](../PLAN.md), in Chinese).
 - **One scheduler thread.** System calls of all guest processes run one at a time.
 - **Android thinks it is an emulator.** Settings titles the device page "About emulated device".
 - **The `Documents` folder** also holds diagnostic text files and screenshots written by the app, which show up in the Files app.
