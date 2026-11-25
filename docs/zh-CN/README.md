@@ -21,6 +21,7 @@ English version: [../README.md](../README.md).
 | [design-notes.md](design-notes.md) | 设计取舍与踩过的坑：挑选出的一些问题，每个按“问题、原因、处理”写出。 |
 | [status.md](status.md) | 哪些能用、哪些还不能用、实测数字和已知限制。 |
 | [installing.md](installing.md) | 怎样给发布的 IPA 签名并装到手机上。 |
+| [using.md](using.md) | 怎么用：装应用、传文件、菜单、root 和 KernelSU Manager、备份，以及 Android 像是卡住时怎么办。 |
 | [measurements.md](measurements.md) | 数字里的 1.0：从全新安装开始的一轮，以及数字到哪里为止。 |
 | [comparison.md](comparison.md) | Nestvane 与两仪、Andarium 的对比，以及它从这两个项目得到了什么。 |
 | [roadmap.md](roadmap.md) | 接下来几个版本做什么、大概多久，以及不做的事。 |

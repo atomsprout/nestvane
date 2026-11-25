@@ -12,7 +12,7 @@ const sidebars = {
       type: 'category',
       label: 'Using and building',
       collapsed: false,
-      items: ['installing', 'building'],
+      items: ['installing', 'using', 'building'],
     },
     {
       type: 'category',

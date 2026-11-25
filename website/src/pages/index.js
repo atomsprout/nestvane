@@ -92,7 +92,7 @@ export default function Home() {
         <section className={styles.section} id="works">
           <div className="container">
             <h2>{text.worksTitle}</h2>
-            <p className={styles.intro}>{text.worksIntro}</p>
+            <p className={styles.intro}>{text.worksIntro} <Link to="/docs/using/">{text.worksGuide}</Link></p>
             <ul className={styles.cards}>
               {text.works.map(([heading, body]) => (
                 <li key={heading} className={styles.card}><h3>{heading}</h3><p>{body}</p></li>
@@ -109,7 +109,25 @@ export default function Home() {
           </div>
         </section>
 
-        <section className={`${styles.section} ${styles.alt}`} id="how">
+        <section className={`${styles.section} ${styles.alt}`} id="kernelsu">
+          <div className="container">
+            <h2>{text.kernelsuTitle}</h2>
+            <p className={styles.intro}>{text.kernelsuIntro}</p>
+            <ol className={styles.cards}>
+              {text.kernelsuSteps.map(([heading, body]) => (
+                <li key={heading} className={styles.card}><h3>{heading}</h3><p>{body}</p></li>
+              ))}
+            </ol>
+            <div className={styles.shots} role="group" aria-label={text.kernelsuTitle} tabIndex={0}>
+              {text.kernelsuShots.map(shot => <Shot key={shot.file} {...shot} />)}
+            </div>
+            <p className={styles.fine}>
+              {text.kernelsuNote} <Link to="/docs/using/#kernelsu-manager">{text.kernelsuMore}</Link>
+            </p>
+          </div>
+        </section>
+
+        <section className={styles.section} id="how">
           <div className="container">
             <h2>{text.howTitle}</h2>
             <p className={styles.intro}>{text.howIntro}</p>
@@ -125,7 +143,7 @@ export default function Home() {
           </div>
         </section>
 
-        <section className={styles.section} id="limits">
+        <section className={`${styles.section} ${styles.alt}`} id="limits">
           <div className="container">
             <h2>{text.limitsTitle}</h2>
             <ul className={styles.plain}>
@@ -138,7 +156,7 @@ export default function Home() {
           </div>
         </section>
 
-        <section className={`${styles.section} ${styles.alt}`} id="thanks">
+        <section className={styles.section} id="thanks">
           <div className="container">
             <h2>{text.thanksTitle}</h2>
             <p className={styles.intro}>
@@ -147,14 +165,14 @@ export default function Home() {
           </div>
         </section>
 
-        <section className={styles.section} id="about">
+        <section className={`${styles.section} ${styles.alt}`} id="about">
           <div className={`container ${styles.prose}`}>
             <h2>{text.aboutTitle}</h2>
             {text.about.map(paragraph => <p key={paragraph}>{paragraph}</p>)}
           </div>
         </section>
 
-        <section className={`${styles.section} ${styles.alt}`} id="community">
+        <section className={styles.section} id="community">
           <div className="container">
             <h2>{text.communityTitle}</h2>
             <p className={styles.intro}>{text.communityIntro}</p>
@@ -171,7 +189,7 @@ export default function Home() {
         </section>
 
         {/* The iOS app links to #privacy. Keep this id, and keep the English policy text word for word. */}
-        <section className={styles.section} id="privacy">
+        <section className={`${styles.section} ${styles.alt}`} id="privacy">
           <div className={`container ${styles.prose}`}>
             <h2>{text.privacyTitle}</h2>
             <p className={styles.intro}>{text.privacyEffective}</p>

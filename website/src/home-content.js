@@ -43,6 +43,7 @@ export const content = {
     ]),
     worksTitle: 'What works today',
     worksIntro: 'Nestvane is early. This is what the latest release does.',
+    worksGuide: 'How to use each of these',
     works: [
       ['Android 17', 'The home screen, Settings and Files, built from the Android Open Source Project.'],
       ['APK files', 'Open an APK with Nestvane from another app, or choose Install APK in Nestvane.'],
@@ -60,6 +61,20 @@ export const content = {
       ['Your device’s storage', 'Android’s Storage page shows how big your device’s storage is and how much of it is free.'],
       ['Update notice', 'Once a day Nestvane asks GitHub which release is the latest and tells you when there is a newer one. It installs nothing itself.'],
     ],
+    kernelsuTitle: 'Root, with KernelSU Manager',
+    kernelsuIntro: 'Turn on root in Nestvane’s settings, and Android apps can ask for it with su: iOS asks you once for each app. The official KernelSU Manager works too. Nestvane’s Linux layer answers KernelSU’s own interface, so there is nothing to flash and no kernel to patch.',
+    kernelsuSteps: [
+      ['Turn on root', 'In Nestvane, open More → Settings and turn on Allow root. Then close Nestvane and open it again.'],
+      ['Install the Manager', 'Download the KernelSU Manager APK from KernelSU’s releases on GitHub and open it with Nestvane. Only the Manager signed by KernelSU is recognized. The first time, it takes about a minute to set itself up.'],
+      ['Give and take away root', 'The Manager shows KernelSU as working. In its Superuser tab every app has a switch. The switches and the iOS prompt share the same answers: change one and the other shows it.'],
+    ],
+    kernelsuShots: [
+      {file: 'nestvane-kernelsu-working.jpg', width: 578, height: 625, caption: 'KernelSU, working', alt: 'KernelSU Manager’s home screen in Nestvane: Working, version 32680-5, GKI, with the manager version v3.3.1 and the kernel version 6.12.0-nestvane.'},
+      {file: 'nestvane-kernelsu-superuser.jpg', width: 578, height: 1064, caption: 'Your apps, in its Superuser tab', alt: 'KernelSU Manager’s Superuser tab listing Android apps installed in Nestvane, among them AntennaPod, Clock, Element and Feeder.'},
+      {file: 'nestvane-kernelsu-profile.jpg', width: 578, height: 500, caption: 'Root for one app, on', alt: 'An app’s profile in KernelSU Manager with its Superuser switch turned on.'},
+    ],
+    kernelsuNote: 'KernelSU modules do not work yet: nothing runs KernelSU’s ksud while Android starts. An app with root can read and change every app’s data, so allow only apps you trust.',
+    kernelsuMore: 'Step by step, and what does not work',
     figures: [
       ['Start to the Android home screen', 'About 10 s'],
       ['The first start after installing', 'About 17 s'],
@@ -96,8 +111,8 @@ export const content = {
     requirementsTitle: 'Requirements',
     requirements: [
       'iOS 17 or later, on an iPhone or iPad with at least 6 GB of memory. Tested on iPhone 14 (iOS 17), iPhone 15 Pro, iPhone 17 Pro and iPad Air (M3).',
-      'The newer the phone, the faster Android runs: it starts in about 7 seconds on an iPhone 17 Pro, about 8 on an iPhone 15 Pro, and 9 to 13 on an iPhone 14.',
-      'The app is a download of about 1.1 GB and uses about 2.4 to 2.6 GB of memory while Android runs.',
+      'The newer the phone, the faster Android runs: it starts in about 7 seconds on an iPhone 17 Pro, about 8 on an iPhone 15 Pro, and about 8.5 on an iPhone 14.',
+      'The app is a download of about 1.2 GB and uses about 2.4 to 2.6 GB of memory while Android runs.',
     ],
     thanksTitle: 'With thanks to two similar projects',
     thanks: 'Twoyi showed that Android translated ahead of time, with no JIT, is usable on an iPhone, and Nestvane follows that idea. Kernarium runs a real Linux kernel on iOS in the open, and was the system to learn from. Nestvane shares no code with either and was written from nothing.',

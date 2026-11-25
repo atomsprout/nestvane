@@ -76,7 +76,8 @@ Each release lists the SHA-256 of its IPA. Compare it with `shasum -a 256 Nestva
   11 seconds later; after that, at once.
 - Android's shared storage is the folder *On My iPhone → Nestvane → Android* in the Files app.
 - iOS asks for local network access only when an Android app connects to a device on your network.
-- Deleting the app deletes Android's data with it.
+- Deleting the app deletes Android's data with it. To keep it, back it up first (More → Back Up Android…).
+- Everything else, root and KernelSU Manager among it, is in [using.md](using.md).
 
 ## What is inside
 

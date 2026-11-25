@@ -21,6 +21,7 @@ They are written for a developer who has not seen the project before.
 | [design-notes.md](design-notes.md) | Decisions and pitfalls: a selection of problems met on the way, each as problem, cause and fix. |
 | [status.md](status.md) | What works, what does not, measured numbers and known limitations. |
 | [installing.md](installing.md) | How to sign the released IPA and put it on a phone. |
+| [using.md](using.md) | Using it: installing apps, files, the menu, root and KernelSU Manager, backups, and what to do when Android seems stuck. |
 | [measurements.md](measurements.md) | Version 1.0 in numbers: one run from a fresh install, and where the numbers stop. |
 | [comparison.md](comparison.md) | Nestvane next to Twoyi and Andarium, and what it owes them. |
 

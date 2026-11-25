@@ -69,7 +69,8 @@ Android 启动到了桌面（这次首次启动 15.5 秒）。改包标识符，
   Android 启动后第一分钟内装的应用，图标约 11 秒后出现；之后装的立刻出现。
 - Android 的共享存储是“文件”App 里的 *我的 iPhone → Nestvane → Android* 文件夹。
 - 只有当某个 Android 应用去连你网络里的设备时，iOS 才会询问本地网络权限。
-- 删除 App 会连同 Android 的数据一起删除。
+- 删除 App 会连同 Android 的数据一起删除。想留着就先备份（More → Back Up Android…）。
+- 其他的用法，包括 root 和 KernelSU Manager，见[使用](using.md)。
 
 ## 里面有什么
 
