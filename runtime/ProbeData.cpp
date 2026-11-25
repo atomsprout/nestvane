@@ -2,9 +2,12 @@
 
 #include <sqlite3.h>
 
+#include <algorithm>
 #include <dirent.h>
 #include <fcntl.h>
 #include <filesystem>
+#include <functional>
+#include <set>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -512,6 +515,136 @@ bool ProbeLinux::syncData() {
             if (!externalFiles.contains(path)) unlink(path.c_str());
     if (std::exchange(compactData, false)) execute(database, "VACUUM");
     return true;
+}
+
+void ProbeLinux::rescanShared() {
+    // inotify's masks, as in ProbeLinux.cpp.
+    constexpr uint32_t fileClosedWrite = 8, fileCreated = 256, fileDeleted = 512;
+    if (sharedHostRoot.empty() || !directories.contains(sharedGuestRoot)) return;
+    std::vector<std::string> changedDirectories;
+    // A directory by its host and guest paths, then its subdirectories.
+    std::function<void(const std::string&, const std::string&)> visit = [&](const std::string& host, const std::string& guest) {
+        struct stat status{};
+        if (::stat(host.c_str(), &status) != 0 || !S_ISDIR(status.st_mode) || !directories.contains(guest)) return;
+        const std::pair<int64_t, int64_t> time{status.st_mtimespec.tv_sec, status.st_mtimespec.tv_nsec};
+        auto& seen = sharedListedTimes[host];
+        if (seen != time) {
+            // The first look only notes the time: the tables were made from the host when the data was mounted.
+            const bool first = seen == std::pair<int64_t, int64_t>{};
+            seen = time;
+            std::set<std::string> names;
+            bool changed = false;
+            if (DIR* listing = opendir(host.c_str())) {
+                while (const dirent* entry = readdir(listing)) {
+                    const std::string name = entry->d_name;
+                    if (name.starts_with(".")) continue;  // ".", "..", and the host's own files
+                    names.insert(name);
+                    if (first) continue;
+                    const auto childHost = host + "/" + name, childGuest = guest + "/" + name;
+                    if (directories.contains(childGuest) || writableFiles.contains(childGuest) || links.contains(childGuest))
+                        continue;
+                    struct stat child{};
+                    if (::lstat(childHost.c_str(), &child) != 0 || !childPath(childGuest)) continue;
+                    const auto parent = directories.at(guest);
+                    if (S_ISDIR(child.st_mode)) {
+                        if (directories.size() >= maxGuestDirectories) continue;
+                        directories.emplace(childGuest, Directory{parent.mode, parent.uid, parent.gid, parent.securityContext});
+                        sharedListedTimes[childHost] = {-1, -1};  // new: what is in it is listed in this same look
+                        fileEvent(childGuest, fileCreated, true);
+                        changed = true;
+                        continue;
+                    }
+                    if (!S_ISREG(child.st_mode) || uint64_t(child.st_size) > maxDataFileBytes ||
+                        writableFiles.size() >= maxPersistentFiles) continue;
+                    auto file = std::make_shared<WritableFile>();
+                    file->inode = nextInode++;
+                    file->mode = 0660;
+                    file->uid = parent.uid;
+                    file->gid = parent.gid;
+                    file->persistent = true;
+                    file->storage->size = uint64_t(child.st_size);
+                    file->storage->pages.attachExact(childHost, (uint64_t(child.st_size) + pageMask) & ~pageMask);
+                    file->times = {child.st_atimespec.tv_sec, child.st_atimespec.tv_nsec, child.st_mtimespec.tv_sec,
+                                   child.st_mtimespec.tv_nsec, child.st_ctimespec.tv_sec, child.st_ctimespec.tv_nsec};
+                    const auto& context = parent.securityContext;
+                    if (!context.empty()) file->attributes["security.selinux"].assign(context.c_str(), context.c_str() + context.size() + 1);
+                    writableFiles.emplace(childGuest, std::move(file));
+                    fileEvent(childGuest, fileCreated);
+                    fileEvent(childGuest, fileClosedWrite);
+                    changed = true;
+                }
+                closedir(listing);
+            }
+            // What the guest has here that the host no longer has was removed from outside. Only files
+            // the host holds (written through to it) go: a file the host could not take stays in the
+            // database and was never on the host.
+            if (!first) {
+                const auto prefix = guest + "/";
+                const auto here = [&](const std::string& path) {
+                    const auto name = std::string_view(path).substr(prefix.size());
+                    return name.find('/') == std::string_view::npos && !name.starts_with(".") && !names.contains(std::string(name));
+                };
+                std::vector<std::string> gone;
+                for (auto it = writableFiles.lower_bound(prefix); it != writableFiles.end() && it->first.starts_with(prefix); ++it)
+                    if (here(it->first) && it->second->persistent && it->second->storage->pages.exact()) gone.push_back(it->first);
+                for (const auto& path : gone) {
+                    writableFiles.erase(path);
+                    fileEvent(path, fileDeleted);
+                    changed = true;
+                }
+                // A directory gone from the host goes with everything in it the host held; one that
+                // still has a file the host never had stays, with that file.
+                gone.clear();
+                for (auto it = directories.lower_bound(prefix); it != directories.end() && it->first.starts_with(prefix); ++it)
+                    if (here(it->first)) gone.push_back(it->first);
+                for (const auto& top : gone) {
+                    const auto inner = top + "/";
+                    std::vector<std::string> files, folders;
+                    for (auto it = writableFiles.lower_bound(inner); it != writableFiles.end() && it->first.starts_with(inner); ++it)
+                        if (it->second->persistent && it->second->storage->pages.exact()) files.push_back(it->first);
+                    for (const auto& path : files) {
+                        writableFiles.erase(path);
+                        fileEvent(path, fileDeleted);
+                    }
+                    for (auto it = directories.lower_bound(inner); it != directories.end() && it->first.starts_with(inner); ++it)
+                        folders.push_back(it->first);
+                    folders.push_back(top);
+                    // Deepest first, each only when nothing is left in it.
+                    std::sort(folders.begin(), folders.end(), std::greater<>());
+                    for (const auto& folder : folders) {
+                        const auto within = folder + "/";
+                        const auto file = writableFiles.lower_bound(within);
+                        const auto directory = directories.lower_bound(within);
+                        const auto link = links.lower_bound(within);
+                        if ((file != writableFiles.end() && file->first.starts_with(within)) ||
+                            (directory != directories.end() && directory->first.starts_with(within)) ||
+                            (link != links.end() && link->first.starts_with(within))) continue;
+                        directories.erase(folder);
+                        sharedListedTimes.erase(sharedHost(folder));
+                        fileEvent(folder, fileDeleted, true);
+                    }
+                    changed = true;
+                }
+            }
+            if (changed) changedDirectories.push_back(guest);
+        }
+        std::vector<std::string> subdirectories;
+        const auto prefix = guest + "/";
+        for (auto it = directories.lower_bound(prefix); it != directories.end() && it->first.starts_with(prefix); ++it)
+            if (it->first.find('/', prefix.size()) == std::string::npos) subdirectories.push_back(it->first);
+        for (const auto& child : subdirectories) {
+            // Android/ is the apps' own, their data and obb directories: nobody puts files there.
+            if (guest == sharedGuestRoot && child == guest + "/Android") continue;
+            visit(sharedHost(child), child);
+        }
+    };
+    visit(sharedHostRoot, std::string(sharedGuestRoot));
+    if (changedDirectories.empty()) return;
+    wakePollers();
+    syncDataSoon();
+    if (apkInbox)
+        for (const auto& directory : changedDirectories)
+            apkInbox->submitLine("scan", "/storage/emulated/0" + directory.substr(sharedGuestRoot.size()));
 }
 
 } // namespace nestvane

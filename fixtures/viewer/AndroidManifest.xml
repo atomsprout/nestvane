@@ -1,0 +1,22 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="dev.nestvane.viewer">
+    <uses-sdk android:minSdkVersion="37" android:targetSdkVersion="37" />
+    <!-- Opens a picture, a video or a sound that a file manager or another app hands over: the system
+         image has no gallery and no player, and tapping such a file did nothing. Not on the home
+         screen; it is what opens such files until the person installs an app of their own for them. -->
+    <application android:label="Viewer" android:allowBackup="false"
+                 android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+        <activity android:name=".ViewerActivity" android:exported="true"
+                  android:configChanges="orientation|screenSize|screenLayout|keyboardHidden">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:mimeType="image/*" />
+                <data android:mimeType="video/*" />
+                <data android:mimeType="audio/*" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

@@ -181,6 +181,11 @@ struct ProbeLinux {
     void refreshBattery();
     // Makes a host directory the guest's shared storage (see sharedHostRoot). Before mountData.
     void shareStorage(std::string hostDirectory) { sharedHostRoot = std::move(hostDirectory); }
+    // Files put into the shared folder from outside while Android runs, from the Files app or a
+    // computer, and files removed there: the guest's tables follow the host directory, as when the
+    // data is mounted, with inotify events, and the media library is asked to look again. Looked at
+    // every few seconds; only directories whose modification time changed are listed again.
+    void rescanShared();
     // Gives the guest its Ethernet interface and lets its sockets out through the host's.
     void enableHostNetwork();
     // Makes a Java process print the stacks of its threads into the Android log, the way SIGQUIT does:
@@ -854,6 +859,8 @@ private:
     std::string sharedHost(std::string_view backing) const;
     void sharedFileCreated(const std::string& backing, WritableFile& file);
     void sharedFileRemoved(const std::string& backing);
+    std::map<std::string, std::pair<int64_t, int64_t>, std::less<>> sharedListedTimes;
+    std::chrono::steady_clock::time_point sharedScannedAt{};
     // After a file or a directory tree moved: the host's files follow, into the shared storage, out of it, or within.
     void sharedMoved(const std::string& source, const std::string& destination);
     // The database still has the content of files that have moved out of it: it is packed after the next sync.
@@ -933,7 +940,10 @@ private:
     uint32_t freeDescriptor(uint32_t minimum = 0) const;
     uint64_t recordLock(Machine& machine, const Descriptor& fd);
     void wakeRecordLockWaiters(const WritableFile& file);
-    void releaseRecordLocks(const Descriptor& fd, uint64_t owner);
+    // descriptionUsers: how many descriptors of the open file description go now (close: this one).
+    void releaseRecordLocks(const Descriptor& fd, uint64_t owner, long descriptionUsers = 1);
+    static constexpr uint64_t descriptionLockBit = uint64_t{1} << 63;
+    static uint64_t descriptionLockOwner(const Descriptor& fd) { return descriptionLockBit | reinterpret_cast<uintptr_t>(fd.offset.get()); }
     uint64_t readDirectory(Machine& machine, const Descriptor& fd) const;
     uint64_t socketRead(Machine& machine, const Descriptor& fd, uint64_t address, uint64_t size,
                         bool reportPacketSize = false, bool peek = false);

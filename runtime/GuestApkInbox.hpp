@@ -133,6 +133,20 @@ public:
         textKinds.push_back(false);
         return true;
     }
+    // "scan", a directory of the shared storage, nothing: tells Android's media library to look at
+    // it again, after files were put there from outside while Android ran (ProbeLinux::rescanShared).
+    // "shell", a command, nothing: runs it as Android's shell user, its output going to
+    // nestvane-test/shell.txt in the shared storage. Only the app's tests send it (NESTVANE_TEST_TAPS).
+    bool submitLine(std::string_view kind, std::string_view field) {
+        std::lock_guard lock(mutex);
+        if (stopped || texts.size() >= 16 || field.empty() || field.size() > 4000) return false;
+        std::string line(field);
+        for (auto& c : line) if (c == '\n' || c == '\r' || c == '\0') c = ' ';
+        const auto message = std::string(kind) + "\n" + line + "\n\n";
+        texts.emplace_back(message.begin(), message.end());
+        textKinds.push_back(false);
+        return true;
+    }
     // "rotate", quarter turns, nothing: which way up Android is to hold its display, 0 as it was made
     // and 1 turned a quarter; an app that asks for one orientation still gets it. Sent when the
     // person turns the device.

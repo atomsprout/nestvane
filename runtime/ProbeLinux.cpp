@@ -677,7 +677,7 @@ void ProbeLinux::setGuestTouch(std::shared_ptr<GuestTouch> touch) {
         "touch.enableForInactiveViewport = 1\n"
         "touch.wake = 1\n";
     mount(configPath, {reinterpret_cast<const uint8_t*>(config.data()), config.size()});
-    static constexpr std::string_view keyLayout = "key 143 WAKEUP\nkey 158 BACK\nkey 172 HOME\n";
+    static constexpr std::string_view keyLayout = "key 143 WAKEUP\nkey 158 BACK\nkey 172 HOME\nkey 580 APP_SWITCH\n";
     mount(keyLayoutPath, {reinterpret_cast<const uint8_t*>(keyLayout.data()), keyLayout.size()});
 }
 
@@ -1927,9 +1927,12 @@ uint64_t ProbeLinux::recordLock(Machine& machine, const Descriptor& fd) {
     Flock request;
     if (!machine.readInto(x[2], {reinterpret_cast<uint8_t*>(&request), sizeof(request)}))
         return uint64_t(-14);
-    const bool query = x[1] == 5;
+    // F_GETLK, F_SETLK, F_SETLKW (5, 6, 7) lock for the process; F_OFD_GETLK, F_OFD_SETLK, F_OFD_SETLKW
+    // (36, 37, 38) for the open file description, which MediaProvider asks about before it opens a file.
+    const bool description = x[1] >= 36;
+    const bool query = x[1] == 5 || x[1] == 36, wait = x[1] == 7 || x[1] == 38;
     if (request.type < readLock || request.type > unlock || (query && request.type == unlock) ||
-        request.whence < 0 || request.whence > 2) return invalid;
+        request.whence < 0 || request.whence > 2 || (description && request.owner)) return invalid;
     const auto base = request.whence == 0 ? 0U :
         request.whence == 1 ? *fd.offset : fd.temporary->storage->size;
     int64_t start, otherEnd = 0;
@@ -1939,7 +1942,7 @@ uint64_t ProbeLinux::recordLock(Machine& machine, const Descriptor& fd) {
     const uint64_t low = request.length < 0 ? otherEnd : start;
     const uint64_t high = request.length < 0 ? uint64_t(start) : request.length > 0 ? uint64_t(otherEnd) : endOfFile;
     auto& locks = fd.temporary->locks;
-    const auto owner = processId();
+    const auto owner = description ? descriptionLockOwner(fd) : processId();
     const auto overlap = [&](const RecordLock& lock) { return low < lock.end && lock.start < high; };
     if (!query && ((request.type == readLock && (fd.flags & 3) == 1) ||
                    (request.type == writeLock && !(fd.flags & 3)))) return uint64_t(-9);
@@ -1950,17 +1953,18 @@ uint64_t ProbeLinux::recordLock(Machine& machine, const Descriptor& fd) {
         if (conflict == locks.end()) request.type = unlock;
         else request = {conflict->type, 0, 0, int64_t(conflict->start),
                          conflict->end == endOfFile ? 0 : int64_t(conflict->end - conflict->start),
-                         int32_t(conflict->owner), 0};
+                         conflict->owner & descriptionLockBit ? -1 : int32_t(conflict->owner), 0};
         return writeGuest(machine, x[2], request) ? 0 : uint64_t(-14);
     }
     if (request.type != unlock && conflict != locks.end()) {
-        if (x[1] != 7) return uint64_t(-11);
+        if (!wait) return uint64_t(-11);
         std::set<uint64_t> visited;
         std::vector<uint64_t> blockers{conflict->owner};
         while (!blockers.empty()) {
             const auto blocker = blockers.back();
             blockers.pop_back();
-            if (blocker == owner) return uint64_t(-35); // EDEADLK
+            if (blocker == owner && !description) return uint64_t(-35); // EDEADLK
+            if (blocker & descriptionLockBit) continue;  // Linux finds no deadlocks through these
             if (!visited.insert(blocker).second) continue;
             for (const auto& [tid, thread] : threads) {
                 if (thread.wait == Wait::recordLock && thread.process->id == blocker)
@@ -2007,8 +2011,12 @@ void ProbeLinux::wakeRecordLockWaiters(const WritableFile& file) {
     }
 }
 
-void ProbeLinux::releaseRecordLocks(const Descriptor& fd, uint64_t owner) {
-    if (fd.temporary && std::erase_if(fd.temporary->locks, [owner](const auto& lock) { return lock.owner == owner; }))
+void ProbeLinux::releaseRecordLocks(const Descriptor& fd, uint64_t owner, long descriptionUsers) {
+    // A lock of the open file description goes when its last descriptor does.
+    const auto description = fd.offset.use_count() <= descriptionUsers ? descriptionLockOwner(fd) : 0;
+    if (fd.temporary && std::erase_if(fd.temporary->locks, [owner, description](const auto& lock) {
+            return lock.owner == owner || (description && lock.owner == description);
+        }))
         wakeRecordLockWaiters(*fd.temporary);
 }
 
@@ -2899,7 +2907,7 @@ uint64_t ProbeLinux::touchIoctl(Machine& machine, const Descriptor& fd) {
             break;
         case 0x20: bits[0] = (1 << 0) | (1 << 1) | (1 << 3); break; // EV_SYN, EV_KEY, EV_ABS
         case 0x21:
-            for (const auto key : {GuestTouch::Key::wake, GuestTouch::Key::back, GuestTouch::Key::home}) {
+            for (const auto key : {GuestTouch::Key::wake, GuestTouch::Key::back, GuestTouch::Key::home, GuestTouch::Key::recents}) {
                 const auto scanCode = static_cast<uint16_t>(key);
                 bits[scanCode / 8] |= 1 << (scanCode % 8);
             }
@@ -6576,6 +6584,12 @@ bool ProbeLinux::switchThread(Machine& machine, std::chrono::steady_clock::time_
     serviceGraphicsDma();
     collectNative(machine);
     auto now = steady_clock::now();
+    // The shared folder, for files put there from outside: every three seconds once the home screen is up.
+    if (!sharedHostRoot.empty() && !appsHeld.load(std::memory_order_relaxed) && now - sharedScannedAt > seconds(3)) {
+        sharedScannedAt = now;
+        rescanShared();
+        now = steady_clock::now();
+    }
     std::optional<steady_clock::time_point> nextDeadline;
     bool runnable = false;
     // Until the home screen is shown, apps the user installed do not run: their start at BOOT_COMPLETED
@@ -7995,7 +8009,11 @@ void ProbeLinux::finishProcess(Process& process, uint32_t status, bool killed) {
             break;
         }
     }
-    for (const auto& [fd, entry] : process.descriptors) releaseRecordLocks(entry, process.id);
+    for (const auto& [fd, entry] : process.descriptors) {
+        // The process's own descriptors that share the description go with it.
+        const auto sharing = std::ranges::count_if(process.descriptors, [&](const auto& other) { return other.second.offset == entry.offset; });
+        releaseRecordLocks(entry, process.id, sharing);
+    }
     process.descriptors.clear();
     wakePollers();
 }
@@ -11995,6 +12013,7 @@ bool ProbeLinux::syscall(Machine& machine) {
                     x[0] = 0;
                     break;
                 case 5: case 6: case 7: // F_GETLK, F_SETLK, F_SETLKW
+                case 36: case 37: case 38: // F_OFD_GETLK, F_OFD_SETLK, F_OFD_SETLKW
                     x[0] = recordLock(machine, fd);
                     break;
                 default: return false;

@@ -5601,7 +5601,7 @@ int main() {
         put(base + 704, "/system/usr/keylayout/Nestvane_Touchscreen.kl");
         const auto layout = call(56, {uint32_t(-100), base + 704, 0});
         assert(layout < 256);
-        constexpr std::string_view keyLayout = "key 143 WAKEUP\nkey 158 BACK\nkey 172 HOME\n";
+        constexpr std::string_view keyLayout = "key 143 WAKEUP\nkey 158 BACK\nkey 172 HOME\nkey 580 APP_SWITCH\n";
         assert(call(63, {layout, base + 768, 96}) == keyLayout.size());
         const auto* layoutBytes = machine.read(base + 768, keyLayout.size(), 4);
         assert(layoutBytes && std::string_view(reinterpret_cast<const char*>(layoutBytes), keyLayout.size()) == keyLayout);
@@ -6254,6 +6254,24 @@ int main() {
     assert(linux.schedule(machine) && linux.processId() == child && machine.cpu.x[0] == 0);
     prepareLock(1, 8, 4);
     assert(call(25, {viaBind, 6, lockAddress}) == 0);
+    // Locks of the open file description (F_OFD_*), which MediaProvider asks about before it opens a
+    // file: their owner is the description, not the process, and they are reported with PID -1.
+    prepareLock(1, 8, 4);
+    assert(call(25, {viaBind, 36, lockAddress}) == 0);
+    assert(load(lockAddress) == 1 && load(lockAddress + 24) == child);
+    prepareLock(1, 30, 10);
+    assert(call(25, {viaBind, 37, lockAddress}) == 0);
+    prepareLock(1, 30, 10);
+    assert(call(25, {viaBind, 5, lockAddress}) == 0);
+    assert(load(lockAddress) == 1 && load(lockAddress + 8) == 30 && load(lockAddress + 24) == 0xffffffff);
+    prepareLock(0, 30, 10);
+    assert(machine.store64(lockAddress + 24, 5) && call(25, {viaBind, 36, lockAddress}) == uint64_t(-22));
+    prepareLock(1, 30, 10);
+    assert(call(25, {viaBind, 6, lockAddress}) == uint64_t(-11));
+    prepareLock(2, 30, 10);
+    assert(call(25, {viaBind, 37, lockAddress}) == 0);
+    prepareLock(1, 30, 10);
+    assert(call(25, {viaBind, 5, lockAddress}) == 0 && load(lockAddress) == 2 && !linux.blocked());
 
     constexpr uint64_t quit = 3, quitMask = 1ULL << (quit - 1);
     assert(machine.store64(base + 0x820, quitMask));
@@ -7578,6 +7596,32 @@ int main() {
                 guest.shareStorage(hostRoot.string());
                 guest.mountData(databasePath);
                 assert(invoke(guest, 56, {atCwd, secondPath, 0}) == uint64_t(-2));
+            }
+            {
+                // While the guest runs: what the host adds is there after the next look, and what it
+                // removes is gone, without mounting again.
+                ProbeLinux guest(1, 0);
+                guest.shareStorage(hostRoot.string());
+                guest.mountData(databasePath);
+                guest.rescanShared();
+                std::ofstream(hostRoot / "Notes/live.txt") << "live";
+                fs::create_directory(hostRoot / "Live");
+                std::ofstream(hostRoot / "Live/inner.txt") << "x";
+                put(firstPath, "/data/media/0/Notes/live.txt");
+                put(secondPath, "/data/media/0/Live/inner.txt");
+                assert(invoke(guest, 56, {atCwd, firstPath, 0}) == uint64_t(-2));
+                guest.rescanShared();
+                auto file = invoke(guest, 56, {atCwd, firstPath, 0});
+                assert(file < 256 && invoke(guest, 63, {file, payload, 8}) == 4 && invoke(guest, 57, {file}) == 0);
+                file = invoke(guest, 56, {atCwd, secondPath, 0});
+                assert(file < 256 && invoke(guest, 63, {file, payload, 8}) == 1 && invoke(guest, 57, {file}) == 0);
+                fs::remove(hostRoot / "Notes/live.txt");
+                fs::remove_all(hostRoot / "Live");
+                guest.rescanShared();
+                assert(invoke(guest, 56, {atCwd, firstPath, 0}) == uint64_t(-2));
+                assert(invoke(guest, 56, {atCwd, secondPath, 0}) == uint64_t(-2));
+                put(firstPath, "/data/media/0/Live");
+                assert(invoke(guest, 56, {atCwd, firstPath, 0x10000}) == uint64_t(-2));
             }
         }
 

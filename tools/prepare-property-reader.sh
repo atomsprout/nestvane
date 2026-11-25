@@ -32,4 +32,5 @@ if [[ -f "$root/system/bin/cmd" ]]; then
     tools/build-app-labels.sh "$root"
     tools/build-rotation-watch.sh "$root"
     tools/build-phone-permissions.sh "$root"
+    tools/build-viewer.sh "$root"
 fi

@@ -1227,6 +1227,7 @@ static void AskForRoot(NSString* name) {
 @property(nonatomic, strong) UIButton* more;
 @property(nonatomic, strong) UIButton* back;
 @property(nonatomic, strong) UIButton* home;
+@property(nonatomic, strong) UIButton* recents;
 @property(nonatomic, strong) UIStackView* startup;
 @property(nonatomic, strong) EmblemView* emblem;
 @property(nonatomic, strong) UILabel* apkStatus;
@@ -1282,6 +1283,7 @@ static void AskForRoot(NSString* name) {
 
     self.back = ToolbarButton(@"chevron.backward", @"Android Back", self, @selector(guestBack));
     self.home = ToolbarButton(@"house", @"Android Home", self, @selector(guestHome));
+    self.recents = ToolbarButton(@"square.on.square", @"Recent Apps", self, @selector(guestRecents));
     // Touch and hold Home: clear the apps in the background, as Clear all among Android's recent apps.
     __weak ValidationViewController* weakSelf = self;
     self.home.menu = [UIMenu menuWithChildren:@[
@@ -1290,7 +1292,7 @@ static void AskForRoot(NSString* name) {
     self.home.showsMenuAsPrimaryAction = NO;
     self.importApk = ToolbarButton(@"square.and.arrow.down", @"Install APK…", self, @selector(chooseApk));
     self.run = ToolbarButton(@"play.fill", @"Start Android", self, @selector(runOrStop));
-    // Back and Home are used all the time and sit alone in the bar. What is used now and then, and
+    // Back, Home and Recent Apps are used all the time and sit alone in the bar. What is used now and then, and
     // what ends the session, is one step away in a menu: stopping Android also asks first. The
     // install button is no longer in the bar; it still says whether an installation may start.
     self.more = ToolbarButton(@"ellipsis.circle", @"More", nil, nil);
@@ -1331,7 +1333,7 @@ static void AskForRoot(NSString* name) {
             completion(@[install, text, settings, bug, power]);
         }]]];
     UIStackView* controls = [[UIStackView alloc] initWithArrangedSubviews:
-        @[self.back, self.home, self.more, self.run]];
+        @[self.back, self.home, self.recents, self.more, self.run]];
     controls.distribution = UIStackViewDistributionFillEqually;
     controls.translatesAutoresizingMaskIntoConstraints = NO;
 
@@ -1521,6 +1523,10 @@ static void AskForRoot(NSString* name) {
     [self.display pressKey:nestvane::GuestTouch::Key::home];
 }
 
+- (void)guestRecents {
+    [self.display pressKey:nestvane::GuestTouch::Key::recents];
+}
+
 - (void)clearBackgroundApps {
     if (_apkInbox) _apkInbox->submitClean();
 }
@@ -1575,6 +1581,18 @@ static void AskForRoot(NSString* name) {
     [self presentViewController:sheet animated:YES completion:nil];
 }
 
+// An APK is a ZIP archive with AndroidManifest.xml in it: a local file header first, and the name
+// in the central directory at the end.
+static bool ApkContent(NSData* data) {
+    const auto* bytes = static_cast<const uint8_t*>(data.bytes);
+    if (data.length < 64 || memcmp(bytes, "PK\x03\x04", 4) != 0) return false;
+    static constexpr char name[] = "AndroidManifest.xml";
+    const size_t tail = std::min<size_t>(data.length, 4 * 1024 * 1024);
+    const auto* start = bytes + data.length - tail;
+    return memmem(start, tail, name, sizeof(name) - 1) != nullptr ||
+           memmem(bytes, std::min<size_t>(data.length, 1024 * 1024), name, sizeof(name) - 1) != nullptr;
+}
+
 // Installs an APK from the picker, or one that another app handed over ("Open in", AirDrop, a quick
 // action). Android picks it up when it has booted, so this can come before the launcher is there.
 - (void)installApkAtURL:(NSURL*)source {
@@ -1588,10 +1606,8 @@ static void AskForRoot(NSString* name) {
         [self showApkStatus:@"Another APK is still being installed." transient:YES];
         return;
     }
-    if ([source.pathExtension caseInsensitiveCompare:@"apk"] != NSOrderedSame) {
-        [self showApkStatus:@"Choose an .apk file." transient:YES];
-        return;
-    }
+    // Judged by its content once read (ApkContent): another app may hand over an APK under a name
+    // of its own, without the extension.
     self.importApk.enabled = NO;
     [self showApkStatus:@"Waiting for Android to install the APK…" transient:NO];
     __weak ValidationViewController* weakSelf = self;
@@ -1620,7 +1636,13 @@ static void AskForRoot(NSString* name) {
         }
         if (data.length > Inbox::maxBytes) {
             if (access) [source stopAccessingSecurityScopedResource];
-            report(@"Choose an APK file up to 256 MiB.");
+            report(@"Choose an APK file up to 1 GB.");
+            return;
+        }
+        if (!ApkContent(data)) {
+            if (access) [source stopAccessingSecurityScopedResource];
+            NSLog(@"APK: not an Android package: %@", source.lastPathComponent);
+            report(@"This file isn’t an Android app (APK).");
             return;
         }
         const auto* bytes = static_cast<const uint8_t*>(data.bytes);
@@ -1694,8 +1716,8 @@ static void AskForRoot(NSString* name) {
     [self.display setTouchDevice:touch];
     [self.display show:nil size:CGSizeZero];
     self.display.hidden = YES;
-    self.back.hidden = self.home.hidden = !apkInbox;
-    self.back.enabled = self.home.enabled = NO;
+    self.back.hidden = self.home.hidden = self.recents.hidden = !apkInbox;
+    self.back.enabled = self.home.enabled = self.recents.enabled = NO;
     self.startup.hidden = NO;
     self.emblem.active = YES;
     self.details.hidden = YES;
@@ -2009,6 +2031,12 @@ static void AskForRoot(NSString* name) {
                                 if ([fields[0] isEqualToString:@"launch"]) {
                                     // "launch:<package>:0:wait" opens that app without finding its icon.
                                     if (apkInbox) apkInbox->submitLaunch(fields[1].UTF8String);
+                                } else if ([fields[0] hasPrefix:@"shell"]) {
+                                    // "shell<n>:0:0:wait" runs NESTVANE_TEST_SHELL<n> in Android as its shell
+                                    // user; the output goes to Android/nestvane-test/shell.txt in Documents.
+                                    NSString* key = [@"NESTVANE_TEST_SHELL" stringByAppendingString:[fields[0] substringFromIndex:5]];
+                                    if (NSString* command = NSProcessInfo.processInfo.environment[key]; command && apkInbox)
+                                        apkInbox->submitLine("shell", command.UTF8String);
                                 } else if ([fields[0] isEqualToString:@"clean"]) {
                                     // "clean:0:0:wait" clears the apps in the background, as Home's menu does.
                                     if (apkInbox) apkInbox->submitClean();
@@ -2027,6 +2055,9 @@ static void AskForRoot(NSString* name) {
                                 } else if ([fields[0] isEqualToString:@"back"]) {
                                     // "back:0:0:wait" presses Android's Back key instead.
                                     device->press(nestvane::GuestTouch::Key::back);
+                                } else if ([fields[0] isEqualToString:@"recents"]) {
+                                    // "recents:0:0:wait" presses Android's Recent Apps key.
+                                    device->press(nestvane::GuestTouch::Key::recents);
                                 } else if ([fields[0] isEqualToString:@"up"]) {
                                     // "up:0:0:wait" scrolls: a slow drag up the middle of the screen.
                                     for (int step = 0; step <= 20; ++step) {
@@ -2142,8 +2173,8 @@ static void AskForRoot(NSString* name) {
                         self.emblem.active = NO;
                         self.display.hidden = NO;
                         [self.view setNeedsLayout];  // viewDidLayoutSubviews says which way up Android is to be
-                        self.back.hidden = self.home.hidden = NO;
-                        self.back.enabled = self.home.enabled = YES;
+                        self.back.hidden = self.home.hidden = self.recents.hidden = NO;
+                        self.back.enabled = self.home.enabled = self.recents.enabled = YES;
                         writePresentationTime(displayProgress);
                     }
                     NSString* launcherPrefix = launcher
@@ -2202,7 +2233,7 @@ static void AskForRoot(NSString* name) {
     self.emblem.active = YES;
             self.details.text = apkInbox ? nil : report;
             self.details.hidden = bool(apkInbox);
-            self.back.enabled = self.home.enabled = NO;
+            self.back.enabled = self.home.enabled = self.recents.enabled = NO;
             self->_androidStop = std::stop_source{std::nostopstate};
             self.importApk.enabled = NO;
             [self setRunSymbol:@"play.fill" label:apkInbox ? @"Start Android" : @"Run validation"];

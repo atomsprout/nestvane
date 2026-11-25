@@ -18,6 +18,12 @@
 # "uninstall", package name: removes that app, as dragging its icon to Uninstall does. For tests.
 
 #
+# "scan", a directory of the shared storage: files were put there from outside while Android ran,
+# and the media library is to look at them (ProbeLinux::rescanShared).
+#
+# "shell", a command: runs it, for the app's tests; the output goes to nestvane-test/shell.txt in
+# the shared storage and to the log, tagged NestvaneShell.
+#
 # "labels", anything: tells Nestvane the names of the installed apps (tools/app-labels).
 #
 # "rotate", quarter turns: which way up Android holds its display, sent when the person turns the
@@ -47,6 +53,19 @@ while true; do
         ;;
     uninstall)
         /system/bin/toybox log -t Nestvane "uninstall $sender: $(/system/bin/cmd package uninstall "$sender" 2>&1)"
+        ;;
+    shell)
+        # A service has no /sdcard of its own: the shared storage is under /data/media.
+        output=$(/system/bin/sh -c "content() { CLASSPATH=/system/framework/content.jar /system/bin/app_process64 /system/bin com.android.commands.content.Content \"\$@\"; }; $sender" 2>&1; echo "exit $?")
+        /system/bin/toybox mkdir -p /data/media/0/nestvane-test 2> /dev/null
+        printf '$ %s\n%s\n' "$sender" "$output" >> /data/media/0/nestvane-test/shell.txt 2> /dev/null ||
+            /system/bin/toybox log -t NestvaneShell "cannot write shell.txt"
+        /system/bin/toybox log -t NestvaneShell "$output"
+        ;;
+    scan)
+        # The media library's own call for it; on a directory it looks at everything inside.
+        scanned=$(content call --uri content://media --method scan_file --arg "$sender" 2>&1)
+        /system/bin/toybox log -t Nestvane "scan $sender: $scanned"
         ;;
     labels)
         # The names of the installed apps, for Nestvane's root prompt and Settings.

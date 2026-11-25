@@ -16,7 +16,8 @@ class GuestTouch {
 public:
     static constexpr int32_t maximumAxis = 32767;
     static constexpr uint16_t touchKey = 0x14a;
-    enum class Key : uint16_t { wake = 143, back = 158, home = 172 };
+    // Recents is Linux's KEY_APPSELECT, which Android's key layouts call APP_SWITCH.
+    enum class Key : uint16_t { wake = 143, back = 158, home = 172, recents = 580 };
 
     struct Event {
         int64_t seconds;
