@@ -45,6 +45,10 @@ constexpr uint32_t profileVersion = 4;
 } // namespace
 
 std::optional<uint32_t> ProbeLinux::uidOfPackage(std::string_view wanted) const {
+    // The owner of its data directory; else Android's own list.
+    if (wanted.find('/') == std::string_view::npos && !wanted.empty() && wanted != "." && wanted != "..")
+        if (const auto home = directories.find(backingPath("/data/data/" + std::string(wanted))); home != directories.end())
+            return home->second.uid;
     const auto list = writableFiles.find(backingPath("/data/system/packages.list"));
     if (list == writableFiles.end()) return {};
     const auto& storage = *list->second->storage;
@@ -62,7 +66,10 @@ std::optional<uint32_t> ProbeLinux::uidOfPackage(std::string_view wanted) const 
 
 // Zygote made a process this user: when it is the official Manager's, the process gets the driver.
 void ProbeLinux::kernelSuUserChanged(uint32_t uid) {
-    if (!rootOn || uid % 100000 < 10000 || packageOfUid(uid) != kernelSuPackage) return;
+    // Whose it is: the owner of the Manager's data directory, which Android made as it installed it.
+    if (!rootOn || uid % 100000 < 10000) return;
+    const auto home = directories.find(backingPath("/data/data/" + std::string(kernelSuPackage)));
+    if (home == directories.end() || home->second.uid != uid % 100000) return;
     // Its APK: /data/app/<random>/me.weishu.kernelsu-<random>/base.apk.
     const std::string marker = "/" + std::string(kernelSuPackage) + "-";
     bool official = false;

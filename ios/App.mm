@@ -2640,15 +2640,16 @@ int main(int argc, char* argv[]) {
             writeToURL:[documents URLByAppendingPathComponent:@"memory-limits.txt"] atomically:YES];
     }
     nestvane::ProbeLinux::setHostVolumeSource(deviceVolume);
-    // NESTVANE_TEST_ROOT=allow or =deny answers for every app without asking, for the app's tests.
+    // NESTVANE_TEST_ROOT=allow or =deny turns root on and answers for every app that has no answer
+    // yet, instead of asking, for the app's tests.
     nestvane::ProbeLinux::setRootPolicy({
         [NSUserDefaults.standardUserDefaults boolForKey:RootEnabledKey] || getenv("NESTVANE_TEST_ROOT"),
         [](uint32_t uid, const std::string& package) -> int {
-            if (const char* test = getenv("NESTVANE_TEST_ROOT")) return std::string_view(test) == "allow" ? 1 : 0;
             @autoreleasepool {
                 NSString* name = package.empty() ? [NSString stringWithFormat:@"uid %u", uid] : @(package.c_str());
                 NSNumber* answer = [NSUserDefaults.standardUserDefaults objectForKey:[RootGrantPrefix stringByAppendingString:name]];
                 if (answer) return answer.boolValue ? 1 : 0;
+                if (const char* test = getenv("NESTVANE_TEST_ROOT")) return std::string_view(test) == "allow" ? 1 : 0;
                 AskForRoot(name);
                 return -1;
             }

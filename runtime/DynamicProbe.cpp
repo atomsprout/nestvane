@@ -1290,7 +1290,7 @@ service nestvane-trim /system/bin/sh /system/etc/nestvane/trim.sh
                 "ActivityTaskManager: ", "ActivityManager: Start proc", "ActivityManager: Process ",
                 "ActivityManager: ANR", "ActivityManager: Killing", "AndroidRuntime: ", "DEBUG: ",
                 "PackageInstaller", "PackageManager: Package ", "installd: ", "Zygote: Process ",
-                "native execution: "
+                "native execution: ", "Nestvane: KernelSU", "Nestvane: root granted", "KernelSU: "
             };
             if (message.starts_with("Zygote: System zygote died") ||
                 message.starts_with("SystemServer: Failure") ||

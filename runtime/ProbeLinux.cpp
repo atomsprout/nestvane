@@ -13310,15 +13310,47 @@ bool ProbeLinux::syscall(Machine& machine) {
                 break;
             }
             if (signal == 15) {
-                // The boot probe supports the default and ignored SIGTERM dispositions.
-                // A caught or fully masked delivery needs guest signal-frame handling.
+                // Ignored, it does nothing. Caught, one of the process's threads that does not hold it
+                // back runs the handler, as tgkill has it run (a shell catches it, and libsu ends its
+                // root shell with it). Otherwise it ends the process; held back by every thread, that
+                // would need it kept until one lets it through.
                 std::erase_if(victims, [](const auto& item) { return item.second->signalActions[15][0] == 1; });
+                constexpr uint64_t mask = 1ULL << 14;
+                std::vector<uint64_t> caught;
                 for (const auto& [id, victim] : victims) {
-                    if (victim->signalActions[15][0] || std::none_of(threads.begin(), threads.end(), [&](const auto& item) {
-                            const auto& task = item.second;
-                            return task.process == victim && task.wait != Wait::exited && !(task.signalMask & (1ULL << 14));
-                        })) return false;
+                    const auto open = [&](const Thread& task) {
+                        return task.process == victim && task.wait != Wait::exited && !(task.signalMask & mask);
+                    };
+                    if (!victim->signalActions[15][0]) {
+                        if (std::none_of(threads.begin(), threads.end(), [&](const auto& item) { return open(item.second); }))
+                            return false;
+                        continue;
+                    }
+                    const auto chosen = std::find_if(threads.begin(), threads.end(), [&](const auto& item) {
+                        const auto& task = item.second;
+                        return open(task) && (task.wait == Wait::none || task.wait == Wait::poll || task.wait == Wait::futex ||
+                                              task.wait == Wait::signal || task.wait == Wait::signalSuspend ||
+                                              task.wait == Wait::sleep);
+                    });
+                    if (chosen == threads.end()) return false;
+                    auto& target = chosen->second;
+                    std::array<uint32_t, 32> info{};
+                    info[0] = 15;
+                    info[4] = uint32_t(processId()); // SI_USER
+                    info[5] = current->process->userIds[0];
+                    if (!target.pendingSignals.contains(15)) target.pendingSignals.emplace(15, info);
+                    if (target.wait == Wait::signal && (target.signalWaitMask & mask)) {
+                        target.wait = Wait::none;
+                        target.deadline.reset();
+                    } else if (target.wait != Wait::none) {
+                        target.signalInterruptedWait = target.wait;
+                        target.wait = Wait::none;
+                        target.nextSliceAfter.reset();
+                    }
+                    sliceEnd = 0;
+                    caught.push_back(id);
                 }
+                for (const auto id : caught) victims.erase(id);
             }
             for (const auto& [id, victim] : victims) recallNativeThreads(victim.get());
             for (const auto& [id, victim] : victims) finishProcess(*victim, signal, true);
