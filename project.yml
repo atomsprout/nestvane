@@ -33,6 +33,7 @@ targets:
       - sdk: CoreVideo.framework
       - sdk: CoreGraphics.framework
       - sdk: libsqlite3.tbd
+      - sdk: libAppleArchive.tbd
       - sdk: libresolv.tbd
       - sdk: QuartzCore.framework
       - sdk: IOSurface.framework
@@ -98,6 +99,7 @@ targets:
       - sdk: CoreVideo.framework
       - sdk: CoreGraphics.framework
       - sdk: libsqlite3.tbd
+      - sdk: libAppleArchive.tbd
       - sdk: libresolv.tbd
       - sdk: QuartzCore.framework
       - sdk: IOSurface.framework

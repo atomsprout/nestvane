@@ -7,6 +7,7 @@
 
 #import <AVFAudio/AVFAudio.h>
 #import <AudioToolbox/AudioToolbox.h>
+#include "Backup.hpp"
 #include "GuestAudio.hpp"
 #include "GuestBattery.hpp"
 #include "DynamicProbe.hpp"
@@ -1050,6 +1051,29 @@ static NSArray<NSDictionary*>* RootGrantRows() {
     return rows;
 }
 
+// The settings that belong to Android rather than to the app, which a backup carries: whether root
+// is on, each app's answer, and the apps' names.
+static bool AndroidSetting(NSString* key) {
+    return [key isEqualToString:RootEnabledKey] || [key hasPrefix:RootGrantPrefix] || [key hasPrefix:RootLabelPrefix];
+}
+static NSDictionary* AndroidSettings() {
+    NSMutableDictionary* settings = [NSMutableDictionary dictionary];
+    [NSUserDefaults.standardUserDefaults.dictionaryRepresentation enumerateKeysAndObjectsUsingBlock:^(NSString* key, id value, BOOL*) {
+        if (AndroidSetting(key)) settings[key] = value;
+    }];
+    return settings;
+}
+static void ApplyAndroidSettings(NSDictionary* settings) {
+    NSUserDefaults* defaults = NSUserDefaults.standardUserDefaults;
+    for (NSString* key in defaults.dictionaryRepresentation.allKeys)
+        if (AndroidSetting(key)) [defaults removeObjectForKey:key];
+    [settings enumerateKeysAndObjectsUsingBlock:^(id key, id value, BOOL*) {
+        if ([key isKindOfClass:NSString.class] && AndroidSetting(key) &&
+            ([value isKindOfClass:NSNumber.class] || [value isKindOfClass:NSString.class]))
+            [defaults setObject:value forKey:key];
+    }];
+}
+
 // Asks the person whether an app may have root, once at a time for each app. The answer is kept.
 static void AskForRoot(NSString* name) {
     static NSMutableSet<NSString*>* asking = [NSMutableSet set];
@@ -1253,6 +1277,11 @@ static void AskForRoot(NSString* name) {
     bool _displayMadeWide;  // the shape Android's display was given when it started
     int _rotationAsked;     // the quarter turns last asked of Android
     bool _rotationHeld;     // a test asked for a rotation: the view's shape no longer decides
+    void (^_afterStop)(void);  // what waits for Android to have stopped
+    NSURL* _backupFile;        // a backup written, for the person to choose where it goes
+    BOOL _backupBusy;          // a backup or a restore is under way
+    BOOL _startAfterBackup;    // Android was running when the backup began
+    enum { PickApk, PickBackupPlace, PickBackup } _picking;
 }
 
 - (BOOL)prefersStatusBarHidden {
@@ -1343,7 +1372,15 @@ static void AskForRoot(NSString* name) {
             UIAction* diagnostics = [UIAction actionWithTitle:@"Export Diagnostics…"
                                                         image:[UIImage systemImageNamed:@"stethoscope"]
                                                    identifier:nil handler:^(UIAction*) { [owner exportDiagnostics]; }];
-            completion(@[install, text, settings, bug, diagnostics, power]);
+            UIAction* backup = [UIAction actionWithTitle:@"Back Up Android…" image:[UIImage systemImageNamed:@"externaldrive"]
+                                              identifier:nil handler:^(UIAction*) { [owner confirmBackup]; }];
+            UIAction* restore = [UIAction actionWithTitle:@"Restore Android…" image:[UIImage systemImageNamed:@"clock.arrow.circlepath"]
+                                               identifier:nil handler:^(UIAction*) { [owner confirmRestore]; }];
+            if (owner->_backupBusy || (owner->_androidStop.stop_possible() && !running))
+                backup.attributes = restore.attributes = UIMenuElementAttributesDisabled;
+            UIMenu* backups = [UIMenu menuWithTitle:@"" image:nil identifier:nil options:UIMenuOptionsDisplayInline
+                                           children:@[backup, restore]];
+            completion(@[install, text, settings, backups, bug, diagnostics, power]);
         }]]];
     UIStackView* controls = [[UIStackView alloc] initWithArrangedSubviews:
         @[self.back, self.home, self.recents, self.more, self.run]];
@@ -1488,6 +1525,29 @@ static void AskForRoot(NSString* name) {
         [defaults setObject:version forKey:UpdateToldKey];
         [owner showApkStatus:[NSString stringWithFormat:@"Nestvane %@ is out. It’s in Settings when you want it.", version] transient:YES];
     });
+    // NESTVANE_TEST_BACKUP=export writes a backup to backup-test.aar in Documents before Android
+    // starts, and =import restores that file; what came of it is in backup-test.txt.
+    if (NSString* test = NSProcessInfo.processInfo.environment[@"NESTVANE_TEST_BACKUP"]) {
+        NSURL* documents = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
+        NSURL* archive = [documents URLByAppendingPathComponent:@"backup-test.aar"];
+        self.status.text = @"Testing backup…";
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            const auto started = NSProcessInfo.processInfo.systemUptime;
+            NSString* error = nil;
+            NSDictionary* settings = nil;
+            if ([test isEqualToString:@"export"]) error = nestvane::backup::write(archive, AndroidSettings());
+            else if ([test isEqualToString:@"import"]) error = nestvane::backup::restore(archive, AndroidSettings(), &settings);
+            else error = @"unknown test";
+            if (settings) ApplyAndroidSettings(settings);
+            NSNumber* bytes = [archive resourceValuesForKeys:@[NSURLFileSizeKey] error:nil][NSURLFileSizeKey];
+            [[NSString stringWithFormat:@"%@: %@ in %.1f s; archive %@ bytes, data %llu bytes, pending %d\n", test, error ?: @"done",
+                NSProcessInfo.processInfo.systemUptime - started, bytes, nestvane::backup::dataBytes(),
+                int(nestvane::backup::restorePending())]
+                writeToURL:[documents URLByAppendingPathComponent:@"backup-test.txt"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            dispatch_async(dispatch_get_main_queue(), ^{ [self runValidation]; });
+        });
+        return;
+    }
     [self runValidation];
 }
 
@@ -1577,6 +1637,130 @@ static void AskForRoot(NSString* name) {
     });
 }
 
+// Runs `then` once Android has stopped, stopping it first when it runs; says whether it was running.
+- (void)whenAndroidStopped:(void (^)(BOOL wasRunning))then {
+    if (!_androidStop.stop_possible()) return then(NO);
+    const BOOL running = !_androidStop.stop_requested();
+    _afterStop = ^{ then(running); };
+    [self showApkStatus:@"Stopping Android…" transient:NO];
+    if (running) [self runOrStop];
+}
+
+- (void)startAndroidIf:(BOOL)wanted {
+    if (wanted && !_androidStop.stop_possible() && self.run.enabled) [self runValidation];
+}
+
+// Back Up Android: Android stops, its data goes into one file, and the person chooses where to keep it.
+- (void)confirmBackup {
+    const bool running = _androidStop.stop_possible() && !_androidStop.stop_requested();
+    NSString* bytes = [NSByteCountFormatter stringFromByteCount:(long long)nestvane::backup::dataBytes()
+                                                     countStyle:NSByteCountFormatterCountStyleFile];
+    UIAlertController* alert = [UIAlertController alertControllerWithTitle:@"Back Up Android?"
+        message:[NSString stringWithFormat:@"Android’s apps, their data and its settings are saved in one file of up to %@, "
+                                           @"and you choose where to keep it. Files in the Android folder are not in it: "
+                                           @"they are in the Files app already.%@", bytes,
+                                           running ? @"\n\nAndroid stops while it is saved, and starts again afterwards." : @""]
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Back Up" style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction*) { [self backUp]; }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)backUp {
+    if (_backupBusy) return;
+    _backupBusy = YES;
+    [self whenAndroidStopped:^(BOOL wasRunning) {
+        [self showApkStatus:@"Backing up Android…" transient:NO];
+        __block UIBackgroundTaskIdentifier task = [UIApplication.sharedApplication beginBackgroundTaskWithName:@"Backup" expirationHandler:^{
+            [UIApplication.sharedApplication endBackgroundTask:task];
+            task = UIBackgroundTaskInvalid;
+        }];
+        NSDictionary* settings = AndroidSettings();
+        NSDateFormatter* format = [NSDateFormatter new];
+        format.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+        format.dateFormat = @"yyyy-MM-dd-HHmm";
+        NSURL* file = [[NSURL fileURLWithPath:NSTemporaryDirectory()] URLByAppendingPathComponent:
+            [NSString stringWithFormat:@"Nestvane-Backup-%@.aar", [format stringFromDate:NSDate.date]]];
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            NSString* error = nestvane::backup::write(file, settings);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (task != UIBackgroundTaskInvalid) [UIApplication.sharedApplication endBackgroundTask:task];
+                self->_backupBusy = NO;
+                if (error) {
+                    [self showApkStatus:error transient:YES];
+                    return [self startAndroidIf:wasRunning];
+                }
+                self->_backupFile = file;
+                self->_startAfterBackup = wasRunning;
+                // NESTVANE_TEST_BACKUP_SAVE=1 keeps it as backup-test.aar in Documents, as if chosen there.
+                if (getenv("NESTVANE_TEST_BACKUP_SAVE")) {
+                    NSURL* documents = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
+                    NSURL* kept = [documents URLByAppendingPathComponent:@"backup-test.aar"];
+                    [NSFileManager.defaultManager removeItemAtURL:kept error:nil];
+                    [NSFileManager.defaultManager moveItemAtURL:file toURL:kept error:nil];
+                    return [self backupPlaced:YES];
+                }
+                self.apkStatus.hidden = YES;
+                self->_picking = PickBackupPlace;
+                UIDocumentPickerViewController* picker = [[UIDocumentPickerViewController alloc] initForExportingURLs:@[file] asCopy:NO];
+                picker.delegate = self;
+                [self presentViewController:picker animated:YES completion:nil];
+            });
+        });
+    }];
+}
+
+- (void)backupPlaced:(BOOL)placed {
+    if (_backupFile) [NSFileManager.defaultManager removeItemAtURL:_backupFile error:nil];
+    _backupFile = nil;
+    [self showApkStatus:placed ? @"Android is backed up." : @"The backup was not kept." transient:YES];
+    [self startAndroidIf:std::exchange(_startAfterBackup, NO)];
+}
+
+// Restore Android: the person chooses a backup, Android stops, and starts again from the backup.
+- (void)confirmRestore {
+    UIAlertController* alert = [UIAlertController alertControllerWithTitle:@"Restore Android?"
+        message:@"Android’s apps, their data and its settings are replaced by those in a backup you choose, and Android starts "
+                @"from it. What Android has now is kept until then, and put back if Android does not start."
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Choose Backup…" style:UIAlertActionStyleDestructive handler:^(UIAlertAction*) {
+        self->_picking = PickBackup;
+        UIDocumentPickerViewController* picker = [[UIDocumentPickerViewController alloc]
+            initForOpeningContentTypes:@[UTTypeData] asCopy:NO];  // read where it is: a backup is large
+        picker.delegate = self;
+        [self presentViewController:picker animated:YES completion:nil];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)restoreFrom:(NSURL*)source {
+    if (_backupBusy) return;
+    _backupBusy = YES;
+    const BOOL scoped = [source startAccessingSecurityScopedResource];
+    [self whenAndroidStopped:^(BOOL) {
+        [self showApkStatus:@"Restoring Android…" transient:NO];
+        __block UIBackgroundTaskIdentifier task = [UIApplication.sharedApplication beginBackgroundTaskWithName:@"Restore" expirationHandler:^{
+            [UIApplication.sharedApplication endBackgroundTask:task];
+            task = UIBackgroundTaskInvalid;
+        }];
+        NSDictionary* current = AndroidSettings();
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            NSDictionary* settings = nil;
+            NSString* error = nestvane::backup::restore(source, current, &settings);
+            if (scoped) [source stopAccessingSecurityScopedResource];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (task != UIBackgroundTaskInvalid) [UIApplication.sharedApplication endBackgroundTask:task];
+                self->_backupBusy = NO;
+                if (!error) ApplyAndroidSettings(settings);
+                [self startAndroidIf:YES];
+                [self showApkStatus:error ?: @"Android is starting from the backup." transient:YES];
+            });
+        });
+    }];
+}
+
 - (void)confirmStop {
     UIAlertController* alert = [UIAlertController alertControllerWithTitle:@"Stop Android?"
                                                                    message:@"Apps that are running in Android will be closed."
@@ -1631,11 +1815,20 @@ static void AskForRoot(NSString* name) {
     UIDocumentPickerViewController* picker = [[UIDocumentPickerViewController alloc]
         initForOpeningContentTypes:@[UTTypeData] asCopy:YES];  // not every provider tags .apk files with a type
     picker.delegate = self;
+    _picking = PickApk;
     [self presentViewController:picker animated:YES completion:nil];
 }
 
 - (void)documentPicker:(UIDocumentPickerViewController*)controller didPickDocumentsAtURLs:(NSArray<NSURL*>*)urls {
-    if (NSURL* source = urls.firstObject) [self installApkAtURL:source];
+    switch (std::exchange(_picking, PickApk)) {
+        case PickBackupPlace: return [self backupPlaced:YES];
+        case PickBackup: if (NSURL* source = urls.firstObject) [self restoreFrom:source]; return;
+        case PickApk: if (NSURL* source = urls.firstObject) [self installApkAtURL:source]; return;
+    }
+}
+
+- (void)documentPickerWasCancelled:(UIDocumentPickerViewController*)controller {
+    if (std::exchange(_picking, PickApk) == PickBackupPlace) [self backupPlaced:NO];
 }
 
 // The home screen's quick action: the picker, as soon as there is something to present it from.
@@ -1869,6 +2062,7 @@ static bool ApkContent(NSData* data) {
             return report;
         };
         NSString* artStatus = nil;
+        bool failedBeforeHome = false;  // Android stopped by itself before it showed its home screen
         NSString* artRoot = [resources stringByAppendingPathComponent:@"android17-art-root"];
         if (previousChecksPassed && [NSFileManager.defaultManager fileExistsAtPath:artRoot]) {
             exportReport(outputURL, result.report + "\nAndroid 17 ART probe starting\n");
@@ -2028,6 +2222,9 @@ static bool ApkContent(NSData* data) {
                     report += '\n';
                     AppendMemoryUsage(report);
                     exportReport(launcherURL, report);
+                    // Android started from a restored backup: what it had before can go.
+                    if (nestvane::backup::restorePending())
+                        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ nestvane::backup::restoreProven(); });
                     // NESTVANE_ADDRESS_MAP=1: what fills the host address space, ten seconds on (PLAN.md, "先量 2.0").
                     if ([NSProcessInfo.processInfo.environment[@"NESTVANE_ADDRESS_MAP"] isEqualToString:@"1"]) {
                         NSURL* mapURL = [documents URLByAppendingPathComponent:@"address-map.txt"];
@@ -2160,6 +2357,13 @@ static bool ApkContent(NSData* data) {
                                             [NSFileManager.defaultManager copyItemAtURL:report toURL:copy error:nil];
                                         }];
                                     });
+                                } else if ([fields[0] isEqualToString:@"backup"]) {
+                                    // "backup:0:0:wait" backs up as Back Up Android does, once: Android
+                                    // stops and starts again. With NESTVANE_TEST_BACKUP_SAVE=1 the file
+                                    // is backup-test.aar in Documents.
+                                    static std::atomic_bool backedUp{false};
+                                    if (!backedUp.exchange(true))
+                                        dispatch_async(dispatch_get_main_queue(), ^{ [self backUp]; });
                                 } else if ([fields[0] isEqualToString:@"recents"]) {
                                     // "recents:0:0:wait" presses Android's Recent Apps key.
                                     device->press(nestvane::GuestTouch::Key::recents);
@@ -2314,6 +2518,7 @@ static bool ApkContent(NSData* data) {
                 return boot;
             };
             auto probe = runAndroid();
+            failedBeforeHome = !probe.passed && !stop.stop_requested() && !launcherDisplayed.load();
             result.report += "\n" + probe.report;
             AppendMemoryUsage(result.report);
             if (!probe.passed) status = @"Android 17 startup probe stopped";
@@ -2344,6 +2549,14 @@ static bool ApkContent(NSData* data) {
             [self setRunSymbol:@"play.fill" label:apkInbox ? @"Start Android" : @"Run validation"];
             self.run.enabled = YES;
             UIApplication.sharedApplication.idleTimerDisabled = NO;
+            // Android did not start from a restored backup: what it had before is put back.
+            if (failedBeforeHome && nestvane::backup::restorePending()) {
+                if (NSDictionary* settings = nestvane::backup::rollBack()) {
+                    ApplyAndroidSettings(settings);
+                    self.status.text = @"Android did not start from the backup. What it had before is back.";
+                }
+            }
+            if (void (^after)(void) = std::exchange(self->_afterStop, nil)) after();
         });
     }];
     guestThread.qualityOfService = NSQualityOfServiceUserInitiated;
