@@ -39,6 +39,8 @@
 - [x] 小修：Allow root 改成每次启动 Android 时读；设置页脚改成放进 Android 文件夹的文件几秒内出现
 - [x] 再测 50 个主流应用，共 104 个，87 个能打开（[清单](docs/zh-CN/compatibility.md)）。修了一次启动里接连开很多应用时的问题：iOS 因内存结束 Nestvane（现在先结束 Android 排得最低的应用）、宿主内存不够或进程出错时整个 Android 停住（现在只结束那个进程）、WebView 的 zygote 卡住后所有应用都起不来、400 MB 的 APK 复制时内存不够；JNA 和 Rust 的应用原生运行；补了 pselect6、边沿触发 epoll、clone/wait4 的几种用法、网络接口的 ioctl、缺的七个共享库
 - [ ] 还没打开的：网易云音乐（安全库在不可执行的内存里跑代码）、12306（梆梆加固）、知乎和 Mihon（自己的原生代码里崩）、WPS、Session（要 Wi-Fi 服务，1.14）、哔哩哔哩、夸克、UC、爱奇艺、Opera、LocalSend（太慢）、Zoom（窗口空白）；百度网盘只有 32 位，不支持
+- [x] 稳定性：一次启动里把装着的 8 个应用各开三轮（24 次，每次 12 秒再回桌面，1.13 发布的构建，iPhone 14）。Android 没停、Nestvane 没被结束、没有 ANR；内存紧时 Nestvane 先结束缓存应用，按设计
+- [ ] WebView 的渲染进程崩溃（SIGSEGV，`<anonymous:140000000>` 里 pc 0x1243b48，只有一帧），带 WebView 的应用跟着被结束（“Render process kill wasn't handled … killing application”）。测试应用开着十几秒或从后台回来时出现，三轮里每轮一次。1.12 一样（同一地址），不是 1.13 新出的。要先拿到符号或更多栈
 
 ## 1.14 要重新构建 AOSP
 
