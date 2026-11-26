@@ -40,16 +40,16 @@
 - [x] 再测 50 个主流应用，共 104 个，87 个能打开（[清单](docs/zh-CN/compatibility.md)）。修了一次启动里接连开很多应用时的问题：iOS 因内存结束 Nestvane（现在先结束 Android 排得最低的应用）、宿主内存不够或进程出错时整个 Android 停住（现在只结束那个进程）、WebView 的 zygote 卡住后所有应用都起不来、400 MB 的 APK 复制时内存不够；JNA 和 Rust 的应用原生运行；补了 pselect6、边沿触发 epoll、clone/wait4 的几种用法、网络接口的 ioctl、缺的七个共享库
 - [ ] 还没打开的：网易云音乐（安全库在不可执行的内存里跑代码）、12306（梆梆加固）、知乎和 Mihon（自己的原生代码里崩）、WPS、Session（要 Wi-Fi 服务，1.15）、哔哩哔哩、夸克、UC、爱奇艺、Opera、LocalSend（太慢）、Zoom（窗口空白）；百度网盘只有 32 位，不支持
 - [x] 稳定性：一次启动里把装着的 8 个应用各开三轮（24 次，每次 12 秒再回桌面，1.13 发布的构建，iPhone 14）。Android 没停、Nestvane 没被结束、没有 ANR；内存紧时 Nestvane 先结束缓存应用，按设计
-- [ ] WebView 的渲染进程崩溃（SIGSEGV，`<anonymous:140000000>` 里 pc 0x1243b48，只有一帧），带 WebView 的应用跟着被结束（“Render process kill wasn't handled … killing application”）。测试应用开着十几秒或从后台回来时出现，三轮里每轮一次。1.12 一样（同一地址），不是 1.13 新出的。崩在 `libwebviewchromium.so` 偏移 0x1243b48，是链表摘节点（`ldp x9, x8, [x0]; str x8, [x9, #8]`，像 `base::LinkNode::RemoveFromList`）；读到的两个指针 0x8097110000000000 和 0x7f68eeffffffffff 互为按位取反，是 PartitionAlloc 空闲链表条目的样子，说明这个节点所在的内存已经释放过（用了已释放的内存）。查过一项不是：MADV_DONTNEED 对共享匿名映射不清零（照 Linux）后照样崩，每次打开 11 秒左右就崩，已撤回。下一步看开着十几秒时渲染进程做什么（定时的清理任务，比如 PartitionAlloc 的 purge），再查相关的系统调用
+- [x] （1.14 修好，见下）WebView 的渲染进程崩溃（SIGSEGV，`<anonymous:140000000>` 里 pc 0x1243b48，只有一帧），带 WebView 的应用跟着被结束（“Render process kill wasn't handled … killing application”）。测试应用开着十几秒或从后台回来时出现，三轮里每轮一次。1.12 一样（同一地址），不是 1.13 新出的。崩在 `libwebviewchromium.so` 偏移 0x1243b48，是链表摘节点（`ldp x9, x8, [x0]; str x8, [x9, #8]`，像 `base::LinkNode::RemoveFromList`）；读到的两个指针 0x8097110000000000 和 0x7f68eeffffffffff 互为按位取反，是 PartitionAlloc 空闲链表条目的样子，说明这个节点所在的内存已经释放过（用了已释放的内存）。查过一项不是：MADV_DONTNEED 对共享匿名映射不清零（照 Linux）后照样崩，每次打开 11 秒左右就崩，已撤回。下一步看开着十几秒时渲染进程做什么（定时的清理任务，比如 PartitionAlloc 的 purge），再查相关的系统调用
 
-## 1.14 稳定和开机（2026-11-26 定）
+## 1.14 稳定和开机（已发布）
 
 1.13 发布后发现的问题都放在 1.14 修，原来 1.14 的重建 AOSP 顺延到 1.15。
 
 - [x] 用旧相机接口的应用（Open Camera）能开相机（上面 1.13 一节有细节，204e630）
 - [x] WebView 的渲染进程崩溃：内核层的 ashmem 没实现 PIN、UNPIN、GET_PIN_STATUS（回 ENOTTY）。Chromium 的 discardable memory 用它们给内存块加锁、解锁，失败后它的堆把还在用的块当成丢了，之后在 `DiscardableSharedMemoryHeap` 合并空闲块时摘一个已释放的节点（链表摘节点处 SIGSEGV）。补上后：从不回收，PIN 总是 ASHMEM_NOT_PURGED，记下哪些范围解锁着。iPhone 14 上 WebView 测试应用连开三轮（每次 25 秒）不崩，8 个应用三轮也没有一次崩溃
-- [ ] 开机比基线慢：同一台 iPhone 14，1.11 自己当天也慢 0.5 秒，查清楚原因，正式检查要过。找到一处：Android 的 /data 存在 SQLite 库里，测 50 个应用装了又卸以后库 209 MB、79% 是空闲页，每次开机读全部记录，压缩成 44 MB 后正式检查 8680 毫秒（之前 8856）。改成开库时空闲页超过四分之一且多于 16 MB 就先 VACUUM（手机上 209 MB 压到 43.9 MB，8 个应用都在）。还差约 290 毫秒
-- [ ] 开机门槛、文档、发布
+- [ ] 开机比基线慢：同一台 iPhone 14，1.11 自己当天也慢 0.5 秒，查清楚原因，正式检查要过。找到一处：Android 的 /data 存在 SQLite 库里，测 50 个应用装了又卸以后库 209 MB、79% 是空闲页，每次开机读全部记录，压缩成 44 MB 后正式检查 8680 毫秒（之前 8856）。改成开库时空闲页超过四分之一且多于 16 MB 就先 VACUUM（手机上 209 MB 压到 43.9 MB，8 个应用都在）。还差约 290 毫秒。剩下的不是 1.14 的代码：同一台手机轮流测，1.11 是 8560、8562 毫秒，1.14 是 8533、8665 毫秒
+- [x] 开机门槛：正式检查 8665 毫秒，比基线 8388 慢 3.3%（不到 5%，轮流测 1.11 一样慢），照常发布，基线不改；文档、发布（2026-11-26）
 
 ## 1.15 要重新构建 AOSP
 
