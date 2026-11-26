@@ -137,7 +137,7 @@ On an iPhone 15 Pro unless noted. The running record, with every measurement, is
 | A finger kept moving on a list | 58–60 frames a second; with 120 Hz on, 111–120 (iPhone 17 Pro) |
 | Playing a 1280×720 H.264 video | 30 frames a second, in step with the clock |
 | Translated modules | about 1,230, in 12 frameworks |
-| Apps that open, of 54 installed from APK | 51 |
+| Apps that open, of 104 installed from APK | 87 |
 
 ## Requirements
 

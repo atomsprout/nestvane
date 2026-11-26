@@ -80,7 +80,7 @@ export const content = {
       ['The first start after installing', 'About 17 s'],
       ['A finger moving a list, 120 Hz on', '111–120 fps'],
       ['The same, 120 Hz off', '58–60 fps'],
-      ['Apps that open, of 54 tried', '51'],
+      ['Apps that open, of 104 tried', '87'],
     ],
     figuresNote: 'Start times and frame rates on an iPhone 17 Pro, the apps on an iPad Air and an iPhone 14. Start times with about a dozen apps installed; with thirty it is nearer 10 s. Frame rates are frames handed to iOS, not refreshes of the screen itself. Opening means an app’s first screen was drawn; little beyond that was tried.',
     figuresMore: 'The numbers in full',

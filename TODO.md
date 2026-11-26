@@ -31,11 +31,13 @@
 - [ ] KernelSU 模块：要在开机各阶段运行 `ksud`、做 overlay 挂载，之后再定
 - [x] 备份先做精简版，排在 KernelSU 前面（#5-12）：Android 停下后把数据导出成一个文件存进“文件”，导入时整个替换，原来的数据先留一份；不带共享文件夹，不做跨版本兼容，约 1–2 天。整台 iPhone 的备份本来就包含 Android 的数据，这个只为回滚（装 KernelSU 前留存档）和只挪 Android（2026-11-25 定）。做完：More 菜单里 Back Up / Restore Android，Apple Archive（LZ4）；原来的数据留到 Android 从备份启动到桌面，没到桌面就停了放回去。iPhone 14 上 507 MB 备份成 331 MB，恢复 0.8 秒，卸载的应用和改过的文件都回来了。文件选择器那一步没有在手机上手点过
 
-## 1.13 相机（约 1 周）
+## 1.13 相机和稳定性（已发布）
 
-- [ ] 前置相机出现在相机应用里（#5-14）
-- [ ] 拍照和录像能存下来，先用 AOSP 的相机，再用 Google 相机复测（#5-14）
-- [ ] 小修：设置里的 Allow root 只在 Nestvane 启动时读（`main` 里 `setRootPolicy` 一次），改成每次启动 Android 时读；设置页脚还说放进 Android 文件夹的文件下次启动才出现，1.10 起已经是几秒内
+- [x] 前置相机出现在相机应用里（#5-14）：内核层的 qemud 相机服务多了 `nestvane-front`（640×480，朝前，方向 270），iOS 这边用前置摄像头、不镜像。iPhone 14 上 Camera2 列出两个相机：id 10 朝后、id 11 朝前
+- [ ] 拍照和录像能存下来（#5-14）：测试应用 `fixtures/media` 的 `CameraActivity` 能拍照、录像存进 DCIM/Camera；在手机上要先在 iOS 的相机权限弹窗里点允许，这一步还没人点，所以没在手机上测过。之后再用 Google 相机复测
+- [x] 小修：Allow root 改成每次启动 Android 时读；设置页脚改成放进 Android 文件夹的文件几秒内出现
+- [x] 再测 50 个主流应用，共 104 个，87 个能打开（[清单](docs/zh-CN/compatibility.md)）。修了一次启动里接连开很多应用时的问题：iOS 因内存结束 Nestvane（现在先结束 Android 排得最低的应用）、宿主内存不够或进程出错时整个 Android 停住（现在只结束那个进程）、WebView 的 zygote 卡住后所有应用都起不来、400 MB 的 APK 复制时内存不够；JNA 和 Rust 的应用原生运行；补了 pselect6、边沿触发 epoll、clone/wait4 的几种用法、网络接口的 ioctl、缺的七个共享库
+- [ ] 还没打开的：网易云音乐（安全库在不可执行的内存里跑代码）、12306（梆梆加固）、知乎和 Mihon（自己的原生代码里崩）、WPS、Session（要 Wi-Fi 服务，1.14）、哔哩哔哩、夸克、UC、爱奇艺、Opera、LocalSend（太慢）、Zoom（窗口空白）；百度网盘只有 32 位，不支持
 
 ## 1.14 要重新构建 AOSP
 

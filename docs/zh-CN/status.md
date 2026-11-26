@@ -58,6 +58,9 @@ Nestvane 是早期版本，目前只有开发者能运行：IPA 必须用付费�
 - **备份和恢复 Android（1.12）。** More 菜单里的 Back Up Android…：Android 停下，应用、应用数据、设置和 root 的回答存成一个文件（Apple Archive），你选放在哪里，然后 Android 再启动。共享文件夹不在里面，它本来就在“文件”App 里。Restore Android…：把选中的备份放回去，Android 从它启动；原来的数据一直留着，到 Android 从备份启动到桌面才删，没到桌面就停了会放回去。iPhone 14 上 507 MB 的数据备份成 331 MB；恢复不到一秒，备份之后卸载的应用和改过的文件都回来了。整台 iPhone 的备份本来就包含 Android 的数据，这个是为了回到某个时刻，或者只挪 Android。
 - **KernelSU Manager（1.12）。** root 打开时，官方的 KernelSU Manager（3.3.1，KernelSU 的 Release 里下载）显示 KernelSU 已工作，版本 32680，列出应用。它给每个应用的开关允许或拒绝 root，和 iOS 弹窗、Nestvane 设置里的回答是同一份。KernelSU 的驱动（它的 ioctl，UAPI 5）由内核层自己回答；只有 KernelSU 签名的 Manager 才被当作 Manager。iPhone 14 上测过：允许时应用经 KernelSU 的驱动拿到 root，拒绝时被挡回。
 - **应用自己文件里的程序能运行（1.12）。** `/data` 里的程序，比如应用 native 库目录里的，以前一直启动不了；现在可执行的都能运行。一个进程收到别的进程发来的 SIGTERM 而它自己处理这个信号时，发信号的一方不再卡住。
+- **接连打开很多应用（1.13）。** 又试了 50 个应用，一共 104 个（[清单](compatibility.md)）。一次启动里打开几个应用，会出现单开一个时没有的问题：Nestvane 被结束，或 Android 停住。这些修好了：内存剩得不多时，Nestvane 先结束 Android 排得最低的应用，不等 iOS 来结束 Nestvane（iPhone 14 上 iOS 允许约 4.3 GB）；出内存错误或拿不到宿主内存的进程单独结束，不连带整个 Android；第一个渲染进程结束后 WebView 的 zygote 不再一直等，以前它会挡住后面所有应用的启动；400 MB 的 APK 不复制就交给 Android。
+- **用 JNA 或 Rust 的应用原生运行（1.13）。** libffi 写进可执行映射文件里的代码（Bitwarden、Element X、Firefox Focus、Proton VPN），以及应用用自己的加载器加载的库（微信），以前会让整个应用变成解释执行，现在只有这部分代码是。Firefox 能打开，它的辅助进程会停。
+- **前置相机（1.13）。** Android 有两个相机：iPhone 的后置，现在还有前置，都是 640×480，前置的画面不镜像。iPhone 14 上 Camera2 列出两个（朝后、朝前）。拍照、录像并存下来的测试写好了，但还没在手机上跑过：iOS 会问一次 Nestvane 能不能用相机，手机上这个问题还没人回答。
 
 ## 还不能用的
 
