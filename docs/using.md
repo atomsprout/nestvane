@@ -35,6 +35,14 @@ Its folders are Android's `Download`, `Pictures`, `Movies` and so on.
 A file you put there from iOS appears in Android within a few seconds, and a file an Android app saves there can be opened from iOS.
 Pictures and videos open in Android with Nestvane's small viewer.
 
+## Camera
+
+Android has two cameras, the iPhone's back camera and its front one, each 640×480.
+Camera apps take photos and record video with sound; what they save goes into `DCIM` and so appears in the Files app too.
+The first time an app opens a camera, iOS asks whether Nestvane may use it.
+If Camera is off for Nestvane in iOS Settings → Privacy & Security → Camera, Android's camera fails to start: turn it on there.
+Apps that use either camera interface work (Camera2, and since 1.14 the older Camera API 1, which Open Camera uses).
+
 ## Settings
 
 More → Settings has Nestvane's own settings: its version, where the shared files are, **120 Hz** on a ProMotion screen (smoother, uses more battery; it applies from the next start of Android), **Allow root** and the apps that asked for it, and **Check for updates**.

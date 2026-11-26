@@ -29,6 +29,14 @@ Android 应用是 APK 文件。下面任何一种都能装：
 
 Android 的共享存储是 iOS“文件”App 里的一个文件夹：**我的 iPhone → Nestvane → Android**，里面就是 Android 的 `Download`、`Pictures`、`Movies` 等。从 iOS 放进去的文件几秒内在 Android 里出现；Android 应用存在这里的文件，iOS 也能打开。图片和视频在 Android 里用 Nestvane 带的小查看器打开。
 
+## 相机
+
+Android 有两个相机：iPhone 的后置和前置，都是 640×480。
+相机应用能拍照、录带声音的视频，存在 `DCIM` 里，所以“文件” App 里也看得到。
+应用第一次打开相机时，iOS 会问是否允许 Nestvane 使用相机。
+iOS 设置 → 隐私与安全性 → 相机里 Nestvane 关着时，Android 的相机启动失败，到那里打开。
+两种相机接口的应用都能用（Camera2，以及 1.14 起 Open Camera 用的旧接口 Camera API 1）。
+
 ## 设置
 
 More → Settings 是 Nestvane 自己的设置：版本、共享文件在哪里、**120 Hz**（ProMotion 屏幕上才有，更流畅也更耗电，下次启动 Android 时生效）、**Allow root** 和请求过 root 的应用、**Check for updates**。
