@@ -1197,7 +1197,7 @@ service nestvane-trim /system/bin/sh /system/etc/nestvane/trim.sh
             linux.alias("/dev/kmsg_debug", "/dev/kmsg");
             if (!std::getenv("NESTVANE_NO_TOYBOX_LINKS")) linux.addToyboxLinks();
             // Built-in root, when the person has turned it on.
-            if (auto root = ProbeLinux::rootPolicy(); root.enabled) {
+            if (auto root = ProbeLinux::rootPolicy(); root.enabled && root.enabled()) {
                 linux.enableRoot();
                 linux.rootDecision = std::move(root.decision);
                 linux.rootAnswers = std::move(root.answers);

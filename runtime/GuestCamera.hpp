@@ -7,6 +7,8 @@
 #include <charconv>
 #include <cstdio>
 #include <cstring>
+#include <optional>
+#include <utility>
 #include <string>
 
 namespace nestvane {
@@ -16,14 +18,15 @@ public:
     static constexpr unsigned width = 640, height = 480;
     enum class Status { starting, ready, unavailable };
     enum class Format { rgba, yuv420 };
+    enum class Facing { back, front };
     static constexpr size_t frameBytes(Format format) {
         constexpr size_t pixels = size_t(width) * height;
         return format == Format::rgba ? pixels * 4 : pixels * 3 / 2;
     }
 
     virtual ~GuestCameraSource() = default;
-    virtual bool available() const = 0;
-    virtual bool start() = 0; // Acquire the single rear camera lease.
+    virtual bool available(Facing facing) const = 0;
+    virtual bool start(Facing facing) = 0; // Acquire the single camera lease, for the back or the front camera.
     virtual Status status() const = 0;
     virtual bool copyFrame(Format format, std::span<uint8_t> destination) = 0;
     virtual void stop() = 0;
@@ -35,10 +38,20 @@ class GuestCameraPipe final : public GraphicsPipe {
 public:
     static constexpr std::string_view catalog = "qemud:camera";
     static constexpr std::string_view rear = "qemud:camera:name=nestvane-rear";
+    static constexpr std::string_view front = "qemud:camera:name=nestvane-front";
+    using Facing = GuestCameraSource::Facing;
     using WriteFrame = std::function<bool(uint64_t, GuestCameraSource::Format)>;
 
-    GuestCameraPipe(std::shared_ptr<GuestCameraSource> camera, bool list, WriteFrame writeFrame)
-        : camera(std::move(camera)), listOnly(list), writeFrame(std::move(writeFrame)) {}
+    // The pipe a camera HAL opens by name: the catalog, or one camera.
+    static std::optional<std::pair<bool, Facing>> service(std::string_view name) {
+        if (name == catalog) return std::pair{true, Facing::back};
+        if (name == rear) return std::pair{false, Facing::back};
+        if (name == front) return std::pair{false, Facing::front};
+        return std::nullopt;
+    }
+
+    GuestCameraPipe(std::shared_ptr<GuestCameraSource> camera, bool list, Facing facing, WriteFrame writeFrame)
+        : camera(std::move(camera)), listOnly(list), facing(facing), writeFrame(std::move(writeFrame)) {}
     ~GuestCameraPipe() override {
         if (leased) camera->stop();
     }
@@ -87,6 +100,7 @@ public:
 private:
     std::shared_ptr<GuestCameraSource> camera;
     bool listOnly, connected = false, leased = false, pendingStart = false;
+    Facing facing;
     WriteFrame writeFrame;
     std::string request, reply;
     size_t offset = 0;
@@ -132,16 +146,21 @@ private:
     void handle(std::string_view command) {
         if (listOnly) {
             if (command != "list") return respond("ko:invalid catalog command");
-            return respond(camera->available()
-                ? "ok:name=nestvane-rear channel=0 pix=876758866 dir=back framedims=640x480 sensor_orientation=90\n"
-                : "ok:");
+            // Android's front cameras are mounted turned the other way from the back ones (270 against 90), and
+            // their frames are not mirrored: the app mirrors its own preview.
+            std::string list = "ok:";
+            if (camera->available(Facing::back))
+                list += "name=nestvane-rear channel=0 pix=876758866 dir=back framedims=640x480 sensor_orientation=90\n";
+            if (camera->available(Facing::front))
+                list += "name=nestvane-front channel=0 pix=876758866 dir=front framedims=640x480 sensor_orientation=270\n";
+            return respond(list);
         }
-        if (command == "connect" && camera->available()) {
+        if (command == "connect" && camera->available(facing)) {
             connected = true;
             return respond("ok");
         }
         if (command == "start" && connected && !leased) {
-            if (!(leased = camera->start())) return respond("ko:camera unavailable");
+            if (!(leased = camera->start(facing))) return respond("ko:camera unavailable");
             pendingStart = true;
             return;
         }

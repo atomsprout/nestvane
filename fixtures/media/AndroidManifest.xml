@@ -1,10 +1,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="dev.nestvane.media">
     <uses-sdk android:minSdkVersion="23" android:targetSdkVersion="37" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- Plays Android/data/dev.nestvane.media/files/test.mp4 of the shared storage with the platform's
          own player, and says in the log how the playing goes: for testing codecs, sound and frame rate.
-         RecordActivity records, as the screen recorder and a sound recorder do (RecordActivity.java). -->
+         RecordActivity records, as the screen recorder and a sound recorder do (RecordActivity.java).
+         CameraActivity takes pictures and records video, as a camera app does (CameraActivity.java). -->
     <application android:label="AAA Media Test" android:theme="@android:style/Theme.Material.NoActionBar"
                  android:allowBackup="false">
         <activity android:name=".MainActivity" android:exported="true">
@@ -14,5 +16,6 @@
             </intent-filter>
         </activity>
         <activity android:name=".RecordActivity" android:exported="true" />
+        <activity android:name=".CameraActivity" android:exported="true" />
     </application>
 </manifest>

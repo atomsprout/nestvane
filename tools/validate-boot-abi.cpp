@@ -2852,8 +2852,9 @@ int main() {
         struct CameraFixture final : GuestCameraSource {
             Status state = Status::unavailable;
             unsigned stops = 0;
-            bool available() const override { return true; }
-            bool start() override { state = Status::starting; return true; }
+            Facing started = Facing::back;
+            bool available(Facing) const override { return true; }
+            bool start(Facing facing) override { started = facing; state = Status::starting; return true; }
             Status status() const override { return state; }
             bool copyFrame(Format format, std::span<uint8_t> bytes) override {
                 assert(bytes.size() == frameBytes(format));
@@ -2930,7 +2931,11 @@ int main() {
         guest.setBootContext("u:r:shell:s0");
         assert(send(catalog, "list") == uint64_t(-13));
         guest.setBootContext("u:r:hal_camera_default:s0");
-        assert(command(catalog, "list").starts_with("ok:name=nestvane-rear "));
+        {
+            const auto list = command(catalog, "list");
+            assert(list.starts_with("ok:name=nestvane-rear "));
+            assert(list.find("\nname=nestvane-front channel=0 pix=876758866 dir=front framedims=640x480 sensor_orientation=270\n") != std::string::npos);
+        }
         assert(syscall(57, {catalog}) == 0);
 
         guest.setBootContext("u:r:hal_sensors_default:s0");
@@ -2958,6 +2963,18 @@ int main() {
         assert(syscall(57, {sensors}) == 0);
 
         guest.setBootContext("u:r:hal_camera_default:s0");
+        {
+            const auto front = open("/dev/goldfish_pipe_dprctd");
+            const std::string frontService = "pipe:qemud:camera:name=nestvane-front";
+            assert(front < 256 && send(front, frontService) == frontService.size() + 1);
+            assert(command(front, "connect") == "ok");
+            assert(send(front, "start") == 6 && camera->started == GuestCameraSource::Facing::front);
+            camera->state = GuestCameraSource::Status::ready;
+            assert(reply(front) == "ok");
+            const auto stops = camera->stops;
+            assert(command(front, "disconnect") == "ok" && camera->stops == stops + 1);
+            assert(syscall(57, {front}) == 0);
+        }
         const auto rear = open("/dev/goldfish_pipe_dprctd");
         const std::string rearService = "pipe:qemud:camera:name=nestvane-rear";
         assert(rear < 256 && send(rear, rearService) == rearService.size() + 1);
@@ -3020,8 +3037,8 @@ int main() {
         assert(command(rear, "frame dim=640x480 pix=842093913 offset=" + std::to_string(offset)) == "ok");
         assert(word(mapping) == 0x3131313131313131ULL);
         assert(command(rear, "frame dim=640x480 pix=876758866 offset=" + std::to_string(offset + length)).starts_with("ko:"));
-        assert(command(rear, "stop") == "ok" && camera->stops == 1);
-        assert(send(rear, "start") == 6 && syscall(57, {rear}) == 0 && camera->stops == 2);
+        assert(command(rear, "stop") == "ok" && camera->stops == 2);
+        assert(send(rear, "start") == 6 && syscall(57, {rear}) == 0 && camera->stops == 3);
         assert(syscall(215, {mapping, length}) == 0 && syscall(57, {address}) == 0);
     }
     {

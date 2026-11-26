@@ -214,9 +214,10 @@ struct ProbeLinux {
     // The commands that are toybox under other names (ls, id, cp, ps...): the image has toybox but
     // not its links, and apps that run a command, as root or not, expect them in /system/bin.
     void addToyboxLinks();
-    // What the app has set for the next start of Android: whether root is on, and who decides.
+    // What the app has set for Android: whether root is on (asked at each start of Android, so the switch
+    // in Settings applies from the next start without closing the app), and who decides.
     struct RootPolicy {
-        bool enabled = false;
+        std::function<bool()> enabled;
         std::function<int(uint32_t uid, const std::string& package)> decision;
         // Every answer given so far, by package (or "uid <n>"), and a new one: the KernelSU Manager
         // reads and changes the same answers the person gave (ProbeKernelSu.cpp).

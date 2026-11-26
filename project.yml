@@ -44,7 +44,7 @@ targets:
       path: generated/Info.plist
       properties:
         CFBundleDisplayName: nestvane
-        NSCameraUsageDescription: Nestvane shares the rear camera with Android apps when you use their camera.
+        NSCameraUsageDescription: Nestvane shares the cameras with Android apps when you use their camera.
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
@@ -167,7 +167,7 @@ targets:
           - UIApplicationShortcutItemType: com.atomsprout.nestvane.install-apk
             UIApplicationShortcutItemTitle: Install APK…
             UIApplicationShortcutItemIconSymbolName: square.and.arrow.down
-        NSCameraUsageDescription: Nestvane shares the rear camera with Android apps when you use their camera.
+        NSCameraUsageDescription: Nestvane shares the cameras with Android apps when you use their camera.
         NSMicrophoneUsageDescription: Nestvane lets Android apps hear the microphone while they record.
         NSLocalNetworkUsageDescription: Android apps in Nestvane reach devices on your local network, such as your router, when they ask to.
         UILaunchScreen: {}

@@ -44,7 +44,7 @@ More → Settings has Nestvane's own settings: its version, where the shared fil
 Root is off until you turn it on.
 
 1. More → Settings → **Allow root**.
-2. Close Nestvane (swipe it away in the app switcher) and open it again. The switch is read when Nestvane starts.
+2. Start Android again: More → **Stop Android…**, then Start Android (or close Nestvane and open it). The switch is read each time Android starts.
 3. When an Android app runs `su`, iOS asks whether that app may have root. Your answer is kept.
 
 The apps that have asked are listed under Allow root in Settings, by name; turn one off to refuse it from then on.
@@ -80,7 +80,7 @@ An iPhone backup (iCloud or a computer) already includes Android's data. A Nestv
 
 **To restore:** More → **Restore Android…** → Choose Backup…, and pick the file. Android stops, its apps and data are replaced by the backup's, and it starts from the backup.
 What Android had before is kept until Android reaches its home screen from the backup; if it stops before that, the previous Android is put back.
-The apps' root answers come back with the backup at once. Whether root is on comes back too, and like the switch it applies after Nestvane is closed and opened again.
+The apps' root answers come back with the backup at once. Whether root is on comes back too, and applies as Android starts from the backup.
 
 A backup made by one version of Nestvane is meant to be restored by the same or a later version.
 

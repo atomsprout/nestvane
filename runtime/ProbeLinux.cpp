@@ -3013,10 +3013,10 @@ uint64_t ProbeLinux::writeGraphics(const Machine& machine, GraphicsPipeState& pi
         const auto service = std::string_view(pipe.serviceHeader);
         if (delimiter != bytes.end() && service.starts_with("pipe:")) {
             const auto name = service.substr(5);
-            if (camera && current->process->context == cameraHalContext &&
-                (name == GuestCameraPipe::catalog || name == GuestCameraPipe::rear)) {
+            const auto cameraService = GuestCameraPipe::service(name);
+            if (camera && current->process->context == cameraHalContext && cameraService) {
                 pipe.serviceContext = cameraHalContext;
-                pipe.backend = std::make_unique<GuestCameraPipe>(camera, name == GuestCameraPipe::catalog,
+                pipe.backend = std::make_unique<GuestCameraPipe>(camera, cameraService->first, cameraService->second,
                     [this](auto offset, auto format) { return writeCameraFrame(offset, format); });
             } else if (name == GuestSensorsPipe::service && current->process->context == sensorsHalContext) {
                 pipe.serviceContext = sensorsHalContext;

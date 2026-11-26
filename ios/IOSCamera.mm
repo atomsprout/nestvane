@@ -8,17 +8,20 @@
 
 using Camera = nestvane::GuestCameraSource;
 using Status = Camera::Status;
+using Facing = Camera::Facing;
 
 @interface NestvaneCameraCapture : NSObject <AVCaptureVideoDataOutputSampleBufferDelegate>
-- (BOOL)available;
-- (BOOL)start;
+- (BOOL)available:(Facing)facing;
+- (BOOL)start:(Facing)facing;
 - (Status)status;
 - (void)stop;
 - (BOOL)copyFrame:(Camera::Format)format into:(std::span<uint8_t>)destination;
 @end
 
 @implementation NestvaneCameraCapture {
-    AVCaptureDevice* _device;
+    AVCaptureDevice* _back;
+    AVCaptureDevice* _front;
+    AVCaptureDevice* _device; // The one being used.
     AVCaptureSession* _session;
     dispatch_queue_t _queue;
     uint64_t _sessionGeneration;
@@ -33,9 +36,12 @@ using Status = Camera::Status;
 
 - (instancetype)init {
     if (!(self = [super init])) return nil;
-    _device = [AVCaptureDevice defaultDeviceWithDeviceType:AVCaptureDeviceTypeBuiltInWideAngleCamera
-                                                mediaType:AVMediaTypeVideo
-                                                 position:AVCaptureDevicePositionBack];
+    _back = [AVCaptureDevice defaultDeviceWithDeviceType:AVCaptureDeviceTypeBuiltInWideAngleCamera
+                                              mediaType:AVMediaTypeVideo
+                                               position:AVCaptureDevicePositionBack];
+    _front = [AVCaptureDevice defaultDeviceWithDeviceType:AVCaptureDeviceTypeBuiltInWideAngleCamera
+                                               mediaType:AVMediaTypeVideo
+                                                position:AVCaptureDevicePositionFront];
     _queue = dispatch_queue_create("dev.nestvane.camera", DISPATCH_QUEUE_SERIAL);
     _status = Status::unavailable;
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(appBackgrounded:)
@@ -48,19 +54,21 @@ using Status = Camera::Status;
     if (_frame) CVPixelBufferRelease(_frame);
 }
 
-- (BOOL)available { return _device != nil; }
+- (BOOL)available:(Facing)facing { return (facing == Facing::front ? _front : _back) != nil; }
 
 - (BOOL)ownsGeneration:(uint64_t)generation {
     std::lock_guard lock(_lock);
     return _leased && _generation == generation;
 }
 
-- (BOOL)start {
-    if (!_device) return NO;
+- (BOOL)start:(Facing)facing {
+    AVCaptureDevice* device = facing == Facing::front ? _front : _back;
+    if (!device) return NO;
     uint64_t generation;
     {
         std::lock_guard lock(_lock);
         if (_leased) return NO;
+        _device = device;
         _leased = true;
         _status = Status::starting;
         generation = ++_generation;
@@ -68,6 +76,7 @@ using Status = Camera::Status;
     dispatch_async(_queue, ^{
         if (![self ownsGeneration:generation]) return;
         const auto access = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeVideo];
+        NSLog(@"Nestvane camera: %@ camera asked for, access %ld", self->_device == self->_front ? @"front" : @"back", long(access));
         if (access == AVAuthorizationStatusNotDetermined) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (![self ownsGeneration:generation]) return;
@@ -115,11 +124,17 @@ using Status = Camera::Status;
     [session addOutput:output];
     AVCaptureConnection* connection = [output connectionWithMediaType:AVMediaTypeVideo];
     if ([connection isVideoRotationAngleSupported:0]) connection.videoRotationAngle = 0;
+    // The sensor's own picture, unmirrored, as an Android camera gives it: the app mirrors a front preview itself.
+    if (connection.isVideoMirroringSupported) {
+        connection.automaticallyAdjustsVideoMirroring = NO;
+        connection.videoMirrored = NO;
+    }
     [output setSampleBufferDelegate:self queue:_queue];
     if (![self ownsGeneration:generation]) return;
     _session = session;
     _sessionGeneration = generation;
     [session startRunning];
+    NSLog(@"Nestvane camera: session running %d", session.running);
     if (!session.running) unavailable();
 }
 
@@ -218,8 +233,8 @@ namespace nestvane {
 namespace {
 class IOSCameraSource final : public GuestCameraSource {
 public:
-    bool available() const override { return [capture available]; }
-    bool start() override { return [capture start]; }
+    bool available(Facing facing) const override { return [capture available:facing]; }
+    bool start(Facing facing) override { return [capture start:facing]; }
     Status status() const override { return [capture status]; }
     bool copyFrame(Format format, std::span<uint8_t> target) override { return [capture copyFrame:format into:target]; }
     void stop() override { [capture stop]; }

@@ -38,7 +38,7 @@ More → Settings 是 Nestvane 自己的设置：版本、共享文件在哪里�
 root 默认关。
 
 1. More → Settings → 打开 **Allow root**。
-2. 关掉 Nestvane（在多任务界面上划掉）再打开。这个开关在 Nestvane 启动时读。
+2. 重新启动 Android：More → **Stop Android…**，再 Start Android（或者关掉 Nestvane 再打开）。这个开关在每次启动 Android 时读。
 3. Android 应用运行 `su` 时，iOS 会问是否允许这个应用拿 root，回答会记住。
 
 请求过的应用按名字列在 Settings 的 Allow root 下面，关掉某一个就是以后拒绝它。有 root 的应用能读写 Android 里所有应用的数据，只允许信得过的应用。
@@ -67,7 +67,7 @@ Nestvane 实现了 KernelSU 自己的接口，所以官方的 KernelSU Manager �
 
 **备份：** More → **Back Up Android…** → Back Up。写文件时 Android 停下，写好后你选放在哪里（我的 iPhone、iCloud 云盘或别的应用），然后 Android 再启动。文件名像 `Nestvane-Backup-2026-11-25-1030.aar`。要留出差不多和 Android 数据一样大的空闲空间，菜单里会写有多大。
 
-**恢复：** More → **Restore Android…** → Choose Backup…，选文件。Android 停下，应用和数据换成备份里的，然后从备份启动。原来的数据一直留着，直到 Android 从备份启动到桌面；在那之前就停了的话，会把原来的放回去。各个应用的 root 回答随备份马上回来；root 开没开也会回来，和开关一样，要关掉再打开 Nestvane 才生效。
+**恢复：** More → **Restore Android…** → Choose Backup…，选文件。Android 停下，应用和数据换成备份里的，然后从备份启动。原来的数据一直留着，直到 Android 从备份启动到桌面；在那之前就停了的话，会把原来的放回去。各个应用的 root 回答随备份马上回来；root 开没开也会回来，Android 从备份启动时就生效。
 
 哪个版本的 Nestvane 做的备份，就用同一个或更新的版本恢复。
 

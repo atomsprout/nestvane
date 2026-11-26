@@ -1141,8 +1141,8 @@ static void AskForRoot(NSString* name) {
     };
     _sections = @[
         @{@"title": @"Android", @"footer": fast
-              ? @"120 Hz makes motion smoother and uses more battery. It takes effect the next time Android starts, as do files you put into the Android folder."
-              : @"Files you put into the Android folder appear in Android the next time it starts.",
+              ? @"120 Hz makes motion smoother and uses more battery. It takes effect the next time Android starts. Files you put into the Android folder appear in Android within a few seconds."
+              : @"Files you put into the Android folder appear in Android within a few seconds.",
           @"rows": [@[row(@"cpu", @"Android version", @"17", nil), row(@"display", @"Display", rate, nil)]
               arrayByAddingObjectsFromArray:[(fast ? @[@{@"symbol": @"gauge.with.dots.needle.67percent", @"title": @"120 Hz",
                                                         @"detail": @"", @"url": @"", @"switch": Display120HzKey}] : @[])
@@ -2643,7 +2643,7 @@ int main(int argc, char* argv[]) {
     // NESTVANE_TEST_ROOT=allow or =deny turns root on and answers for every app that has no answer
     // yet, instead of asking, for the app's tests.
     nestvane::ProbeLinux::setRootPolicy({
-        [NSUserDefaults.standardUserDefaults boolForKey:RootEnabledKey] || getenv("NESTVANE_TEST_ROOT"),
+        [] { return [NSUserDefaults.standardUserDefaults boolForKey:RootEnabledKey] || getenv("NESTVANE_TEST_ROOT"); },
         [](uint32_t uid, const std::string& package) -> int {
             @autoreleasepool {
                 NSString* name = package.empty() ? [NSString stringWithFormat:@"uid %u", uid] : @(package.c_str());

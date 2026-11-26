@@ -64,7 +64,7 @@ export const content = {
     kernelsuTitle: 'Root, with KernelSU Manager',
     kernelsuIntro: 'Turn on root in Nestvane’s settings, and Android apps can ask for it with su: iOS asks you once for each app. The official KernelSU Manager works too. Nestvane’s Linux layer answers KernelSU’s own interface, so there is nothing to flash and no kernel to patch.',
     kernelsuSteps: [
-      ['Turn on root', 'In Nestvane, open More → Settings and turn on Allow root. Then close Nestvane and open it again.'],
+      ['Turn on root', 'In Nestvane, open More → Settings and turn on Allow root. Then stop Android from the More menu and start it again.'],
       ['Install the Manager', 'Download the KernelSU Manager APK from KernelSU’s releases on GitHub and open it with Nestvane. Only the Manager signed by KernelSU is recognized. The first time, it takes about a minute to set itself up.'],
       ['Give and take away root', 'The Manager shows KernelSU as working. In its Superuser tab every app has a switch. The switches and the iOS prompt share the same answers: change one and the other shows it.'],
     ],
