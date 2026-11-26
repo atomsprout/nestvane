@@ -6,6 +6,7 @@
 #include "ProbeLinux.hpp"
 
 #include <map>
+#include <set>
 #include <new>
 #include <atomic>
 #include <mutex>
@@ -878,7 +879,9 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
                         report << " [unimplemented in guest PID " << caller << ", suspended]\n";
                         // In Android's log too, with what its first argument is when that is a descriptor: a
                         // suspended process can hold up others that wait for it, far from where it stopped.
-                        if (linux.androidLogObserver) {
+                        // Once for each process and call: a signal wakes a suspended thread, and it tries again.
+                        static std::set<std::pair<uint32_t, uint64_t>> reported;
+                        if (linux.androidLogObserver && reported.size() < 4096 && reported.emplace(caller, syscall).second) {
                             std::ostringstream event;
                             event << "Nestvane: system call " << syscall << " not implemented, PID " << caller << " suspended:" << std::hex;
                             for (int i = 0; i < 6; ++i) event << " x" << i << "=0x" << cpu.x[i];

@@ -2514,7 +2514,7 @@ bool ProbeLinux::eventCall(Machine& machine) {
             // TCP sockets too: Telegram watches its connections for changes only.
             const bool edgeSupported = target->second.node == Node::event || target->second.pipe ||
                 (socket && socket->family == 1 && !(mask & ~unixReadEdge)) ||
-                (socket && (socket->family == 2 || socket->family == 10) && socket->type == 1);
+                (socket && (socket->family == 2 || socket->family == 10) && (socket->type == 1 || socket->inetDatagram()));
             const auto supported = 0x2000205fU | (edgeSupported ? epollEdge : 0);
             if (mask & ~supported) return false;
             watches.insert_or_assign(fd, Watch{mask, event[1], target->second.event, target->second.socket,
@@ -2542,7 +2542,8 @@ bool ProbeLinux::eventCall(Machine& machine) {
                 const auto endpoint = watch.socket.lock();
                 watchesListener |= endpoint && endpoint->listening && (watch.mask & epollIn);
                 const bool pipeEdge = (watch.mask & epollEdge) && watch.pipe.lock();
-                const bool hostEdge = (watch.mask & epollEdge) && endpoint && endpoint->hostFd >= 0;
+                // Sockets the host carries, and UDP sockets, whose readiness is looked at rather than counted.
+                const bool hostEdge = (watch.mask & epollEdge) && endpoint && (endpoint->hostFd >= 0 || endpoint->inetDatagram());
                 const bool edge = (watch.mask & epollEdge) && !pipeEdge && !hostEdge;
                 const PollNotifications* notifications = nullptr;
                 if (edge) {
@@ -10704,7 +10705,11 @@ uint64_t ProbeLinux::receiveInetDatagram(Machine& machine, SocketState& socket, 
     if (socket.hostFd >= 0 && socket.datagrams.empty()) {
         if (const auto pulled = pullHostDatagram(socket); pulled) return *pulled;
     }
-    if (socket.datagrams.empty()) return socket.receiveShutdown ? 0 : uint64_t(-11);
+    if (socket.datagrams.empty()) {
+        if (socket.receiveShutdown) return 0;
+        ++socket.pollNotifications.readable;  // drained: an edge-triggered watch reports the next datagram
+        return uint64_t(-11);
+    }
     const auto& packet = socket.datagrams.front();
     const auto count = std::min<uint64_t>(size, packet.payload.size());
     if (source) {
@@ -12632,6 +12637,81 @@ bool ProbeLinux::syscall(Machine& machine) {
             break;
         }
         case 73: return poll(machine); // ppoll
+        case 72: { // pselect6, as a ppoll of the same descriptors (VLC's libraries wait in it)
+            const auto saved = x;
+            const uint64_t count = x[0];
+            if (count > 1024) { x[0] = invalid; break; }
+            const size_t setBytes = (count + 63) / 64 * 8;
+            std::array<std::array<uint64_t, 16>, 3> sets{};
+            for (int i = 0; i < 3; ++i)
+                if (saved[1 + i] && setBytes &&
+                    !machine.readInto(saved[1 + i], {reinterpret_cast<uint8_t*>(sets[i].data()), setBytes})) {
+                    x[0] = uint64_t(-14);
+                    return true;
+                }
+            const auto has = [&](int set, uint64_t fd) { return saved[1 + set] && (sets[set][fd / 64] >> (fd % 64) & 1); };
+            std::vector<std::array<int32_t, 2>> entries;  // pollfd: fd, then events and revents as two shorts
+            for (uint64_t fd = 0; fd < count; ++fd) {
+                const int16_t events = int16_t((has(0, fd) ? 1 : 0) | (has(1, fd) ? 4 : 0) | (has(2, fd) ? 2 : 0));
+                if (events) entries.push_back({int32_t(fd), events});
+            }
+            // The sixth argument points at the signal mask and its size.
+            std::array<uint64_t, 2> maskArgument{};
+            if (saved[5] && !machine.readInto(saved[5], {reinterpret_cast<uint8_t*>(maskArgument.data()), sizeof(maskArgument)})) {
+                x[0] = uint64_t(-14);
+                return true;
+            }
+            // The entries go below the caller's stack, which nothing else uses while it is in this call.
+            const uint64_t scratch = (machine.cpu.sp - 65536 - entries.size() * 8) & ~uint64_t{15};
+            if (!entries.empty() && !machine.write(scratch, {reinterpret_cast<const uint8_t*>(entries.data()), entries.size() * 8})) {
+                x[0] = uint64_t(-14);
+                return true;
+            }
+            x[0] = entries.empty() ? 0 : scratch;
+            x[1] = entries.size();
+            x[2] = saved[4];
+            x[3] = maskArgument[0];
+            x[4] = maskArgument[1];
+            const bool handled = poll(machine);
+            if (!handled || blocked()) {
+                // Waiting, or not done: it runs again from the start with what the caller gave.
+                const auto result = x[0];
+                x = saved;
+                if (!handled) return false;
+                (void)result;
+                return true;
+            }
+            if (int64_t(x[0]) < 0) { const auto error = x[0]; x = saved; x[0] = error; break; }
+            if (!entries.empty() && !machine.readInto(scratch, {reinterpret_cast<uint8_t*>(entries.data()), entries.size() * 8})) {
+                x = saved;
+                x[0] = uint64_t(-14);
+                break;
+            }
+            std::array<std::array<uint64_t, 16>, 3> ready{};
+            uint64_t total = 0;
+            bool badDescriptor = false;
+            for (const auto& entry : entries) {
+                const auto fd = uint32_t(entry[0]);
+                const auto revents = uint16_t(uint32_t(entry[1]) >> 16), events = uint16_t(entry[1]);
+                if (revents & 0x20) badDescriptor = true;  // POLLNVAL
+                const bool readable = (events & 1) && (revents & (1 | 8 | 16));  // POLLIN, POLLERR, POLLHUP
+                const bool writable = (events & 4) && (revents & (4 | 8));       // POLLOUT, POLLERR
+                const bool urgent = (events & 2) && (revents & 2);               // POLLPRI
+                if (readable) { ready[0][fd / 64] |= 1ULL << (fd % 64); ++total; }
+                if (writable) { ready[1][fd / 64] |= 1ULL << (fd % 64); ++total; }
+                if (urgent) { ready[2][fd / 64] |= 1ULL << (fd % 64); ++total; }
+            }
+            x = saved;
+            if (badDescriptor) { x[0] = uint64_t(-9); break; }
+            for (int i = 0; i < 3; ++i)
+                if (saved[1 + i] && setBytes &&
+                    !machine.write(saved[1 + i], {reinterpret_cast<const uint8_t*>(ready[i].data()), setBytes})) {
+                    x[0] = uint64_t(-14);
+                    return true;
+                }
+            x[0] = total;
+            break;
+        }
         case 98: return futex(machine);
         case 102: case 103: { // getitimer, setitimer
             // The real-time timer, which alarm and the timeouts of command-line tools are made of.
