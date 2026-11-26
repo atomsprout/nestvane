@@ -48,7 +48,7 @@
 
 - [x] 用旧相机接口的应用（Open Camera）能开相机（上面 1.13 一节有细节，204e630）
 - [x] WebView 的渲染进程崩溃：内核层的 ashmem 没实现 PIN、UNPIN、GET_PIN_STATUS（回 ENOTTY）。Chromium 的 discardable memory 用它们给内存块加锁、解锁，失败后它的堆把还在用的块当成丢了，之后在 `DiscardableSharedMemoryHeap` 合并空闲块时摘一个已释放的节点（链表摘节点处 SIGSEGV）。补上后：从不回收，PIN 总是 ASHMEM_NOT_PURGED，记下哪些范围解锁着。iPhone 14 上 WebView 测试应用连开三轮（每次 25 秒）不崩，8 个应用三轮也没有一次崩溃
-- [ ] 开机比基线慢：同一台 iPhone 14，1.11 自己当天也慢 0.5 秒，查清楚原因，正式检查要过
+- [ ] 开机比基线慢：同一台 iPhone 14，1.11 自己当天也慢 0.5 秒，查清楚原因，正式检查要过。找到一处：Android 的 /data 存在 SQLite 库里，测 50 个应用装了又卸以后库 209 MB、79% 是空闲页，每次开机读全部记录，压缩成 44 MB 后正式检查 8680 毫秒（之前 8856）。改成开库时空闲页超过四分之一且多于 16 MB 就先 VACUUM（手机上 209 MB 压到 43.9 MB，8 个应用都在）。还差约 290 毫秒
 - [ ] 开机门槛、文档、发布
 
 ## 1.15 要重新构建 AOSP

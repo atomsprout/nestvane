@@ -77,6 +77,21 @@ void ProbeLinux::mountData(const std::string& databasePath) {
     const int opened = sqlite3_open_v2(databasePath.c_str(), &raw,
                                        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nullptr);
     std::unique_ptr<sqlite3, decltype(&sqlite3_close)> database(raw, sqlite3_close);
+    // Installing and removing apps leaves most of the file free pages, with the live records scattered
+    // through it, and every start reads all of them: after many apps came and went (79% free, 209 MB for
+    // 45 MB of records) an iPhone 14 started 170 ms slower. Compact it once it is mostly holes.
+    if (opened == SQLITE_OK) {
+        sqlite3_stmt* count = nullptr;
+        int64_t pages = 0, free = 0;
+        if (sqlite3_prepare_v2(raw, "SELECT (SELECT page_count FROM pragma_page_count),"
+                                    " (SELECT freelist_count FROM pragma_freelist_count)", -1, &count, nullptr) == SQLITE_OK &&
+            sqlite3_step(count) == SQLITE_ROW) {
+            pages = sqlite3_column_int64(count, 0);
+            free = sqlite3_column_int64(count, 1);
+        }
+        sqlite3_finalize(count);
+        if (free > 4096 && free * 4 > pages) execute(raw, "PRAGMA fullfsync=ON; PRAGMA synchronous=FULL; VACUUM");
+    }
     if (opened != SQLITE_OK || !execute(raw,
         "PRAGMA fullfsync=ON; PRAGMA synchronous=FULL; PRAGMA busy_timeout=2000; PRAGMA temp_store=MEMORY;"
         "CREATE TEMP TABLE live_entries (path TEXT PRIMARY KEY) WITHOUT ROWID;"
