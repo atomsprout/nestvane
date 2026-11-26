@@ -876,7 +876,7 @@ int main() {
         assert(inbox.submit({0x50, 0x4b}, finished));
         assert(!inbox.submit({1}, finished));
         const auto first = inbox.take();
-        assert(first && first->bytes == std::vector<uint8_t>({0x50, 0x4b}));
+        assert(first && std::ranges::equal(first->bytes, std::vector<uint8_t>({0x50, 0x4b})));
         assert(!inbox.take() && !inbox.submit({2}, finished));
         first->finish(Result::installed);
         first->finish(Result::rejected);

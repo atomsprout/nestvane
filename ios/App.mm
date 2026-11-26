@@ -1933,12 +1933,14 @@ static bool ApkContent(NSData* data) {
             report(@"This file isn’t an Android app (APK).");
             return;
         }
-        const auto* bytes = static_cast<const uint8_t*>(data.bytes);
-        std::vector<uint8_t> file(bytes, bytes + data.length);
+        // The bytes as read (mapped from the file when it can be), kept by the request: not copied.
+        const std::span<const uint8_t> file(static_cast<const uint8_t*>(data.bytes), data.length);
+        const std::shared_ptr<const void> owner((__bridge_retained const void*)data, [](const void* held) { CFRelease(held); });
         if (access) [source stopAccessingSecurityScopedResource];
-        // A file another app handed over was copied into this app's inbox directory for it.
+        // A file another app handed over was copied into this app's inbox directory for it. Unlinked,
+        // its mapped bytes stay readable until the installation is over.
         if ([source.path containsString:@"/Documents/Inbox/"]) [NSFileManager.defaultManager removeItemAtURL:source error:nil];
-        if (!inbox->submit(std::move(file), [report](Inbox::Result result) {
+        if (!inbox->submit(file, owner, [report](Inbox::Result result) {
             switch (result) {
                 case Inbox::Result::installed: report(@"APK installed. Open it from the Android launcher."); break;
                 case Inbox::Result::rejected: report(@"Android couldn’t install this APK."); break;
@@ -2283,12 +2285,15 @@ static bool ApkContent(NSData* data) {
                                 NSMutableString* text = [NSMutableString string];
                                 for (NSString* name in [names componentsSeparatedByString:@","]) @autoreleasepool {
                                     // Each APK's bytes go when it is installed, not when the whole test is over.
-                                    NSData* data = [NSData dataWithContentsOfURL:[documents URLByAppendingPathComponent:name]];
+                                    NSData* data = [NSData dataWithContentsOfURL:[documents URLByAppendingPathComponent:name]
+                                                                         options:NSDataReadingMappedIfSafe error:nil];
                                     const auto* bytes = static_cast<const uint8_t*>(data.bytes);
                                     const auto submitted = NSProcessInfo.processInfo.systemUptime;
                                     dispatch_semaphore_t done = dispatch_semaphore_create(0);
                                     const auto outcome = std::make_shared<std::atomic_int>(-1);
-                                    const bool accepted = data.length && apkInbox->submit(std::vector<uint8_t>(bytes, bytes + data.length),
+                                    const std::shared_ptr<const void> owner = data ?
+                                        std::shared_ptr<const void>((__bridge_retained const void*)data, [](const void* held) { CFRelease(held); }) : nullptr;
+                                    const bool accepted = data.length && apkInbox->submit(std::span<const uint8_t>(bytes, data.length), owner,
                                         [outcome, done](nestvane::GuestApkInbox::Result result) {
                                             outcome->store(int(result));
                                             dispatch_semaphore_signal(done);
