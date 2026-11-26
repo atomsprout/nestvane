@@ -222,6 +222,7 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
     const auto snapshotInterval = seconds(init && liveSnapshot
         ? initLimit("NESTVANE_INIT_SNAPSHOT_SECONDS", 0, UINT32_MAX) : 0);
     auto nextSnapshot = snapshotInterval.count() ? start + snapshotInterval : steady_clock::time_point::max();
+    auto nextMemoryCheck = start + seconds(1);
     auto scheduleDeadline = std::min(deadline, nextSnapshot);
     constexpr uint64_t sampleStride = 1'048'576;
     const bool sampleBoot = init && initLimit("NESTVANE_INIT_SAMPLE_CODE", 0, 1, 0);
@@ -458,6 +459,10 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
             }
             if (now >= nextSnapshot) captureSnapshot(now);
             serveDiagnostics(now);
+            if (now >= nextMemoryCheck) {
+                nextMemoryCheck = now + seconds(1);
+                linux.relieveMemoryPressure();
+            }
         }
         // Timed after a stretch of native code only: after each interpreted instruction, reading the
         // clock twice would cost more than the instruction.
@@ -1283,7 +1288,7 @@ service nestvane-trim /system/bin/sh /system/etc/nestvane/trim.sh
                 "PackageManager: Failed to create app data", "PackageManager: reconcileAppsData",
                 "installd: Failed to restorecon", "ActivityTaskManager: Displayed com.android.launcher3/",
                 "CameraProviderManager: Adding new camera device:", "CameraService: addStates",
-                "NestvaneSmoke: ", "Nestvane: ended ", "Nestvane: system call ", "ActivityTaskManager: Displayed dev.nestvane.smoke/",
+                "NestvaneSmoke: ", "Nestvane: ended ", "Nestvane: system call ", "Nestvane: SIGSEGV ", "ActivityTaskManager: Displayed dev.nestvane.smoke/",
                 "ActivityTaskManager: Displayed com.android.settings/.FallbackHome",
                 "SystemUIFactory: Failed to initialize WMComponent", "libc: Fatal signal ",
                 "Guest native abort: ", "InputTransport: ", "InputDispatcher: ", "InputManager-JNI: ",

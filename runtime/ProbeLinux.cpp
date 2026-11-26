@@ -24,6 +24,10 @@
 #include <new>
 #include <random>
 #include <sstream>
+#include <TargetConditionals.h>
+#if TARGET_OS_IPHONE
+#include <os/proc.h>
+#endif
 #include <thread>
 #include <type_traits>
 
@@ -8162,11 +8166,29 @@ bool ProbeLinux::futex(Machine& machine) {
     return true;
 }
 
-bool ProbeLinux::endCachedAppForRoom() {
+bool ProbeLinux::endCachedAppForRoom() { return endCachedApp(900, "to make room for a new process"); }
+
+bool ProbeLinux::relieveMemoryPressure() {
+#if TARGET_OS_IPHONE
+    // iOS ends the whole app, Android and all, when it uses more than its limit, with no warning Android
+    // could act on. So the runtime does what lmkd would: when little is left, the cached app Android ranks
+    // lowest goes; when very little is left, the previous app too (700). Never anything the person sees.
+    const size_t left = os_proc_available_memory();
+    if (!left) return false;
+    constexpr size_t megabyte = 1024 * 1024;
+    const int minimum = left < 250 * megabyte ? 700 : left < 500 * megabyte ? 900 : -1;
+    if (minimum < 0) return false;
+    return endCachedApp(minimum, "to free memory (" + std::to_string(left / megabyte) + " MB left)");
+#else
+    return false;
+#endif
+}
+
+bool ProbeLinux::endCachedApp(int minimumAdjustment, std::string_view reason) {
     // Android's cached apps have 900 and above (ProcessList.CACHED_APP_MIN_ADJ); the higher, the less needed.
     Process* victim = nullptr;
     for (const auto& [id, process] : processes)
-        if (process != current->process.get() && process->oomScoreAdjustment >= 900 &&
+        if (process != current->process.get() && process->oomScoreAdjustment >= minimumAdjustment &&
             (!victim || process->oomScoreAdjustment > victim->oomScoreAdjustment)) victim = process;
     if (!victim) return false;
     const auto id = victim->id;
@@ -8175,7 +8197,7 @@ bool ProbeLinux::endCachedAppForRoom() {
         name.assign(reinterpret_cast<const char*>(main->second.name.data()),
                     strnlen(reinterpret_cast<const char*>(main->second.name.data()), main->second.name.size()));
     const std::string event = "Nestvane: ended cached app " + name + " (pid " + std::to_string(id) + ", adj " +
-        std::to_string(victim->oomScoreAdjustment) + ") to make room for a new process";
+        std::to_string(victim->oomScoreAdjustment) + ") " + std::string(reason);
     if (androidLogObserver) androidLogObserver(event);
     keepDiagnosticLine(event);
     recallNativeThreads(victim);
@@ -9403,6 +9425,21 @@ bool ProbeLinux::deliverMemoryFault(Machine& machine) {
     info.number = sigSegv;
     info.code = mapped ? 2 : 1; // SEGV_ACCERR or SEGV_MAPERR
     info.address = address;
+    // An access error away from the first pages, which ART uses for its null checks, is rare and often
+    // the start of an app's crash: say where, and what the mapping allows, a few times a run.
+    static unsigned accessErrorsLogged = 0;
+    if (mapped && address >= 0x10000 && accessErrorsLogged < 48 && androidLogObserver) {
+        ++accessErrorsLogged;
+        const auto segment = std::ranges::find_if(machine.segments, [&](const Segment& candidate) {
+            return address >= candidate.address && address - candidate.address < candidate.mappedSize();
+        });
+        std::ostringstream event;
+        event << "Nestvane: SIGSEGV access error in pid " << current->process->id << " tid " << currentTid << std::hex
+              << ": PC=0x" << machine.cpu.pc << " address=0x" << address << " mapping 0x" << segment->address << "+0x"
+              << segment->mappedSize() << " flags " << segment->flags << " accessible 0x" << segment->accessibleSize()
+              << (segment->anonymous ? " anonymous" : "") << (segment->shared ? " shared" : "");
+        androidLogObserver(event.str());
+    }
     if (installSignalFrame(machine, sigSegv, std::bit_cast<SignalWords>(info), address)) return true;
     // No handler for it, or it is blocked, or there is no room for the frame: Linux ends the process with
     // SIGSEGV, and the rest of the system goes on. Only init's own fault still stops everything.
@@ -13039,6 +13076,10 @@ bool ProbeLinux::syscall(Machine& machine) {
         // pidfd_send_signal: not here (lmkd's kills would use it). Saying so lets the caller go on, where
         // an unknown call would stop it.
         case 424: x[0] = uint64_t(-38); break;
+        // ptrace: no process may trace another here. Chromium's crash handler attaches to the renderer
+        // that crashed; told it may not (as Android's Yama would for an unrelated process), it ends, and so
+        // does the crashed app, where waiting for the handler kept both stopped.
+        case 117: x[0] = uint64_t(-1); break;
         case 232: { // mincore: residency of the guest backing for each virtual page.
             if (x[0] % pageSize || x[1] > maxReservation) { x[0] = invalid; break; }
             const auto length = pageAlignedLength(x[1]);

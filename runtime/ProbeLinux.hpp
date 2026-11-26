@@ -375,6 +375,11 @@ private:
     // When a new process finds no room in the host's address space: ends the cached app that matters
     // least, as Linux's low-memory killer would. False when there is none to end.
     bool endCachedAppForRoom();
+    bool endCachedApp(int minimumAdjustment, std::string_view reason);
+public:
+    // Called about once a second: ends a cached app when iOS has little memory left for this one.
+    bool relieveMemoryPressure();
+private:
     bool waitChild(Machine& machine);
     Process* liveProcess(uint64_t id) const;
     bool processAlive(uint64_t id) const { return liveProcess(id) != nullptr; }
