@@ -4232,6 +4232,17 @@ int main() {
         const auto writable = call(222, {0, pageSize, 3, 1, fd});
         assert(writable < (1ULL << 37));
         assert(call(29, {fd, 0x40087703, pageSize * 2}) == uint64_t(-22));
+        // Pinning (Chromium's discardable memory): never purged, and the pin state is kept.
+        const auto pinArgument = base + 64;
+        assert(machine.store64(pinArgument, 0));                          // offset 0, length 0: the whole region
+        assert(call(29, {fd, 0x7709, pinArgument}) == 1);                 // ASHMEM_IS_PINNED
+        assert(call(29, {fd, 0x40087708, pinArgument}) == 0);             // ASHMEM_UNPIN
+        assert(call(29, {fd, 0x7709, pinArgument}) == 0);                 // ASHMEM_IS_UNPINNED
+        assert(call(29, {fd, 0x40087707, pinArgument}) == 0);             // ASHMEM_PIN: ASHMEM_NOT_PURGED
+        assert(call(29, {fd, 0x7709, pinArgument}) == 1 && load(writable) == 0);
+        assert(machine.store64(pinArgument, 1));                          // an offset that is not page aligned
+        assert(call(29, {fd, 0x40087707, pinArgument}) == uint64_t(-22));
+        assert(call(29, {fd, 0x770a}) == 0);                              // ASHMEM_PURGE_ALL_CACHES
         assert(call(29, {fd, 0x40087705, 1}) == 0);
         assert(call(222, {0, pageSize, 3, 1, fd}) == uint64_t(-1));
         const auto shared = call(222, {0, pageSize, 1, 1, fd});

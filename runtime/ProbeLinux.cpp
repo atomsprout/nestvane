@@ -9363,6 +9363,35 @@ uint64_t ProbeLinux::ashmemIoctl(Machine& machine, const Descriptor& fd) {
             return 0;
         case 0x7706: // ASHMEM_GET_PROT_MASK
             return region.protection;
+        // Pinning. Chromium's discardable memory locks and unlocks its blocks with these; failing them made
+        // its heap treat memory as lost while still using it. Nothing here is ever purged, so a pin always
+        // finds its pages (ASHMEM_NOT_PURGED) and only the pin state is kept.
+        case 0x40087707: case 0x40087708: case 0x7709: { // ASHMEM_PIN, ASHMEM_UNPIN, ASHMEM_GET_PIN_STATUS
+            if (!region.allocated) return invalid;
+            struct { uint32_t offset, length; } pin{};
+            std::vector<uint8_t> scratch;
+            const auto* input = machine.read(x[2], sizeof(pin), 4, scratch);
+            if (!input) return uint64_t(-14);
+            std::memcpy(&pin, input, sizeof(pin));
+            const uint64_t size = pageAlignedLength(region.size);
+            if (pin.offset % pageSize || pin.length % pageSize || pin.offset > size) return invalid;
+            const uint64_t start = pin.offset, end = pin.length ? uint64_t(pin.offset) + pin.length : size;
+            if (end > size || end < start) return invalid;
+            auto& ranges = region.unpinned;
+            if (x[1] == 0x7709) // ASHMEM_IS_UNPINNED (0) when any page of the range is unpinned, else ASHMEM_IS_PINNED
+                return std::ranges::any_of(ranges, [&](const auto& r) { return r.first < end && start < r.second; }) ? 0 : 1;
+            std::vector<std::pair<uint64_t, uint64_t>> kept;
+            for (const auto& [left, right] : ranges) {
+                if (right <= start || end <= left) { kept.emplace_back(left, right); continue; }
+                if (left < start) kept.emplace_back(left, start);
+                if (end < right) kept.emplace_back(end, right);
+            }
+            if (x[1] == 0x40087708) kept.emplace_back(start, end);
+            ranges = std::move(kept);
+            return 0; // ASHMEM_NOT_PURGED for a pin; 0 for an unpin
+        }
+        case 0x770a: // ASHMEM_PURGE_ALL_CACHES: nothing is ever purged here.
+            return 0;
         default:
             return uint64_t(-25);
     }

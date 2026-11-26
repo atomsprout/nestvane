@@ -47,7 +47,7 @@
 1.13 发布后发现的问题都放在 1.14 修，原来 1.14 的重建 AOSP 顺延到 1.15。
 
 - [x] 用旧相机接口的应用（Open Camera）能开相机（上面 1.13 一节有细节，204e630）
-- [ ] WebView 的渲染进程崩溃（上面 1.13 一节有细节）
+- [x] WebView 的渲染进程崩溃：内核层的 ashmem 没实现 PIN、UNPIN、GET_PIN_STATUS（回 ENOTTY）。Chromium 的 discardable memory 用它们给内存块加锁、解锁，失败后它的堆把还在用的块当成丢了，之后在 `DiscardableSharedMemoryHeap` 合并空闲块时摘一个已释放的节点（链表摘节点处 SIGSEGV）。补上后：从不回收，PIN 总是 ASHMEM_NOT_PURGED，记下哪些范围解锁着。iPhone 14 上 WebView 测试应用连开三轮（每次 25 秒）不崩，8 个应用三轮也没有一次崩溃
 - [ ] 开机比基线慢：同一台 iPhone 14，1.11 自己当天也慢 0.5 秒，查清楚原因，正式检查要过
 - [ ] 开机门槛、文档、发布
 

@@ -806,6 +806,7 @@ private:
         unsigned protection = 7;
         std::string name;
         bool allocated = false;
+        std::vector<std::pair<uint64_t, uint64_t>> unpinned; // [start, end) ranges unpinned and not pinned since
     };
     struct Descriptor {
         std::string path;
