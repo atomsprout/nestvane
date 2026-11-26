@@ -24,6 +24,7 @@
 #include <new>
 #include <random>
 #include <sstream>
+#include <sys/ioctl.h>
 #include <TargetConditionals.h>
 #if TARGET_OS_IPHONE
 #include <os/proc.h>
@@ -7029,9 +7030,12 @@ bool ProbeLinux::forkProcess(Machine& machine) {
     // without SIGCHLD at its end: Firefox starts its helper process with CLONE_FS | CLONE_UNTRACED, a new
     // stack and no signal. Here the child gets its own copy of the working directory, which a child that
     // goes on to exec does not miss.
-    constexpr uint64_t cloneFs = 0x200, untraced = 0x800000;
+    // CLONE_FILES likewise: Quark and UC start a helper sharing the descriptor table, and a copy of it is
+    // the same to a child that only sets up and execs.
+    constexpr uint64_t cloneFs = 0x200, cloneFiles = 0x400, untraced = 0x800000;
     const uint64_t shape = x[0] & ~uint64_t(0xff), exitSignal = x[0] & 0xff;
-    const bool copy = !(shape & ~(cloneFs | untraced | childSetTid | childClearTid)) && (exitSignal == 17 || exitSignal == 0);
+    const bool copy = !(shape & ~(cloneFs | cloneFiles | untraced | childSetTid | childClearTid)) &&
+                      (exitSignal == 17 || exitSignal == 0);
     if (!vfork && !copy) return false;
     const auto retry = [&](std::string_view reason, uint64_t requested, int mappingError = 0) {
         if (androidLogObserver) {
@@ -12069,6 +12073,51 @@ bool ProbeLinux::syscall(Machine& machine) {
                         androidLogObserver("native execution: ethtool command " + std::to_string(command));
                     x[0] = uint64_t(-95);
                 }
+                break;
+            }
+            // SIOCGIFCONF: the interfaces with an IPv4 address, loopback and Ethernet. Zoom and Tencent Video ask
+            // for the list before they use the network, and were suspended.
+            if (descriptor->second.socket && x[1] == 0x8912) {
+                std::array<uint8_t, 16> request{};
+                if (!machine.readInto(x[2], request)) { x[0] = uint64_t(-14); break; }
+                int32_t capacity = 0;
+                uint64_t buffer = 0;
+                std::memcpy(&capacity, request.data(), 4);
+                std::memcpy(&buffer, request.data() + 8, 8);
+                std::vector<std::array<uint8_t, 40>> entries;
+                const auto add = [&](std::string_view name, std::array<uint8_t, 4> ip) {
+                    std::array<uint8_t, 40> entry{};
+                    std::copy(name.begin(), name.end(), entry.begin());
+                    entry[16] = 2;  // AF_INET
+                    std::copy(ip.begin(), ip.end(), entry.begin() + 20);
+                    entries.push_back(entry);
+                };
+                add("lo", {127, 0, 0, 1});
+                if (guestRoutes.ethernet.present && guestRoutes.ethernet.address) add("eth0", *guestRoutes.ethernet.address);
+                int32_t length = int32_t(entries.size() * 40);
+                if (buffer) {
+                    const auto fits = size_t(std::max(capacity, 0)) / 40;
+                    length = int32_t(std::min(fits, entries.size()) * 40);
+                    for (size_t i = 0; i < size_t(length) / 40; ++i)
+                        if (!machine.write(buffer + i * 40, entries[i])) { length = -1; break; }
+                    if (length < 0) { x[0] = uint64_t(-14); break; }
+                }
+                std::memcpy(request.data(), &length, 4);
+                x[0] = machine.write(x[2], request) ? 0 : uint64_t(-14);
+                break;
+            }
+            // FIONREAD on a socket: how much can be read now (AppFlowy asks).
+            if (x[1] == 0x541b && descriptor->second.socket) {
+                const auto& socket = *descriptor->second.socket;
+                uint64_t available = 0;
+                if (socket.hostFd >= 0) {
+                    int count = 0;
+                    if (::ioctl(socket.hostFd, FIONREAD, &count) == 0 && count > 0) available = uint64_t(count);
+                }
+                if (!socket.datagrams.empty()) available = socket.datagrams.front().payload.size();
+                else if (!socket.inbox.empty())
+                    available = socket.type == 1 ? socket.queuedBytes : socket.inbox.front().payload.size();
+                x[0] = writeGuest(machine, x[2], uint32_t(std::min<uint64_t>(available, INT32_MAX))) ? 0 : uint64_t(-14);
                 break;
             }
             if (guestRoutes.ethernet.present && descriptor->second.socket &&
