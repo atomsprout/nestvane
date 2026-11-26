@@ -850,8 +850,19 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
                 executeDecoded(machine, instruction);
             } else {
                 if (!trace) describeCall(report, cpu, syscall);
+                const auto caller = linux.processId();
                 if (linux.suspendChild()) {
-                    report << " [unimplemented in guest PID " << linux.processId() << ", suspended]\n";
+                    report << " [unimplemented in guest PID " << caller << ", suspended]\n";
+                    // In Android's log too, with what its first argument is when that is a descriptor: a
+                    // suspended process can hold up others that wait for it, far from where it stopped.
+                    if (linux.androidLogObserver) {
+                        std::ostringstream event;
+                        event << "Nestvane: system call " << syscall << " not implemented, PID " << caller << " suspended:" << std::hex;
+                        for (int i = 0; i < 6; ++i) event << " x" << i << "=0x" << cpu.x[i];
+                        event << std::dec << "; x0 is " << linux.describeDescriptor(cpu.x[0]);
+                        if (syscall == 21) event << "; x2 is " << linux.describeDescriptor(cpu.x[2]);  // epoll_ctl's target
+                        linux.androidLogObserver(event.str());
+                    }
                     continue;
                 }
                 report << " [unimplemented]\n";
@@ -1272,7 +1283,7 @@ service nestvane-trim /system/bin/sh /system/etc/nestvane/trim.sh
                 "PackageManager: Failed to create app data", "PackageManager: reconcileAppsData",
                 "installd: Failed to restorecon", "ActivityTaskManager: Displayed com.android.launcher3/",
                 "CameraProviderManager: Adding new camera device:", "CameraService: addStates",
-                "NestvaneSmoke: ", "Nestvane: ended cached app", "ActivityTaskManager: Displayed dev.nestvane.smoke/",
+                "NestvaneSmoke: ", "Nestvane: ended ", "Nestvane: system call ", "ActivityTaskManager: Displayed dev.nestvane.smoke/",
                 "ActivityTaskManager: Displayed com.android.settings/.FallbackHome",
                 "SystemUIFactory: Failed to initialize WMComponent", "libc: Fatal signal ",
                 "Guest native abort: ", "InputTransport: ", "InputDispatcher: ", "InputManager-JNI: ",

@@ -5302,6 +5302,34 @@ int main() {
     }
 
     {
+        // A datagram to a named socket from one that is not connected (sendto and sendmsg with an
+        // address): the zygotes report a child that ended to system_server this way.
+        constexpr auto address = base + 0x300, data = base + 0x320, vector = base + 0x340, message = base + 0x360;
+        constexpr char socketAddress[] = "\x01\0\0nestvane-unsolicited";
+        assert(machine.write(address, {reinterpret_cast<const uint8_t*>(socketAddress), sizeof(socketAddress) - 1}));
+        const auto receiver = call(198, {1, 2 | 0x800, 0}), sender = call(198, {1, 2, 0});
+        assert(receiver < 256 && sender < 256);
+        assert(call(200, {receiver, address, sizeof(socketAddress) - 1}) == 0);
+        assert(machine.store64(data, 0x0000002a00000007ULL) && machine.store64(data + 8, 0x0000000900002710ULL));
+        assert(call(206, {sender, data, 16, 0, address, sizeof(socketAddress) - 1}) == 16);
+        assert(machine.store64(data, 0) && machine.store64(data + 8, 0));
+        assert(call(207, {receiver, data, 64, 0, 0, 0}) == 16);
+        assert(load(data) == 0x0000002a00000007ULL && load(data + 8) == 0x0000000900002710ULL);
+        assert(machine.store64(data, 'z') && machine.store64(vector, data) && machine.store64(vector + 8, 1));
+        const std::array<uint64_t, 7> outbound{address, sizeof(socketAddress) - 1, vector, 1, 0, 0, 0};
+        assert(machine.write(message, {reinterpret_cast<const uint8_t*>(outbound.data()), sizeof(outbound)}));
+        assert(call(211, {sender, message, 0}) == 1);
+        assert(machine.store64(data, 0) && call(207, {receiver, data, 64, 0, 0, 0}) == 1 && load(data) == 'z');
+        assert(call(207, {receiver, data, 64, 0, 0, 0}) == uint64_t(-11));
+        // The sender is still not connected, and an address nobody has is refused.
+        assert(call(64, {sender, data, 1}) == uint64_t(-107));
+        constexpr char nobody[] = "\x01\0\0nestvane-nobody";
+        assert(machine.write(address, {reinterpret_cast<const uint8_t*>(nobody), sizeof(nobody) - 1}));
+        assert(call(206, {sender, data, 1, 0, address, sizeof(nobody) - 1}) == uint64_t(-111));
+        assert(call(57, {receiver}) == 0 && call(57, {sender}) == 0);
+    }
+
+    {
         constexpr auto address = base + 0x300, data = base + 0x320, vector = base + 0x340;
         constexpr auto message = base + 0x360, control = base + 0x3a0, optionLength = base + 0x3c0;
         constexpr char socketAddress[] = "\x01\0/dev/nestvane-passcred";

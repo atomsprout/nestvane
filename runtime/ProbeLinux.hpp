@@ -93,6 +93,9 @@ struct ProbeLinux {
     uint64_t processId() const;
     uint64_t parentProcessId() const { return current->process->parent; }
     bool suspendChild();
+    // What a descriptor of the current process is, for a log line: its path, or for a socket its family,
+    // type, protocol, addresses and whether it is connected.
+    std::string describeDescriptor(uint64_t fd);
     bool blocked() const { return current->wait != Wait::none; }
     const std::string& currentExecutable() const { return current->process->executable; }
     const std::string& currentContext() const { return current->process->context; }
@@ -633,6 +636,11 @@ private:
         std::weak_ptr<BpfMap> ring{};
         std::optional<PollNotifications> deliveredNotifications{};
         uint64_t pipeWritesSeen = ~uint64_t{0};  // Pipe::writes when this watch last reported, if it reports only changes
+        // Edge-triggered on a socket the host carries: what was reported and is still ready, and the socket's
+        // counts of reads and writes that found nothing to do when this watch last looked. A direction is
+        // reported again once it was drained (a read or write that would block) or stopped being ready.
+        uint32_t hostEdgeReported = 0;
+        PollNotifications hostEdgeDrains{};
     };
     struct EventState {
         struct Timer {
@@ -979,6 +987,10 @@ private:
     uint64_t socketWrite(Machine& machine, const Descriptor& fd, uint64_t address, uint64_t size);
     uint64_t socketWrite(Machine& machine, const Descriptor& fd, std::span<const SocketVector> vectors,
                          SocketRights rights = {});
+    // A datagram to a named UNIX socket from one that is not connected to it (sendto or sendmsg with an
+    // address): the zygotes tell system_server of a child that ended this way.
+    uint64_t sendUnixDatagramTo(Machine& machine, const Descriptor& fd, std::span<const SocketVector> vectors,
+                                uint64_t name, uint64_t nameLength, SocketRights rights = {});
     void consumeSocketStream(SocketState& endpoint, size_t count);
     // After the guest read from a socket's queue: wakes waiting threads only if a writer could have
     // been held up by a full queue before (Linux's writability: the queue under the writer's send buffer

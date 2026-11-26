@@ -2507,8 +2507,10 @@ bool ProbeLinux::eventCall(Machine& machine) {
             // A pipe may be watched for changes only: it is reported once for each time something was
             // written to it. Realm watches its named pipes this way and never reads them, so reporting
             // them for as long as they can be read keeps its thread running without end.
+            // TCP sockets too: Telegram watches its connections for changes only.
             const bool edgeSupported = target->second.node == Node::event || target->second.pipe ||
-                (socket && socket->family == 1 && !(mask & ~unixReadEdge));
+                (socket && socket->family == 1 && !(mask & ~unixReadEdge)) ||
+                (socket && (socket->family == 2 || socket->family == 10) && socket->type == 1);
             const auto supported = 0x2000205fU | (edgeSupported ? epollEdge : 0);
             if (mask & ~supported) return false;
             watches.insert_or_assign(fd, Watch{mask, event[1], target->second.event, target->second.socket,
@@ -2536,7 +2538,8 @@ bool ProbeLinux::eventCall(Machine& machine) {
                 const auto endpoint = watch.socket.lock();
                 watchesListener |= endpoint && endpoint->listening && (watch.mask & epollIn);
                 const bool pipeEdge = (watch.mask & epollEdge) && watch.pipe.lock();
-                const bool edge = (watch.mask & epollEdge) && !pipeEdge;
+                const bool hostEdge = (watch.mask & epollEdge) && endpoint && endpoint->hostFd >= 0;
+                const bool edge = (watch.mask & epollEdge) && !pipeEdge && !hostEdge;
                 const PollNotifications* notifications = nullptr;
                 if (edge) {
                     if (!state && !endpoint) continue;
@@ -2590,8 +2593,17 @@ bool ProbeLinux::eventCall(Machine& machine) {
                 const auto taskEvents = readEvents | (mountsChanged ? 2U : 0) | (writable ? epollOut : 0) |
                     (receiveEnded ? epollReadHangup : 0);
                 const auto errors = (hungUp ? epollHangup : 0) | (socketError ? epollError : 0);
-                const uint64_t mask = (taskEvents & watch.mask) | errors |
+                uint64_t mask = (taskEvents & watch.mask) | errors |
                     ((graphicsEvents | pipeEvents | ringEvents) & (watch.mask | epollError | epollHangup));
+                if (hostEdge) {
+                    const auto& drains = endpoint->pollNotifications;
+                    if (drains.readable != watch.hostEdgeDrains.readable) watch.hostEdgeReported &= ~(epollIn | epollReadHangup);
+                    if (drains.writable != watch.hostEdgeDrains.writable) watch.hostEdgeReported &= ~epollOut;
+                    watch.hostEdgeDrains = drains;
+                    watch.hostEdgeReported &= uint32_t(mask);
+                    mask &= ~uint64_t(watch.hostEdgeReported);
+                    watch.hostEdgeReported |= uint32_t(mask);
+                }
                 if (mask) {
                     if (pipeEdge && pipe) watch.pipeWritesSeen = pipe->writes;
                     ready.push_back({mask, watch.data});
@@ -2659,7 +2671,10 @@ uint64_t ProbeLinux::socketRead(Machine& machine, const Descriptor& fd, uint64_t
         if (endpoint.receiveShutdown) return 0;
         std::vector<uint8_t> bytes(std::min<uint64_t>(size, 256 * 1024));
         const auto received = hostnet::receive(endpoint.hostFd, bytes, peek);
-        if (received == -11) hostSocketWait = true;
+        if (received == -11) {
+            hostSocketWait = true;
+            ++endpoint.pollNotifications.readable;  // drained: an edge-triggered watch reports new input again
+        }
         if (received <= 0) return uint64_t(received);
         return machine.write(address, std::span(bytes).first(size_t(received))) ? uint64_t(received) : uint64_t(-14);
     }
@@ -2700,7 +2715,10 @@ void ProbeLinux::socketDrained(SocketState& endpoint, uint64_t queuedBefore, siz
     // A writer that was refused, or a connected writer that may be polling for room it did not have.
     const auto writer = endpoint.peer.lock();
     if (std::exchange(endpoint.writerWaiting, false) || packetsBefore >= 256 ||
-        (writer && queuedBefore >= writer->sendBuffer)) wakePollers();
+        (writer && queuedBefore >= writer->sendBuffer)) {
+        if (writer) ++writer->pollNotifications.writable;  // room again, for a writer watching for changes
+        wakePollers();
+    }
 }
 
 void ProbeLinux::consumeSocketStream(SocketState& endpoint, size_t count) {
@@ -3131,7 +3149,10 @@ uint64_t ProbeLinux::socketWrite(Machine& machine, const Descriptor& fd, std::sp
             if (length < vector[1]) break;
         }
         const auto sent = hostnet::send(endpoint.hostFd, bytes);
-        if (sent == -11) hostSocketWait = true;
+        if (sent == -11) {
+            hostSocketWait = true;
+            ++endpoint.pollNotifications.writable;  // full: an edge-triggered watch reports room again
+        }
         return uint64_t(sent);
     }
     if (fd.socket->inetStream() && !inetLoopbackUp) return uint64_t(-100);
@@ -4423,6 +4444,15 @@ bool ProbeLinux::socketCall(Machine& machine) {
             constexpr uint64_t peek = 0x2;
             const bool hostStream = socket->hostFd >= 0 && !socket->inetDatagram();
             const auto receiveFlags = 0x140ULL | (socket->family == 1 ? truncate : 0) | (hostStream ? peek : 0);
+            if (send && x[4] && socket->family == 1 && (socket->type == 2 || socket->type == 5) && !(x[3] & ~0x4040ULL)) {
+                const SocketVector vector{x[1], x[2]};
+                const auto result = sendUnixDatagramTo(machine, fd->second, std::span(&vector, 1), x[4], x[5]);
+                const bool blocking = !(x[3] & 0x40) && !(fd->second.effectiveFlags() & 0x800);
+                if (result == uint64_t(-11) && blocking && waitForSocketTimeout(socket->sendTimeout)) return true;
+                current->deadline.reset();
+                x[0] = result;
+                break;
+            }
             if (x[4] || x[5] || (x[3] & ~(send ? 0x4040ULL : receiveFlags))) return false;
             const auto& endpoint = *socket;
             const auto peer = endpoint.peer.lock();
@@ -4486,6 +4516,15 @@ bool ProbeLinux::socketCall(Machine& machine) {
             }
             if (endpoint->netlink) {
                 x[0] = sendKernelNetlink(machine, endpoint, vectors, message.name, message.nameLength);
+                break;
+            }
+            if (message.nameLength && endpoint->family == 1 && (endpoint->type == 2 || endpoint->type == 5)) {
+                const auto result = sendUnixDatagramTo(machine, fd->second, vectors, message.name, message.nameLength,
+                                                       std::move(rights));
+                const bool blocking = !(x[2] & 0x40) && !(fd->second.effectiveFlags() & 0x800);
+                if (result == uint64_t(-11) && blocking && waitForSocketTimeout(endpoint->sendTimeout)) return true;
+                current->deadline.reset();
+                x[0] = result;
                 break;
             }
             if (message.nameLength && !endpoint->inetDatagram()) return false;
@@ -6882,6 +6921,58 @@ bool ProbeLinux::cloneThread(Machine& machine) {
 
 uint64_t ProbeLinux::processId() const {
     return current->process->id;
+}
+
+uint64_t ProbeLinux::sendUnixDatagramTo(Machine& machine, const Descriptor& fd, std::span<const SocketVector> vectors,
+                                        uint64_t name, uint64_t nameLength, SocketRights rights) {
+    const auto& socket = fd.socket;
+    if (nameLength < 3 || nameLength > 110) return invalid;
+    std::array<uint8_t, 110> bytes{};
+    if (!machine.readInto(name, std::span(bytes).first(nameLength))) return uint64_t(-14);
+    if (bytes[0] != 1 || bytes[1]) return uint64_t(-97);
+    const bool abstract = !bytes[2];
+    const auto* nul = abstract ? nullptr : static_cast<const uint8_t*>(std::memchr(bytes.data() + 2, 0, nameLength - 2));
+    const size_t length = nul ? nul - bytes.data() - 2 : nameLength - 2;
+    const std::string_view text(reinterpret_cast<const char*>(bytes.data() + 2), length);
+    const auto path = abstract ? std::string(text) : absolutePath(text);
+    const auto bound = socketPaths.find(path);
+    if (bound == socketPaths.end()) return abstract ? uint64_t(-111) : uint64_t(-2);
+    const auto endpoint = bound->second.endpoint.lock();
+    if (!endpoint) return uint64_t(-111);
+    if (endpoint->type != socket->type) return uint64_t(-91);
+    // Send as if connected to it for this one message, then put back what the socket was connected to.
+    const auto previousPeer = socket->peer;
+    const bool previouslyConnected = socket->connected;
+    const auto previousPeerAddress = socket->peerAddress;
+    socket->peer = endpoint;
+    socket->connected = true;
+    const auto result = socketWrite(machine, fd, vectors, std::move(rights));
+    socket->peer = previousPeer;
+    socket->connected = previouslyConnected;
+    socket->peerAddress = previousPeerAddress;
+    if (result < uint64_t(-4095)) wakePollers();
+    return result;
+}
+
+std::string ProbeLinux::describeDescriptor(uint64_t number) {
+    const auto& table = descriptors();
+    const auto fd = number <= INT32_MAX ? table.find(int(number)) : table.end();
+    if (fd == table.end()) return "not open";
+    const auto& descriptor = fd->second;
+    std::ostringstream text;
+    if (const auto& socket = descriptor.socket) {
+        const auto printable = [](const std::string& address) {
+            std::string out;
+            for (const char c : address) out += c >= 32 && c < 127 ? c : '@';
+            return out;
+        };
+        text << "socket family " << socket->family << " type " << socket->type << " protocol " << socket->protocol
+             << (socket->netlink ? " netlink" : "") << (socket->connected ? " connected" : "")
+             << " local '" << printable(socket->localAddress) << "' peer '" << printable(socket->peerAddress) << "'";
+    } else {
+        text << (!descriptor.visiblePath.empty() ? descriptor.visiblePath : descriptor.path);
+    }
+    return text.str();
 }
 
 bool ProbeLinux::suspendChild() {
@@ -9312,7 +9403,25 @@ bool ProbeLinux::deliverMemoryFault(Machine& machine) {
     info.number = sigSegv;
     info.code = mapped ? 2 : 1; // SEGV_ACCERR or SEGV_MAPERR
     info.address = address;
-    return installSignalFrame(machine, sigSegv, std::bit_cast<SignalWords>(info), address);
+    if (installSignalFrame(machine, sigSegv, std::bit_cast<SignalWords>(info), address)) return true;
+    // No handler for it, or it is blocked, or there is no room for the frame: Linux ends the process with
+    // SIGSEGV, and the rest of the system goes on. Only init's own fault still stops everything.
+    if (current->process->id == pid) return false;
+    std::string name;
+    if (const auto main = threads.find(current->process->id); main != threads.end())
+        name.assign(reinterpret_cast<const char*>(main->second.name.data()),
+                    strnlen(reinterpret_cast<const char*>(main->second.name.data()), main->second.name.size()));
+    std::ostringstream event;
+    event << "Nestvane: ended " << name << " (pid " << current->process->id << ") on a memory fault it could not be told of: PC=0x"
+          << std::hex << machine.cpu.pc << " address=0x" << address << (mapped ? " (mapped)" : " (not mapped)");
+    if (androidLogObserver) androidLogObserver(event.str());
+    keepDiagnosticLine(event.str());
+    finishProcess(*current->process, sigSegv, true);
+    removeSiblingThreads();
+    current->wait = Wait::exited;
+    sliceEnd = 0;
+    machine.cpu.stop = Stop::running;
+    return true;
 }
 
 bool ProbeLinux::deliverIllegalInstruction(Machine& machine) {

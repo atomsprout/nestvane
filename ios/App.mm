@@ -2298,6 +2298,10 @@ static bool ApkContent(NSData* data) {
                                         NSProcessInfo.processInfo.systemUptime - submitted];
                                     [text writeToURL:[documents URLByAppendingPathComponent:@"apk-result.txt"] atomically:YES
                                             encoding:NSUTF8StringEncoding error:nil];
+                                    // NESTVANE_TEST_APK_REMOVE=1 deletes the file once it is installed, so that a
+                                    // batch of apps tried one after another leaves nothing in Documents.
+                                    if ([NSProcessInfo.processInfo.environment[@"NESTVANE_TEST_APK_REMOVE"] isEqualToString:@"1"])
+                                        [NSFileManager.defaultManager removeItemAtURL:[documents URLByAppendingPathComponent:name] error:nil];
                                     sleep(1);
                                 }
                                 sleep(2);
