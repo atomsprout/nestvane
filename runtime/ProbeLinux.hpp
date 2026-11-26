@@ -379,6 +379,11 @@ private:
 public:
     // Called about once a second: ends a cached app when iOS has little memory left for this one.
     bool relieveMemoryPressure();
+    // Ends the process that is running now, killed by that signal, with a line in Android's log. False for
+    // init, whose end is the end of Android.
+    bool endCurrentProcess(uint32_t signal, std::string_view why);
+    // Ends the app Android ranks lowest that is not on screen, whatever memory is left. False if none.
+    bool endAppForMemory() { return endCachedApp(200, "because the host had no memory for init"); }
 private:
     bool waitChild(Machine& machine);
     Process* liveProcess(uint64_t id) const;

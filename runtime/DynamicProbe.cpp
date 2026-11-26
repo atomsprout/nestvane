@@ -6,6 +6,7 @@
 #include "ProbeLinux.hpp"
 
 #include <map>
+#include <new>
 #include <atomic>
 #include <mutex>
 #include <algorithm>
@@ -432,488 +433,510 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
         ~RunningMark() { if (init) androidRunning.store(false); }
     } runningMark{init};
     while (cpu.retired < instructionLimit) {
-        if (cpu.stop == Stop::fault) {
-            const auto pc = cpu.pc, address = cpu.faultAddress, lr = cpu.x[30], sp = cpu.sp;
-            const auto* code = machine.read(pc, sizeof(uint32_t), 1);
-            uint32_t faultWord = 0;
-            if (code) std::memcpy(&faultWord, code, sizeof(faultWord));
-            if (!linux.deliverMemoryFault(machine)) break;
-            if (deliveredFaults++ < 32) {
-                std::ostringstream fault;
-                fault << "guest SIGSEGV delivered to PID=" << linux.processId() << " TID=" << linux.threadId()
-                      << std::hex << " PC=0x" << pc << " address=0x" << address << " word=0x" << faultWord
-                      << " SP=0x" << sp << " LR=0x" << lr << " handler=0x" << cpu.pc << std::dec;
-                report << "  " << fault.str() << '\n';
-                if (init && linux.androidLogObserver) {
-                    const auto message = fault.str();
-                    linux.androidLogObserver(message);
+        // The host can run out of memory for what a guest process does, anywhere here: that process
+        // ends, as Linux's out-of-memory killer would end it, and Android goes on. It used to end everything.
+        try {
+            if (cpu.stop == Stop::fault) {
+                const auto pc = cpu.pc, address = cpu.faultAddress, lr = cpu.x[30], sp = cpu.sp;
+                const auto* code = machine.read(pc, sizeof(uint32_t), 1);
+                uint32_t faultWord = 0;
+                if (code) std::memcpy(&faultWord, code, sizeof(faultWord));
+                if (!linux.deliverMemoryFault(machine)) break;
+                if (deliveredFaults++ < 32) {
+                    std::ostringstream fault;
+                    fault << "guest SIGSEGV delivered to PID=" << linux.processId() << " TID=" << linux.threadId()
+                          << std::hex << " PC=0x" << pc << " address=0x" << address << " word=0x" << faultWord
+                          << " SP=0x" << sp << " LR=0x" << lr << " handler=0x" << cpu.pc << std::dec;
+                    report << "  " << fault.str() << '\n';
+                    if (init && linux.androidLogObserver) {
+                        const auto message = fault.str();
+                        linux.androidLogObserver(message);
+                    }
+                }
+            } else if (cpu.stop != Stop::running) break;
+            if (init && (linux.blocked() || !(cpu.retired & 4095))) {
+                if (stop.stop_requested()) break;
+                const auto now = steady_clock::now();
+                if (now >= deadline) {
+                    timedOut = true;
+                    break;
+                }
+                if (now >= nextSnapshot) captureSnapshot(now);
+                serveDiagnostics(now);
+                if (now >= nextMemoryCheck) {
+                    // After ending one, look again soon: one app may not have been enough.
+                    nextMemoryCheck = now + (linux.relieveMemoryPressure() ? milliseconds(250) : seconds(1));
                 }
             }
-        } else if (cpu.stop != Stop::running) break;
-        if (init && (linux.blocked() || !(cpu.retired & 4095))) {
-            if (stop.stop_requested()) break;
-            const auto now = steady_clock::now();
-            if (now >= deadline) {
-                timedOut = true;
+            // Timed after a stretch of native code only: after each interpreted instruction, reading the
+            // clock twice would cost more than the instruction.
+            const bool timeSchedule = nativeExecution && afterNative;
+            afterNative = false;
+            const auto scheduleBegan = timeSchedule ? steady_clock::now() : steady_clock::time_point{};
+            const bool scheduled = linux.schedule(machine, scheduleDeadline, stop);
+            if (timeSchedule) scheduleTime += steady_clock::now() - scheduleBegan;
+            if (!scheduled) {
+                const auto now = steady_clock::now();
+                if (now >= nextSnapshot && now < deadline && !stop.stop_requested()) {
+                    // A timed guest wait can become runnable while the snapshot deadline expires.
+                    // Capture before retrying, even when the instruction counter is mid-slice.
+                    captureSnapshot(now);
+                    continue;
+                }
+                timedOut = now >= deadline;
+                idle = !timedOut;
                 break;
             }
-            if (now >= nextSnapshot) captureSnapshot(now);
-            serveDiagnostics(now);
-            if (now >= nextMemoryCheck) {
-                nextMemoryCheck = now + seconds(1);
-                linux.relieveMemoryPressure();
-            }
-        }
-        // Timed after a stretch of native code only: after each interpreted instruction, reading the
-        // clock twice would cost more than the instruction.
-        const bool timeSchedule = nativeExecution && afterNative;
-        afterNative = false;
-        const auto scheduleBegan = timeSchedule ? steady_clock::now() : steady_clock::time_point{};
-        const bool scheduled = linux.schedule(machine, scheduleDeadline, stop);
-        if (timeSchedule) scheduleTime += steady_clock::now() - scheduleBegan;
-        if (!scheduled) {
-            const auto now = steady_clock::now();
-            if (now >= nextSnapshot && now < deadline && !stop.stop_requested()) {
-                // A timed guest wait can become runnable while the snapshot deadline expires.
-                // Capture before retrying, even when the instruction counter is mid-slice.
-                captureSnapshot(now);
-                continue;
-            }
-            timedOut = now >= deadline;
-            idle = !timedOut;
-            break;
-        }
-        if (cpu.stop != Stop::running) continue;
-        if (init && linux.hasChildEntryAt(cpu.pc)) {
-            if (auto event = linux.observeEntry(cpu.pc); !event.empty()) {
-                if (event.find(" entered /system/bin/app_process64 ") != std::string::npos)
-                    zygotePid = linux.processId();
-                if (event.find(" entered /system/bin/surfaceflinger ") != std::string::npos ||
-                    event.find(" entered /vendor/bin/hw/android.hardware.graphics.") != std::string::npos)
-                    graphicsPids.push_back(linux.processId());
-                report << event;
-            }
-        }
-        if (!reachedExecutable && cpu.pc == startup.executableEntry) {
-            reachedExecutable = true;
-            if (init) report << "  init entry reached after " << cpu.retired << " guest instructions\n";
-        }
-        // A run on a worker that has ended is looked at now, at the thread's next turn.
-        auto taken = nativeExecution ? linux.takeNativeResult() : std::nullopt;
-        // The instruction native code left to the interpreter is interpreted, whatever it is.
-        bool leftToInterpreter = false;
-        if (!taken && interpretNext) {
-            interpretNext = false;
-            leftToInterpreter = true;
-        } else if (const bool stretching = stretchLeft && linux.threadId() == stretchThread;
-                   taken || (!stretching && nativeExecution && linux.nativeAt(machine) && !(init && linux.hasChildEntryAt(cpu.pc)))) {
-            if (!taken && linux.offloadNative(machine)) continue;
-            // A thread that waits in a system call comes back to its svc whenever the wait is tried
-            // again. Entering native code there only to leave it at once costs more than the call.
-            const auto atCall = [&] {
-                const auto* code = machine.readInstruction(cpu.pc);
-                uint32_t next = 0;
-                if (code) std::memcpy(&next, code, sizeof(next));
-                return next == 0xd4000001;
-            };
-            const auto left = taken ? native::settle(machine, *taken) : atCall() ? native::Exit::syscall : native::run(machine);
-            afterNative = true;
-            if (left == native::Exit::fault && !(++nativeFaults & 0xffff)) {
-                // A sample of what native code could not do itself, for finding memory it cannot reach.
-                std::ostringstream sample;
-                uint64_t address = 0;
-                bool inRun = false;
-                const bool known = machine.space->guestAddress(native::lastFaultAddress(), address, &inRun);
-                sample << "native execution: fault sample PID=" << linux.processId() << " PC=0x" << std::hex << cpu.pc
-                       << " address=0x" << (known ? address : 0) << (known ? inRun ? " (in a run)" : " (void or guard)" : " (unknown)");
-                for (const auto& segment : machine.segments) {
-                    if (address < segment.address || address - segment.address >= segment.mappedSize()) continue;
-                    sample << " segment 0x" << segment.address << "+0x" << segment.mappedSize() << " flags=" << segment.flags
-                           << (segment.shared ? " shared" : "") << (segment.placed ? " placed" : "")
-                           << (segment.anonymousPages ? segment.anonymousPages->guestSpace() ? " native-pages" : " pages" : "")
-                           << (segment.imageView ? " view" : "") << (segment.beyondFileEnd ? " beyond-file-end" : "")
-                           << (segment.anonymous ? " anonymous" : "") << " backed=" << machine.space->backed(address)
-                           << " mapped=" << machine.space->mapped(address);
-                    break;
+            if (cpu.stop != Stop::running) continue;
+            if (init && linux.hasChildEntryAt(cpu.pc)) {
+                if (auto event = linux.observeEntry(cpu.pc); !event.empty()) {
+                    if (event.find(" entered /system/bin/app_process64 ") != std::string::npos)
+                        zygotePid = linux.processId();
+                    if (event.find(" entered /system/bin/surfaceflinger ") != std::string::npos ||
+                        event.find(" entered /vendor/bin/hw/android.hardware.graphics.") != std::string::npos)
+                        graphicsPids.push_back(linux.processId());
+                    report << event;
                 }
-                if (faultSamples.size() > 4096) faultSamples.erase(0, faultSamples.find('\n', 2048) + 1);
-                faultSamples += "  " + sample.str() + '\n';
             }
-            switch (left) {
-                case native::Exit::preempted:
-                    // The scheduler counts instructions: a slice of native code counts as one of its own.
-                    cpu.retired += linux.sliceLength;
-                    linux.noteNativeTurnUsed();
-                    break;
-                case native::Exit::lost:
-                case native::Exit::retry:
-                    break;
-                default:
-                    // An svc, or something else that the interpreter does in native code's place.
-                    cpu.retired += 16;
-                    interpretNext = true;
-                    // NESTVANE_NO_STRETCH=1 goes back to native code after one instruction, for comparison.
-                    static const bool stretches = !std::getenv("NESTVANE_NO_STRETCH");
-                    // Only in apps: in Android's own processes a fault is mostly a single one, and a
-                    // stretch there ran their translated code in the interpreter while Android started.
-                    if (left == native::Exit::fault && stretches && linux.currentIsApp()) {
-                        const auto now = steady_clock::now();
-                        const bool again = linux.threadId() == stretchThread && now - lastNativeFault < milliseconds(2);
-                        stretchLength = again ? std::min(stretchLength * 2, 65536U) : 256;
-                        stretchThread = linux.threadId();
-                        stretchLeft = stretchLength;
-                        lastNativeFault = now;
-                    }
-                    break;
+            if (!reachedExecutable && cpu.pc == startup.executableEntry) {
+                reachedExecutable = true;
+                if (init) report << "  init entry reached after " << cpu.retired << " guest instructions\n";
             }
-            continue;
-        }
-        if (nativeExecution && machine.space && !machine.space->interpreted()) {
-            // In a process that runs natively, what comes here is a library without a translation, or
-            // one instruction that native code left to the interpreter. The library is run in a loop
-            // of its own up to the next thing the code around this loop looks after: a system call,
-            // the end of the thread's turn, translated code, a fault.
-            bool ran = false, stretchEnded = false;
-            const auto inPlaceStart = steady_clock::now();
-            const auto retiredBefore = cpu.retired;
-            // Instructions are fetched from a window onto the code, looked up again when pc leaves
-            // it: nothing in this loop changes the mappings (a system call ends it).
-            uint64_t windowStart = 0, windowEnd = 0;
-            const uint8_t* window = nullptr;
-            // Likewise the memory loads and stores go to.
-            MemoryWindows dataWindows;
-            for (;;) {
-                const uint8_t* code;
-                if (cpu.pc - windowStart < windowEnd - windowStart && !(cpu.pc & 3)) {
-                    code = window + (cpu.pc - windowStart);
-                } else if (fastPath && machine.codeWindow(cpu.pc, windowStart, windowEnd, window)) {
-                    code = window + (cpu.pc - windowStart);
-                } else {
-                    windowStart = windowEnd = 0;
-                    code = machine.readInstruction(cpu.pc);
-                }
-                if (!code) break;
-                std::memcpy(&word, code, sizeof(word));
-                // In translated code only on a stretch after a fault; and not for an exclusive or atomic
-                // access there, which other threads running natively beside this one would not see as one.
-                const bool translated = machine.space->hasCode(cpu.pc);
-                const bool forced = std::exchange(leftToInterpreter, false);
-                if (forced) {
-                    // as before: this one instruction, then on as below
-                } else if (translated) {
-                    const bool atomic = (word & 0x3f000000) == 0x08000000 || (word & 0x3b200c00) == 0x38200000;
-                    if (!stretchLeft || linux.threadId() != stretchThread || atomic) {
-                        if (stretchLeft && linux.threadId() == stretchThread) stretchEnded = true;
-                        stretchLeft = 0;
+            // A run on a worker that has ended is looked at now, at the thread's next turn.
+            auto taken = nativeExecution ? linux.takeNativeResult() : std::nullopt;
+            // The instruction native code left to the interpreter is interpreted, whatever it is.
+            bool leftToInterpreter = false;
+            if (!taken && interpretNext) {
+                interpretNext = false;
+                leftToInterpreter = true;
+            } else if (const bool stretching = stretchLeft && linux.threadId() == stretchThread;
+                       taken || (!stretching && nativeExecution && linux.nativeAt(machine) && !(init && linux.hasChildEntryAt(cpu.pc)))) {
+                if (!taken && linux.offloadNative(machine)) continue;
+                // A thread that waits in a system call comes back to its svc whenever the wait is tried
+                // again. Entering native code there only to leave it at once costs more than the call.
+                const auto atCall = [&] {
+                    const auto* code = machine.readInstruction(cpu.pc);
+                    uint32_t next = 0;
+                    if (code) std::memcpy(&next, code, sizeof(next));
+                    return next == 0xd4000001;
+                };
+                const auto left = taken ? native::settle(machine, *taken) : atCall() ? native::Exit::syscall : native::run(machine);
+                afterNative = true;
+                if (left == native::Exit::fault && !(++nativeFaults & 0xffff)) {
+                    // A sample of what native code could not do itself, for finding memory it cannot reach.
+                    std::ostringstream sample;
+                    uint64_t address = 0;
+                    bool inRun = false;
+                    const bool known = machine.space->guestAddress(native::lastFaultAddress(), address, &inRun);
+                    sample << "native execution: fault sample PID=" << linux.processId() << " PC=0x" << std::hex << cpu.pc
+                           << " address=0x" << (known ? address : 0) << (known ? inRun ? " (in a run)" : " (void or guard)" : " (unknown)");
+                    for (const auto& segment : machine.segments) {
+                        if (address < segment.address || address - segment.address >= segment.mappedSize()) continue;
+                        sample << " segment 0x" << segment.address << "+0x" << segment.mappedSize() << " flags=" << segment.flags
+                               << (segment.shared ? " shared" : "") << (segment.placed ? " placed" : "")
+                               << (segment.anonymousPages ? segment.anonymousPages->guestSpace() ? " native-pages" : " pages" : "")
+                               << (segment.imageView ? " view" : "") << (segment.beyondFileEnd ? " beyond-file-end" : "")
+                               << (segment.anonymous ? " anonymous" : "") << " backed=" << machine.space->backed(address)
+                               << " mapped=" << machine.space->mapped(address);
                         break;
                     }
-                    --stretchLeft;
-                    ++inPlaceStretched;
+                    if (faultSamples.size() > 4096) faultSamples.erase(0, faultSamples.find('\n', 2048) + 1);
+                    faultSamples += "  " + sample.str() + '\n';
                 }
-                // The common instructions from their decoded form; the rest from the full interpreter,
-                // here too: going round the outer loop for each, through the scheduler and its checks,
-                // cost more than the instruction itself. A system call, or an instruction the
-                // interpreter does not have (false, nothing done), goes round, where the app gets SIGILL.
-                if (const auto& fast = fastWord(word); fast.kind != FastInstruction::none) {
-                    executeFast(machine, fast, &dataWindows);
-                } else if (word == 0xd4000001) {
-                    break;
-                } else if (!executeStartupInstruction(machine, word)) {
-                    // Translated code the interpreter does not have goes back to native code.
-                    if (translated && !forced) { stretchLeft = 0; stretchEnded = true; }
-                    break;
-                }
-                ran = true;
-                if (cpu.stop != Stop::running || !(cpu.retired & 4095) || !linux.hasSliceBudget(cpu.retired, 1)) break;
-            }
-            inPlaceTime += steady_clock::now() - inPlaceStart;
-            inPlaceInstructions += cpu.retired - retiredBefore;
-            // A thread that used its whole turn here goes on on a worker, beside the main loop, for as
-            // long as its code is the kind a worker can interpret (FastPath.hpp, interpretInSpace).
-            if (ran && cpu.stop == Stop::running && !linux.hasSliceBudget(cpu.retired, 1) && !machine.space->hasCode(cpu.pc)) {
-                // The whole code segment when the worker can fetch it through the address space; else the window.
-                uint64_t segmentStart = 0, segmentEnd = 0;
-                const auto code = machine.codeInSpace(cpu.pc, segmentStart, segmentEnd) ? SpaceCode{segmentStart, segmentEnd, nullptr}
-                                : window && cpu.pc - windowStart < windowEnd - windowStart ? SpaceCode{windowStart, windowEnd, window}
-                                : SpaceCode{};
-                if (code.end > code.start && linux.offloadInterpreter(machine, code)) continue;
-            }
-            if (ran || stretchEnded) continue;
-        }
-        const auto* bytes = machine.readInstruction(cpu.pc);
-        if (!bytes) {
-            machine.fault(cpu.pc, cpu.pc);
-            continue;
-        }
-        if (cpu.retired >= nextSample) {
-            ++samples;
-            ++intervalSamples;
-            nextSample = cpu.retired + sampleStride + ((samples * 0x9e37) & 0xffff);
-            if (const auto location = linux.guestCodeFile(bytes)) {
-                const auto [path, offset] = *location;
-                const auto module = linux.guestCodeFileName(path);
-                ++codeSamples[{module, offset & ~uint64_t(4095)}];
-                ++intervalCodeSamples[{module, offset & ~uint64_t(63)}];
-            } else {
-                ++unattributedSamples;
-                ++intervalUnattributed;
-            }
-        }
-        if (const auto* block = bootAot ? bootAot->lookup(bytes) : nullptr;
-            block && linux.hasSliceBudget(cpu.retired, block->words.size()) &&
-            block->words.size() <= instructionLimit - cpu.retired) {
-            block->execute(cpu);
-            cpu.pc += block->words.size_bytes();
-            cpu.retired += block->words.size();
-            ++sha256AotEntries;
-            sha256AotInstructions += block->words.size();
-            continue;
-        }
-        std::memcpy(&word, bytes, sizeof(word));
-        if (bootAot) {
-            if (word == AndroidDexHashLoop::words.front() &&
-                runNativeLoop.operator()<AndroidDexHashLoop>(dexAot, bytes)) continue;
-            if (word == AndroidDexAsciiVerifierLoop::words.front() &&
-                runNativeLoop.operator()<AndroidDexAsciiVerifierLoop>(dexVerifierAot, bytes)) continue;
-            if (word == AndroidFontFamilyScan::words.front() &&
-                runNativeLoop.operator()<AndroidFontFamilyScan>(fontScanAot, bytes)) continue;
-            if (word == AndroidArtGcBitmap::words.front() &&
-                runNativeLoop.operator()<AndroidArtGcBitmap>(artBitmapAot, bytes)) continue;
-            if (word == AndroidArtAsciiScan::words.front() &&
-                runNativeLoop.operator()<AndroidArtAsciiScan>(artAsciiAot, bytes)) continue;
-            if (word == AndroidArtGcReturn::words.front() &&
-                runNativeLoop.operator()<AndroidArtGcReturn>(artReturnAot, bytes)) continue;
-            if (word == AndroidBionicFillLoop::words.front() &&
-                runNativeLoop.operator()<AndroidBionicFillLoop>(bionicFillAot, bytes)) continue;
-            if (word == AndroidBionicCopyLoop::words.front() &&
-                runNativeLoop.operator()<AndroidBionicCopyLoop>(bionicCopyAot, bytes)) continue;
-        }
-        if (const auto& fast = fastWord(word); fast.kind != FastInstruction::none) {
-            executeFast(machine, fast);
-            continue;
-        }
-        auto& decoded = decodedWords[((word ^ (word >> 16)) * 0x9e3779b9U) >> 21];
-        if (decoded.word != word) {
-            decoded.word = word;
-            decoded.instruction = decode(word);
-        }
-        const auto& instruction = decoded.instruction;
-        if (instruction.op != Op::unsupported) {
-            if (instruction.op != Op::svc) {
-                executeDecoded(machine, instruction);
-                continue;
-            }
-            const uint64_t syscall = cpu.x[8];
-            ++syscallCount;
-            bool trace = false;
-            if (traceLimit) {
-                const bool repetitive = (syscall == 226 && protectionLogs++ >= (kind == ProbeKind::art ? 512U : 8U)) ||
-                    (kind == ProbeKind::art && syscall == 227 && syncLogs++ >= 32);
-                const bool stackMemory = kind == ProbeKind::art && (syscall == 226 || syscall == 233) &&
-                    cpu.x[0] >= 0x7f000000 && cpu.x[0] < 0x80000000;
-                bool zygoteTrace = false;
-                if (zygotePid && syscallCount > traceLimit && linux.processId() == zygotePid) {
-                    const auto count = zygoteSyscalls++;
-                    const bool memoryFile = syscall == 279 || (syscall == 25 && (cpu.x[1] == 1033 || cpu.x[1] == 1034));
-                    zygoteTrace = count < 2048 || (syscall == 222 && zygoteMappings++ < 256) ||
-                                  (memoryFile && zygoteMemoryFiles++ < 40) ||
-                                  (count % 1'000'000 == 0 && zygoteSamples++ < 128);
-                } else if (zygotePid && syscallCount > traceLimit && linux.parentProcessId() == zygotePid) {
-                    zygoteTrace = zygoteChildSyscalls++ < 2048;
-                    if (!zygoteTrace && zygoteChildPolicyCalls < 64) {
-                        const bool securityControl = syscall == 167 && (cpu.x[0] == 22 || cpu.x[0] == 38);
-                        const auto path = syscall == 56 || syscall == 79 ? pathArgument(machine, cpu.x[1]) : std::string{};
-                        zygoteTrace = securityControl || (syscall == 280 && cpu.x[0] == 7) || path.ends_with("_seapp_contexts") ||
-                            path.ends_with("/attr/current") || path == "/sys/fs/selinux/context" || path.starts_with("/dev/ashmem");
-                        zygoteChildPolicyCalls += zygoteTrace;
-                    }
-                }
-                const bool graphicsTrace = graphicsCalls < 512 && syscallCount > traceLimit &&
-                    (syscall == 56 || syscall == 29) &&
-                    std::ranges::find(graphicsPids, linux.processId()) != graphicsPids.end();
-                graphicsCalls += graphicsTrace;
-                trace = stackMemory || zygoteTrace || graphicsTrace || (!repetitive && syscallCount <= traceLimit);
-            }
-            if (!trace) ++suppressedLogs;
-            if (trace) {
-                describeCall(report, cpu, syscall);
-                if (linux.threadId() != 1 && init) report << " tid=" << linux.threadId();
-                switch (syscall) {
-                    case 36:
-                        report << " link=" << pathArgument(machine, cpu.x[2])
-                               << " points_to=" << pathArgument(machine, cpu.x[0]);
+                switch (left) {
+                    case native::Exit::preempted:
+                        // The scheduler counts instructions: a slice of native code counts as one of its own.
+                        cpu.retired += linux.sliceLength;
+                        linux.noteNativeTurnUsed();
                         break;
-                    case 39: case 43: case 221: case 279:
-                        report << " path=" << pathArgument(machine, cpu.x[0]);
-                        break;
-                    case 280:
-                        if (cpu.x[0] == 7 && cpu.x[2] >= sizeof(uint64_t)) {
-                            uint64_t name;
-                            if (machine.load64(cpu.x[1], name)) report << " path=" << pathArgument(machine, name);
-                        }
-                        break;
-                    case 33: case 34: case 35: case 48: case 53: case 54: case 56: case 60: case 78: case 79:
-                        report << " path=" << pathArgument(machine, cpu.x[1]);
-                        break;
-                    case 200: case 203:
-                        if (cpu.x[2] > 2 && cpu.x[1] <= UINT64_MAX - 2)
-                            report << " unix_path=" << pathArgument(machine, cpu.x[1] + 2);
-                        break;
-                    case 40:
-                        report << " source=" << pathArgument(machine, cpu.x[0])
-                               << " target=" << pathArgument(machine, cpu.x[1])
-                               << " type=" << pathArgument(machine, cpu.x[2]);
+                    case native::Exit::lost:
+                    case native::Exit::retry:
                         break;
                     default:
+                        // An svc, or something else that the interpreter does in native code's place.
+                        cpu.retired += 16;
+                        interpretNext = true;
+                        // NESTVANE_NO_STRETCH=1 goes back to native code after one instruction, for comparison.
+                        static const bool stretches = !std::getenv("NESTVANE_NO_STRETCH");
+                        // Only in apps: in Android's own processes a fault is mostly a single one, and a
+                        // stretch there ran their translated code in the interpreter while Android started.
+                        if (left == native::Exit::fault && stretches && linux.currentIsApp()) {
+                            const auto now = steady_clock::now();
+                            const bool again = linux.threadId() == stretchThread && now - lastNativeFault < milliseconds(2);
+                            stretchLength = again ? std::min(stretchLength * 2, 65536U) : 256;
+                            stretchThread = linux.threadId();
+                            stretchLeft = stretchLength;
+                            lastNativeFault = now;
+                        }
                         break;
                 }
-            }
-            auto& timing = intervalSyscalls[std::min<uint64_t>(syscall, otherSyscall)];
-            if (sampleBoot) ++timing.calls;
-            const bool timeSyscall = syscallCount >= nextSyscallSample;
-            const auto syscallStart = timeSyscall ? steady_clock::now() : steady_clock::time_point{};
-            const auto callBegan = nativeExecution ? steady_clock::now() : steady_clock::time_point{};
-            // NESTVANE_TRACE_PROGRAM=<part of a program's path> puts that program's system calls into
-            // the Android log: the number, the first four arguments, and what came back.
-            static const char* const tracedProgram = std::getenv("NESTVANE_TRACE_PROGRAM");
-            const bool traceCall = tracedProgram && linux.androidLogObserver && !linux.blocked() &&
-                linux.currentExecutable().find(tracedProgram) != std::string::npos;
-            const std::array<uint64_t, 4> callArguments{cpu.x[0], cpu.x[1], cpu.x[2], cpu.x[3]};
-            const auto callProcess = traceCall ? linux.processId() : 0;
-            const bool handled = linux.syscall(machine);
-            if (traceCall) {
-                char line[200];
-                std::snprintf(line, sizeof(line), "native execution: call %llu(0x%llx, 0x%llx, 0x%llx, 0x%llx) in PID %llu -> %s0x%llx",
-                              static_cast<unsigned long long>(syscall), static_cast<unsigned long long>(callArguments[0]),
-                              static_cast<unsigned long long>(callArguments[1]), static_cast<unsigned long long>(callArguments[2]),
-                              static_cast<unsigned long long>(callArguments[3]), static_cast<unsigned long long>(callProcess),
-                              !handled ? "not handled " : linux.blocked() ? "waits " : "", static_cast<unsigned long long>(cpu.x[0]));
-                linux.androidLogObserver(line);
-            }
-            // NESTVANE_TRACE_FAILED=<part of an SELinux domain> puts the calls that fail in processes of
-            // that domain into the Android log, such as isolated_app for WebView's renderers.
-            if (static const char* const failedDomain = std::getenv("NESTVANE_TRACE_FAILED");
-                failedDomain && handled && !linux.blocked() && linux.androidLogObserver &&
-                (cpu.x[0] >= uint64_t(-4095) || ((syscall == 222 || syscall == 215 || syscall == 216 || syscall == 226 ||
-                                                  syscall == 233) && callArguments[1] >= 1024 * 1024)) &&
-                linux.currentContext().find(failedDomain) != std::string::npos) {
-                char line[200];
-                std::snprintf(line, sizeof(line), "native execution: traced call %llu(0x%llx, 0x%llx, 0x%llx, 0x%llx) in PID %llu -> 0x%llx",
-                              static_cast<unsigned long long>(syscall), static_cast<unsigned long long>(callArguments[0]),
-                              static_cast<unsigned long long>(callArguments[1]), static_cast<unsigned long long>(callArguments[2]),
-                              static_cast<unsigned long long>(callArguments[3]), static_cast<unsigned long long>(linux.processId()),
-                              static_cast<unsigned long long>(cpu.x[0]));
-                // A Unix socket's path, for connect and bind.
-                const auto path = (syscall == 203 || syscall == 200) ? pathArgument(machine, callArguments[1] + 2) : std::string();
-                linux.androidLogObserver(path.empty() ? std::string(line) : std::string(line) + " " + path);
-            }
-            // NESTVANE_TRACE_DENIED=1: the calls that end in "permission denied", with where the path leads.
-            if (static const bool traced = std::getenv("NESTVANE_TRACE_DENIED"); traced && cpu.x[0] == uint64_t(-13) && linux.androidLogObserver) {
-                const auto path = pathArgument(machine, cpu.x[1]);
-                linux.androidLogObserver("native execution: denied call " + std::to_string(syscall) + " " + path + " " + linux.pathReport(path));
-            }
-            if (nativeExecution) {
-                const auto spent = steady_clock::now() - callBegan;
-                syscallTime += spent;
-                auto& slot = syscallCost[std::min<uint64_t>(syscall, syscallCost.size() - 1)];
-                slot.first += spent;
-                ++slot.second;
-            }
-            if (timeSyscall) {
-                timing.nanoseconds += duration_cast<nanoseconds>(steady_clock::now() - syscallStart).count();
-                ++timing.samples;
-                ++intervalSyscallSamples;
-                ++syscallSamples;
-                nextSyscallSample = syscallCount + syscallSampleStride + ((syscallSamples * 0x9e37) & 255);
-            }
-            if (handled) {
-                if (linux.blocked()) {
-                    if (trace) report << " [blocked]\n";
-                    continue;
-                }
-                if (linux.replacedImage()) {
-                    ++cpu.retired;
-                    if (trace) report << " [loaded guest image]\n";
-                    continue;
-                }
-                if (linux.restoredSignalContext()) {
-                    ++cpu.retired;
-                    if (trace) report << " [restored signal context]\n";
-                    if (restoredSignals++ < 32)
-                        report << "  guest rt_sigreturn restored TID=" << linux.threadId()
-                               << " PC=0x" << std::hex << cpu.pc << std::dec << '\n';
-                    continue;
-                }
-                if (cpu.stop == Stop::fault) {
-                    ++cpu.retired;
-                    if (trace) report << " [fault]\n";
-                    continue;
-                }
-                cpu.pc += 4;
-                ++cpu.retired;
-            } else if (syscall == 93 || syscall == 94) {
-                executeDecoded(machine, instruction);
-            } else {
-                if (!trace) describeCall(report, cpu, syscall);
-                const auto caller = linux.processId();
-                if (linux.suspendChild()) {
-                    report << " [unimplemented in guest PID " << caller << ", suspended]\n";
-                    // In Android's log too, with what its first argument is when that is a descriptor: a
-                    // suspended process can hold up others that wait for it, far from where it stopped.
-                    if (linux.androidLogObserver) {
-                        std::ostringstream event;
-                        event << "Nestvane: system call " << syscall << " not implemented, PID " << caller << " suspended:" << std::hex;
-                        for (int i = 0; i < 6; ++i) event << " x" << i << "=0x" << cpu.x[i];
-                        event << std::dec << "; x0 is " << linux.describeDescriptor(cpu.x[0]);
-                        if (syscall == 21) event << "; x2 is " << linux.describeDescriptor(cpu.x[2]);  // epoll_ctl's target
-                        linux.androidLogObserver(event.str());
-                    }
-                    continue;
-                }
-                report << " [unimplemented]\n";
-                unhandled = syscall;
-                cpu.stop = Stop::unsupported;
-                break;
-            }
-            if (trace) report << " result=0x" << std::hex << cpu.x[0] << std::dec << '\n';
-        } else if (!executeStartupInstruction(machine, word)) {
-            // An instruction the interpreter does not have, in an app's own library: that app gets
-            // SIGILL and Android goes on. It used to end the whole run, and the screen stood still.
-            const auto pc = cpu.pc;
-            const auto process = linux.processId(), thread = linux.threadId();
-            // The callers, by the frame records, before the signal frame changes the registers.
-            std::ostringstream callers;
-            callers << std::hex << " LR=0x" << cpu.x[30];
-            for (uint64_t frame = cpu.x[29], depth = 0; frame && depth < 8; ++depth) {
-                std::array<uint64_t, 2> record{};
-                if (!machine.readInto(frame, {reinterpret_cast<uint8_t*>(record.data()), sizeof(record)})) break;
-                callers << " <- 0x" << record[1];
-                if (record[0] <= frame) break;
-                frame = record[0];
-            }
-            // NESTVANE_TRAP_DUMP=[*]<address>:<bytes> adds guest memory to the report, at the address or,
-            // with *, at the address read from there.
-            if (const char* dump = std::getenv("NESTVANE_TRAP_DUMP")) {
-                const bool indirect = *dump == '*';
-                uint64_t address = std::strtoull(dump + indirect, nullptr, 16);
-                const char* colon = std::strchr(dump, ':');
-                const uint64_t bytes = std::min<uint64_t>(colon ? std::strtoull(colon + 1, nullptr, 10) : 16, 64);
-                if (indirect && !machine.readInto(address, {reinterpret_cast<uint8_t*>(&address), sizeof(address)})) address = 0;
-                std::vector<uint8_t> memory(bytes);
-                callers << " memory@0x" << address << ":";
-                if (address && machine.readInto(address, memory))
-                    for (const auto byte : memory) callers << ' ' << unsigned(byte);
-            }
-            if (init && linux.deliverIllegalInstruction(machine)) {
-                std::ostringstream message;
-                message << ((word & 0xffe0001f) == 0xd4200000 || (word & 0xffe0001f) == 0xd4400000 ? "native execution: breakpoint instruction, SIGTRAP to PID="
-                                                               : "native execution: no such instruction in the interpreter, SIGILL to PID=") << process
-                        << " TID=" << thread << std::hex << " PC=0x" << pc << " word=0x" << word << std::dec << callers.str();
-                if (illegalInstructions++ < 32) report << "  " << message.str() << '\n';
-                if (linux.androidLogObserver) linux.androidLogObserver(message.str());
                 continue;
             }
-            cpu.stop = Stop::unsupported;
+            if (nativeExecution && machine.space && !machine.space->interpreted()) {
+                // In a process that runs natively, what comes here is a library without a translation, or
+                // one instruction that native code left to the interpreter. The library is run in a loop
+                // of its own up to the next thing the code around this loop looks after: a system call,
+                // the end of the thread's turn, translated code, a fault.
+                bool ran = false, stretchEnded = false;
+                const auto inPlaceStart = steady_clock::now();
+                const auto retiredBefore = cpu.retired;
+                // Instructions are fetched from a window onto the code, looked up again when pc leaves
+                // it: nothing in this loop changes the mappings (a system call ends it).
+                uint64_t windowStart = 0, windowEnd = 0;
+                const uint8_t* window = nullptr;
+                // Likewise the memory loads and stores go to.
+                MemoryWindows dataWindows;
+                for (;;) {
+                    const uint8_t* code;
+                    if (cpu.pc - windowStart < windowEnd - windowStart && !(cpu.pc & 3)) {
+                        code = window + (cpu.pc - windowStart);
+                    } else if (fastPath && machine.codeWindow(cpu.pc, windowStart, windowEnd, window)) {
+                        code = window + (cpu.pc - windowStart);
+                    } else {
+                        windowStart = windowEnd = 0;
+                        code = machine.readInstruction(cpu.pc);
+                    }
+                    if (!code) break;
+                    std::memcpy(&word, code, sizeof(word));
+                    // In translated code only on a stretch after a fault; and not for an exclusive or atomic
+                    // access there, which other threads running natively beside this one would not see as one.
+                    const bool translated = machine.space->hasCode(cpu.pc);
+                    const bool forced = std::exchange(leftToInterpreter, false);
+                    if (forced) {
+                        // as before: this one instruction, then on as below
+                    } else if (translated) {
+                        const bool atomic = (word & 0x3f000000) == 0x08000000 || (word & 0x3b200c00) == 0x38200000;
+                        if (!stretchLeft || linux.threadId() != stretchThread || atomic) {
+                            if (stretchLeft && linux.threadId() == stretchThread) stretchEnded = true;
+                            stretchLeft = 0;
+                            break;
+                        }
+                        --stretchLeft;
+                        ++inPlaceStretched;
+                    }
+                    // The common instructions from their decoded form; the rest from the full interpreter,
+                    // here too: going round the outer loop for each, through the scheduler and its checks,
+                    // cost more than the instruction itself. A system call, or an instruction the
+                    // interpreter does not have (false, nothing done), goes round, where the app gets SIGILL.
+                    if (const auto& fast = fastWord(word); fast.kind != FastInstruction::none) {
+                        executeFast(machine, fast, &dataWindows);
+                    } else if (word == 0xd4000001) {
+                        break;
+                    } else if (!executeStartupInstruction(machine, word)) {
+                        // Translated code the interpreter does not have goes back to native code.
+                        if (translated && !forced) { stretchLeft = 0; stretchEnded = true; }
+                        break;
+                    }
+                    ran = true;
+                    if (cpu.stop != Stop::running || !(cpu.retired & 4095) || !linux.hasSliceBudget(cpu.retired, 1)) break;
+                }
+                inPlaceTime += steady_clock::now() - inPlaceStart;
+                inPlaceInstructions += cpu.retired - retiredBefore;
+                // A thread that used its whole turn here goes on on a worker, beside the main loop, for as
+                // long as its code is the kind a worker can interpret (FastPath.hpp, interpretInSpace).
+                if (ran && cpu.stop == Stop::running && !linux.hasSliceBudget(cpu.retired, 1) && !machine.space->hasCode(cpu.pc)) {
+                    // The whole code segment when the worker can fetch it through the address space; else the window.
+                    uint64_t segmentStart = 0, segmentEnd = 0;
+                    const auto code = machine.codeInSpace(cpu.pc, segmentStart, segmentEnd) ? SpaceCode{segmentStart, segmentEnd, nullptr}
+                                    : window && cpu.pc - windowStart < windowEnd - windowStart ? SpaceCode{windowStart, windowEnd, window}
+                                    : SpaceCode{};
+                    if (code.end > code.start && linux.offloadInterpreter(machine, code)) continue;
+                }
+                if (ran || stretchEnded) continue;
+            }
+            const auto* bytes = machine.readInstruction(cpu.pc);
+            if (!bytes) {
+                machine.fault(cpu.pc, cpu.pc);
+                continue;
+            }
+            if (cpu.retired >= nextSample) {
+                ++samples;
+                ++intervalSamples;
+                nextSample = cpu.retired + sampleStride + ((samples * 0x9e37) & 0xffff);
+                if (const auto location = linux.guestCodeFile(bytes)) {
+                    const auto [path, offset] = *location;
+                    const auto module = linux.guestCodeFileName(path);
+                    ++codeSamples[{module, offset & ~uint64_t(4095)}];
+                    ++intervalCodeSamples[{module, offset & ~uint64_t(63)}];
+                } else {
+                    ++unattributedSamples;
+                    ++intervalUnattributed;
+                }
+            }
+            if (const auto* block = bootAot ? bootAot->lookup(bytes) : nullptr;
+                block && linux.hasSliceBudget(cpu.retired, block->words.size()) &&
+                block->words.size() <= instructionLimit - cpu.retired) {
+                block->execute(cpu);
+                cpu.pc += block->words.size_bytes();
+                cpu.retired += block->words.size();
+                ++sha256AotEntries;
+                sha256AotInstructions += block->words.size();
+                continue;
+            }
+            std::memcpy(&word, bytes, sizeof(word));
+            if (bootAot) {
+                if (word == AndroidDexHashLoop::words.front() &&
+                    runNativeLoop.operator()<AndroidDexHashLoop>(dexAot, bytes)) continue;
+                if (word == AndroidDexAsciiVerifierLoop::words.front() &&
+                    runNativeLoop.operator()<AndroidDexAsciiVerifierLoop>(dexVerifierAot, bytes)) continue;
+                if (word == AndroidFontFamilyScan::words.front() &&
+                    runNativeLoop.operator()<AndroidFontFamilyScan>(fontScanAot, bytes)) continue;
+                if (word == AndroidArtGcBitmap::words.front() &&
+                    runNativeLoop.operator()<AndroidArtGcBitmap>(artBitmapAot, bytes)) continue;
+                if (word == AndroidArtAsciiScan::words.front() &&
+                    runNativeLoop.operator()<AndroidArtAsciiScan>(artAsciiAot, bytes)) continue;
+                if (word == AndroidArtGcReturn::words.front() &&
+                    runNativeLoop.operator()<AndroidArtGcReturn>(artReturnAot, bytes)) continue;
+                if (word == AndroidBionicFillLoop::words.front() &&
+                    runNativeLoop.operator()<AndroidBionicFillLoop>(bionicFillAot, bytes)) continue;
+                if (word == AndroidBionicCopyLoop::words.front() &&
+                    runNativeLoop.operator()<AndroidBionicCopyLoop>(bionicCopyAot, bytes)) continue;
+            }
+            if (const auto& fast = fastWord(word); fast.kind != FastInstruction::none) {
+                executeFast(machine, fast);
+                continue;
+            }
+            auto& decoded = decodedWords[((word ^ (word >> 16)) * 0x9e3779b9U) >> 21];
+            if (decoded.word != word) {
+                decoded.word = word;
+                decoded.instruction = decode(word);
+            }
+            const auto& instruction = decoded.instruction;
+            if (instruction.op != Op::unsupported) {
+                if (instruction.op != Op::svc) {
+                    executeDecoded(machine, instruction);
+                    continue;
+                }
+                const uint64_t syscall = cpu.x[8];
+                ++syscallCount;
+                bool trace = false;
+                if (traceLimit) {
+                    const bool repetitive = (syscall == 226 && protectionLogs++ >= (kind == ProbeKind::art ? 512U : 8U)) ||
+                        (kind == ProbeKind::art && syscall == 227 && syncLogs++ >= 32);
+                    const bool stackMemory = kind == ProbeKind::art && (syscall == 226 || syscall == 233) &&
+                        cpu.x[0] >= 0x7f000000 && cpu.x[0] < 0x80000000;
+                    bool zygoteTrace = false;
+                    if (zygotePid && syscallCount > traceLimit && linux.processId() == zygotePid) {
+                        const auto count = zygoteSyscalls++;
+                        const bool memoryFile = syscall == 279 || (syscall == 25 && (cpu.x[1] == 1033 || cpu.x[1] == 1034));
+                        zygoteTrace = count < 2048 || (syscall == 222 && zygoteMappings++ < 256) ||
+                                      (memoryFile && zygoteMemoryFiles++ < 40) ||
+                                      (count % 1'000'000 == 0 && zygoteSamples++ < 128);
+                    } else if (zygotePid && syscallCount > traceLimit && linux.parentProcessId() == zygotePid) {
+                        zygoteTrace = zygoteChildSyscalls++ < 2048;
+                        if (!zygoteTrace && zygoteChildPolicyCalls < 64) {
+                            const bool securityControl = syscall == 167 && (cpu.x[0] == 22 || cpu.x[0] == 38);
+                            const auto path = syscall == 56 || syscall == 79 ? pathArgument(machine, cpu.x[1]) : std::string{};
+                            zygoteTrace = securityControl || (syscall == 280 && cpu.x[0] == 7) || path.ends_with("_seapp_contexts") ||
+                                path.ends_with("/attr/current") || path == "/sys/fs/selinux/context" || path.starts_with("/dev/ashmem");
+                            zygoteChildPolicyCalls += zygoteTrace;
+                        }
+                    }
+                    const bool graphicsTrace = graphicsCalls < 512 && syscallCount > traceLimit &&
+                        (syscall == 56 || syscall == 29) &&
+                        std::ranges::find(graphicsPids, linux.processId()) != graphicsPids.end();
+                    graphicsCalls += graphicsTrace;
+                    trace = stackMemory || zygoteTrace || graphicsTrace || (!repetitive && syscallCount <= traceLimit);
+                }
+                if (!trace) ++suppressedLogs;
+                if (trace) {
+                    describeCall(report, cpu, syscall);
+                    if (linux.threadId() != 1 && init) report << " tid=" << linux.threadId();
+                    switch (syscall) {
+                        case 36:
+                            report << " link=" << pathArgument(machine, cpu.x[2])
+                                   << " points_to=" << pathArgument(machine, cpu.x[0]);
+                            break;
+                        case 39: case 43: case 221: case 279:
+                            report << " path=" << pathArgument(machine, cpu.x[0]);
+                            break;
+                        case 280:
+                            if (cpu.x[0] == 7 && cpu.x[2] >= sizeof(uint64_t)) {
+                                uint64_t name;
+                                if (machine.load64(cpu.x[1], name)) report << " path=" << pathArgument(machine, name);
+                            }
+                            break;
+                        case 33: case 34: case 35: case 48: case 53: case 54: case 56: case 60: case 78: case 79:
+                            report << " path=" << pathArgument(machine, cpu.x[1]);
+                            break;
+                        case 200: case 203:
+                            if (cpu.x[2] > 2 && cpu.x[1] <= UINT64_MAX - 2)
+                                report << " unix_path=" << pathArgument(machine, cpu.x[1] + 2);
+                            break;
+                        case 40:
+                            report << " source=" << pathArgument(machine, cpu.x[0])
+                                   << " target=" << pathArgument(machine, cpu.x[1])
+                                   << " type=" << pathArgument(machine, cpu.x[2]);
+                            break;
+                        default:
+                            break;
+                    }
+                }
+                auto& timing = intervalSyscalls[std::min<uint64_t>(syscall, otherSyscall)];
+                if (sampleBoot) ++timing.calls;
+                const bool timeSyscall = syscallCount >= nextSyscallSample;
+                const auto syscallStart = timeSyscall ? steady_clock::now() : steady_clock::time_point{};
+                const auto callBegan = nativeExecution ? steady_clock::now() : steady_clock::time_point{};
+                // NESTVANE_TRACE_PROGRAM=<part of a program's path> puts that program's system calls into
+                // the Android log: the number, the first four arguments, and what came back.
+                static const char* const tracedProgram = std::getenv("NESTVANE_TRACE_PROGRAM");
+                const bool traceCall = tracedProgram && linux.androidLogObserver && !linux.blocked() &&
+                    linux.currentExecutable().find(tracedProgram) != std::string::npos;
+                const std::array<uint64_t, 4> callArguments{cpu.x[0], cpu.x[1], cpu.x[2], cpu.x[3]};
+                const auto callProcess = traceCall ? linux.processId() : 0;
+                bool handled;
+                try {
+                    handled = linux.syscall(machine);
+                } catch (const std::bad_alloc&) {
+                    // The host had no memory for what this call needed. The caller is told so, as Linux
+                    // would; letting it go on unwinding ended all of Android.
+                    cpu.x[0] = uint64_t(-12);
+                    handled = true;
+                    if (linux.androidLogObserver) {
+                        std::ostringstream event;
+                        event << "Nestvane: system call " << syscall << " in PID " << linux.processId()
+                              << " found no host memory; told ENOMEM";
+                        linux.androidLogObserver(event.str());
+                    }
+                }
+                if (traceCall) {
+                    char line[200];
+                    std::snprintf(line, sizeof(line), "native execution: call %llu(0x%llx, 0x%llx, 0x%llx, 0x%llx) in PID %llu -> %s0x%llx",
+                                  static_cast<unsigned long long>(syscall), static_cast<unsigned long long>(callArguments[0]),
+                                  static_cast<unsigned long long>(callArguments[1]), static_cast<unsigned long long>(callArguments[2]),
+                                  static_cast<unsigned long long>(callArguments[3]), static_cast<unsigned long long>(callProcess),
+                                  !handled ? "not handled " : linux.blocked() ? "waits " : "", static_cast<unsigned long long>(cpu.x[0]));
+                    linux.androidLogObserver(line);
+                }
+                // NESTVANE_TRACE_FAILED=<part of an SELinux domain> puts the calls that fail in processes of
+                // that domain into the Android log, such as isolated_app for WebView's renderers.
+                if (static const char* const failedDomain = std::getenv("NESTVANE_TRACE_FAILED");
+                    failedDomain && handled && !linux.blocked() && linux.androidLogObserver &&
+                    (cpu.x[0] >= uint64_t(-4095) || ((syscall == 222 || syscall == 215 || syscall == 216 || syscall == 226 ||
+                                                      syscall == 233) && callArguments[1] >= 1024 * 1024)) &&
+                    linux.currentContext().find(failedDomain) != std::string::npos) {
+                    char line[200];
+                    std::snprintf(line, sizeof(line), "native execution: traced call %llu(0x%llx, 0x%llx, 0x%llx, 0x%llx) in PID %llu -> 0x%llx",
+                                  static_cast<unsigned long long>(syscall), static_cast<unsigned long long>(callArguments[0]),
+                                  static_cast<unsigned long long>(callArguments[1]), static_cast<unsigned long long>(callArguments[2]),
+                                  static_cast<unsigned long long>(callArguments[3]), static_cast<unsigned long long>(linux.processId()),
+                                  static_cast<unsigned long long>(cpu.x[0]));
+                    // A Unix socket's path, for connect and bind.
+                    const auto path = (syscall == 203 || syscall == 200) ? pathArgument(machine, callArguments[1] + 2) : std::string();
+                    linux.androidLogObserver(path.empty() ? std::string(line) : std::string(line) + " " + path);
+                }
+                // NESTVANE_TRACE_DENIED=1: the calls that end in "permission denied", with where the path leads.
+                if (static const bool traced = std::getenv("NESTVANE_TRACE_DENIED"); traced && cpu.x[0] == uint64_t(-13) && linux.androidLogObserver) {
+                    const auto path = pathArgument(machine, cpu.x[1]);
+                    linux.androidLogObserver("native execution: denied call " + std::to_string(syscall) + " " + path + " " + linux.pathReport(path));
+                }
+                if (nativeExecution) {
+                    const auto spent = steady_clock::now() - callBegan;
+                    syscallTime += spent;
+                    auto& slot = syscallCost[std::min<uint64_t>(syscall, syscallCost.size() - 1)];
+                    slot.first += spent;
+                    ++slot.second;
+                }
+                if (timeSyscall) {
+                    timing.nanoseconds += duration_cast<nanoseconds>(steady_clock::now() - syscallStart).count();
+                    ++timing.samples;
+                    ++intervalSyscallSamples;
+                    ++syscallSamples;
+                    nextSyscallSample = syscallCount + syscallSampleStride + ((syscallSamples * 0x9e37) & 255);
+                }
+                if (handled) {
+                    if (linux.blocked()) {
+                        if (trace) report << " [blocked]\n";
+                        continue;
+                    }
+                    if (linux.replacedImage()) {
+                        ++cpu.retired;
+                        if (trace) report << " [loaded guest image]\n";
+                        continue;
+                    }
+                    if (linux.restoredSignalContext()) {
+                        ++cpu.retired;
+                        if (trace) report << " [restored signal context]\n";
+                        if (restoredSignals++ < 32)
+                            report << "  guest rt_sigreturn restored TID=" << linux.threadId()
+                                   << " PC=0x" << std::hex << cpu.pc << std::dec << '\n';
+                        continue;
+                    }
+                    if (cpu.stop == Stop::fault) {
+                        ++cpu.retired;
+                        if (trace) report << " [fault]\n";
+                        continue;
+                    }
+                    cpu.pc += 4;
+                    ++cpu.retired;
+                } else if (syscall == 93 || syscall == 94) {
+                    executeDecoded(machine, instruction);
+                } else {
+                    if (!trace) describeCall(report, cpu, syscall);
+                    const auto caller = linux.processId();
+                    if (linux.suspendChild()) {
+                        report << " [unimplemented in guest PID " << caller << ", suspended]\n";
+                        // In Android's log too, with what its first argument is when that is a descriptor: a
+                        // suspended process can hold up others that wait for it, far from where it stopped.
+                        if (linux.androidLogObserver) {
+                            std::ostringstream event;
+                            event << "Nestvane: system call " << syscall << " not implemented, PID " << caller << " suspended:" << std::hex;
+                            for (int i = 0; i < 6; ++i) event << " x" << i << "=0x" << cpu.x[i];
+                            event << std::dec << "; x0 is " << linux.describeDescriptor(cpu.x[0]);
+                            if (syscall == 21) event << "; x2 is " << linux.describeDescriptor(cpu.x[2]);  // epoll_ctl's target
+                            linux.androidLogObserver(event.str());
+                        }
+                        continue;
+                    }
+                    report << " [unimplemented]\n";
+                    unhandled = syscall;
+                    cpu.stop = Stop::unsupported;
+                    break;
+                }
+                if (trace) report << " result=0x" << std::hex << cpu.x[0] << std::dec << '\n';
+            } else if (!executeStartupInstruction(machine, word)) {
+                // An instruction the interpreter does not have, in an app's own library: that app gets
+                // SIGILL and Android goes on. It used to end the whole run, and the screen stood still.
+                const auto pc = cpu.pc;
+                const auto process = linux.processId(), thread = linux.threadId();
+                // The callers, by the frame records, before the signal frame changes the registers.
+                std::ostringstream callers;
+                callers << std::hex << " LR=0x" << cpu.x[30];
+                for (uint64_t frame = cpu.x[29], depth = 0; frame && depth < 8; ++depth) {
+                    std::array<uint64_t, 2> record{};
+                    if (!machine.readInto(frame, {reinterpret_cast<uint8_t*>(record.data()), sizeof(record)})) break;
+                    callers << " <- 0x" << record[1];
+                    if (record[0] <= frame) break;
+                    frame = record[0];
+                }
+                // NESTVANE_TRAP_DUMP=[*]<address>:<bytes> adds guest memory to the report, at the address or,
+                // with *, at the address read from there.
+                if (const char* dump = std::getenv("NESTVANE_TRAP_DUMP")) {
+                    const bool indirect = *dump == '*';
+                    uint64_t address = std::strtoull(dump + indirect, nullptr, 16);
+                    const char* colon = std::strchr(dump, ':');
+                    const uint64_t bytes = std::min<uint64_t>(colon ? std::strtoull(colon + 1, nullptr, 10) : 16, 64);
+                    if (indirect && !machine.readInto(address, {reinterpret_cast<uint8_t*>(&address), sizeof(address)})) address = 0;
+                    std::vector<uint8_t> memory(bytes);
+                    callers << " memory@0x" << address << ":";
+                    if (address && machine.readInto(address, memory))
+                        for (const auto byte : memory) callers << ' ' << unsigned(byte);
+                }
+                if (init && linux.deliverIllegalInstruction(machine)) {
+                    std::ostringstream message;
+                    message << ((word & 0xffe0001f) == 0xd4200000 || (word & 0xffe0001f) == 0xd4400000 ? "native execution: breakpoint instruction, SIGTRAP to PID="
+                                                                   : "native execution: no such instruction in the interpreter, SIGILL to PID=") << process
+                            << " TID=" << thread << std::hex << " PC=0x" << pc << " word=0x" << word << std::dec << callers.str();
+                    if (illegalInstructions++ < 32) report << "  " << message.str() << '\n';
+                    if (linux.androidLogObserver) linux.androidLogObserver(message.str());
+                    continue;
+                }
+                cpu.stop = Stop::unsupported;
+            }
+        } catch (const std::bad_alloc&) {
+            // Init cannot be ended: the app that matters least is, and init tries again.
+            if (!init || !(linux.endCurrentProcess(9, "no host memory for it") || linux.endAppForMemory())) throw;
+            cpu.stop = Stop::running;
         }
     }
 

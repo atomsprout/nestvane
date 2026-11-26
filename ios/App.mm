@@ -2281,7 +2281,8 @@ static bool ApkContent(NSData* data) {
                             if (NSString* names = NSProcessInfo.processInfo.environment[@"NESTVANE_TEST_APK"]; names && apkInbox) {
                                 sleep(unsigned(NSProcessInfo.processInfo.environment[@"NESTVANE_TEST_APK_WAIT"].intValue));
                                 NSMutableString* text = [NSMutableString string];
-                                for (NSString* name in [names componentsSeparatedByString:@","]) {
+                                for (NSString* name in [names componentsSeparatedByString:@","]) @autoreleasepool {
+                                    // Each APK's bytes go when it is installed, not when the whole test is over.
                                     NSData* data = [NSData dataWithContentsOfURL:[documents URLByAppendingPathComponent:name]];
                                     const auto* bytes = static_cast<const uint8_t*>(data.bytes);
                                     const auto submitted = NSProcessInfo.processInfo.systemUptime;

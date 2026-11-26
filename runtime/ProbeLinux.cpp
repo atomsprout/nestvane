@@ -8171,17 +8171,38 @@ bool ProbeLinux::endCachedAppForRoom() { return endCachedApp(900, "to make room 
 bool ProbeLinux::relieveMemoryPressure() {
 #if TARGET_OS_IPHONE
     // iOS ends the whole app, Android and all, when it uses more than its limit, with no warning Android
-    // could act on. So the runtime does what lmkd would: when little is left, the cached app Android ranks
-    // lowest goes; when very little is left, the previous app too (700). Never anything the person sees.
+    // could act on. So the runtime does what lmkd would, down Android's ranks (ProcessList) as less is
+    // left: cached apps (900 and up), the previous app (700), services (500), and last what can be heard
+    // or noticed (200). Never what is on screen (0, 100) or the system's persistent processes.
     const size_t left = os_proc_available_memory();
     if (!left) return false;
     constexpr size_t megabyte = 1024 * 1024;
-    const int minimum = left < 250 * megabyte ? 700 : left < 500 * megabyte ? 900 : -1;
+    // With room to spare: a host allocation of a few hundred megabytes (a new run of guest memory) must
+    // still fit when the last step is taken.
+    const int minimum = left < 200 * megabyte ? 200 : left < 300 * megabyte ? 500 : left < 450 * megabyte ? 700 :
+                        left < 700 * megabyte ? 900 : -1;
     if (minimum < 0) return false;
     return endCachedApp(minimum, "to free memory (" + std::to_string(left / megabyte) + " MB left)");
 #else
     return false;
 #endif
+}
+
+bool ProbeLinux::endCurrentProcess(uint32_t signal, std::string_view why) {
+    if (current->process->id == pid) return false;
+    std::string name;
+    if (const auto main = threads.find(current->process->id); main != threads.end())
+        name.assign(reinterpret_cast<const char*>(main->second.name.data()),
+                    strnlen(reinterpret_cast<const char*>(main->second.name.data()), main->second.name.size()));
+    const std::string event = "Nestvane: ended " + name + " (pid " + std::to_string(current->process->id) + "): " +
+        std::string(why);
+    if (androidLogObserver) androidLogObserver(event);
+    keepDiagnosticLine(event);
+    finishProcess(*current->process, signal, true);
+    removeSiblingThreads();
+    current->wait = Wait::exited;
+    sliceEnd = 0;
+    return true;
 }
 
 bool ProbeLinux::endCachedApp(int minimumAdjustment, std::string_view reason) {
@@ -9421,6 +9442,19 @@ bool ProbeLinux::deliverMemoryFault(Machine& machine) {
     const bool mapped = std::ranges::any_of(machine.segments, [&](const Segment& segment) {
         return address >= segment.address && address - segment.address < segment.mappedSize();
     });
+    // Mapped memory touched for the first time gets host memory then. When the host's address space is
+    // full, it got none, and the access was not the program's fault: make room as for a new process (end
+    // the cached app that matters least) and run the instruction again. Only when there is nothing left to
+    // end does the program get the signal. A thread's stack in Wikipedia's background process met this.
+    if (mapped && machine.space && address < GuestSpace::size && machine.space->mapped(address) &&
+        !machine.space->backed(address)) {
+        for (int attempt = 0; attempt < 4 && !machine.space->touch(address); ++attempt)
+            if (!endCachedAppForRoom()) break;
+        if (machine.space->backed(address)) {
+            machine.cpu.stop = Stop::running;
+            return true;
+        }
+    }
     SignalFrame::Info info{};
     info.number = sigSegv;
     info.code = mapped ? 2 : 1; // SEGV_ACCERR or SEGV_MAPERR
@@ -13099,6 +13133,15 @@ bool ProbeLinux::syscall(Machine& machine) {
         case 233: { // madvise
             const auto advice = int32_t(x[2]);
             if (advice < 0) { x[0] = invalid; break; }
+            // Hints that change nothing here, since memory has no huge pages, merging, core dumps or swap to
+            // steer: MERGEABLE, UNMERGEABLE, HUGEPAGE, NOHUGEPAGE (Go's runtime gives it for its heap),
+            // DONTDUMP, DODUMP, COLD, PAGEOUT, POPULATE_READ, POPULATE_WRITE, COLLAPSE.
+            if (advice == 12 || advice == 13 || advice == 14 || advice == 15 || advice == 16 || advice == 17 ||
+                advice == 20 || advice == 21 || advice == 22 || advice == 23 || advice == 25) {
+                if (x[0] % pageSize || x[1] > maxReservation) { x[0] = invalid; break; }
+                x[0] = 0;
+                break;
+            }
             if (advice > 4 && advice != 8 && advice != 9 && advice != 10 && advice != 11 && advice != 18 && advice != 19) return false;
             if (x[0] % pageSize || x[1] > maxReservation) { x[0] = invalid; break; }
             const auto length = pageAlignedLength(x[1]);
@@ -13553,7 +13596,10 @@ bool ProbeLinux::syscall(Machine& machine) {
             const bool scheduleHandler = caught && !masked && !waiting;
             if ((!caught && signal >= 32 && !waiting) ||
                 (!waiting && !masked && !fatalResend && !caught)) return false;
-            if (scheduleHandler && target.wait != Wait::none && target.wait != Wait::poll &&
+            // A thread computing on a worker gets it at its next turn, which its recall brings soon: Go's
+            // runtime preempts its busy threads this way, with SIGURG (WireGuard's tunnel is in Go).
+            const bool onWorker = target.wait == Wait::native;
+            if (scheduleHandler && !onWorker && target.wait != Wait::none && target.wait != Wait::poll &&
                 target.wait != Wait::futex && target.wait != Wait::signal && target.wait != Wait::signalSuspend &&
                 target.wait != Wait::sleep && target.wait != Wait::suspended) return false;
             if (signal >= 32 && target.pendingSignals.size() >= 1024) { x[0] = uint64_t(-11); break; }
@@ -13566,7 +13612,9 @@ bool ProbeLinux::syscall(Machine& machine) {
             if (signal >= 32 || !target.pendingSignals.contains(signal))
                 target.pendingSignals.emplace(signal, info);
             x[0] = 0;
-            if (waiting) {
+            if (onWorker && scheduleHandler) {
+                native::recall(target.nativeTicket, false);
+            } else if (waiting) {
                 target.wait = Wait::none;
                 target.deadline.reset();
             } else if (scheduleHandler) {
