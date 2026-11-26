@@ -232,7 +232,7 @@ the kernel layer no longer refuses memory that gains execute permission, which t
   in its own library is slow.
 - **No Google Play services.** Apps that need them were not tried.
 - **No Wi-Fi service.** Android here reaches the network through a wired interface. An app that asks for the
-  Wi-Fi service and does not expect to be told there is none stops (KDE Connect, Session). Planned for 1.15.
+  Wi-Fi service and does not expect to be told there is none stops (KDE Connect, Session). Planned for 1.16.
 - **No VPN dialog.** A VPN app stops when it asks for permission to set up a VPN (Tailscale).
 - **App protectors** that wrap an app's code (SecNeo in 12306) do not start.
 - **32-bit apps** cannot run: the iPhone's processor has no 32-bit mode (Baidu Netdisk's package).
