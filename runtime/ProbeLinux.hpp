@@ -384,6 +384,8 @@ public:
     bool endCurrentProcess(uint32_t signal, std::string_view why);
     // Ends the app Android ranks lowest that is not on screen, whatever memory is left. False if none.
     bool endAppForMemory() { return endCachedApp(200, "because the host had no memory for init"); }
+    // Ends the cached app that matters least, to give the host room. False if there is none.
+    bool makeRoom() { return endCachedAppForRoom(); }
 private:
     bool waitChild(Machine& machine);
     Process* liveProcess(uint64_t id) const;

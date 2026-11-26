@@ -1,5 +1,7 @@
 #include "GuestSpace.hpp"
 
+#include <new>
+
 #include <algorithm>
 #include <cstring>
 #include <mach/mach.h>
@@ -35,7 +37,11 @@ void* copyOnWrite(const void* source, uint64_t length, void* target = nullptr) {
 
 } // namespace
 
-GuestSpace::GuestSpace() : GuestSpace(copyOnWrite(emptyTables(), tableBytes)) {}
+GuestSpace::GuestSpace() : GuestSpace(copyOnWrite(emptyTables(), tableBytes)) {
+    // No host addresses for the tables: the caller is out of memory (an execve is told ENOMEM), where
+    // going on wrote through a null pointer and ended the app.
+    if (!tables_) throw std::bad_alloc();
+}
 
 GuestSpace::GuestSpace(void* tables) { attach(tables); }
 

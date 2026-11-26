@@ -786,17 +786,30 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
                 const std::array<uint64_t, 4> callArguments{cpu.x[0], cpu.x[1], cpu.x[2], cpu.x[3]};
                 const auto callProcess = traceCall ? linux.processId() : 0;
                 bool handled;
+                const auto registersBefore = cpu.x;
                 try {
                     handled = linux.syscall(machine);
                 } catch (const std::bad_alloc&) {
-                    // The host had no memory for what this call needed. The caller is told so, as Linux
-                    // would; letting it go on unwinding ended all of Android.
-                    cpu.x[0] = uint64_t(-12);
-                    handled = true;
+                    // The host had no memory for what this call needed. Room is made as for a new process (the
+                    // cached app that matters least ends) and the call runs once more; if that fails too, the caller
+                    // is told so, as Linux would. Letting it go on unwinding ended all of Android.
+                    bool again = false;
+                    if (linux.makeRoom()) {
+                        cpu.x = registersBefore;
+                        try {
+                            handled = linux.syscall(machine);
+                            again = true;
+                        } catch (const std::bad_alloc&) {}
+                    }
+                    if (!again) {
+                        cpu.x = registersBefore;
+                        cpu.x[0] = uint64_t(-12);
+                        handled = true;
+                    }
                     if (linux.androidLogObserver) {
                         std::ostringstream event;
                         event << "Nestvane: system call " << syscall << " in PID " << linux.processId()
-                              << " found no host memory; told ENOMEM";
+                              << (again ? " found no host memory; made room and ran it again" : " found no host memory; told ENOMEM");
                         linux.androidLogObserver(event.str());
                     }
                 }

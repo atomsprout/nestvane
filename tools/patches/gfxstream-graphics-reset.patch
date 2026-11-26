@@ -1,0 +1,16 @@
+diff --git a/host/gl/emulated_egl_window_surface.cpp b/host/gl/emulated_egl_window_surface.cpp
+index 451a91a6d..933c03b04 100644
+--- a/host/gl/emulated_egl_window_surface.cpp
++++ b/host/gl/emulated_egl_window_surface.cpp
+@@ -111,7 +111,10 @@ bool EmulatedEglWindowSurface::flushColorBuffer() {
+ 
+     GLenum resetStatus = s_gles2.glGetGraphicsResetStatusEXT();
+     if (resetStatus != GL_NO_ERROR) {
+-        GFXSTREAM_FATAL("Stream server aborting due to graphics reset: %x", resetStatus);
++        // Nestvane: a reset of the phone's graphics (Metal) fails this flush instead of ending the
++        // whole app, Android with it. The guest app that drew sees the failure; Android goes on.
++        GFXSTREAM_ERROR("Graphics reset while flushing a window surface: %x", resetStatus);
++        return false;
+     }
+ 
+     // Make the surface current

@@ -6012,6 +6012,18 @@ static uint64_t freeForeignAddress(const Machine& machine, uint64_t length) {
 
 uint64_t ProbeLinux::map(Machine& machine) {
     const auto& x = machine.cpu.x;
+    // What a fixed mapping replaces, for the line about code that has no translation.
+    std::string replaced;
+    if ((x[3] & 0x10) && (x[2] & 4))
+        for (const auto& segment : machine.segments)
+            if (x[0] >= segment.address && x[0] - segment.address < segment.mappedSize()) {
+                char text[160];
+                std::snprintf(text, sizeof(text), ", replacing 0x%llx+0x%llx flags %u%s%s", static_cast<unsigned long long>(segment.address),
+                              static_cast<unsigned long long>(segment.mappedSize()), segment.flags,
+                              segment.anonymous ? " anonymous" : "", segment.fileMapping ? " file" : "");
+                replaced = text;
+                break;
+            }
     constexpr uint64_t fixed = 0x10, anonymous = 0x20, noReserve = 0x4000;
     // Prefaulting is advisory. Existing guest backing and protection rules still apply.
     constexpr uint64_t populate = 0x8000;
@@ -6035,17 +6047,30 @@ uint64_t ProbeLinux::map(Machine& machine) {
                          length <= mappingFloor - hint && !overlaps(hint, false);
     // What the dynamic linker reserves is for a library. It goes where native code can jump to it even
     // if it has no translation: a prelinked library is mapped at an address of its own instead.
-    const uint64_t forLibrary = !atAddress && !lowHint && anon && !(x[2] & 7) && machine.space && !machine.space->interpreted() &&
-        machine.space->inLinker(machine.cpu.pc) ? freeForeignAddress(machine, length) : 0;
+    // So does the shape of libffi's trampoline table: two pages, readable and writable or not at all, over
+    // whose first page it then maps its code file (MAP_FIXED). JNA and Rust's UniFFI use it (Bitwarden,
+    // Element X, Firefox, Proton VPN); anywhere else the whole process had to be interpreted.
+    const bool trampolineShape = anon && length == 2 * pageSize && ((x[2] & 7) == 0 || (x[2] & 7) == 3);
+    const uint64_t forLibrary = !atAddress && !lowHint && machine.space && !machine.space->interpreted() &&
+        ((anon && !(x[2] & 7) && machine.space->inLinker(machine.cpu.pc)) || (native::enabled() && trampolineShape))
+        ? freeForeignAddress(machine, length) : 0;
+    // Code from a file that has no translation goes there too when the program lets the kernel choose:
+    // libffi's closures are a file in the app's cache mapped executable (JNA, Rust's UniFFI: Bitwarden,
+    // Element X, Firefox Focus, Proton VPN). Anywhere else the whole process had to be interpreted.
+    const uint64_t forCode = !atAddress && !lowHint && !forLibrary && !anon && (x[2] & 4) && machine.space &&
+        !machine.space->interpreted() && native::enabled() && [&] {
+            const auto fd = descriptors().find(uint32_t(x[4]));
+            return fd != descriptors().end() && (fd->second.temporary || !native::moduleFor(fd->second.contents()));
+        }() ? freeForeignAddress(machine, length) : 0;
     // A hint in the arena is taken when the range is free, as Linux takes it. V8 places its code range
     // near its own code this way, and gives up when every mapping lands somewhere else.
     const uint64_t arenaFloor = native::enabled() ? native::webViewBase + native::webViewSize : mappingFloor;
-    const bool highHint = !atAddress && !lowHint && !forLibrary && hint >= arenaFloor && length <= mappingLimit - hint &&
+    const bool highHint = !atAddress && !lowHint && !forLibrary && !forCode && hint >= arenaFloor && length <= mappingLimit - hint &&
                           !overlaps(hint, false);
     const bool webView = !atAddress && anon && !(x[2] & 7) && length == native::webViewSize && machine.space &&
                          native::covers(native::webViewBase, native::webViewBase + length) && !overlaps(native::webViewBase, false);
     const auto start = atAddress ? x[0] : webView ? native::webViewBase : lowHint || highHint ? hint :
-                       forLibrary ? forLibrary : freeMappingAddress(machine, nextMapping, length);
+                       forLibrary ? forLibrary : forCode ? forCode : freeMappingAddress(machine, nextMapping, length);
     if (static const bool trace = std::getenv("NESTVANE_NATIVE_TRACE"); trace && machine.space && !(x[2] & 7) && anon)
         std::fprintf(stderr, "[native] pid %llu reserves 0x%llx bytes hint 0x%llx flags 0x%llx pc 0x%llx: linker %d interpreted %d -> 0x%llx\n",
                      static_cast<unsigned long long>(processId()), static_cast<unsigned long long>(length),
@@ -6256,13 +6281,14 @@ uint64_t ProbeLinux::map(Machine& machine) {
                 std::string name = fd.path.substr(0, 200);
                 for (char& character : name)
                     if (character < 0x20 || character > 0x7e) character = '?';
-                char where[64];
-                std::snprintf(where, sizeof(where), " at 0x%llx", static_cast<unsigned long long>(start));
+                char where[128];
+                std::snprintf(where, sizeof(where), " at 0x%llx (asked 0x%llx, flags 0x%llx)", static_cast<unsigned long long>(start),
+                              static_cast<unsigned long long>(x[0]), static_cast<unsigned long long>(x[3]));
                 const bool known = !fd.temporary && native::moduleFor(fd.contents());
                 androidLogObserver("native execution: " + current->process->executable + " (pid " + std::to_string(processId()) +
                                    (inPlace ? ") interprets code without a translation in place: " :
                                               ") is interpreted from here on, it maps code without a translation in place: ") +
-                                   name + where + (known ? ", translated for another address" : ""));
+                                   name + where + replaced + (known ? ", translated for another address" : ""));
             }
             if (!inPlace) machine.space->dropCode();
             if (static const bool report = std::getenv("NESTVANE_NATIVE_TRACE"); report) {
@@ -6996,7 +7022,14 @@ bool ProbeLinux::forkProcess(Machine& machine) {
     // needs, and the parent goes on at once.
     constexpr uint64_t cloneVm = 0x100, cloneVfork = 0x4000, childSetTid = 0x1000000, childClearTid = 0x200000;
     const bool vfork = (x[0] & ~uint64_t(0xff)) == (cloneVm | cloneVfork) && (x[0] & 0xff) == 17;
-    if (!vfork && (x[0] != 0x1200011 || x[1])) return false;
+    // A copy with a stack of its own, sharing the working directory or not, traced or not, and with or
+    // without SIGCHLD at its end: Firefox starts its helper process with CLONE_FS | CLONE_UNTRACED, a new
+    // stack and no signal. Here the child gets its own copy of the working directory, which a child that
+    // goes on to exec does not miss.
+    constexpr uint64_t cloneFs = 0x200, untraced = 0x800000;
+    const uint64_t shape = x[0] & ~uint64_t(0xff), exitSignal = x[0] & 0xff;
+    const bool copy = !(shape & ~(cloneFs | untraced | childSetTid | childClearTid)) && (exitSignal == 17 || exitSignal == 0);
+    if (!vfork && !copy) return false;
     const auto retry = [&](std::string_view reason, uint64_t requested, int mappingError = 0) {
         if (androidLogObserver) {
             std::ostringstream event;
@@ -7102,7 +7135,7 @@ bool ProbeLinux::forkProcess(Machine& machine) {
     child.saved.pc += 4;
     child.saved.x[0] = 0;
     child.saved.exclusiveSize = 0;
-    if (vfork && x[1]) child.saved.sp = x[1];
+    if (x[1]) child.saved.sp = x[1];
     // The child TID is written only to its private memory view.
     auto parent = std::move(machine.segments);
     auto parentSpace = std::move(machine.space);
@@ -8405,10 +8438,13 @@ static bool writeGuestRusage(Machine& machine, uint64_t address, std::chrono::na
 bool ProbeLinux::waitChild(Machine& machine) {
     auto& x = machine.cpu.x;
     constexpr uint64_t noHang = 1, untraced = 2, exited = 4, continued = 8, noWait = 0x1000000;
+    // __WALL and __WCLONE: wait for children however they signal their end. Every child is found here
+    // whatever it signals, so they change nothing. Firefox waits for its helper so: it has no signal.
+    constexpr uint64_t anyChild = 0x40000000 | 0x80000000;
     const bool wait4 = x[8] == 260;
     int32_t target = wait4 ? int32_t(x[0]) : x[0] == 1 ? int32_t(x[1]) : -1;
-    if (wait4 ? ((target <= 0 && target != -1) || (x[2] & ~(noHang | untraced | continued))) :
-                (x[0] == 2 || x[0] > 3 || (x[3] & ~(noHang | exited | noWait)))) return false;
+    if (wait4 ? ((target <= 0 && target != -1) || (x[2] & ~(noHang | untraced | continued | anyChild))) :
+                (x[0] == 2 || x[0] > 3 || (x[3] & ~(noHang | exited | noWait | anyChild)))) return false;
     if (!wait4 && x[0] == 3) { // P_PIDFD
         const auto fd = descriptors().find(uint32_t(x[1]));
         if (fd == descriptors().end() || fd->second.node != Node::processHandle) {
