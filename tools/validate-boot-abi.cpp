@@ -4738,8 +4738,13 @@ int main() {
         assert(write(output, withoutRoute) && invoke(203, {stream, output, withoutRoute.size()}) == uint64_t(-100));
         assert(write(attr + 16, uint16_t(9)) && invoke(29, {stream, 0x8914, attr}) == 0);
         assert(invoke(203, {stream, output, withoutRoute.size()}) == uint64_t(-111));
+        // Loopback's address, mask and hardware address (Zoom), and ENODEV for an interface there is not.
+        assert(invoke(29, {stream, 0x8915, attr}) == 0 && task.load64(attr + 16, field) && field == 0x0100007f00000002);
+        assert(invoke(29, {stream, 0x891b, attr}) == 0 && task.load64(attr + 16, field) && field == 0x000000ff00000002);
+        assert(invoke(29, {stream, 0x8927, attr}) == 0 && task.load64(attr + 16, field) && field == 0x0304);
         ifreq[0] = 'x';
         assert(write(attr, ifreq) && invoke(29, {stream, 0x8913, attr}) == uint64_t(-19));
+        assert(invoke(29, {stream, 0x8915, attr}) == uint64_t(-19));
         assert(invoke(29, {stream, 0x8913, attr + pageSize}) == uint64_t(-14));
         const std::array<uint32_t, 5> createTags{1, 8, 8, 2, 0};
         assert(write(attr, createTags));

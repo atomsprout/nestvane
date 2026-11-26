@@ -12202,7 +12202,9 @@ bool ProbeLinux::syscall(Machine& machine) {
                     break;
                 }
             }
-            if (x[1] == 0x8910 || x[1] == 0x8913 || x[1] == 0x8914 || x[1] == 0x8921 || x[1] == 0x8933) {
+            // Loopback's, and an interface there is not: as Linux, ENODEV. SIOCGIFCONF lists lo, and Zoom asks for
+            // its address (SIOCGIFADDR) and was left waiting for an answer.
+            if (x[1] == 0x8910 || (x[1] >= 0x8913 && x[1] <= 0x8922) || x[1] == 0x8927 || x[1] == 0x8933) {
                 if (!descriptor->second.socket) { x[0] = uint64_t(-25); break; }
                 struct Request {
                     std::array<char, 16> name;
@@ -12235,9 +12237,22 @@ bool ProbeLinux::syscall(Machine& machine) {
                     if (!(current->process->effectiveCaps & (1ULL << 12))) { x[0] = uint64_t(-1); break; }
                     inetLoopbackUp = input.value[0] & up;
                     x[0] = 0;
-                } else { // SIOCGIFMTU, SIOCGIFINDEX
+                } else if (x[1] == 0x8921 || x[1] == 0x8933) { // SIOCGIFMTU, SIOCGIFINDEX
                     x[0] = writeGuest(machine, value, x[1] == 0x8921 ? guestLoopbackMtu : guestLoopbackIndex)
                         ? 0 : uint64_t(-14);
+                } else if (x[1] == 0x8915 || x[1] == 0x8917 || x[1] == 0x8919 || x[1] == 0x891b) {
+                    // SIOCGIFADDR 127.0.0.1, SIOCGIFDSTADDR the same, SIOCGIFBRDADDR none, SIOCGIFNETMASK 255.0.0.0.
+                    std::array<uint8_t, 16> address{2, 0};  // AF_INET
+                    if (x[1] == 0x891b) address[4] = 255;
+                    else if (x[1] != 0x8919) { address[4] = 127; address[7] = 1; }
+                    x[0] = writeGuest(machine, value, address) ? 0 : uint64_t(-14);
+                } else if (x[1] == 0x8927) { // SIOCGIFHWADDR: ARPHRD_LOOPBACK, all zeros
+                    std::array<uint8_t, 16> hardware{};
+                    hardware[0] = uint8_t(772 & 0xff);
+                    hardware[1] = uint8_t(772 >> 8);
+                    x[0] = writeGuest(machine, value, hardware) ? 0 : uint64_t(-14);
+                } else {
+                    x[0] = uint64_t(-95);
                 }
                 break;
             }

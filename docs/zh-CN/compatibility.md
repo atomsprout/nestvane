@@ -1,6 +1,6 @@
 # 试过的应用
 
-从 APK 安装的开源应用，每个打开一次。这里说的是每个应用走到了哪一步，不是它好不好用：
+从 APK 安装的应用，每个打开一次：先是开源应用，1.5 起也有从各家官网下载的常用应用。这里说的是每个应用走到了哪一步，不是它好不好用：
 “能打开”指它的第一个界面画出来了，除非备注里另有说明，再往后的都没有试。
 
 2026 年 11 月 23 日在 iPhone 17 Pro（iOS 27.0.1）上用后来成为 1.3 版的构建测试。APK 来自 F-Droid 或各项目自己的发布页。
@@ -76,6 +76,85 @@
 
 没有试：TikTok 和 YouTube。两家都不提供安装包下载，YouTube 还依赖 Google Play 服务。
 
+## 为 1.13 又试的 50 个
+
+2026 年 11 月 25 日和 26 日在 iPhone 14（iOS 17.3.1）上试，用的是 1.13 开发过程中的构建，每个应用在它引出的修复之后又试了一次。安装包来自各家官网、项目自己在 GitHub 的发布页或 F-Droid，没有用镜像站。应用装上后按包名打开，等 25 到 90 秒存一帧，再卸载；一次启动 Android 连着试六个或四个。
+
+| 应用 | 来源 | 结果 |
+| --- | --- | --- |
+| 微信 | weixin.qq.com | 约 90 秒后打开到启动画面：它用自己的加载器映射库，其中一部分是解释执行的 |
+| QQ | im.qq.com | 打开到启动画面 |
+| 支付宝 | alipay.com | 打开到登录页 |
+| 哔哩哔哩 | app.bilibili.com | 能安装（1.13 之前被拒绝，见下面）；90 秒内没有画面 |
+| 知乎 | zhihu.com | 能安装（1.13 之前被拒绝）；一启动就停，停在它自己的原生代码里 |
+| 网易云音乐 | music.163.com | 一启动就停：它的安全库在没设成可执行的内存里运行代码 |
+| 酷狗音乐 | kugou.com | 打开到隐私提示 |
+| 百度地图 | map.baidu.com | 打开到用户协议 |
+| 百度网盘 | pan.baidu.com | 不支持：提供的安装包只有 32 位，iPhone 的处理器不运行 32 位代码 |
+| 夸克 | quark.cn | 60 秒内没有画面 |
+| UC 浏览器 | ucweb.com | 60 秒内没有画面 |
+| 钉钉 | dingtalk.com | 打开到隐私政策 |
+| 飞书 | feishu.cn | 18 秒后打开到登录页 |
+| 腾讯会议 | meeting.tencent.com | 能打开 |
+| WPS Office | wps.com | 一启动就停 |
+| 腾讯视频 | v.qq.com | 打开到启动画面（1.13，见下面） |
+| 爱奇艺 | iqiyi.com | 60 秒内没有画面：它加载的一个库让整个应用变成解释执行 |
+| 优酷 | youku.com | 打开到欢迎页 |
+| 铁路12306 | 12306.cn | 一启动就停：它被加固（梆梆）包着，加固在这里起不来 |
+| WhatsApp | whatsapp.com | 打开到服务条款 |
+| Zoom | zoom.us | 两分钟里窗口一直是空白。1.13 之前它在网络接口的请求上一直等 |
+| Firefox | Mozilla | 能打开（1.13，见下面）；它的辅助进程会停，浏览器本身继续 |
+| Firefox Focus | Mozilla | 能打开（1.13） |
+| Brave | GitHub | 打开到欢迎页（nightly 构建） |
+| Opera | opera.com | 60 秒内没有画面：解释执行 |
+| Tor Browser | torproject.org | 能打开 |
+| Bitwarden | GitHub | 能打开（1.13） |
+| Proton VPN | GitHub | 打开到登录页（1.13） |
+| Mullvad VPN | mullvad.net | 能打开 |
+| Tailscale | tailscale.com | 能打开；请求 VPN 权限时停住，这个 Android 没有那个对话框 |
+| WireGuard | wireguard.com | 能打开（1.13） |
+| v2rayNG | GitHub | 能打开，询问权限 |
+| Session | getsession.org | 一启动就停：它要 Wi-Fi 服务，这个 Android 没有 |
+| Element X | GitHub | 能打开（1.13） |
+| Wire | wire.com | 能打开 |
+| Briar | briarproject.org | 打开到设置向导 |
+| Jitsi Meet | F-Droid | 能打开 |
+| Thunderbird | GitHub | 打开到欢迎页 |
+| Tusky | GitHub | 打开到登录页 |
+| Tuta Mail | F-Droid | 能打开 |
+| VLC | videolan.org | 打开到介绍页（1.13） |
+| Kodi | kodi.tv | 能打开 |
+| RetroArch | libretro.com | 能打开 |
+| Moonlight | moonlight-stream.org | 能打开 |
+| Kiwix | kiwix.org | 能打开 |
+| Syncthing-Fork | GitHub | 打开到介绍页 |
+| Obtainium | GitHub | 能打开，询问权限 |
+| Mihon | GitHub | 一启动就停，停在它自己的原生代码里 |
+| LocalSend | GitHub | 60 秒内没有画面：它的 Flutter 引擎是解释执行的 |
+| AppFlowy | GitHub | 46 秒后能打开（Flutter） |
+
+50 个里 36 个能打开，另有一个（百度网盘）在 iPhone 上根本不能运行；试过的 104 个应用合计 87 个能打开。
+
+## 1.13 改了什么
+
+一次启动里接连打开很多应用，比每次启动只开一个应用发现的问题多。
+
+**开过几个应用后，Android 不再停住，Nestvane 也不再被结束。**
+
+- Nestvane 用的内存超过 iOS 允许的（iPhone 14 上约 4.3 GB）时，iOS 不打招呼就结束它。现在剩得不多时，先结束 Android 排得最低的应用，和 Android 的低内存查杀一样：先是缓存的应用，再是上一个应用，然后是服务；屏幕上的从不结束。
+- 宿主内存分配失败会结束整个 Android。现在系统调用拿不到内存时先腾地方再试一次，给不了内存的进程单独结束。
+- 一个进程出了内存错误而它没有处理函数时，整个 Android 都结束。现在和 Linux 一样只结束这个进程。映射了但暂时拿不到宿主内存的地方出错时，先腾地方再跑。
+- 第一个 WebView 渲染进程结束后，任何应用都启动不了：WebView 的 zygote 用一个没实现的调用报告这件事，然后一直等，后面每个应用的启动都排在它后面。
+- 400 MB 的安装包（QQ、飞书）在为安装复制时内存不够，Nestvane 被结束。现在安装包直接从文件交给 Android，不复制。
+
+**用 JNA 或 Rust 的应用原生运行。** Bitwarden、Element X、Firefox Focus 和 Proton VPN 用 libffi 生成小段跳板代码，放在它们自己选地址、映射成可执行的文件里。这让整个应用变成解释执行，到第一个画面要几分钟。现在这类代码放在只有它被解释执行的地方。应用用自己的加载器加载的库（微信）也一样。
+
+**缺的系统调用和请求**，每一个都会让一个进程一直等下去：`pselect6`（VLC）；向在另一个核上运行的线程发 `tgkill`，以及 `madvise` 的几种提示（Go 程序：WireGuard、Tailscale）；TCP 和 UDP 套接字上的边沿触发 `epoll`（Telegram、Tailscale）；`ptrace`（现在像对无关进程那样拒绝）；带新栈、不发信号的 `clone`，以及带 `__WALL` 的 `wait4`（Firefox、夸克、UC）；套接字上的 `SIOCGIFCONF`、回环接口的地址和 `FIONREAD`（Zoom、腾讯视频、AppFlowy）。
+
+**共享库。** Android 声明的七个库镜像里没有（USB 配件库、测试库等），需要其中任何一个的应用 Android 都拒绝安装：哔哩哔哩和知乎。
+
+**图形。** 应用绘制时手机的图形被重置，Nestvane 就结束（Firefox）。现在那次绘制失败，Android 继续。
+
 ## 1.5 里改了什么
 
 **密钥。** 应用在 Android 的密钥库里生成不了密钥：密钥库去问这个应用有没有权限，对所有应用的回答都是没有，因为那张回答表当初只为系统自己的进程取过。现在应用得到的是 Android 的策略给每个应用的权限。Signal 和 Element 一启动就停在这里，凡是把设置加密保存的应用都会这样。
@@ -112,7 +191,10 @@ Android 有一种兼容的加载方式，现在对所有应用打开（`bionic.l
 - **Android 数据里能放的文件数有上限**，装到三十来个应用时到了上限，再装的应用就启动不了。原来是 4096 个文件、2048 个目录，现在是它的十六倍。
 - **原生库是解释执行的**，约每秒四千万条指令。在自己的库里干重活的应用会很慢。
 - **没有 Google Play 服务。** 需要它的应用没有试。
-- **没有 Wi-Fi 服务。** 这里的 Android 通过有线接口上网。应用去取 Wi-Fi 服务又没料到取不到，就会停止（KDE Connect）。
-- **大应用启动慢。** 它们的 Java 代码在这里没有预先编译。Firefox 到第一个画面要将近两分钟。
+- **没有 Wi-Fi 服务。** 这里的 Android 通过有线接口上网。应用去取 Wi-Fi 服务又没料到取不到，就会停止（KDE Connect、Session）。计划在 1.14 加上。
+- **没有 VPN 对话框。** VPN 应用请求建立 VPN 的权限时会停住（Tailscale）。
+- **加固**把应用的代码包起来的（12306 的梆梆），在这里起不来。
+- **32 位应用**不能运行：iPhone 的处理器没有 32 位模式（百度网盘的安装包）。
+- **大应用启动慢。** 它们的 Java 代码在这里没有预先编译。Firefox 到第一个画面最长要两分钟。
 
-没有列入的：VLC，手头的 APK 只有 x86 版，不能在手机上运行。
+前两张表里没有 VLC，因为当时手头的 APK 只有 x86 版；1.13 试了它的 ARM 版。

@@ -1,6 +1,6 @@
 # Apps that were tried
 
-Open-source apps installed from their APK files and opened once each. This says how far each one got, not how
+Apps installed from their APK files and opened once each: open-source ones first, and since 1.5 also widely used ones from their makers' sites. This says how far each one got, not how
 well it works: "opens" means its first screen was drawn, and nothing beyond that was tried unless a note says so.
 
 Tried on 23 November 2026 on an iPhone 17 Pro (iOS 27.0.1) with the build that became version 1.3. The APKs came
@@ -80,6 +80,103 @@ Twenty-nine of the thirty-two open; of all fifty-four, fifty.
 
 Not tried: TikTok and YouTube. Neither maker offers an APK to download, and YouTube needs Google Play services.
 
+## Fifty more, tried for 1.13
+
+Tried on 25 and 26 November 2026 on an iPhone 14 (iOS 17.3.1) with builds of 1.13 as it was being made, each app
+again after the fix it led to. The APKs came from the makers' own sites, the projects' own GitHub releases, or
+F-Droid; none from a mirror. Apps were installed, opened by their package name and given 25 to 90 seconds, a frame
+was saved, and they were uninstalled again, six or four at a time in one start of Android.
+
+| App | Source | Result |
+| --- | --- | --- |
+| WeChat (微信) | weixin.qq.com | Opens to its splash screen after about 90 seconds: its own loader maps its libraries, and part of them is interpreted |
+| QQ | im.qq.com | Opens to its splash screen |
+| Alipay (支付宝) | alipay.com | Opens to its sign-in screen |
+| Bilibili (哔哩哔哩) | app.bilibili.com | Installs (before 1.13 it was refused: see below); no screen within 90 seconds |
+| Zhihu (知乎) | zhihu.com | Installs (refused before 1.13); stops as it starts, in its own native code |
+| NetEase Cloud Music (网易云音乐) | music.163.com | Stops as it starts: its security library runs code from memory it has not made executable |
+| Kugou Music (酷狗音乐) | kugou.com | Opens to its privacy notice |
+| Baidu Maps (百度地图) | map.baidu.com | Opens to its terms |
+| Baidu Netdisk (百度网盘) | pan.baidu.com | Not supported: the package offered is 32-bit only, and the iPhone's processor runs no 32-bit code |
+| Quark (夸克) | quark.cn | No screen within 60 seconds |
+| UC Browser | ucweb.com | No screen within 60 seconds |
+| DingTalk (钉钉) | dingtalk.com | Opens to its privacy policy |
+| Feishu (飞书) | feishu.cn | Opens to its sign-in, after 18 seconds |
+| Tencent Meeting (腾讯会议) | meeting.tencent.com | Opens |
+| WPS Office | wps.com | Stops as it starts |
+| Tencent Video (腾讯视频) | v.qq.com | Opens to its splash screen (1.13: see below) |
+| iQIYI (爱奇艺) | iqiyi.com | No screen within 60 seconds: a library it loads makes the whole app interpreted |
+| Youku (优酷) | youku.com | Opens to its welcome screen |
+| 12306 (铁路12306) | 12306.cn | Stops as it starts: it is wrapped by an app protector (SecNeo) that does not start here |
+| WhatsApp | whatsapp.com | Opens to its terms |
+| Zoom | zoom.us | Its window stays blank for two minutes. Before 1.13 it waited for ever on network interface requests |
+| Firefox | Mozilla | Opens (1.13: see below); its helper processes stop, the browser itself goes on |
+| Firefox Focus | Mozilla | Opens (1.13) |
+| Brave | GitHub | Opens to its welcome screen (a nightly build) |
+| Opera | opera.com | No screen within 60 seconds: interpreted |
+| Tor Browser | torproject.org | Opens |
+| Bitwarden | GitHub | Opens (1.13) |
+| Proton VPN | GitHub | Opens to its sign-in (1.13) |
+| Mullvad VPN | mullvad.net | Opens |
+| Tailscale | tailscale.com | Opens; stops when it asks for VPN permission, which this Android has no dialog for |
+| WireGuard | wireguard.com | Opens (1.13) |
+| v2rayNG | GitHub | Opens, and asks for a permission |
+| Session | getsession.org | Stops as it starts: it asks for the Wi-Fi service, which this Android does not have |
+| Element X | GitHub | Opens (1.13) |
+| Wire | wire.com | Opens |
+| Briar | briarproject.org | Opens to its setup |
+| Jitsi Meet | F-Droid | Opens |
+| Thunderbird | GitHub | Opens to its welcome screen |
+| Tusky | GitHub | Opens to its sign-in |
+| Tuta Mail | F-Droid | Opens |
+| VLC | videolan.org | Opens to its introduction (1.13) |
+| Kodi | kodi.tv | Opens |
+| RetroArch | libretro.com | Opens |
+| Moonlight | moonlight-stream.org | Opens |
+| Kiwix | kiwix.org | Opens |
+| Syncthing-Fork | GitHub | Opens to its introduction |
+| Obtainium | GitHub | Opens, and asks for a permission |
+| Mihon | GitHub | Stops as it starts, in its own native code |
+| LocalSend | GitHub | No screen within 60 seconds: its Flutter engine is interpreted |
+| AppFlowy | GitHub | Opens, after 46 seconds (Flutter) |
+
+Thirty-six of the fifty open, and one more (Baidu Netdisk) cannot run on an iPhone at all; of all one hundred and four apps tried, eighty-seven open.
+
+## What changed in 1.13
+
+Opening many apps one after another, rather than one per start of Android, found more than any single app did.
+
+**Android no longer stops, and Nestvane no longer ends, when several apps have been opened.**
+
+- iOS ended Nestvane when it used more memory than the app may (on an iPhone 14, about 4.3 GB), without a warning.
+  Now, when little is left, the app Android ranks lowest is ended first, as Android's low-memory killer would:
+  cached apps, then the previous app, then services; never what is on screen.
+- A host allocation that failed ended all of Android. Now a system call that finds no memory makes room and tries
+  again, and a process that cannot be given memory is ended alone.
+- A memory fault in one process that it had no handler for ended all of Android. Now only that process ends, as on
+  Linux. A fault on memory that was mapped but could not be given host memory yet makes room and runs again.
+- After the first WebView renderer ended, no app could start any more: WebView's zygote reported the end with a
+  call that was not implemented, waited for ever, and every start of an app waited behind it.
+- A 400 MB package (QQ, Feishu) ran out of memory while it was copied for installing, and Nestvane ended. Packages
+  are now handed to Android from the file without a copy.
+
+**Apps that use JNA or Rust run natively.** Bitwarden, Element X, Firefox Focus and Proton VPN build small
+trampolines with libffi, in a file mapped executable at an address of their own choosing. That made the whole app
+interpreted, minutes to a first screen. Such code is now placed where only it is interpreted. The same goes for
+libraries that apps load with their own loader (WeChat).
+
+**System calls and requests that were missing**, each of which left a process waiting for ever: `pselect6` (VLC),
+`tgkill` to a thread running on another core and `madvise` hints (Go programs: WireGuard, Tailscale),
+edge-triggered `epoll` on TCP and UDP sockets (Telegram, Tailscale), `ptrace` (now refused, as for an unrelated
+process), `clone` with a new stack and no signal and `wait4` with `__WALL` (Firefox, Quark, UC), `SIOCGIFCONF`, loopback's
+address and `FIONREAD` on sockets (Zoom, Tencent Video, AppFlowy).
+
+**Shared libraries.** Seven libraries that Android declares were missing from the image (the USB accessory library,
+the test libraries, and others), so Android refused to install any app that requires one: Bilibili and Zhihu.
+
+**Graphics.** A reset of the phone's graphics while an app drew ended Nestvane (Firefox). That draw fails now, and
+Android goes on.
+
 ## What changed in 1.5
 
 **Keys.** An app could not make a key in Android's keystore: the keystore asked whether the app was allowed, and
@@ -135,8 +232,11 @@ the kernel layer no longer refuses memory that gains execute permission, which t
   in its own library is slow.
 - **No Google Play services.** Apps that need them were not tried.
 - **No Wi-Fi service.** Android here reaches the network through a wired interface. An app that asks for the
-  Wi-Fi service and does not expect to be told there is none stops (KDE Connect).
+  Wi-Fi service and does not expect to be told there is none stops (KDE Connect, Session). Planned for 1.14.
+- **No VPN dialog.** A VPN app stops when it asks for permission to set up a VPN (Tailscale).
+- **App protectors** that wrap an app's code (SecNeo in 12306) do not start.
+- **32-bit apps** cannot run: the iPhone's processor has no 32-bit mode (Baidu Netdisk's package).
 - **Large apps start slowly.** Their Java code is not compiled ahead of time here. Firefox takes up to two
   minutes to its first screen.
 
-Not in the list: VLC, because the APK at hand was built for x86 only and cannot run on a phone.
+VLC was left out of the first two lists because the APK at hand was built for x86 only; its ARM build was tried for 1.13.
