@@ -226,6 +226,10 @@ struct ProbeLinux {
         // reads and changes the same answers the person gave (ProbeKernelSu.cpp).
         std::function<std::vector<std::pair<std::string, bool>>()> answers;
         std::function<void(const std::string& package, bool allowed)> remember;
+        // The whole profile the Manager last set for a package (struct app_profile; empty for none):
+        // a custom root profile's user, groups, capabilities and domain, which root then gets.
+        std::function<std::vector<uint8_t>(const std::string& package)> profile;
+        std::function<void(const std::string& package, std::span<const uint8_t> profile)> rememberProfile;
     };
     static void setRootPolicy(RootPolicy policy);
     static RootPolicy rootPolicy();
@@ -242,6 +246,15 @@ struct ProbeLinux {
     bool kernelSuManager() const;
     // Root's credentials for the calling process now, as su gives them at its start.
     void becomeRoot();
+    // What a custom root profile from the KernelSU Manager gives the app with this uid; none for the
+    // default profile (root, every capability, su's domain).
+    struct RootCredentials {
+        uint32_t uid = 0, gid = 0;
+        std::vector<uint32_t> groups;
+        uint64_t effective = 0, permitted = 0, inheritable = 0;
+        std::string context;
+    };
+    std::optional<RootCredentials> customRoot(uint32_t uid) const;
     // The package that has a uid, from Android's own list; "" for none. And the other way.
     std::string packageOfUid(uint32_t uid) const;
     std::optional<uint32_t> uidOfPackage(std::string_view package) const;
@@ -1221,6 +1234,8 @@ public:
     // slower with them in the middle): the KernelSU state and the answers the Manager reads.
     std::function<std::vector<std::pair<std::string, bool>>()> rootAnswers;
     std::function<void(const std::string& package, bool allowed)> rootRemember;
+    std::function<std::vector<uint8_t>(const std::string& package)> rootProfile;
+    std::function<void(const std::string& package, std::span<const uint8_t> profile)> rootRememberProfile;
     int64_t kernelSuManagerUid = -1;  // the uid whose APK carries the Manager's certificate
     std::map<std::string, bool, std::less<>> kernelSuSignatures;  // APK path -> whether it is the Manager's
 };

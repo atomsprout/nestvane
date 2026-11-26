@@ -103,17 +103,49 @@ bool ProbeLinux::kernelSuManager() const {
     return kernelSuManagerUid >= 0 && current->process->userIds[0] == uint64_t(kernelSuManagerUid);
 }
 
+std::optional<ProbeLinux::RootCredentials> ProbeLinux::customRoot(uint32_t uid) const {
+    if (!rootProfile) return {};
+    const auto package = packageOfUid(uid);
+    if (package.empty()) return {};
+    const auto profile = rootProfile(package);
+    // Only an allowed app's own profile; the default one is root with everything.
+    if (profile.size() != profileBytes || !profile[allowOffset] || profile[useDefaultOffset]) return {};
+    int32_t ids[3] = {};
+    std::memcpy(ids, profile.data() + rootProfileOffset, sizeof ids);
+    if (ids[0] < 0 || ids[1] < 0) return {};
+    RootCredentials credentials;
+    credentials.uid = uint32_t(ids[0]);
+    credentials.gid = uint32_t(ids[1]);
+    const int32_t count = std::clamp(ids[2], 0, 32);
+    for (int32_t group = 0; group < count; ++group) {
+        int32_t id = 0;
+        std::memcpy(&id, profile.data() + rootProfileOffset + 12 + 4 * group, 4);
+        if (id >= 0) credentials.groups.push_back(uint32_t(id));
+    }
+    uint64_t capabilities[3] = {};
+    std::memcpy(capabilities, profile.data() + rootProfileOffset + 144, sizeof capabilities);
+    credentials.effective = capabilities[0] & Process::allCapabilities;
+    credentials.permitted = capabilities[1] & Process::allCapabilities;
+    credentials.inheritable = capabilities[2] & Process::allCapabilities;
+    const auto* domain = reinterpret_cast<const char*>(profile.data() + rootProfileOffset + 168);
+    credentials.context = std::string(domain, strnlen(domain, 64));
+    if (credentials.context.empty()) credentials.context = std::string(rootContext);
+    return credentials;
+}
+
 void ProbeLinux::becomeRoot() {
     auto& process = *current->process;
-    process.userIds.fill(0);
-    process.groupIds.fill(0);
-    process.groups = {0};
+    // A custom profile the KernelSU Manager set for the app: its user, groups, capabilities and domain.
+    const auto custom = customRoot(uint32_t(process.userIds[0]));
+    process.userIds.fill(custom ? custom->uid : 0);
+    process.groupIds.fill(custom ? custom->gid : 0);
+    process.groups = custom ? custom->groups : std::vector<uint32_t>{0};
     // An app's bounding set is empty (zygote drops it): root gets every capability back, as su gives
     // them, so that it can read and change any app's files.
     process.capabilityBound = Process::allCapabilities;
-    process.inheritableCaps = Process::allCapabilities;
+    process.inheritableCaps = custom ? custom->inheritable : Process::allCapabilities;
     process.secureBits = 0;
-    process.pendingContext = std::string(rootContext);
+    process.pendingContext = custom ? custom->context : std::string(rootContext);
     current->seccomp.reset();
     current->noNewPrivileges = false;
 }
@@ -168,10 +200,12 @@ std::optional<uint64_t> ProbeLinux::kernelSuIoctl(Machine& machine, uint32_t req
                 }
                 if (!decision) return uint64_t(-1);
             }
+            const auto custom = customRoot(uid);
             becomeRoot();
             auto& process = *current->process;
             process.context = std::exchange(process.pendingContext, {});
-            process.permittedCaps = process.effectiveCaps = Process::allCapabilities;
+            process.permittedCaps = custom ? custom->permitted : Process::allCapabilities;
+            process.effectiveCaps = custom ? custom->effective : Process::allCapabilities;
             if (androidLogObserver) androidLogObserver("Nestvane: root granted through KernelSU to uid " + std::to_string(uid));
             return 0;
         }
@@ -219,6 +253,16 @@ std::optional<uint64_t> ProbeLinux::kernelSuIoctl(Machine& machine, uint32_t req
             std::memcpy(&subject, profile.data() + uidOffset, 4);
             const auto answer = subject >= 0 ? answerFor(uint32_t(subject)) : std::nullopt;
             if (!answer) return uint64_t(-2);  // no profile: the Manager shows its default
+            // The profile the Manager set last, with the answer as it is now (the iOS prompt and
+            // Nestvane's settings change it too).
+            if (const auto package = packageOfUid(uint32_t(subject)); !package.empty() && rootProfile) {
+                if (const auto stored = rootProfile(package); stored.size() == profileBytes) {
+                    std::copy(stored.begin(), stored.end(), profile.begin());
+                    std::memcpy(profile.data() + uidOffset, &subject, 4);
+                    profile[allowOffset] = *answer;
+                    return write(argument, profile.data(), profile.size()) ? 0 : uint64_t(-14);
+                }
+            }
             std::memcpy(profile.data(), &profileVersion, 4);
             profile[allowOffset] = *answer;
             profile[useDefaultOffset] = 1;
@@ -244,6 +288,7 @@ std::optional<uint64_t> ProbeLinux::kernelSuIoctl(Machine& machine, uint32_t req
             // "$" and "#" are the defaults for apps without root and with it: those stay as they are.
             if (name.empty() || name == "$" || name == "#") return 0;
             if (rootRemember) rootRemember(name, profile[allowOffset] != 0);
+            if (rootRememberProfile) rootRememberProfile(name, profile);
             if (androidLogObserver)
                 androidLogObserver("Nestvane: KernelSU Manager " + std::string(profile[allowOffset] ? "allowed" : "refused") +
                                    " root for " + name);

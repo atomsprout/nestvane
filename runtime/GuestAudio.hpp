@@ -24,6 +24,9 @@ struct GuestAudio {
     // And the bytes the guest has played, whether or not anybody took them.
     std::atomic<uint64_t> played{0};
     std::atomic<uint32_t> peak{0};
+    // How often the output wanted sound while playing and the guest had not given enough: a gap, heard
+    // as a click or a crackle.
+    std::atomic<uint64_t> shortfalls{0};
 
     void configure(uint32_t newRate, uint32_t newChannels, uint32_t newBits) {
         const std::lock_guard guard(lock);
@@ -59,6 +62,7 @@ struct GuestAudio {
         const std::lock_guard guard(lock);
         // Nothing is taken until the cushion is there, and again after the sound ran out.
         if (!primed && filled < cushion) return 0;
+        if (primed && filled < count) ++shortfalls;
         primed = filled != 0;
         count = std::min(count, filled);
         if (!count) return 0;

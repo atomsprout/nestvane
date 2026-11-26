@@ -1304,6 +1304,8 @@ service nestvane-trim /system/bin/sh /system/etc/nestvane/trim.sh
                 linux.rootDecision = std::move(root.decision);
                 linux.rootAnswers = std::move(root.answers);
                 linux.rootRemember = std::move(root.remember);
+                linux.rootProfile = std::move(root.profile);
+                linux.rootRememberProfile = std::move(root.rememberProfile);
             }
         }
         for (const bool directory : {false, true}) {

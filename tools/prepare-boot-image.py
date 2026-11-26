@@ -18,6 +18,8 @@ FRAMEWORK_APPS = (
     # PackageManager resolves this required shared library from its factory APK.
     "android.ext.shared",
     "com.android.documentsui",
+    # Settings' Safety and emergency page asks its gesture provider and stops without it.
+    "com.android.emergency",
     "com.android.externalstorage",
     "com.android.inputdevices",
     "com.android.inputmethod.latin",
@@ -31,10 +33,16 @@ FRAMEWORK_APPS = (
     # Brings the Ethernet interface up and checks the network: without it nothing is ever connected.
     "com.android.networkstack",
     "com.android.packageinstaller",
+    # Providers apps ask for and stop without: contacts, calendar, blocked numbers, and the user
+    # dictionary the keyboard and Settings' language page read.
+    "com.android.providers.blockednumber",
+    "com.android.providers.calendar",
+    "com.android.providers.contacts",
     "com.android.providers.downloads",
     "com.android.providers.downloads.ui",
     "com.android.providers.settings",
     "com.android.providers.telephony",
+    "com.android.providers.userdictionary",
     "com.android.server.telecom",
     "com.android.settings",
     "com.android.shell",
@@ -43,6 +51,7 @@ FRAMEWORK_APPS = (
 
 FRAMEWORK_APP_APEXES = ("com.android.extservices", "com.android.mediaprovider", "com.android.permission")
 LATIN_IME_LIBRARY = "/product/lib64/libjni_latinime.so"
+EMERGENCY_PERMISSIONS = "/system_ext/etc/permissions/com.android.emergency.xml"
 TETHERING_APEX = "/system/apex/com.android.tethering.apex"
 TETHERING_LOADER = "nestvane-metadata/tethering-netbpfload.elf"
 
@@ -74,6 +83,10 @@ def copy_framework_apps(adb, remote, active_modules, guest):
         header = library.read(20)
     if header[:6] != b"\x7fELF\x02\x01" or int.from_bytes(header[18:20], "little") != 183:
         raise SystemExit(f"Expected an ARM64 ELF for {LATIN_IME_LIBRARY}")
+    # Emergency info's privileged permissions: without the allowlist the package manager refuses it.
+    allowlist = guest / EMERGENCY_PERMISSIONS.lstrip("/")
+    allowlist.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(adb + ["pull", EMERGENCY_PERMISSIONS, str(allowlist)], check=True)
     for module in FRAMEWORK_APP_APEXES:
         path = active_modules.get(module, "")
         if not re.fullmatch(r"/system/apex/[A-Za-z0-9_.-]+\.apex", path):

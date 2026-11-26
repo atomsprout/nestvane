@@ -334,11 +334,11 @@ std::jthread StartDisplayReader(const nestvane::GfxstreamSession& renderer, Disp
                 static double cpuBefore = 0;
                 const double cpuNow = used.ru_utime.tv_sec + used.ru_stime.tv_sec + (used.ru_utime.tv_usec + used.ru_stime.tv_usec) / 1e6;
                 [rates appendFormat:@"cpu %.0f%%; ", (cpuNow - std::exchange(cpuBefore, cpuNow)) / seconds * 100];
-                [rates appendFormat:@"%@%dx%d at %d Hz: composed %.0f, shown %.0f frames per second; sound %.0f bytes a second taken, %.0f played by Android, peak %u (%@, %zu bytes waiting); most in a tenth %llu\n",
+                [rates appendFormat:@"%@%dx%d at %d Hz: composed %.0f, shown %.0f frames per second; sound %.0f bytes a second taken, %.0f played by Android, peak %u (%@, %zu bytes waiting, %llu short); most in a tenth %llu\n",
                     refresh ? [NSString stringWithFormat:@"surfaces, screen refreshed %.0f times a second; ", [refresh takeTicks] / seconds] : @"read back; ",
                     size.width, size.height, hertz,
                     rateFirstFrame ? double(lastFrame - rateFirstFrame + 1) / seconds : 0.0, shown / seconds, double(soundNow - soundBefore) / seconds, double(playedNow - playedBefore) / seconds,
-                    sound.peak.exchange(0), GuestAudioOutputState, sound.buffered(), std::exchange(tenthMost, 0)];
+                    sound.peak.exchange(0), GuestAudioOutputState, sound.buffered(), sound.shortfalls.exchange(0), std::exchange(tenthMost, 0)];
                 {
                     auto& microphone = nestvane::GuestMicrophone::host();
                     static uint64_t givenBefore = 0;
@@ -477,6 +477,7 @@ static NSString* const Display120HzKey = @"Display120Hz";
 // RootGrantPrefix + package name. Apps are asked the first time they start su.
 static NSString* const RootEnabledKey = @"RootEnabled";
 static NSString* const RootGrantPrefix = @"RootGrant:";
+static NSString* const RootProfilePrefix = @"RootProfile:";
 static NSInteger GuestDisplayRate() {
     static const NSInteger launchedWith = std::atoi(getenv("NESTVANE_DISPLAY_HZ") ?: "");
     if (launchedWith) return launchedWith;
@@ -1052,9 +1053,10 @@ static NSArray<NSDictionary*>* RootGrantRows() {
 }
 
 // The settings that belong to Android rather than to the app, which a backup carries: whether root
-// is on, each app's answer, and the apps' names.
+// is on, each app's answer and KernelSU profile, and the apps' names.
 static bool AndroidSetting(NSString* key) {
-    return [key isEqualToString:RootEnabledKey] || [key hasPrefix:RootGrantPrefix] || [key hasPrefix:RootLabelPrefix];
+    return [key isEqualToString:RootEnabledKey] || [key hasPrefix:RootGrantPrefix] || [key hasPrefix:RootProfilePrefix] ||
+           [key hasPrefix:RootLabelPrefix];
 }
 static NSDictionary* AndroidSettings() {
     NSMutableDictionary* settings = [NSMutableDictionary dictionary];
@@ -2678,6 +2680,20 @@ int main(int argc, char* argv[]) {
         [](const std::string& package, bool allowed) {
             @autoreleasepool {
                 [NSUserDefaults.standardUserDefaults setBool:allowed forKey:[RootGrantPrefix stringByAppendingString:@(package.c_str())]];
+            }
+        },
+        // The KernelSU Manager's whole profile for an app, kept so that it reads back what it set.
+        [](const std::string& package) {
+            @autoreleasepool {
+                NSData* data = [NSUserDefaults.standardUserDefaults dataForKey:[RootProfilePrefix stringByAppendingString:@(package.c_str())]];
+                const auto* bytes = static_cast<const uint8_t*>(data.bytes);
+                return data ? std::vector<uint8_t>(bytes, bytes + data.length) : std::vector<uint8_t>{};
+            }
+        },
+        [](const std::string& package, std::span<const uint8_t> profile) {
+            @autoreleasepool {
+                [NSUserDefaults.standardUserDefaults setObject:[NSData dataWithBytes:profile.data() length:profile.size()]
+                                                        forKey:[RootProfilePrefix stringByAppendingString:@(package.c_str())]];
             }
         }});
     @autoreleasepool {
