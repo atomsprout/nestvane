@@ -60,7 +60,7 @@ Nestvane 是早期版本，目前只有开发者能运行：IPA 必须用付费�
 - **应用自己文件里的程序能运行（1.12）。** `/data` 里的程序，比如应用 native 库目录里的，以前一直启动不了；现在可执行的都能运行。一个进程收到别的进程发来的 SIGTERM 而它自己处理这个信号时，发信号的一方不再卡住。
 - **接连打开很多应用（1.13）。** 又试了 50 个应用，一共 104 个（[清单](compatibility.md)）。一次启动里打开几个应用，会出现单开一个时没有的问题：Nestvane 被结束，或 Android 停住。这些修好了：内存剩得不多时，Nestvane 先结束 Android 排得最低的应用，不等 iOS 来结束 Nestvane（iPhone 14 上 iOS 允许约 4.3 GB）；出内存错误或拿不到宿主内存的进程单独结束，不连带整个 Android；第一个渲染进程结束后 WebView 的 zygote 不再一直等，以前它会挡住后面所有应用的启动；400 MB 的 APK 不复制就交给 Android。
 - **用 JNA 或 Rust 的应用原生运行（1.13）。** libffi 写进可执行映射文件里的代码（Bitwarden、Element X、Firefox Focus、Proton VPN），以及应用用自己的加载器加载的库（微信），以前会让整个应用变成解释执行，现在只有这部分代码是。Firefox 能打开，它的辅助进程会停。
-- **前置相机（1.13）。** Android 有两个相机：iPhone 的后置，现在还有前置，都是 640×480，前置的画面不镜像。iPhone 14 上 Camera2 列出两个（朝后、朝前）。拍照、录像能存下来：iPhone 14 上（1.13 发布后）测试应用用两个相机各拍一张 640×480 的 JPEG，用后置录 5 秒带声音的视频（H.264 145 帧、AAC），都存进 DCIM/Camera，在媒体库里，“文件”的共享文件夹里也有。iOS 要允许 Nestvane 用相机：iOS 设置里 Nestvane 的相机关着时，Android 的相机启动失败。没录成的视频留下一个空的隐藏 `.pending-` 文件。
+- **前置相机（1.13）。** Android 有两个相机：iPhone 的后置，现在还有前置，都是 640×480，前置的画面不镜像。iPhone 14 上 Camera2 列出两个（朝后、朝前）。拍照、录像能存下来：iPhone 14 上（1.13 发布后）测试应用用两个相机各拍一张 640×480 的 JPEG，用后置录 5 秒带声音的视频（H.264 145 帧、AAC），都存进 DCIM/Camera，在媒体库里，“文件”的共享文件夹里也有。iOS 要允许 Nestvane 用相机：iOS 设置里 Nestvane 的相机关着时，Android 的相机启动失败。没录成的视频留下一个空的隐藏 `.pending-` 文件。1.13 里用旧相机接口（Camera API 1）的应用，比如 Open Camera，打不开相机：镜像里没有 media profiles，Android 内置的视频尺寸最大 352×288，API 1 对 640×480 的相机就给不出预览尺寸。1.13 之后 Nestvane 给 Android 一份带 640×480 的 media profiles，Open Camera（F-Droid 下载）在 iPhone 14 上拍了照片、录了 6 秒带声音的视频。
 
 ## 还不能用的
 

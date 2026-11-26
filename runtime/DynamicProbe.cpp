@@ -1150,6 +1150,53 @@ DynamicReport probeInit(const std::string& directory, const std::string& databas
         const bool wakeGuestDisplay = startupTouch && files.contains("/system/bin/cmd");
         linux.setGraphicsPipeFactory(std::move(graphics));
         linux.setGraphicsDma(std::move(graphicsDma));
+        if (camera) {
+            // The image has no media profiles, so Android falls back to its built-in ones, whose video sizes stop
+            // at 352x288. Camera API 1 lists only preview sizes inside the video size range, our camera's one size
+            // (640x480) is outside it, and every API 1 app (Open Camera among them) then fails to open a camera.
+            static constexpr std::string_view mediaProfiles = R"xml(<?xml version="1.0" encoding="utf-8"?>
+<MediaSettings>
+    <CamcorderProfiles cameraId="0">
+        <EncoderProfile quality="480p" fileFormat="mp4" duration="60">
+            <Video codec="h264" bitRate="2000000" width="640" height="480" frameRate="30" />
+            <Audio codec="aac" bitRate="96000" sampleRate="48000" channels="1" />
+        </EncoderProfile>
+        <EncoderProfile quality="timelapse480p" fileFormat="mp4" duration="30">
+            <Video codec="h264" bitRate="2000000" width="640" height="480" frameRate="30" />
+            <Audio codec="aac" bitRate="96000" sampleRate="48000" channels="1" />
+        </EncoderProfile>
+        <ImageEncoding quality="95" />
+        <ImageEncoding quality="80" />
+        <ImageEncoding quality="70" />
+        <ImageDecoding memCap="20000000" />
+    </CamcorderProfiles>
+    <CamcorderProfiles cameraId="1">
+        <EncoderProfile quality="480p" fileFormat="mp4" duration="60">
+            <Video codec="h264" bitRate="2000000" width="640" height="480" frameRate="30" />
+            <Audio codec="aac" bitRate="96000" sampleRate="48000" channels="1" />
+        </EncoderProfile>
+        <EncoderProfile quality="timelapse480p" fileFormat="mp4" duration="30">
+            <Video codec="h264" bitRate="2000000" width="640" height="480" frameRate="30" />
+            <Audio codec="aac" bitRate="96000" sampleRate="48000" channels="1" />
+        </EncoderProfile>
+        <ImageEncoding quality="95" />
+        <ImageEncoding quality="80" />
+        <ImageEncoding quality="70" />
+        <ImageDecoding memCap="20000000" />
+    </CamcorderProfiles>
+    <EncoderOutputFileFormat name="3gp" />
+    <EncoderOutputFileFormat name="mp4" />
+    <VideoEncoderCap name="h264" enabled="true" minBitRate="64000" maxBitRate="12000000" minFrameWidth="176"
+        maxFrameWidth="1280" minFrameHeight="144" maxFrameHeight="720" minFrameRate="15" maxFrameRate="30" />
+    <AudioEncoderCap name="aac" enabled="true" minBitRate="8000" maxBitRate="96000" minSampleRate="8000"
+        maxSampleRate="48000" minChannels="1" maxChannels="1" />
+    <VideoDecoderCap name="wmv" enabled="false" />
+    <AudioDecoderCap name="wma" enabled="false" />
+</MediaSettings>
+)xml";
+            linux.mount("/vendor/etc/media_profiles_V1_0.xml",
+                        {reinterpret_cast<const uint8_t*>(mediaProfiles.data()), mediaProfiles.size()});
+        }
         linux.setCamera(std::move(camera));
         linux.setGuestTouch(std::move(touch));
         if (const auto loader = files.find("/nestvane-metadata/tethering-netbpfload.elf"); loader != files.end()) {

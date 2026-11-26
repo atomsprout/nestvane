@@ -35,6 +35,7 @@
 
 - [x] 前置相机出现在相机应用里（#5-14）：内核层的 qemud 相机服务多了 `nestvane-front`（640×480，朝前，方向 270），iOS 这边用前置摄像头、不镜像。iPhone 14 上 Camera2 列出两个相机：id 10 朝后、id 11 朝前
 - [x] 拍照和录像能存下来（#5-14）：iPhone 14 上测试应用 `fixtures/media` 的 `CameraActivity` 用后置、前置各拍一张 640×480 的 JPEG，后置录 5 秒视频（H.264 145 帧、AAC 声音），都存进 DCIM/Camera、在媒体库里，iOS“文件”的共享文件夹里也有（2026-11-26，1.13 发布后）。之前没拍成是 iOS 设置里 Nestvane 的相机开关是关的，用 UI 测试打开。当时手机放在暗处，画面很暗（平均亮度 15）。没录成的视频留下 0 KB 的 `.pending-*` 文件。Google 相机没复测
+- [x] 用旧相机接口（Camera API 1）的应用打不开相机（Open Camera 显示 “Failed to open camera”）：镜像没有 media profiles，内置的视频尺寸最大 352×288，API 1 的 `Parameters` 只列视频尺寸范围内的预览尺寸，640×480 不在里面。改成运行时挂一份 `/vendor/etc/media_profiles_V1_0.xml`（640×480 的 H.264 档）。iPhone 14 上 Open Camera 拍照、录 6.2 秒带声音的视频都存进 DCIM/OpenCamera。在 1.13 发布之后，跟下一版发
 - [x] 小修：Allow root 改成每次启动 Android 时读；设置页脚改成放进 Android 文件夹的文件几秒内出现
 - [x] 再测 50 个主流应用，共 104 个，87 个能打开（[清单](docs/zh-CN/compatibility.md)）。修了一次启动里接连开很多应用时的问题：iOS 因内存结束 Nestvane（现在先结束 Android 排得最低的应用）、宿主内存不够或进程出错时整个 Android 停住（现在只结束那个进程）、WebView 的 zygote 卡住后所有应用都起不来、400 MB 的 APK 复制时内存不够；JNA 和 Rust 的应用原生运行；补了 pselect6、边沿触发 epoll、clone/wait4 的几种用法、网络接口的 ioctl、缺的七个共享库
 - [ ] 还没打开的：网易云音乐（安全库在不可执行的内存里跑代码）、12306（梆梆加固）、知乎和 Mihon（自己的原生代码里崩）、WPS、Session（要 Wi-Fi 服务，1.14）、哔哩哔哩、夸克、UC、爱奇艺、Opera、LocalSend（太慢）、Zoom（窗口空白）；百度网盘只有 32 位，不支持
