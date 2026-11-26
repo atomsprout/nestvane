@@ -294,6 +294,16 @@ def add_content_tool(adb, guest):
             subprocess.run(adb + ["pull", "/" + path, str(guest / path)], check=True, stdout=subprocess.DEVNULL)
 
 
+def add_declared_libraries(adb, guest):
+    """The shared libraries that /system/etc/permissions declares (the USB accessory library, the test
+    libraries and others). Without the file, Android refuses every app that lists one as required
+    (Bilibili, Zhihu); they were not taken into the image before 1.13."""
+    for declaration in (guest / "system/etc/permissions").glob("*.xml"):
+        for path in re.findall(r'file="/(system/framework/[A-Za-z0-9_.+-]+\.jar)"', declaration.read_text(encoding="utf-8")):
+            if not (guest / path).is_file():
+                subprocess.run(adb + ["pull", "/" + path, str(guest / path)], check=True, stdout=subprocess.DEVNULL)
+
+
 def add_overlay_daemon(adb, guest):
     """idmap2d, which the overlay manager starts to put resource overlays into effect, and idmap2,
     which zygote runs before anything else for the overlays of the framework's own resources.
@@ -873,6 +883,7 @@ def main():
                     add_low_memory_killer(adb, guest)
                     add_overlay_daemon(adb, guest)
                     add_content_tool(adb, guest)
+                    add_declared_libraries(adb, guest)
                     add_media_server(adb, guest)
                     precompile_apex_apps(adb, remote, guest)
                 if args.precompile_framework_code:

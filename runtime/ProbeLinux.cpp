@@ -6050,7 +6050,10 @@ uint64_t ProbeLinux::map(Machine& machine) {
     // So does the shape of libffi's trampoline table: two pages, readable and writable or not at all, over
     // whose first page it then maps its code file (MAP_FIXED). JNA and Rust's UniFFI use it (Bitwarden,
     // Element X, Firefox, Proton VPN); anywhere else the whole process had to be interpreted.
-    const bool trampolineShape = anon && length == 2 * pageSize && ((x[2] & 7) == 0 || (x[2] & 7) == 3);
+    // And reservations with no access of a library's size, which loaders of their own map a library over
+    // (WeChat's libilink2.so and libXNet.so, 27 MB). Arenas of allocators and runtimes are larger and stay where they were.
+    const bool trampolineShape = anon && ((length == 2 * pageSize && ((x[2] & 7) == 0 || (x[2] & 7) == 3)) ||
+                                          (!(x[2] & 7) && length <= 64 * 1024 * 1024));
     const uint64_t forLibrary = !atAddress && !lowHint && machine.space && !machine.space->interpreted() &&
         ((anon && !(x[2] & 7) && machine.space->inLinker(machine.cpu.pc)) || (native::enabled() && trampolineShape))
         ? freeForeignAddress(machine, length) : 0;

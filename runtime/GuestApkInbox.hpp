@@ -6,6 +6,7 @@
 #include <memory>
 #include <map>
 #include <mutex>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -26,10 +27,13 @@ public:
 
     class Request {
     public:
-        Request(std::vector<uint8_t> file, Completion complete)
-            : bytes(std::move(file)), completion(std::move(complete)) {}
+        Request(std::vector<uint8_t> file, Completion complete) : Request(std::make_shared<const std::vector<uint8_t>>(std::move(file)), std::move(complete)) {}
+        // Bytes kept alive by their owner, such as a file mapped into memory: a package of several hundred
+        // megabytes is not copied, which could fail for want of memory and ended the app.
+        Request(std::span<const uint8_t> file, std::shared_ptr<const void> owner, Completion complete)
+            : bytes(file), owner(std::move(owner)), completion(std::move(complete)) {}
         ~Request() { finish(Result::guestStopped); }
-        const std::vector<uint8_t> bytes;
+        const std::span<const uint8_t> bytes;
 
         bool finished() const {
             std::lock_guard lock(mutex);
@@ -46,18 +50,31 @@ public:
         }
 
     private:
+        Request(std::shared_ptr<const std::vector<uint8_t>> file, Completion complete)
+            : bytes(*file), owner(file), completion(std::move(complete)) {}
+        std::shared_ptr<const void> owner;
         mutable std::mutex mutex;
         Completion completion;
     };
 
     bool submit(std::vector<uint8_t> file, Completion completion) {
         if (file.empty() || file.size() > maxBytes || !completion) return false;
+        return accept([&] { return std::make_shared<Request>(std::move(file), std::move(completion)); });
+    }
+    bool submit(std::span<const uint8_t> file, std::shared_ptr<const void> owner, Completion completion) {
+        if (file.empty() || file.size() > maxBytes || !completion) return false;
+        return accept([&] { return std::make_shared<Request>(file, std::move(owner), std::move(completion)); });
+    }
+
+    // The request is made only once it is taken: one refused never reports an outcome.
+    template<class Make>
+    bool accept(Make make) {
         std::shared_ptr<Request> previous;
         std::lock_guard lock(mutex);
         if (stopped || pending) return false;
         previous = active.lock();
         if (previous && !previous->finished()) return false;
-        pending = std::make_shared<Request>(std::move(file), std::move(completion));
+        pending = make();
         return true;
     }
 
