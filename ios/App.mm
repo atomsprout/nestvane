@@ -177,6 +177,13 @@ size_t GuestPixelBudget(CGSize viewport) {
 }
 
 DisplaySize GuestDisplaySize(CGSize viewport) {
+    // NESTVANE_TEST_DISPLAY_SIZE=<width>x<height> gives Android a display of another device's size, shown
+    // scaled into this one's view: an iPad's 1160x1578 on an iPhone, to try the tablet layout without an iPad.
+    if (const char* size = getenv("NESTVANE_TEST_DISPLAY_SIZE")) {
+        unsigned width = 0, height = 0;
+        if (sscanf(size, "%ux%u", &width, &height) == 2 && width >= 320 && height >= 320 && width <= 4096 && height <= 4096)
+            return {uint32_t(width & ~1u), uint32_t(height & ~1u)};
+    }
     if (viewport.width <= 0 || viewport.height <= 0) return {defaultGuestWidth, defaultGuestHeight};
     const double aspect = std::clamp(double(viewport.width / viewport.height), 0.25, 4.0);
     const double budget = double(GuestPixelBudget(viewport));
