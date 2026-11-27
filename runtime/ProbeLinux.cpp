@@ -8387,6 +8387,8 @@ bool ProbeLinux::relieveMemoryPressure() {
     // own, for a thread's stack or a picture's buffer, and has no one to ask: the renderer, refused a
     // thread, ended the whole app. So 2 GiB are kept free the way memory is, down the same ranks; a
     // process on screen and the system are never ended for it.
+    // NESTVANE_TEST_NO_ADDRESS_RESERVE=1 leaves this out, for comparing starts with and without it.
+    if (static const bool off = std::getenv("NESTVANE_TEST_NO_ADDRESS_RESERVE"); off) return false;
     const int pieces = freeAddressPieces(4);
     if (pieces >= 4) return false;
     const std::string why = "to keep address space free (" + std::to_string(pieces * 512) + " MB left in pieces of 512)";
