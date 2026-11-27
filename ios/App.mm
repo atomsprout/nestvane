@@ -2083,9 +2083,15 @@ static bool ApkContent(NSData* data) {
             mach_msg_type_number_t eventCount = TASK_EVENTS_INFO_COUNT;
             const long pageIns = task_info(mach_task_self(), TASK_EVENTS_INFO, task_info_t(&events), &eventCount) == KERN_SUCCESS
                 ? long(events.pageins) : -1;
-            NSString* report = [NSString stringWithFormat:@"%@ %@ | process %d | thermal %@ → %@%@ | pages read from storage %ld, faults %ld\n%@",
+            // An app that is not in front (the device locked, or its screen off) is given less of the
+            // processor and of storage: a start measured then is not the app's.
+            const UIApplicationState appState = UIApplication.sharedApplication.applicationState;
+            NSString* front = appState == UIApplicationStateActive ? @"" :
+                appState == UIApplicationStateInactive ? @" | app not active" : @" | app in the background";
+            if (!UIApplication.sharedApplication.protectedDataAvailable) front = [front stringByAppendingString:@" | device locked"];
+            NSString* report = [NSString stringWithFormat:@"%@ %@ | process %d | thermal %@ → %@%@%@ | pages read from storage %ld, faults %ld\n%@",
                 platform, UIDevice.currentDevice.systemVersion, NSProcessInfo.processInfo.processIdentifier,
-                before, ThermalState(), NSProcessInfo.processInfo.lowPowerModeEnabled ? @" | low power mode" : @"",
+                before, ThermalState(), NSProcessInfo.processInfo.lowPowerModeEnabled ? @" | low power mode" : @"", front,
                 pageIns, long(events.faults), [NSString stringWithUTF8String:output.c_str()]];
             NSError* error = nil;
             if (![report writeToURL:destination atomically:YES encoding:NSUTF8StringEncoding error:&error])

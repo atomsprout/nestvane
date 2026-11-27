@@ -27,7 +27,7 @@ mkdir -p $out
 
 model=$(xcrun devicectl list devices 2>/dev/null | grep "$device" | grep -o '([A-Za-z]*[0-9]*,[0-9]*)' | tr -d '()')
 [[ -n "$model" ]] || { echo "device $device not found"; exit 2; }
-version=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" generated/native-app-graphics/nestvane-native.app/Info.plist 2>/dev/null)
+version=$(grep 'MARKETING_VERSION:' project.yml | tail -1 | sed 's/.*"\(.*\)".*/\1/')
 commit=$(git rev-parse --short HEAD)
 
 times=() memories=()
