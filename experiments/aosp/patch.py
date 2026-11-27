@@ -287,3 +287,90 @@ for flavour in ("stable", "tot"):
         '    cflags: ["-DOPENSSL_NO_ASM"], // Nestvane: the assembly uses registers owned by the host runtime.\n'
         '    asflags: ["-DOPENSSL_NO_ASM"],\n' % flavour)],
         "Nestvane: the assembly uses registers")
+
+# ---------------------------------------------------------------- behaviour of the guest (1.16)
+# The guest has no Wi-Fi hardware: its Wi-Fi service only reports that Wi-Fi is off, but apps,
+# Settings and the system server's own services expect it to exist. Taken through the boot with the
+# other services it costs about 0.3 s, so where ro.nestvane.late_wifi is set the Wi-Fi services are
+# created with the others but go through the boot phases, and are told of the user, once the boot
+# has completed. Without the property (the reference emulator) nothing changes.
+SSM = "frameworks/base/services/core/java/com/android/server/SystemServiceManager.java"
+edit(SSM, [
+    ("    /** Disallow starting new services after this call. */\n",
+     "    // Nestvane: see experiments/aosp/patch.py in the Nestvane repository.\n"
+     "    private final boolean mLateWifi =\n"
+     "            android.os.SystemProperties.getBoolean(\"ro.nestvane.late_wifi\", false);\n"
+     "    private volatile boolean mLateStarted;\n"
+     "\n"
+     "    private boolean isLate(SystemService service) {\n"
+     "        return mLateWifi && !mLateStarted\n"
+     "                && service.getClass().getName().startsWith(\"com.android.server.wifi.\");\n"
+     "    }\n"
+     "\n"
+     "    private void startLateServices() {\n"
+     "        final ArrayList<SystemService> late = new ArrayList<>();\n"
+     "        for (int i = 0; i < mServices.size(); i++) {\n"
+     "            if (isLate(mServices.get(i))) late.add(mServices.get(i));\n"
+     "        }\n"
+     "        mLateStarted = true;\n"
+     "        final TargetUser user;\n"
+     "        synchronized (mTargetUsers) {\n"
+     "            user = mCurrentUser;\n"
+     "        }\n"
+     "        final boolean unlocked = user != null && LocalServices.getService(UserManagerInternal.class)\n"
+     "                .isUserUnlockingOrUnlocked(user.getUserIdentifier());\n"
+     "        final int[] phases = {SystemService.PHASE_WAIT_FOR_DEFAULT_DISPLAY,\n"
+     "                SystemService.PHASE_WAIT_FOR_SENSOR_SERVICE,\n"
+     "                SystemService.PHASE_LOCK_SETTINGS_READY,\n"
+     "                SystemService.PHASE_SYSTEM_SERVICES_READY,\n"
+     "                SystemService.PHASE_DEVICE_SPECIFIC_SERVICES_READY,\n"
+     "                SystemService.PHASE_ACTIVITY_MANAGER_READY,\n"
+     "                SystemService.PHASE_THIRD_PARTY_APPS_CAN_START,\n"
+     "                SystemService.PHASE_BOOT_COMPLETED};\n"
+     "        for (SystemService service : late) {\n"
+     "            final String name = service.getClass().getName();\n"
+     "            try {\n"
+     "                for (int phase : phases) {\n"
+     "                    if (phase <= mCurrentPhase) service.onBootPhase(phase);\n"
+     "                }\n"
+     "                if (user != null && service.isUserSupported(user)) {\n"
+     "                    service.onUserStarting(user);\n"
+     "                    if (unlocked) {\n"
+     "                        service.onUserUnlocking(user);\n"
+     "                        service.onUserUnlocked(user);\n"
+     "                    }\n"
+     "                }\n"
+     "                Slog.i(TAG, \"Started late: \" + name);\n"
+     "            } catch (RuntimeException e) {\n"
+     "                Slog.e(TAG, \"Starting late: \" + name, e);\n"
+     "            }\n"
+     "        }\n"
+     "    }\n"
+     "\n"
+     "    /** Disallow starting new services after this call. */\n"),
+    ("                final SystemService service = mServices.get(i);\n"
+     "                if (!Flags.parallelizeOnbootphase() || service.getBootPhaseSerial(mCurrentPhase)) {\n",
+     "                final SystemService service = mServices.get(i);\n"
+     "                if (isLate(service)) continue;\n"
+     "                if (!Flags.parallelizeOnbootphase() || service.getBootPhaseSerial(mCurrentPhase)) {\n"),
+    ("            final String serviceName = service.getClass().getName();\n"
+     "            boolean supported = service.isUserSupported(curUser);\n",
+     "            final String serviceName = service.getClass().getName();\n"
+     "            if (isLate(service)) continue;\n"
+     "            boolean supported = service.isUserSupported(curUser);\n"),
+    ("        if (phase == SystemService.PHASE_BOOT_COMPLETED) {\n"
+     "            final long totalBootTime",
+     "        if (phase == SystemService.PHASE_BOOT_COMPLETED) {\n"
+     "            if (mLateWifi) {\n"
+     "                new android.os.Handler(android.os.Looper.getMainLooper())\n"
+     "                        .postDelayed(this::startLateServices, 3000);\n"
+     "            }\n"
+     "            final long totalBootTime")],
+    "ro.nestvane.late_wifi")
+
+# The home screen follows the device's rotation on a phone too. Launcher3 only does so on a large
+# screen; the setting that allowed it on phones is gone. Auto-rotate being off still holds it still.
+edit("packages/apps/Launcher3/src/com/android/launcher3/states/RotationHelper.java", [(
+    "            activityFlags = SCREEN_ORIENTATION_NOSENSOR;\n",
+    "            activityFlags = SCREEN_ORIENTATION_UNSPECIFIED;  // Nestvane: was NOSENSOR\n")],
+    "Nestvane: was NOSENSOR")

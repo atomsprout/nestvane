@@ -7527,7 +7527,8 @@ bool ProbeLinux::loadAccessClass(std::string_view manifest, std::string_view nam
         declared != kernelFiles.end() && declared->second != std::to_string(type)) return false;
     std::vector<uint32_t> positions;
     AccessClass access;
-    access.applicationService = name == "service_manager" || name == "hwservice_manager";
+    // An app's context carries its categories; the decisions are kept for the domain without them.
+    access.applicationService = name == "service_manager" || name == "hwservice_manager" || name == "property_service";
     for (size_t i = 0; i < permissions.size(); ++i) {
         uint32_t position = 0;
         if (!(stream >> position) || !position || position > 32) return false;

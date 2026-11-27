@@ -536,7 +536,9 @@ def copy_prebuilt_code(adb, remote, guest):
 ABSENT_HARDWARE = ("android.hardware.wifi-service.xml", "android.hardware.wifi.hostapd.xml",
                    "android.hardware.wifi.supplicant.xml", "android.hardware.biometrics.fingerprint-service.ranchu.xml",
                    "android.hardware.media.c2-service-goldfish.xml")
-ABSENT_FEATURES = ("android.hardware.wifi", "android.hardware.wifi.direct", "android.hardware.wifi.passpoint",
+# Wi-Fi itself stays declared: there is no hardware, and its service says that Wi-Fi is off, but apps
+# and Settings expect the service to exist.
+ABSENT_FEATURES = ("android.hardware.wifi.direct", "android.hardware.wifi.passpoint",
                    "android.hardware.wifi.aware", "android.hardware.wifi.rtt", "android.hardware.uwb",
                    "android.hardware.fingerprint")
 
@@ -584,13 +586,12 @@ def remove_unused_files(guest):
 
 
 def write_guest_hardware_profile(guest):
-    # The guest has no Bluetooth controller or location hardware bridge.
+    # The guest has no location hardware bridge. It has no Bluetooth controller either, but Bluetooth
+    # stays declared: Settings pages and apps expect its service, which says that Bluetooth is off.
     config = guest / "system/etc/sysconfig/nestvane-hardware.xml"
     config.parent.mkdir(parents=True, exist_ok=True)
     config.write_text("""<?xml version="1.0" encoding="utf-8"?>
 <config>
-    <unavailable-feature name="android.hardware.bluetooth" />
-    <unavailable-feature name="android.hardware.bluetooth_le" />
     <unavailable-feature name="android.hardware.location" />
     <unavailable-feature name="android.hardware.location.gps" />
     <unavailable-feature name="android.hardware.location.network" />
@@ -648,6 +649,8 @@ def make_framework_root(base, image, guest, defer_zygote_preload, hardware_timeo
         remove_unused_files(guest)
         declare_network(guest)
     set_property(system_properties, "dalvik.vm.usejit", "false")
+    # The Wi-Fi service is started once the boot has completed (experiments/aosp/patch.py).
+    set_property(system_properties, "ro.nestvane.late_wifi", "1")
     # The guest is one app's window on a phone that has a lock screen of its own.
     set_property(system_properties, "ro.lockscreen.disable.default", "true")
     # The guest's pages are the iPhone's, 16 KiB. Most apps' own libraries are still laid out for

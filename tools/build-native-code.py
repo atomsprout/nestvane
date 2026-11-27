@@ -31,6 +31,7 @@ REWRITER = os.path.join(HERE, "../experiments/g0/e3/rewrite.py")
 OPTIONS = ["--table", "--chunk-shift", "20", "--reuse", "--split-index", "--final-table"]
 # Below the kernel layer's mapping arena (4 GiB and up) and above the boot image and the first stack.
 FIRST_BASE, LIMIT = 0x8000_0000, 0xFFF0_0000  # the runtime has its signal return page at 0xFFFF_0000
+ART_SENTINEL = (0xEBAC_0000, 0xEBB0_0000)
 KEY_BYTES = 16384
 IOS = "--ios" in sys.argv
 TARGET = (["-target", "arm64-apple-ios17.0", "-isysroot", subprocess.run(["xcrun", "--sdk", "iphoneos", "--show-sdk-path"],
@@ -163,7 +164,28 @@ def main():
         for line in open(address_file):
             key, copy, start, end = line.split()
             addresses[(int(key, 16), int(copy))] = (int(start, 16), int(end, 16))
-    jobs, base = [], max([FIRST_BASE] + [end for _, end in addresses.values()])
+    # A file that is no longer in the trees (an earlier build of a jar's compiled code) gives its
+    # addresses back: a rebuilt image changes dozens of large files, and the range would run out.
+    addresses = {entry: span for entry, span in addresses.items() if entry in files}
+    # ART keeps a page that must fault at 0xebad4000 (the sentinel for its bad register values,
+    # Context::kBadGprBase): a module laid over it could not be mapped in any process.
+    addresses = {entry: span for entry, span in addresses.items() if span[1] <= ART_SENTINEL[0] or span[0] >= ART_SENTINEL[1]}
+    taken = sorted([*addresses.values(), ART_SENTINEL])
+    jobs, base = [], max([FIRST_BASE] + [end for _, end in taken])
+
+    def place(size):
+        """The lowest free span of 256 KiB units that holds `size` bytes and a guard."""
+        nonlocal base
+        need = (size + 0x10000 + 0x3FFFF) & ~0x3FFFF
+        start = FIRST_BASE
+        for index, (low, high) in enumerate(taken):
+            if low - start >= need:
+                break
+            start = max(start, high)
+        taken.append((start, start + need))
+        taken.sort()
+        base = max(base, start + need)
+        return start, start + need
     for (key, copy), (path, size, guest) in sorted(files.items(), key=lambda item: item[1][2]):
         image = path[:-4] + ".art"
         if path.endswith(".oat") and os.path.exists(image):
@@ -176,9 +198,8 @@ def main():
         else:
             # Bionic's CFI shadow has one entry per 256 KiB, which tells whose code is there: two
             # libraries must not share one (the linker's kLibraryAlignment).
-            start = base
-            base = (base + size + 0x10000 + 0x3FFFF) & ~0x3FFFF
-            addresses[(key, copy)] = (start, base)
+            start, end = place(size)
+            addresses[(key, copy)] = (start, end)
         symbol = "m%016x_%d" % (key, copy)
         jobs.append((symbol, path, start, objects, "%s %x %x" % (version, key, start), guest, key, os.path.getsize(path)))
     for path, address in extras:
@@ -198,6 +219,9 @@ def main():
         # Every file keeps its address, so a translation that is left out now needs no other to change.
         def wanted(job):
             if (job[6], job[2]) in used:
+                return True
+            # The system server loads every module's service jar, whether its hardware exists or not.
+            if "@javalib@service-" in job[5]:
                 return True
             return not job[5].startswith("~spare") and not any(
                 "/%s/" % module in job[5] or "apex@%s@" % module in job[5] or "/%s." % module in job[5] for module in UNUSED_MODULES)
