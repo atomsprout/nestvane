@@ -30,6 +30,12 @@ for code in "$bundle"/Frameworks/*.framework "$bundle"; do
     codesign --remove-signature "$code"
 done
 find "$bundle" -name _CodeSignature -type d -prune -exec rm -rf {} +
+# The debugging entries of the symbol tables go: they name each source and object file by its full
+# path on the machine that built it. The symbols themselves stay, for reading crash reports.
+for code in "$bundle"/Frameworks/*.framework "$bundle"; do
+    binary="$code/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$code/Info.plist")"
+    xcrun strip -S "$binary" 2> /dev/null
+done
 if find "$bundle" -name embedded.mobileprovision -o -name _CodeSignature | grep -q .; then
     echo "signing material left in the bundle" >&2
     exit 1

@@ -37,10 +37,22 @@ for start in 1 2 3 4 5 6; do
         ${0:A:h}/end-app.sh $device $bundle
         sleep 60
     fi
-    xcrun devicectl device process launch --device $device --terminate-existing \
-        --environment-variables "{\"NESTVANE_INIT_SNAPSHOT_SECONDS\":\"25\"${BOOT_CHECK_ENV:+,$BOOT_CHECK_ENV}}" $bundle > $out/launch.log 2>&1 ||
-        { echo "launch failed (is the device unlocked?): see $out/launch.log"; exit 2; }
-    sleep 36
+    # A start with the screen off leaves the app behind the lock screen, where it is given less of the
+    # processor: that start woke the screen, so it is made again, twice at most, and not counted.
+    for attempt in 1 2 3; do
+        xcrun devicectl device process launch --device $device --terminate-existing \
+            --environment-variables "{\"NESTVANE_INIT_SNAPSHOT_SECONDS\":\"25\"${BOOT_CHECK_ENV:+,$BOOT_CHECK_ENV}}" $bundle > $out/launch.log 2>&1 ||
+            { echo "launch failed (is the device unlocked?): see $out/launch.log"; exit 2; }
+        sleep 6
+        rm -f $out/boot-milestones.txt
+        xcrun devicectl device copy from --device $device --domain-type appDataContainer --domain-identifier $bundle \
+            --source Documents/boot-milestones.txt --destination $out/boot-milestones.txt > /dev/null 2>&1
+        head -1 $out/boot-milestones.txt 2>/dev/null | grep -q 'app not active\|app in the background' || break
+        echo "start $start: the app was not in front (screen off?); starting it again"
+        ${0:A:h}/end-app.sh $device $bundle
+        sleep 20
+    done
+    sleep 30
     for file in boot-milestones.txt guest-live.txt; do
         rm -f $out/$file
         xcrun devicectl device copy from --device $device --domain-type appDataContainer --domain-identifier $bundle \
