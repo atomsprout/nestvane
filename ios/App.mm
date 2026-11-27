@@ -476,6 +476,8 @@ static NSString* const Display120HzKey = @"Display120Hz";
 // Built-in root: whether it is on (from the next start of Android), and each app's answer, kept as
 // RootGrantPrefix + package name. Apps are asked the first time they start su.
 static NSString* const RootEnabledKey = @"RootEnabled";
+// On an iPad: Android is given a tablet's density, and lays its screens out as on a tablet (1.16, off by default).
+static NSString* const TabletLayoutKey = @"TabletLayout";
 static NSString* const RootGrantPrefix = @"RootGrant:";
 static NSString* const RootProfilePrefix = @"RootProfile:";
 static NSInteger GuestDisplayRate() {
@@ -1138,16 +1140,21 @@ static void AskForRoot(NSString* name) {
         [storage.path stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLPathAllowedCharacterSet]];
     NSString* rate = [NSString stringWithFormat:@"%s frames per second", getenv("NESTVANE_DISPLAY_HZ") ?: "60"];
     const BOOL fast = UIScreen.mainScreen.maximumFramesPerSecond >= 120;
+    // The tablet layout is offered where the display is large enough for it.
+    const BOOL tablet = UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad || getenv("NESTVANE_TEST_TABLET");
     const auto row = [](NSString* symbol, NSString* title, NSString* detail, NSString* url) {
         return @{@"symbol": symbol, @"title": title, @"detail": detail ?: @"", @"url": url ?: @""};
     };
     _sections = @[
-        @{@"title": @"Android", @"footer": fast
+        @{@"title": @"Android", @"footer": [(fast
               ? @"120 Hz makes motion smoother and uses more battery. It takes effect the next time Android starts. Files you put into the Android folder appear in Android within a few seconds."
-              : @"Files you put into the Android folder appear in Android within a few seconds.",
+              : @"Files you put into the Android folder appear in Android within a few seconds.")
+              stringByAppendingString:tablet ? @" Tablet layout makes Android lay its screens out as on a tablet, from the next time it starts. It is new: turn it off here if Android does not show properly." : @""],
           @"rows": [@[row(@"cpu", @"Android version", @"17", nil), row(@"display", @"Display", rate, nil)]
-              arrayByAddingObjectsFromArray:[(fast ? @[@{@"symbol": @"gauge.with.dots.needle.67percent", @"title": @"120 Hz",
-                                                        @"detail": @"", @"url": @"", @"switch": Display120HzKey}] : @[])
+              arrayByAddingObjectsFromArray:[[(fast ? @[@{@"symbol": @"gauge.with.dots.needle.67percent", @"title": @"120 Hz",
+                                                         @"detail": @"", @"url": @"", @"switch": Display120HzKey}] : @[])
+              arrayByAddingObjectsFromArray:(tablet ? @[@{@"symbol": @"rectangle.split.2x1", @"title": @"Tablet layout (experimental)",
+                                                          @"detail": @"", @"url": @"", @"switch": TabletLayoutKey}] : @[])]
               arrayByAddingObject:row(@"folder", @"Shared files", @"Open in Files", files)]]},
         @{@"title": @"Root", @"footer": RootFooter(),
           @"rows": [@[@{@"symbol": @"lock.open", @"title": @"Allow root", @"detail": @"", @"url": @"", @"switch": RootEnabledKey}]
@@ -2106,13 +2113,15 @@ static bool ApkContent(NSData* data) {
             // The rate Android composes at is fixed when it starts (GuestDisplayRate).
             setenv("NESTVANE_DISPLAY_HZ", @(GuestDisplayRate()).stringValue.UTF8String, 1);
             // On an iPad the display has several times a phone's pixels. Android is told they are as
-            // many times denser, so that its screens are laid out as on a phone and drawn sharp. At a
-            // tablet's density (the short side 600 of its units or more) this system does not work:
-            // the launcher stops with an error as it starts (its taskbar's buttons are told where the
-            // bubble bar is before they are set up), and after it restarts, apps' windows are not
-            // drawn. Tried again on 2026-11-23 at 214; see results/G0.md.
+            // many times denser, so that its screens are laid out as on a phone and drawn sharp.
+            // With the tablet layout chosen in the settings, the short side is 800 of Android's units
+            // instead of 590, which is a tablet to Android: a taskbar, and two panes where apps have
+            // them. It is off by default: before 1.16 the launcher stopped as it started at such a
+            // density (fixed in the image), and apps' windows were not drawn on an iPad on 2026-11-23
+            // (see results/G0.md), which has not been tried on an iPad since.
             if (!getenv("NESTVANE_DISPLAY_DENSITY") && std::min(displaySize.width, displaySize.height) > defaultGuestWidth) {
-                const int density = int(std::lround(160.0 * std::min(displaySize.width, displaySize.height) / 590.0));
+                const double shortSide = [NSUserDefaults.standardUserDefaults boolForKey:TabletLayoutKey] ? 800.0 : 590.0;
+                const int density = int(std::lround(160.0 * std::min(displaySize.width, displaySize.height) / shortSide));
                 setenv("NESTVANE_DISPLAY_DENSITY", @(density).stringValue.UTF8String, 1);
             }
             // Android's sound comes out of the phone.

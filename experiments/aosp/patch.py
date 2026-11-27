@@ -374,3 +374,13 @@ edit("packages/apps/Launcher3/src/com/android/launcher3/states/RotationHelper.ja
     "            activityFlags = SCREEN_ORIENTATION_NOSENSOR;\n",
     "            activityFlags = SCREEN_ORIENTATION_UNSPECIFIED;  // Nestvane: was NOSENSOR\n")],
     "Nestvane: was NOSENSOR")
+
+# At a tablet's density the taskbar's buttons are told where the recents button is before the
+# taskbar's controllers are set, and the launcher stops as it starts.
+edit("packages/apps/Launcher3/quickstep/src/com/android/launcher3/taskbar/TaskbarNavButtonController.java", [(
+    "        if (cueBarAceMigration() && mControllers.cueBarController != null) {\n"
+    "            mControllers.cueBarController.onRecentsButtonLayoutChanged(bounds);\n",
+    "        if (cueBarAceMigration() && mControllers != null  // Nestvane: not set yet at the first layout\n"
+    "                && mControllers.cueBarController != null) {\n"
+    "            mControllers.cueBarController.onRecentsButtonLayoutChanged(bounds);\n")],
+    "Nestvane: not set yet at the first layout")
