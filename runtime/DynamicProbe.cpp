@@ -794,6 +794,7 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
                     // cached app that matters least ends) and the call runs once more; if that fails too, the caller
                     // is told so, as Linux would. Letting it go on unwinding ended all of Android.
                     bool again = false;
+                    const std::string state = ProbeLinux::hostMemoryState();
                     if (linux.makeRoom()) {
                         cpu.x = registersBefore;
                         try {
@@ -810,6 +811,7 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
                         std::ostringstream event;
                         event << "Nestvane: system call " << syscall << " in PID " << linux.processId()
                               << (again ? " found no host memory; made room and ran it again" : " found no host memory; told ENOMEM");
+                        event << " (" << state << ")";
                         linux.androidLogObserver(event.str());
                     }
                 }
@@ -1201,26 +1203,27 @@ DynamicReport probeInit(const std::string& directory, const std::string& databas
             // The codec service's two decoders that the host stands behind (GuestVideo.hpp), for
             // Android's list of codecs. The service makes them when ro.boot.qemu.hwcodec.* says so
             // (the boot configuration below). Being the device's own, they are preferred to the
-            // software decoders of the same types. They are listed up to 1920x1088: with a 3840x2160
-            // stream the service stopped on an iPhone 14, and such a stream goes to the software decoder as before.
+            // software decoders of the same types. Up to 3840x2160: before 1.18 such a stream ended the
+            // whole app on an iPhone 14, because the host had no address space left for the renderer's
+            // thread (ProbeLinux::relieveMemoryPressure now keeps some free).
             static constexpr std::string_view mediaCodecs = R"xml(<?xml version="1.0" encoding="utf-8"?>
 <MediaCodecs>
     <Decoders>
         <MediaCodec name="c2.goldfish.h264.decoder" type="video/avc">
-            <Limit name="size" min="96x96" max="1920x1088" />
+            <Limit name="size" min="96x96" max="3840x2160" />
             <Limit name="alignment" value="2x2" />
             <Limit name="block-size" value="16x16" />
-            <Limit name="blocks-per-second" range="24-489600" />
+            <Limit name="blocks-per-second" range="24-1036800" />
             <Limit name="bitrate" range="1-120000000" />
             <Limit name="frame-rate" range="1-240" />
             <Limit name="concurrent-instances" max="4" />
             <Feature name="adaptive-playback" />
         </MediaCodec>
         <MediaCodec name="c2.goldfish.hevc.decoder" type="video/hevc">
-            <Limit name="size" min="96x96" max="1920x1088" />
+            <Limit name="size" min="96x96" max="3840x2160" />
             <Limit name="alignment" value="2x2" />
             <Limit name="block-size" value="16x16" />
-            <Limit name="blocks-per-second" range="24-489600" />
+            <Limit name="blocks-per-second" range="24-1036800" />
             <Limit name="bitrate" range="1-120000000" />
             <Limit name="frame-rate" range="1-240" />
             <Limit name="concurrent-instances" max="4" />
@@ -1229,14 +1232,8 @@ DynamicReport probeInit(const std::string& directory, const std::string& databas
     </Decoders>
 </MediaCodecs>
 )xml";
-            // NESTVANE_TEST_VIDEO_4K=1 lists them up to 3840x2160, for finding out why that stops the service.
-            static std::string listed(mediaCodecs);
-            if (std::getenv("NESTVANE_TEST_VIDEO_4K")) {
-                for (size_t at; (at = listed.find("max=\"1920x1088\"")) != std::string::npos;) listed.replace(at, 15, "max=\"3840x2160\"");
-                for (size_t at; (at = listed.find("24-489600")) != std::string::npos;) listed.replace(at, 9, "24-1036800");
-            }
             linux.mount("/vendor/etc/media_codecs.xml",
-                        {reinterpret_cast<const uint8_t*>(listed.data()), listed.size()});
+                        {reinterpret_cast<const uint8_t*>(mediaCodecs.data()), mediaCodecs.size()});
         }
         linux.setCamera(std::move(camera));
         linux.setGuestTouch(std::move(touch));

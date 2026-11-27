@@ -237,6 +237,9 @@ struct ProbeLinux {
     // service finds no media device and Android decodes in software.
     static void setVideoDecoders(GuestVideoDecoder::Factory factory);
     static bool hasVideoDecoders();
+    // What the host has left when an allocation fails, in words: memory before iOS ends the app, and
+    // the largest piece of address space that can still be reserved.
+    static std::string hostMemoryState();
     static RootPolicy rootPolicy();
     bool rootEnabled() const { return rootOn; }
     std::function<int(uint32_t uid, const std::string& package)> rootDecision;

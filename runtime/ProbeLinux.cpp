@@ -560,6 +560,23 @@ void ProbeLinux::setVideoDecoders(GuestVideoDecoder::Factory factory) {
 
 bool ProbeLinux::hasVideoDecoders() { return bool(videoDecoderFactory()); }
 
+std::string ProbeLinux::hostMemoryState() {
+    std::string state;
+#if TARGET_OS_IPHONE
+    state += std::to_string(os_proc_available_memory() >> 20) + " MB of memory left, ";
+#endif
+    size_t largest = 0;
+    for (const size_t megabytes : {16384, 4096, 1024, 512, 256, 128, 64, 16}) {
+        void* piece = mmap(nullptr, megabytes << 20, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (piece == MAP_FAILED) continue;
+        munmap(piece, megabytes << 20);
+        largest = megabytes;
+        break;
+    }
+    state += "largest free address range at least " + std::to_string(largest) + " MB";
+    return state;
+}
+
 void ProbeLinux::setRootPolicy(RootPolicy policy) {
     std::lock_guard guard(rootPolicyLock);
     configuredRootPolicy = std::move(policy);
@@ -8325,7 +8342,31 @@ bool ProbeLinux::futex(Machine& machine) {
     return true;
 }
 
-bool ProbeLinux::endCachedAppForRoom() { return endCachedApp(900, "to make room for a new process"); }
+// The host's address space is one for every guest process and for the host itself. A guest process
+// that cannot be given some makes room here: the cached app Android ranks lowest goes; when there is
+// none, the previous app, then a service in the background, then what can only be heard or noticed,
+// as Android's own low-memory killer goes down the ranks. What is on screen and the system stay.
+bool ProbeLinux::endCachedAppForRoom() {
+    for (const int minimum : {900, 700, 500, 200})
+        if (endCachedApp(minimum, minimum == 900 ? "to make room for a new process"
+                                                 : "to make room for a new process (no cached app is left)")) return true;
+    return false;
+}
+
+namespace {
+// How many pieces of 512 MiB the host's address space still has, up to `wanted`.
+[[maybe_unused]] int freeAddressPieces(int wanted) {
+    constexpr size_t piece = size_t{512} << 20;
+    void* held[8] = {};
+    int got = 0;
+    for (; got < wanted && got < 8; ++got) {
+        held[got] = mmap(nullptr, piece, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (held[got] == MAP_FAILED) break;
+    }
+    for (int index = 0; index < got; ++index) munmap(held[index], piece);
+    return got;
+}
+}
 
 bool ProbeLinux::relieveMemoryPressure() {
 #if TARGET_OS_IPHONE
@@ -8340,8 +8381,19 @@ bool ProbeLinux::relieveMemoryPressure() {
     // still fit when the last step is taken.
     const int minimum = left < 200 * megabyte ? 200 : left < 300 * megabyte ? 500 : left < 450 * megabyte ? 700 :
                         left < 700 * megabyte ? 900 : -1;
-    if (minimum < 0) return false;
-    return endCachedApp(minimum, "to free memory (" + std::to_string(left / megabyte) + " MB left)");
+    if (minimum >= 0) return endCachedApp(minimum, "to free memory (" + std::to_string(left / megabyte) + " MB left)");
+    // The address space runs out before the memory does: each app process reserves over a gigabyte of
+    // it, and guest processes only stopped taking it when none was left. The host needs some of its
+    // own, for a thread's stack or a picture's buffer, and has no one to ask: the renderer, refused a
+    // thread, ended the whole app. So 2 GiB are kept free the way memory is, down the same ranks; a
+    // process on screen and the system are never ended for it.
+    const int pieces = freeAddressPieces(4);
+    if (pieces >= 4) return false;
+    const std::string why = "to keep address space free (" + std::to_string(pieces * 512) + " MB left in pieces of 512)";
+    if (endCachedApp(900, why)) return true;
+    if (pieces <= 2 && endCachedApp(700, why)) return true;
+    if (pieces <= 1 && endCachedApp(500, why)) return true;
+    return pieces == 0 && endCachedApp(200, why);
 #else
     return false;
 #endif
@@ -9108,6 +9160,28 @@ std::string ProbeLinux::memoryReport(const Machine& machine) const {
         out << "    pid " << rows[index].pid << " " << rows[index].name << ": resident " << rows[index].usage.resident / MiB
             << ", dirty " << rows[index].usage.dirty / MiB << ", swapped " << rows[index].usage.swapped / MiB
             << " MiB in " << rows[index].runs << " runs\n";
+    // The host's address space is what runs out first (every guest process's memory is somewhere in
+    // it): how much each process has reserved there, largest first, by the name of its main thread.
+    {
+        struct Reserved { uint64_t pid, bytes; int adjustment; std::string name; };
+        std::vector<Reserved> reserved;
+        uint64_t all = 0;
+        for (const auto& [id, process] : processes) {
+            const auto* space = process == current->process.get() ? machine.space.get() : process->space.get();
+            if (!space) continue;
+            std::string name;
+            if (const auto main = threads.find(id); main != threads.end())
+                name.assign(reinterpret_cast<const char*>(main->second.name.data()),
+                            strnlen(reinterpret_cast<const char*>(main->second.name.data()), main->second.name.size()));
+            reserved.push_back({id, space->reservedBytes(), process->oomScoreAdjustment, std::move(name)});
+            all += reserved.back().bytes;
+        }
+        std::sort(reserved.begin(), reserved.end(), [](const Reserved& a, const Reserved& b) { return a.bytes > b.bytes; });
+        out << "  host address space reserved by guest processes: " << all / MiB << " MiB; " << hostMemoryState() << "\n   ";
+        for (const auto& row : reserved)
+            out << " " << row.name << "(" << row.pid << "," << row.adjustment << "):" << row.bytes / MiB;
+        out << "\n";
+    }
     // NESTVANE_MEMORY_DETAIL=<part of a program's path>: the mappings of the first such process.
     if (const char* wanted = std::getenv("NESTVANE_MEMORY_DETAIL")) {
         for (const auto& [id, process] : processes) {
@@ -9124,6 +9198,28 @@ std::string ProbeLinux::memoryReport(const Machine& machine) const {
                     << " flags=" << segment.flags << (segment.anonymous ? " anonymous" : " file") << (segment.shared ? " shared" : "")
                     << (segment.initialStack ? " stack" : "") << "\n";
             }
+            // Where its host address space went: each megabyte of guest addresses that has host memory
+            // behind it, counted once, by the mapping that covers its start. Mappings of 4 MiB and more.
+            out << "    host address space of pid " << id << " (MiB with host memory of MiB mapped):\n";
+            uint64_t counted = 0, file = 0, anonymous = 0, small = 0, lastChunk = UINT64_MAX;
+            for (const auto& segment : running ? machine.segments : process->segments) {
+                const uint64_t size = segment.mappedSize();
+                if (!size || segment.address >= GuestSpace::size) continue;
+                uint64_t backedChunks = 0;
+                for (uint64_t chunk = segment.address >> GuestSpace::chunkShift;
+                     chunk <= (segment.address + size - 1) >> GuestSpace::chunkShift && chunk < GuestSpace::chunks; ++chunk) {
+                    if (chunk == lastChunk) continue;
+                    lastChunk = chunk;
+                    if (space->backed(chunk << GuestSpace::chunkShift)) ++backedChunks;
+                }
+                counted += backedChunks;
+                (segment.anonymous ? anonymous : file) += backedChunks;
+                if (backedChunks < 4) { small += backedChunks; continue; }
+                out << "      0x" << std::hex << segment.address << std::dec << " " << backedChunks << " of " << (size >> 20)
+                    << (segment.anonymous ? " anonymous" : " file") << (segment.shared ? " shared" : "") << " flags=" << segment.flags << "\n";
+            }
+            out << "      in all " << counted << " MiB: file " << file << ", anonymous " << anonymous << ", in mappings under 4 MiB " << small
+                << "; reserved " << space->reservedBytes() / MiB << " MiB in " << space->runCount() << " runs\n";
             break;
         }
     }

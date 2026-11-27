@@ -99,7 +99,7 @@ export const content = {
     limitsTitle: 'Limits',
     limits: [
       'Nestvane is not on the App Store. The release is an IPA that you sideload, signed with a paid Apple Developer Program membership (US$99 a year): it needs the Extended Virtual Addressing and Increased Memory Limit capabilities, and a free Apple ID does not get the first. There is no way yet for people without a developer account to run it.',
-      'H.264 and HEVC video up to 1080p is decoded by the iPhone’s own decoders. 4K video and other formats are decoded in software, which is slow at 4K.',
+      'H.264 and HEVC video up to 4K is decoded by the iPhone’s own decoders. Other formats (VP9, AV1) are decoded in software.',
       'There is no Bluetooth, and Android’s own Wi-Fi switch stays off: Android uses the iPhone’s connection through a wired interface.',
       'On an iPad, Android is laid out as on a phone. A tablet layout can be turned on in Settings; it is an experiment.',
       'There are no phone calls and no real SMS: the only text messages are the ones you write in Nestvane.',
