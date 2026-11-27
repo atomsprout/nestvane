@@ -74,7 +74,7 @@ to two minutes for the slow ones.
 | Douyin (抖音) | 32.2.6 | 204 | Opens, with its tabs and bars. No video loads within two minutes, with a WebView too (1.6): its own native libraries are interpreted. Needs about 5 GB of memory: an iPad |
 | AnkiDroid | 2.25.3 | 2 | Opens to its introduction (1.6, with a WebView; before, no screen within a minute) |
 | Jellyfin | 2.7.3 | 2 | Opens to Connect to Server (1.6, with a WebView and SO_BROADCAST; before, only to say that a WebView is needed) |
-| KDE Connect | 1.37.3 | 1 | Stops as it starts: it asks for the Wi-Fi service, which this Android does not have |
+| KDE Connect | 1.37.3 | 1 | Opens since 1.17 and stops at its permission request (iPhone 14); before, it stopped as it started for want of a Wi-Fi service. Pairing and transfers were not tried |
 
 Twenty-nine of the thirty-two open; of all fifty-four, fifty.
 
@@ -121,7 +121,7 @@ was saved, and they were uninstalled again, six or four at a time in one start o
 | Tailscale | tailscale.com | Opens; stops when it asks for VPN permission, which this Android has no dialog for |
 | WireGuard | wireguard.com | Opens (1.13) |
 | v2rayNG | GitHub | Opens, and asks for a permission |
-| Session | getsession.org | Stops as it starts: it asks for the Wi-Fi service, which this Android does not have |
+| Session | getsession.org | Opens to its welcome screen since 1.17 (iPhone 14, 1.33.9); before, it stopped as it started for want of a Wi-Fi service. Signing up and messaging were not tried |
 | Element X | GitHub | Opens (1.13) |
 | Wire | wire.com | Opens |
 | Briar | briarproject.org | Opens to its setup |
@@ -233,7 +233,7 @@ the kernel layer no longer refuses memory that gains execute permission, which t
 - **No Google Play services.** Apps that need them were not tried.
 - **The Wi-Fi service is there since 1.16, and says Wi-Fi is off.** Android here reaches the network through a
   wired interface. An app that asked for the Wi-Fi service and did not expect to be told there is none stopped
-  (KDE Connect, Session); these two were not tried again on 1.16.
+  (KDE Connect, Session); both open now, see the tables above.
 - **No VPN dialog.** A VPN app stops when it asks for permission to set up a VPN (Tailscale).
 - **App protectors** that wrap an app's code (SecNeo in 12306) do not start.
 - **32-bit apps** cannot run: the iPhone's processor has no 32-bit mode (Baidu Netdisk's package).

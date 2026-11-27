@@ -100,7 +100,14 @@ inline sockaddr_in hostNameServer(uint16_t guestPort) {
 // reaching the local network and which bring no answers back through this bridge, and the guest's
 // own made-up subnet apart from its name server.
 inline bool isNameServer(const Address& address);
+// Airplane mode in Android (ProbeLinux's /dev/nestvane-airplane): nothing is carried, the name server
+// included. Android's own network is a wired interface, which airplane mode leaves on.
+inline std::atomic_bool& offline() {
+    static std::atomic_bool off{false};
+    return off;
+}
 inline bool unreachable(const Address& address) {
+    if (offline().load(std::memory_order_relaxed)) return true;
     const auto four = ipv4(address);
     // IPv6: multicast, and the link's own addresses (fe80::/10), which need an interface of the host's.
     if (four.empty()) return address[0] == 10 && (address[8] == 0xff || (address[8] == 0xfe && (address[9] & 0xc0) == 0x80));

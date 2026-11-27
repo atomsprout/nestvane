@@ -1360,8 +1360,22 @@ service nestvane-trim /system/bin/sh /system/etc/nestvane/trim.sh
         }
         bool smokeActivityOpened = false;
         bool bootBroadcastCompleted = false, displayInactive = false, launcherDrawn = false, wakeSent = false;
+        hostnet::offline() = false;
         if (progress || expectSmoke || startupTouch) linux.androidLogObserver = [&](std::string_view message) {
             const auto line = message.substr(0, message.find('\n'));
+            // Airplane mode. Android's network here is a wired interface, which airplane mode leaves on,
+            // so the host does the cutting: while the mode is on it carries nothing (hostnet::offline),
+            // and the connections there are end. The Bluetooth service's listener says what the mode is
+            // as Android starts and each time it changes.
+            if (constexpr std::string_view airplane = "BluetoothSystemServer: AirplaneModeListener: ";
+                line.starts_with(airplane) && line.find("state: ") != std::string_view::npos) {
+                const bool on = line.ends_with("state: true");
+                if (hostnet::offline().exchange(on) != on) {
+                    const size_t ended = on ? hostnet::endStreams() : 0;
+                    if (progress) progress(on ? "Nestvane: airplane mode on, ended " + std::to_string(ended) + " connections"
+                                              : std::string("Nestvane: airplane mode off"));
+                }
+            }
             constexpr std::string_view bootBroadcast =
                 "SystemServerTiming: broadcastIntent-0-android.intent.action.BOOT_COMPLETED took to complete:";
             constexpr std::string_view launcherDisplay = "ActivityTaskManager: Displayed com.android.launcher3/";

@@ -70,7 +70,7 @@
 | 抖音 | 32.2.6 | 204 个 | 能打开，栏目和底栏都在。1.6 有了 WebView 后两分钟内视频仍加载不出来：它自带的原生库是解释执行的。要占约 5 GB 内存，只能在 iPad 上 |
 | AnkiDroid | 2.25.3 | 2 个 | 能打开到引导页（1.6，有了 WebView；之前一分钟内没有画面） |
 | Jellyfin | 2.7.3 | 2 个 | 能打开到 Connect to Server（1.6，有了 WebView 和 SO_BROADCAST；之前只提示需要 WebView） |
-| KDE Connect | 1.37.3 | 1 个 | 一启动就停止：它要用 Wi-Fi 服务，这里的 Android 没有 |
+| KDE Connect | 1.37.3 | 1 个 | 1.17 起能打开，停在它的权限询问上（iPhone 14）；之前一启动就停止，因为没有 Wi-Fi 服务。配对和传输没有试 |
 
 32 个里 29 个能打开；54 个合计 50 个；1.6 后 51 个（AnkiDroid）。
 
@@ -114,7 +114,7 @@
 | Tailscale | tailscale.com | 能打开；请求 VPN 权限时停住，这个 Android 没有那个对话框 |
 | WireGuard | wireguard.com | 能打开（1.13） |
 | v2rayNG | GitHub | 能打开，询问权限 |
-| Session | getsession.org | 一启动就停：它要 Wi-Fi 服务，这个 Android 没有 |
+| Session | getsession.org | 1.17 起能打开到欢迎页（iPhone 14，1.33.9）；之前一启动就停，因为没有 Wi-Fi 服务。注册和收发消息没有试 |
 | Element X | GitHub | 能打开（1.13） |
 | Wire | wire.com | 能打开 |
 | Briar | briarproject.org | 打开到设置向导 |
@@ -191,7 +191,7 @@ Android 有一种兼容的加载方式，现在对所有应用打开（`bionic.l
 - **Android 数据里能放的文件数有上限**，装到三十来个应用时到了上限，再装的应用就启动不了。原来是 4096 个文件、2048 个目录，现在是它的十六倍。
 - **原生库是解释执行的**，约每秒四千万条指令。在自己的库里干重活的应用会很慢。
 - **没有 Google Play 服务。** 需要它的应用没有试。
-- **Wi-Fi 服务在 1.16 加上了，报告 Wi-Fi 关着。** 这里的 Android 通过有线接口上网。以前应用去取 Wi-Fi 服务又没料到取不到，就会停止（KDE Connect、Session）；这两个应用在 1.16 上没有复测。
+- **Wi-Fi 服务在 1.16 加上了，报告 Wi-Fi 关着。** 这里的 Android 通过有线接口上网。以前应用去取 Wi-Fi 服务又没料到取不到，就会停止（KDE Connect、Session）；这两个应用现在都能打开（见上表）。
 - **没有 VPN 对话框。** VPN 应用请求建立 VPN 的权限时会停住（Tailscale）。
 - **加固**把应用的代码包起来的（12306 的梆梆），在这里起不来。
 - **32 位应用**不能运行：iPhone 的处理器没有 32 位模式（百度网盘的安装包）。
