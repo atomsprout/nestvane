@@ -138,3 +138,39 @@ def capture_framework_app_policy(adb, remote, guest):
     capture_app_access(adb, guest, admitted)
     capture_package_relabel_policy(adb, remote, guest)
     print(f"Captured reference zygote transitions and Binder service decisions for {len(admitted)} app domains", flush=True)
+
+
+def capture_daemon_policy(adb, guest, program):
+    """The reference's policy for a daemon that init starts and that the captured tables have no
+    rows for: the domain its program gives it, and what that domain may do. Returns the domain."""
+    def remote(command):
+        return subprocess.check_output(adb + ["shell", command]).decode().rstrip("\0\r\n")
+
+    metadata = guest / "nestvane-metadata"
+    file_context = remote(f"ls -Zd {program}").split()[0]
+    process_class = int(remote("cat /sys/fs/selinux/class/process/index"))
+    query = f"u:r:init:s0 {file_context} {process_class}"
+    if not re.fullmatch(r"[A-Za-z0-9_:]+ [A-Za-z0-9_:]+ [0-9]+", query):
+        raise SystemExit("Unexpected Android SELinux labels")
+    domain = remote(f"exec 3<>/sys/fs/selinux/create && printf '%s' '{query}' >&3 && cat <&3")
+    if not re.fullmatch(r"u:r:[a-z0-9_]+:s0", domain):
+        raise SystemExit(f"Unexpected domain transition for {program}: {domain!r}")
+    transitions = metadata / "selinux-process-transition.txt"
+    if f"{program} " not in transitions.read_text():
+        with transitions.open("a") as file:
+            file.write(f"{program} {query} {domain}\n")
+    for name in ("service", "hwservice", "property", "fscreate", "keystore", "keystore-key"):
+        manifest = metadata / f"selinux-{name}-access.txt"
+        header, *entries = manifest.read_text().splitlines()
+        if any(line.startswith(domain + " ") for line in entries):
+            continue
+        index, *positions = map(int, header.split())
+        mask = sum(1 << (bit - 1) for bit in positions)
+        pairs = [line.split(maxsplit=2)[:2] for line in entries]
+        # The process table asks what a domain may do to itself; the others, to each object type.
+        own = all(source == target for source, target in pairs)
+        targets = {domain} if own else {target for source, target in pairs}
+        captured = query_access(adb, index, mask, [(domain, target) for target in targets])
+        rows = [f"{source} {target} {decision}" for (source, target), decision in captured.items()]
+        manifest.write_text("\n".join([header, *entries, *rows]) + "\n")
+    return domain

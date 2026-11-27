@@ -3181,6 +3181,90 @@ int main() {
         assert(machine.store64(buffer, directOffset) && call(29, {normal, 0xc008470b, buffer}) == 0);
         assert(call(222, {0, pageSize, 3, 1, normal, directOffset}) == uint64_t(-1));
         assert(call(215, {direct, pageSize}) == 0 && call(57, {normal}) == 0);
+
+        // The codec service's media device (GuestVideo.hpp), with a decoder that gives one grey
+        // picture for each buffer of the stream, in the order they came.
+        {
+            struct Fake final : GuestVideoDecoder {
+                uint32_t width = 0, height = 0;
+                std::vector<uint64_t> waiting;
+                uint64_t* taken = nullptr;
+                void decode(std::span<const uint8_t> stream, uint64_t pts) override {
+                    *taken += stream.size();
+                    waiting.push_back(pts);
+                }
+                std::optional<Picture> picture(std::span<uint8_t> i420) override {
+                    const size_t bytes = size_t(width) * height * 3 / 2;
+                    if (waiting.empty() || i420.size() < bytes) return std::nullopt;
+                    std::fill_n(i420.begin(), bytes, uint8_t{0x5a});
+                    Picture result{width, height, waiting.front()};
+                    waiting.erase(waiting.begin());
+                    return result;
+                }
+                void flush() override {}
+            };
+            static uint64_t streamBytes = 0;
+            ProbeLinux::setVideoDecoders([](GuestVideoDecoder::Codec codec, uint32_t width, uint32_t height)
+                                             -> std::unique_ptr<GuestVideoDecoder> {
+                if (codec != GuestVideoDecoder::Codec::h264) return {};
+                auto decoder = std::make_unique<Fake>();
+                decoder->width = width;
+                decoder->height = height;
+                decoder->taken = &streamBytes;
+                return decoder;
+            });
+            const auto media = call(56, {cwd, path, 2});
+            constexpr uint64_t blockBytes = 4096 + (16 << 20), megabyte = 1 << 20;
+            assert(media < 256 && machine.store64(buffer, blockBytes));
+            assert(call(29, {media, 0xc018470a, buffer}) == 0);
+            const auto mediaOffset = load(buffer + 8);
+            assert(ping(media, mediaOffset, 0, 1) == 0 && load(buffer + 16) == 0);
+            const auto block = call(222, {0, blockBytes, 3, 1, media, mediaOffset});
+            assert(block < (uint64_t{1} << 45));
+            // The second megabyte of the block is this decoder's: parameters at its start, results at byte 256.
+            const auto slot = block + megabyte;
+            const auto operation = [&](uint64_t codec, uint64_t code) {
+                return ping(media, mediaOffset, 0, codec << 56 | 1 << 8 | code) == 0 && load(buffer + 16) == 0;
+            };
+            const auto parameters = [&](std::initializer_list<uint64_t> values) {
+                uint64_t at = slot;
+                for (const auto value : values) {
+                    assert(machine.store64(at, value));
+                    at += 8;
+                }
+            };
+            parameters({100, 64, 32, 64, 32, 0});
+            assert(operation(1, 0) && load(slot + 256) == 0); // VP9: there is no decoder for it
+            assert(operation(2, 0));                          // H.264
+            const auto handle = load(slot + 256);
+            assert(handle);
+            parameters({handle, 4096, uint64_t(-1)});
+            assert(operation(2, 3) && uint32_t(load(slot + 256)) == uint32_t(-1)); // no picture yet
+            assert(machine.store64(slot + 4096, 0x0102030405060708));
+            parameters({handle, 4096, 5, 7777});
+            assert(operation(2, 2) && load(slot + 256) == 5 && uint32_t(load(slot + 264)) == 0 && streamBytes == 5);
+            parameters({handle, 4096, 3, 8888});
+            assert(operation(2, 2) && streamBytes == 8);
+            parameters({handle, 4096, uint64_t(-1)});
+            assert(operation(2, 3) && uint32_t(load(slot + 256)) == 64 * 32 * 3 / 2);
+            assert(uint32_t(load(slot + 264)) == 64 && uint32_t(load(slot + 272)) == 32 && load(slot + 280) == 7777);
+            assert(load(slot + 4096) == 0x5a5a5a5a5a5a5a5a && load(slot + 4096 + 64 * 32 * 3 / 2) == 0);
+            assert(operation(2, 3) && load(slot + 280) == 8888);
+            assert(operation(2, 3) && uint32_t(load(slot + 256)) == uint32_t(-1));
+            // A stream said to lie outside the block is not read; a picture that has no room is not written.
+            parameters({handle, blockBytes, 5, 1});
+            assert(operation(2, 2) && streamBytes == 8);
+            parameters({handle, 4096, 5, 9999});
+            assert(operation(2, 2) && streamBytes == 13);
+            parameters({handle, 2 * blockBytes, uint64_t(-1)});
+            assert(operation(2, 3) && uint32_t(load(slot + 256)) == uint32_t(-1));
+            parameters({handle});
+            assert(operation(2, 4) && operation(2, 1)); // flush, destroy
+            parameters({handle, 4096, 5, 1});
+            assert(operation(2, 2) && streamBytes == 13);
+            assert(call(215, {block, blockBytes}) == 0 && call(57, {media}) == 0);
+            ProbeLinux::setVideoDecoders({});
+        }
         linux.setGraphicsPipeFactory({});
     }
     {

@@ -11,7 +11,7 @@ import tempfile
 from xml.etree import ElementTree
 from zipfile import BadZipFile, ZipFile
 
-from android_policy import capture_framework_app_policy
+from android_policy import capture_daemon_policy, capture_framework_app_policy
 
 
 FRAMEWORK_APPS = (
@@ -400,6 +400,35 @@ def allow_media_server(guest):
     # Two services it would ask for are not in the root: refused, it goes on without them at once; allowed, it waits for them.
     allow_domain_like(guest, "mediaserver", "audioserver", "mediaserver_exec", ["/system/bin/mediaserver"],
                       {"*": "3", "mediacodeclist_generator_service": "0", "hal_omx_hwservice": "0"})
+
+
+# The codec service of the emulator's image and what it loads that the root does not have. With
+# decoders of the host's behind it (runtime/GuestVideo.hpp) Android decodes H.264 and HEVC with them.
+CODEC_SERVICE = "/vendor/bin/hw/android.hardware.media.c2-service-goldfish"
+CODEC_SERVICE_FILES = (CODEC_SERVICE, "/vendor/etc/vintf/manifest/android.hardware.media.c2-service-goldfish.xml",
+                       "/vendor/etc/seccomp_policy/android.hardware.media.c2-default-seccomp_policy",
+                       "/vendor/etc/init/android.hardware.media.c2-service-goldfish.rc")
+CODEC_SERVICE_LIBRARIES = ("android.hardware.media.c2-V2-ndk.so", "libavservices_minijail.so", "libcodec2.so",
+                           "libcodec2_aidl_V2.so", "libcodec2_hal_common.so", "libcodec2_vndk.so", "libdrm.so",
+                           "libminijail.so", "libsfplugin_ccodec_utils.so", "libstagefright_aidl_bufferpool2.so",
+                           "libstagefright_bufferpool@2.0.1.so", "libstagefright_foundation.so", "libvpx.so",
+                           "android.hardware.graphics.bufferqueue@2.0.so", "android.hardware.media.bufferpool@2.0.so",
+                           "android.hardware.media.bufferpool2-V2-ndk.so", "libdmabufheap.so", "libcodec2_hidl_plugin.so",
+                           "android.hardware.drm-V2-ndk.so", "libcap.so", "android.hidl.allocator@1.0.so",
+                           "libprotobuf-cpp-lite-6.33.5.so")
+
+
+def add_codec_service(adb, guest):
+    """The codec service, from the reference (an image built with experiments/aosp/patch.py, where the
+    service takes every picture as bytes), and the reference's policy for its domain."""
+    for path in (*CODEC_SERVICE_FILES, *("/vendor/lib64/" + name for name in CODEC_SERVICE_LIBRARIES)):
+        local = guest / path.lstrip("/")
+        if local.exists():
+            continue
+        local.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(adb + ["pull", path, str(local)], check=True)
+    (guest / CODEC_SERVICE.lstrip("/")).chmod(0o755)
+    capture_daemon_policy(adb, guest, CODEC_SERVICE)
 
 
 MEDIA_HELPER_FILES = ("system/bin/mediaextractor", "system/bin/mediametrics", "system/lib64/libmediaextractorservice.so",
@@ -901,6 +930,7 @@ def main():
                     add_content_tool(adb, guest)
                     add_declared_libraries(adb, guest)
                     add_media_server(adb, guest)
+                    add_codec_service(adb, guest)
                     precompile_apex_apps(adb, remote, guest)
                 if args.precompile_framework_code:
                     check_reference_files(

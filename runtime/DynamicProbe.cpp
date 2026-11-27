@@ -1197,6 +1197,41 @@ DynamicReport probeInit(const std::string& directory, const std::string& databas
             linux.mount("/vendor/etc/media_profiles_V1_0.xml",
                         {reinterpret_cast<const uint8_t*>(mediaProfiles.data()), mediaProfiles.size()});
         }
+        if (ProbeLinux::hasVideoDecoders()) {
+            // The codec service's two decoders that the host stands behind (GuestVideo.hpp), for
+            // Android's list of codecs. The service makes them when ro.boot.qemu.hwcodec.* says so
+            // (the boot configuration below). Being the device's own, they are preferred to the
+            // software decoders of the same types. They are listed up to 1920x1088: with a 3840x2160
+            // stream the service stopped on an iPhone 14, and such a stream goes to the software decoder as before.
+            static constexpr std::string_view mediaCodecs = R"xml(<?xml version="1.0" encoding="utf-8"?>
+<MediaCodecs>
+    <Decoders>
+        <MediaCodec name="c2.goldfish.h264.decoder" type="video/avc">
+            <Limit name="size" min="96x96" max="1920x1088" />
+            <Limit name="alignment" value="2x2" />
+            <Limit name="block-size" value="16x16" />
+            <Limit name="blocks-per-second" range="24-489600" />
+            <Limit name="bitrate" range="1-120000000" />
+            <Limit name="frame-rate" range="1-240" />
+            <Limit name="concurrent-instances" max="4" />
+            <Feature name="adaptive-playback" />
+        </MediaCodec>
+        <MediaCodec name="c2.goldfish.hevc.decoder" type="video/hevc">
+            <Limit name="size" min="96x96" max="1920x1088" />
+            <Limit name="alignment" value="2x2" />
+            <Limit name="block-size" value="16x16" />
+            <Limit name="blocks-per-second" range="24-489600" />
+            <Limit name="bitrate" range="1-120000000" />
+            <Limit name="frame-rate" range="1-240" />
+            <Limit name="concurrent-instances" max="4" />
+            <Feature name="adaptive-playback" />
+        </MediaCodec>
+    </Decoders>
+</MediaCodecs>
+)xml";
+            linux.mount("/vendor/etc/media_codecs.xml",
+                        {reinterpret_cast<const uint8_t*>(mediaCodecs.data()), mediaCodecs.size()});
+        }
         linux.setCamera(std::move(camera));
         linux.setGuestTouch(std::move(touch));
         if (const auto loader = files.find("/nestvane-metadata/tethering-netbpfload.elf"); loader != files.end()) {
@@ -1446,6 +1481,11 @@ service nestvane-trim /system/bin/sh /system/etc/nestvane/trim.sh
             if (const int density = std::atoi(std::getenv("NESTVANE_DISPLAY_DENSITY") ? std::getenv("NESTVANE_DISPLAY_DENSITY") : ""); density >= 120 && density <= 640) {
                 if (!configuration.empty() && configuration.back() != '\n') configuration += '\n';
                 configuration += "androidboot.nestvane.density = \"" + std::to_string(density) + "\"\n";
+            }
+            // The codec service makes its H.264 and HEVC decoders when the host has decoders for them.
+            if (ProbeLinux::hasVideoDecoders()) {
+                if (!configuration.empty() && configuration.back() != '\n') configuration += '\n';
+                configuration += "androidboot.qemu.hwcodec.avcdec = \"2\"\nandroidboot.qemu.hwcodec.hevcdec = \"2\"\n";
             }
             linux.mount("/proc/bootconfig", {reinterpret_cast<const uint8_t*>(configuration.data()), configuration.size()});
         }

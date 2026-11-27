@@ -5,6 +5,7 @@
 #include "GraphicsPipe.hpp"
 #include "GuestApkInbox.hpp"
 #include "GuestCamera.hpp"
+#include "GuestVideo.hpp"
 #include "GuestRoute.hpp"
 #include "HostSocket.hpp"
 #include "GuestTouch.hpp"
@@ -232,6 +233,10 @@ struct ProbeLinux {
         std::function<void(const std::string& package, std::span<const uint8_t> profile)> rememberProfile;
     };
     static void setRootPolicy(RootPolicy policy);
+    // The host's video decoders, for the image's codec service (GuestVideo.hpp). Without them the
+    // service finds no media device and Android decodes in software.
+    static void setVideoDecoders(GuestVideoDecoder::Factory factory);
+    static bool hasVideoDecoders();
     static RootPolicy rootPolicy();
     bool rootEnabled() const { return rootOn; }
     std::function<int(uint32_t uid, const std::string& package)> rootDecision;
@@ -622,6 +627,15 @@ private:
         uint64_t type = 0;
         std::map<uint64_t, std::shared_ptr<GraphicsRegion>> owned;
         std::multimap<uint64_t, Claim> claims;
+        // The media device (the codec service's): the block its parameters and data are in, and the
+        // decoders it has made, by the handle it knows each by.
+        struct Video {
+            GuestVideoDecoder::Codec codec;
+            std::unique_ptr<GuestVideoDecoder> decoder;
+        };
+        std::shared_ptr<GraphicsRegion> media;
+        std::map<uint64_t, Video> video;
+        uint64_t nextVideo = 1;
 
         ~GraphicsAddressSpace() {
             for (const auto& [offset, region] : owned) region->released = true;
@@ -636,6 +650,7 @@ private:
     bool transferGraphicsDma(GuestColorDma::Transfer& transfer);
     std::shared_ptr<GraphicsRegion> allocateGraphicsRegion(uint64_t requested);
     uint64_t graphicsAddressIoctl(Machine& machine, const Descriptor& fd);
+    void mediaPing(GraphicsAddressSpace& device, uint64_t command);
     GraphicsPipeFactory graphicsPipeFactory;
     std::shared_ptr<GuestCameraSource> camera;
     std::shared_ptr<GuestApkInbox> apkInbox;

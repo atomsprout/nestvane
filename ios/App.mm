@@ -17,6 +17,7 @@
 #include "GfxstreamSession.hpp"
 #include "HostSocket.hpp"
 #include "IOSCamera.hpp"
+#include "IOSVideoDecoder.hpp"
 #include "Validation.hpp"
 
 #include <algorithm>
@@ -334,11 +335,12 @@ std::jthread StartDisplayReader(const nestvane::GfxstreamSession& renderer, Disp
                 static double cpuBefore = 0;
                 const double cpuNow = used.ru_utime.tv_sec + used.ru_stime.tv_sec + (used.ru_utime.tv_usec + used.ru_stime.tv_usec) / 1e6;
                 [rates appendFormat:@"cpu %.0f%%; ", (cpuNow - std::exchange(cpuBefore, cpuNow)) / seconds * 100];
-                [rates appendFormat:@"%@%dx%d at %d Hz: composed %.0f, shown %.0f frames per second; sound %.0f bytes a second taken, %.0f played by Android, peak %u (%@, %zu bytes waiting, %llu short); most in a tenth %llu\n",
+                [rates appendFormat:@"%@%dx%d at %d Hz: composed %.0f, shown %.0f frames per second; sound %.0f bytes a second taken, %.0f played by Android, peak %u (%@, %zu bytes waiting, %llu short); most in a tenth %llu; %s\n",
                     refresh ? [NSString stringWithFormat:@"surfaces, screen refreshed %.0f times a second; ", [refresh takeTicks] / seconds] : @"read back; ",
                     size.width, size.height, hertz,
                     rateFirstFrame ? double(lastFrame - rateFirstFrame + 1) / seconds : 0.0, shown / seconds, double(soundNow - soundBefore) / seconds, double(playedNow - playedBefore) / seconds,
-                    sound.peak.exchange(0), GuestAudioOutputState, sound.buffered(), sound.shortfalls.exchange(0), std::exchange(tenthMost, 0)];
+                    sound.peak.exchange(0), GuestAudioOutputState, sound.buffered(), sound.shortfalls.exchange(0), std::exchange(tenthMost, 0),
+                    nestvane::IOSVideoDecoderReport().c_str()];
                 {
                     auto& microphone = nestvane::GuestMicrophone::host();
                     static uint64_t givenBefore = 0;
@@ -2661,6 +2663,9 @@ int main(int argc, char* argv[]) {
             writeToURL:[documents URLByAppendingPathComponent:@"memory-limits.txt"] atomically:YES];
     }
     nestvane::ProbeLinux::setHostVolumeSource(deviceVolume);
+    // Android's codec service decodes H.264 and HEVC with the phone's decoders (NESTVANE_NO_HARDWARE_VIDEO
+    // leaves them out: the service then finds no media device and stops, and Android decodes in software).
+    if (!getenv("NESTVANE_NO_HARDWARE_VIDEO")) nestvane::ProbeLinux::setVideoDecoders(nestvane::makeIOSVideoDecoders());
     // NESTVANE_TEST_ROOT=allow or =deny turns root on and answers for every app that has no answer
     // yet, instead of asking, for the app's tests.
     nestvane::ProbeLinux::setRootPolicy({

@@ -384,3 +384,23 @@ edit("packages/apps/Launcher3/quickstep/src/com/android/launcher3/taskbar/Taskba
     "                && mControllers.cueBarController != null) {\n"
     "            mControllers.cueBarController.onRecentsButtonLayoutChanged(bounds);\n")],
     "Nestvane: not set yet at the first layout")
+
+# The image's codec service for an emulator hands H.264 and HEVC streams to the host (the phone's
+# decoders, runtime/GuestVideo.hpp). It can have the host draw a picture into a colour buffer or take
+# it as bytes; the host here only gives bytes, so the service always asks for them.
+for codec, name in (("avc", "Avc"), ("hevc", "Hevc")):
+    edit("device/generic/goldfish/codecs/c2/decoders/%sdec/C2Goldfish%sDec.cpp" % (codec, name), [(
+        "                mEnableAndroidNativeBuffers = true;\n",
+        "                mEnableAndroidNativeBuffers = false;  // Nestvane: the host gives bytes\n")],
+        "Nestvane: the host gives bytes")
+
+# The codec service shares 32 MiB with the host and stops if it cannot have them. Its second 16 MiB
+# are only where the decoders after the first keep their parameters; with half of it the first decoder
+# still has room for a 3840x2160 picture, and the others start in the first 16 MiB.
+edit("device/generic/goldfish/codecs/c2/decoders/base/goldfish_media_utils.cpp", [
+    ("            int slot = search_order[i];\n",
+     "            int slot = search_order[i];\n"
+     "            if (slot >= 16) continue;  // Nestvane: the block is 16 MiB\n"),
+    ("    static constexpr size_t kOutputSizeBytes = 4096 * 4096; // 16M\n",
+     "    static constexpr size_t kOutputSizeBytes = 0;\n")],
+    "Nestvane: the block is 16 MiB")

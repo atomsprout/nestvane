@@ -31,6 +31,7 @@ targets:
       - sdk: AVFoundation.framework
       - sdk: CoreMedia.framework
       - sdk: CoreVideo.framework
+      - sdk: VideoToolbox.framework
       - sdk: CoreGraphics.framework
       - sdk: libsqlite3.tbd
       - sdk: libAppleArchive.tbd
@@ -97,6 +98,7 @@ targets:
       - sdk: AVFoundation.framework
       - sdk: CoreMedia.framework
       - sdk: CoreVideo.framework
+      - sdk: VideoToolbox.framework
       - sdk: CoreGraphics.framework
       - sdk: libsqlite3.tbd
       - sdk: libAppleArchive.tbd

@@ -102,7 +102,8 @@ constexpr uint16_t addressFamilyVsock = 40;
 constexpr uint32_t emulatorHostCid = 2, emulatorDataPort = 5000;
 constexpr std::string_view graphicsAddressDevice = "/dev/goldfish_address_space";
 constexpr uint64_t graphicsAddressBase = 0x800000000ULL, graphicsAlignment = 16 * 1024;
-constexpr uint64_t goldfishHostMemory = 5, goldfishSharedSlots = 6;
+constexpr uint64_t goldfishMedia = 1, goldfishHostMemory = 5, goldfishSharedSlots = 6;
+constexpr uint64_t mediaDevice = UINT64_MAX; // GraphicsAddressSpace::type of the codec service's device
 constexpr size_t maxGraphicsTransfer = 64 * 1024;
 constexpr uint32_t fileAccessed = 1, fileModified = 2, fileAttributes = 4, fileClosedWrite = 8,
                    fileClosedRead = 16, fileOpened = 32, fileMovedFrom = 64, fileMovedTo = 128,
@@ -541,6 +542,23 @@ namespace {
 std::mutex rootPolicyLock;
 ProbeLinux::RootPolicy configuredRootPolicy;
 }
+
+namespace {
+std::mutex videoDecodersLock;
+GuestVideoDecoder::Factory videoDecoders;
+
+GuestVideoDecoder::Factory videoDecoderFactory() {
+    std::lock_guard guard(videoDecodersLock);
+    return videoDecoders;
+}
+}
+
+void ProbeLinux::setVideoDecoders(GuestVideoDecoder::Factory factory) {
+    std::lock_guard guard(videoDecodersLock);
+    videoDecoders = std::move(factory);
+}
+
+bool ProbeLinux::hasVideoDecoders() { return bool(videoDecoderFactory()); }
 
 void ProbeLinux::setRootPolicy(RootPolicy policy) {
     std::lock_guard guard(rootPolicyLock);
@@ -2811,20 +2829,18 @@ std::shared_ptr<ProbeLinux::GraphicsRegion> ProbeLinux::allocateGraphicsRegion(u
         }
     }
     if (offset > graphicsAddressBase - size) return {};
-    try {
-        auto region = std::make_shared<GraphicsRegion>();
-        region->offset = offset;
-        WritableFile backing{};
-        backing.memoryFile = true;
-        backing.storage = {region, &region->storage};
-        if (resize(backing, size)) return {};
-        if (memoryFiles.size() >= resourceObjectCapacity) return {};
-        memoryFiles.push_back(backing.storage);
-        graphicsRegions.insert_or_assign(offset, region);
-        return region;
-    } catch (const std::bad_alloc&) {
-        return {};
-    }
+    // When the host has no memory for it, the exception goes on to where system calls are run: room
+    // is made there and the call runs once more. The codec service stops if its block is refused.
+    auto region = std::make_shared<GraphicsRegion>();
+    region->offset = offset;
+    WritableFile backing{};
+    backing.memoryFile = true;
+    backing.storage = {region, &region->storage};
+    if (resize(backing, size)) return {};
+    if (memoryFiles.size() >= resourceObjectCapacity) return {};
+    memoryFiles.push_back(backing.storage);
+    graphicsRegions.insert_or_assign(offset, region);
+    return region;
 }
 
 uint64_t ProbeLinux::graphicsAddressIoctl(Machine& machine, const Descriptor& fd) {
@@ -2886,6 +2902,22 @@ uint64_t ProbeLinux::graphicsAddressIoctl(Machine& machine, const Descriptor& fd
             const auto command = request.metadata;
             request.offset += graphicsAddressBase;
             request.metadata = 0;
+            if (!device.type && command == goldfishMedia && videoDecoderFactory()) {
+                // The codec service's device: the block it allocated holds its parameters and data.
+                const auto block = device.owned.find(offset);
+                if (block == device.owned.end()) request.metadata = uint64_t(-6);
+                if (!writeGuest(machine, x[2], request)) return uint64_t(-14);
+                if (!request.metadata) {
+                    device.type = mediaDevice;
+                    device.media = block->second;
+                }
+                return 0;
+            }
+            if (device.type == mediaDevice) {
+                mediaPing(device, command);
+                if (!writeGuest(machine, x[2], request)) return uint64_t(-14);
+                return 0;
+            }
             if (!device.type) {
                 if (command != goldfishHostMemory && command != goldfishSharedSlots) request.metadata = uint64_t(-19);
                 if (!writeGuest(machine, x[2], request)) return uint64_t(-14);
@@ -2915,6 +2947,91 @@ uint64_t ProbeLinux::graphicsAddressIoctl(Machine& machine, const Descriptor& fd
             return 0;
         }
         default: return uint64_t(-25);
+    }
+}
+
+// One operation of the goldfish media device (device/generic/goldfish/codecs/c2/decoders). The
+// command names the codec (the top byte), the megabyte of the block the decoder's parameters are at
+// (the second byte from the bottom) and the operation. The parameters are 64-bit words at the start
+// of that megabyte, the results are at byte 256 of it, and data is at an offset from it that a
+// parameter gives. The service has been built to take every picture as bytes (experiments/aosp/patch.py):
+// a colour buffer it names for a picture to be drawn into is not drawn into.
+void ProbeLinux::mediaPing(GraphicsAddressSpace& device, uint64_t command) {
+    enum : uint8_t { initContext, destroyContext, decodeImage, getImage, flushImages, resetContext, sendMetadata };
+    constexpr uint64_t megabyte = 1 << 20, results = 256, parameterBytes = 4096;
+    constexpr int32_t noDecodedFrame = -1;
+    if (!device.media) return;
+    auto& storage = device.media->storage;
+    const uint64_t slot = (command >> 8) & 0xff, type = command >> 56;
+    const uint8_t operation = uint8_t(command);
+    if (slot >= 32 || slot * megabyte > storage.size || storage.size - slot * megabyte < parameterBytes) return;
+    uint8_t* const base = storage.pages.data() + slot * megabyte;
+    const uint64_t room = storage.size - slot * megabyte;
+    const auto parameter = [&](unsigned index) {
+        uint64_t value = 0;
+        std::memcpy(&value, base + 8 * index, 8);
+        return value;
+    };
+    const auto result = [&](uint64_t at, const auto& value) { std::memcpy(base + results + at, &value, sizeof(value)); };
+    const auto make = [&](uint64_t width, uint64_t height) -> std::unique_ptr<GuestVideoDecoder> {
+        const auto factory = videoDecoderFactory();
+        if (!factory || (type != 2 && type != 3) || !width || !height || width > 8192 || height > 8192) return {};
+        return factory(type == 2 ? GuestVideoDecoder::Codec::h264 : GuestVideoDecoder::Codec::hevc, uint32_t(width), uint32_t(height));
+    };
+    if (operation == initContext) {
+        // Version, coded width and height, output width and height, pixel format (I420 is the only one asked for).
+        auto decoder = make(parameter(1), parameter(2));
+        uint64_t handle = 0;
+        if (decoder && device.video.size() < 32) {
+            handle = device.nextVideo++;
+            device.video[handle] = {type == 2 ? GuestVideoDecoder::Codec::h264 : GuestVideoDecoder::Codec::hevc, std::move(decoder)};
+        }
+        result(0, handle);
+        return;
+    }
+    const auto found = device.video.find(parameter(0));
+    switch (operation) {
+        case destroyContext:
+            if (found != device.video.end()) device.video.erase(found);
+            return;
+        case decodeImage: {
+            // Handle, offset of the stream's bytes, their count, presentation time. Every byte is taken.
+            const uint64_t offset = parameter(1), size = parameter(2);
+            if (found != device.video.end() && offset <= room && size <= room - offset)
+                found->second.decoder->decode({base + offset, size_t(size)}, parameter(3));
+            result(0, size);
+            result(8, int32_t{0});
+            return;
+        }
+        case getImage: {
+            // Handle, offset for the picture, a colour buffer or -1. The result is the picture's size in
+            // bytes or an error, then its width, height, time and colour description.
+            const uint64_t offset = parameter(1);
+            std::optional<GuestVideoDecoder::Picture> picture;
+            if (found != device.video.end() && offset <= room)
+                picture = found->second.decoder->picture({base + offset, size_t(room - offset)});
+            if (!picture) {
+                result(0, noDecodedFrame);
+                return;
+            }
+            result(0, int32_t(uint64_t(picture->width) * picture->height * 3 / 2));
+            result(8, picture->width);
+            result(16, picture->height);
+            result(24, picture->pts);
+            result(32, picture->primaries);
+            result(40, picture->range);
+            result(48, picture->transfer);
+            result(56, picture->matrix);
+            return;
+        }
+        case flushImages:
+            if (found != device.video.end()) found->second.decoder->flush();
+            return;
+        case resetContext:
+            if (found != device.video.end())
+                if (auto decoder = make(parameter(1), parameter(2))) found->second.decoder = std::move(decoder);
+            return;
+        case sendMetadata: default: return;
     }
 }
 
