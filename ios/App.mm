@@ -2076,10 +2076,17 @@ static bool ApkContent(NSData* data) {
         const auto exportReport = [&](NSURL* destination, const std::string& output) {
             // Low Power Mode slows the processor by well over a third: a start measured in it says nothing
             // (tools/boot-check.sh refuses one).
-            NSString* report = [NSString stringWithFormat:@"%@ %@ | process %d | thermal %@ → %@%@\n%@",
+            // Pages this process had to wait for from storage so far. A start whose files iOS still holds
+            // in memory has few; tens of thousands mean the start was spent waiting for storage, which
+            // says more about what else the device is doing than about the app.
+            task_events_info_data_t events{};
+            mach_msg_type_number_t eventCount = TASK_EVENTS_INFO_COUNT;
+            const long pageIns = task_info(mach_task_self(), TASK_EVENTS_INFO, task_info_t(&events), &eventCount) == KERN_SUCCESS
+                ? long(events.pageins) : -1;
+            NSString* report = [NSString stringWithFormat:@"%@ %@ | process %d | thermal %@ → %@%@ | pages read from storage %ld, faults %ld\n%@",
                 platform, UIDevice.currentDevice.systemVersion, NSProcessInfo.processInfo.processIdentifier,
                 before, ThermalState(), NSProcessInfo.processInfo.lowPowerModeEnabled ? @" | low power mode" : @"",
-                [NSString stringWithUTF8String:output.c_str()]];
+                pageIns, long(events.faults), [NSString stringWithUTF8String:output.c_str()]];
             NSError* error = nil;
             if (![report writeToURL:destination atomically:YES encoding:NSUTF8StringEncoding error:&error])
                 NSLog(@"Unable to export report: %@", error);

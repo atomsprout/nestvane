@@ -51,7 +51,8 @@ for start in 1 2 3 4 5 6; do
         echo "start $start: the device is in Low Power Mode, which slows it; turn that off and run this again"
         exit 2
     fi
-    thermal=$(head -1 $out/boot-milestones.txt 2>/dev/null | sed 's/.*thermal //')
+    thermal=$(head -1 $out/boot-milestones.txt 2>/dev/null | sed 's/.*thermal //; s/ | pages read.*//')
+    pages=$(head -1 $out/boot-milestones.txt 2>/dev/null | sed -n 's/.*pages read from storage \([0-9]*\).*/\1/p')
     if [[ "$thermal" != "nominal → nominal" ]]; then
         echo "start $start: thermal state '$thermal'; let the device cool down and run this again"
         exit 2
@@ -59,7 +60,7 @@ for start in 1 2 3 4 5 6; do
     home=$(grep -a 'Displayed com.android.launcher3' $out/boot-milestones.txt | tail -1 | sed 's/^\[\([0-9]*\) ms\].*/\1/')
     memory=$(grep -a 'iOS physical footprint bytes' $out/guest-live.txt 2>/dev/null | head -1 | awk '{printf "%.2f", $NF / 1e9}')
     [[ -n "$home" ]] || { echo "start $start: the home screen was not reached within 36 s"; exit 1; }
-    echo "start $start: $home ms to the home screen, $memory GB"
+    echo "start $start: $home ms to the home screen, $memory GB${pages:+, $pages pages read from storage}"
     if (( start > 1 )); then times+=($home); memories+=($memory); fi
 done
 
