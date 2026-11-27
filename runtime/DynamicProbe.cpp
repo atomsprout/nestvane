@@ -1482,7 +1482,11 @@ service nestvane-trim /system/bin/sh /system/etc/nestvane/trim.sh
             linux.addBootTmpfs("/metadata", 0755, 0, 6);
         }
         // NESTVANE_SHARED_STORAGE=<host directory> is the guest's shared storage, file for file.
-        if (const char* shared = std::getenv("NESTVANE_SHARED_STORAGE"); shared && *shared) linux.shareStorage(shared);
+        if (const char* shared = std::getenv("NESTVANE_SHARED_STORAGE"); shared && *shared) {
+            linux.shareStorage(shared);
+            // Its files are mapped, and the Files app can replace or shorten one meanwhile.
+            native::catchFileFaults();
+        }
         if (!databasePath.empty()) linux.mountData(databasePath);
         for (const auto& [path, file] : files) linux.mount(path, file.bytes());
         if (const auto bootconfig = files.find("/nestvane-metadata/bootconfig"); bootconfig != files.end()) {

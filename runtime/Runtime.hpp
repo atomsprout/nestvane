@@ -92,12 +92,18 @@ public:
     void leaveExact() { exactFile = false; }
     // Takes the bytes back into memory and lets go of the file.
     bool unback();
+    // The name is another file's now (it was replaced from outside): lets go of the name. What was
+    // mapped of the old file moves to memory; what was not is gone and reads as zeros.
+    bool forsake();
     const std::string& backingFile() const { return file; }
     // The files under a directory whose buffers are gone since the last call: their owner decides
     // when the content is no longer needed and removes them.
     static std::vector<std::string> takeRetired(std::string_view directory);
     // Counts the times the bytes have moved in host memory.
     uint64_t moves = 0;
+    // The inode of the host file, once its owner has looked: a file of another inode under the same
+    // name later was put there from outside. 0 when not known.
+    uint64_t hostInode = 0;
 
 private:
     bool paged() const { return mapping || !file.empty(); }

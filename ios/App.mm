@@ -2376,6 +2376,14 @@ static bool ApkContent(NSData* data) {
                                     NSString* key = [@"NESTVANE_TEST_SHELL" stringByAppendingString:[fields[0] substringFromIndex:5]];
                                     if (NSString* command = NSProcessInfo.processInfo.environment[key]; command && apkInbox)
                                         apkInbox->submitLine("shell", command.UTF8String);
+                                } else if ([fields[0] isEqualToString:@"replace"]) {
+                                    // "replace:<file>:0:wait" puts Documents/<file> in the place of
+                                    // Android/nestvane-test/<file> the way the Files app replaces a file:
+                                    // written beside it under another name, then renamed over it.
+                                    NSURL* target = [[documents URLByAppendingPathComponent:@"Android/nestvane-test"]
+                                        URLByAppendingPathComponent:fields[1]];
+                                    [[NSData dataWithContentsOfURL:[documents URLByAppendingPathComponent:fields[1]]]
+                                        writeToURL:target atomically:YES];
                                 } else if ([fields[0] isEqualToString:@"clean"]) {
                                     // "clean:0:0:wait" clears the apps in the background, as Home's menu does.
                                     if (apkInbox) apkInbox->submitClean();

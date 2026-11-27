@@ -532,6 +532,30 @@ bool ProbeLinux::syncData() {
     return true;
 }
 
+void ProbeLinux::sharedFileOpened(const std::string& backing, WritableFile& file) {
+    constexpr uint32_t fileModified = 2, fileClosedWrite = 8;  // inotify's masks
+    auto& storage = *file.storage;
+    if (!storage.pages.exact()) return;
+    const std::string host = storage.pages.backingFile();
+    struct stat now{};
+    if (::stat(host.c_str(), &now) != 0 || !S_ISREG(now.st_mode) || uint64_t(now.st_size) == storage.size ||
+        uint64_t(now.st_size) > maxDataFileBytes)
+        return;
+    if (androidLogObserver)
+        androidLogObserver("Nestvane: " + backing + " was written from outside: " + std::to_string(storage.size) + " bytes before, " +
+                           std::to_string(now.st_size) + " now");
+    // Mapped again from the start: pages that the file could not give meanwhile were made zeros.
+    const uint64_t inode = storage.pages.hostInode;
+    storage.size = uint64_t(now.st_size);
+    storage.pages.attachExact(host, (storage.size + pageMask) & ~pageMask);
+    storage.pages.hostInode = inode;
+    if (storage.placedMoves != storage.pages.moves) storage.replace();
+    file.times[2] = file.times[4] = now.st_mtimespec.tv_sec;
+    file.times[3] = file.times[5] = now.st_mtimespec.tv_nsec;
+    fileEvent(backing, fileModified);
+    fileEvent(backing, fileClosedWrite);
+}
+
 void ProbeLinux::rescanShared() {
     // inotify's masks, as in ProbeLinux.cpp.
     constexpr uint32_t fileClosedWrite = 8, fileCreated = 256, fileDeleted = 512;
@@ -554,10 +578,27 @@ void ProbeLinux::rescanShared() {
                     const std::string name = entry->d_name;
                     if (name.starts_with(".")) continue;  // ".", "..", and the host's own files
                     names.insert(name);
-                    if (first) continue;
                     const auto childHost = host + "/" + name, childGuest = guest + "/" + name;
-                    if (directories.contains(childGuest) || writableFiles.contains(childGuest) || links.contains(childGuest))
-                        continue;
+                    if (directories.contains(childGuest) || links.contains(childGuest)) continue;
+                    if (const auto known = writableFiles.find(childGuest); known != writableFiles.end()) {
+                        // A file the host holds whose inode is another now was replaced from outside (the
+                        // Files app writes a new file and renames it): to the guest the old one is removed,
+                        // and the new one is found below. Whoever has the old one open or mapped keeps it.
+                        auto& pages = known->second->storage->pages;
+                        struct stat now{};
+                        if (!pages.exact() || ::lstat(childHost.c_str(), &now) != 0 || !S_ISREG(now.st_mode)) continue;
+                        if (!pages.hostInode) pages.hostInode = uint64_t(now.st_ino);
+                        if (first || pages.hostInode == uint64_t(now.st_ino)) continue;
+                        // Its bytes, while they are few, move to memory: the name is the new file's now.
+                        if ((known->second.use_count() > 1 || known->second->storage.use_count() > 1) && known->second->storage->size <= 64 * 1024 * 1024 && pages.forsake() &&
+                            known->second->storage->placedMoves != pages.moves)
+                            known->second->storage->replace();
+                        if (androidLogObserver) androidLogObserver("Nestvane: " + childGuest + " was replaced from outside");
+                        writableFiles.erase(known);
+                        fileEvent(childGuest, fileDeleted);
+                        changed = true;
+                    }
+                    if (first) continue;
                     struct stat child{};
                     if (::lstat(childHost.c_str(), &child) != 0 || !childPath(childGuest)) continue;
                     const auto parent = directories.at(guest);
@@ -579,6 +620,7 @@ void ProbeLinux::rescanShared() {
                     file->persistent = true;
                     file->storage->size = uint64_t(child.st_size);
                     file->storage->pages.attachExact(childHost, (uint64_t(child.st_size) + pageMask) & ~pageMask);
+                    file->storage->pages.hostInode = uint64_t(child.st_ino);
                     file->times = {child.st_atimespec.tv_sec, child.st_atimespec.tv_nsec, child.st_mtimespec.tv_sec,
                                    child.st_mtimespec.tv_nsec, child.st_ctimespec.tv_sec, child.st_ctimespec.tv_nsec};
                     const auto& context = parent.securityContext;

@@ -35,6 +35,13 @@ if find "$bundle" -name embedded.mobileprovision -o -name _CodeSignature | grep 
     exit 1
 fi
 
+# Nothing in it names the place it was built: a path under the home directory of whoever built it
+# (a library built without -ffile-prefix-map keeps the paths of its sources in its messages).
+if LC_ALL=C grep -rlF "$HOME/" "$bundle" | head -5 | grep .; then
+    echo "these files name the build machine's home directory" >&2
+    exit 1
+fi
+
 rm -f "$output"
 (cd "$stage" && zip -q -6 -r -y "$output" Payload)
 ls -l "$output" | awk '{printf "%s: %.2f GB\n", $9, $5 / 1e9}'

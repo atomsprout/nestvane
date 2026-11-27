@@ -2219,6 +2219,7 @@ uint64_t ProbeLinux::open(const Machine& machine, const std::string& path, uint3
     const auto pathname = backingPath(*logical);
     if (!canAccessParent(pathname, false)) return uint64_t(-13);
     auto entry = find(pathname, flags, &machine);
+    if (entry && entry->temporary && !sharedHostRoot.empty()) sharedFileOpened(pathname, *entry->temporary);
     if ((flags & (create | exclusive)) == (create | exclusive) && entry) return uint64_t(-17);
     if (!entry && !(flags & create)) return uint64_t(-2);
     // Immutable image data is already memory backed, with no guest page cache to bypass.
@@ -6872,6 +6873,16 @@ bool ProbeLinux::switchThread(Machine& machine, std::chrono::steady_clock::time_
     if (!sharedHostRoot.empty() && !appsHeld.load(std::memory_order_relaxed) && now - sharedScannedAt > seconds(3)) {
         sharedScannedAt = now;
         rescanShared();
+        // Pages of mapped files that the files could no longer give (NativeCode.hpp, repairFilePage).
+        static uint64_t repairsTold = 0;
+        uint64_t lastRepair = 0;
+        if (const uint64_t repairs = native::repairedFilePages(&lastRepair); repairs != repairsTold && androidLogObserver) {
+            std::ostringstream event;
+            event << "Nestvane: " << repairs - repairsTold << " pages of mapped files could not be read from the files (changed from "
+                  << "outside?) and read as zeros, the last at host address 0x" << std::hex << lastRepair;
+            androidLogObserver(event.str());
+            repairsTold = repairs;
+        }
         now = steady_clock::now();
     }
     std::optional<steady_clock::time_point> nextDeadline;

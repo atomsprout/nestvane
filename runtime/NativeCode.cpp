@@ -252,6 +252,7 @@ struct Running {
     uint64_t slice = 0;              // mach time after which a run is ended
     uint64_t preemptedPc = 0;
     int signal = 0;
+    int faultAccess = 0;
 };
 Running mainRunning;
 thread_local Running* self = nullptr;
@@ -281,6 +282,20 @@ struct Counters {
     std::array<std::array<uint64_t, 3>, 8> strayExamples{};
 } counters;
 
+std::atomic<uint64_t> repairedPages{0};
+
+std::atomic<uint64_t> lastRepaired{0};
+
+// What a fault was, from the syndrome of its data abort: 0 when it was not for a page that is not
+// there (an address that is not aligned, or an access the page does not allow, is the program's own
+// doing), 1 for a read of such a page, 2 for a write.
+int missingPageAccess(const ucontext_t* user) {
+    const uint32_t syndrome = user->uc_mcontext->__es.__esr;
+    if (syndrome >> 26 != 0x24 && syndrome >> 26 != 0x25) return 0;
+    if ((syndrome & 0x3c) != 0x04) return 0;  // translation faults, of any level
+    return syndrome & 0x40 ? 2 : 1;
+}
+
 void onSignal(int number, siginfo_t* info, void* raw) {
     // A worker interpreting (interpretInSpace) touched memory that another thread unmapped meanwhile:
     // the run ends before that instruction.
@@ -305,6 +320,9 @@ void onSignal(int number, siginfo_t* info, void* raw) {
         mine->preemptedPc = guestPc;
         reason = leftByPreemption;
     } else if (!ours || (pc >= reinterpret_cast<uint64_t>(&nestvane_native_enter) && pc < reinterpret_cast<uint64_t>(&nestvane_native_exit) + 256)) {
+        // A page of a mapped file that the file no longer has reads as zeros from now on, wherever
+        // in the app it was touched: the instruction runs again.
+        if (number == SIGBUS && repairFilePage(reinterpret_cast<uint64_t>(info->si_addr), missingPageAccess(user))) return;
         // Not the guest's doing: let it happen again without us, so that the crash is reported.
         signal(number, SIG_DFL);
         return;
@@ -330,6 +348,7 @@ void onSignal(int number, siginfo_t* info, void* raw) {
     }
     context.borrowed = 0;
     mine->signal = number;
+    mine->faultAccess = number == SIGBUS ? missingPageAccess(user) : 0;
     mine->active.store(false, std::memory_order_relaxed);
     state.__x[0] = uint64_t(reason);
     state.__x[25] = reinterpret_cast<uint64_t>(&context);
@@ -394,6 +413,59 @@ void prepareThread(Running& running, uint64_t sliceNanos) {
 }
 
 } // namespace
+
+bool repairFilePage(uint64_t address, int access) noexcept {
+    if (!access) return false;
+    const bool write = access == 2;
+    // First what the mapping allows, which costs nothing to ask: nearly every fault that comes here is
+    // at an address the guest may not touch (a null pointer in a reserved range of gigabytes), and
+    // the question after this one looks at each page of the range.
+    vm_address_t start = vm_address_t(address);
+    vm_size_t size = 0;
+    vm_region_basic_info_data_64_t basic{};
+    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+    mach_port_t object = MACH_PORT_NULL;
+    if (vm_region_64(mach_task_self(), &start, &size, VM_REGION_BASIC_INFO_64, reinterpret_cast<vm_region_info_t>(&basic), &count,
+                     &object) != KERN_SUCCESS || start > address)
+        return false;
+    // The mapping allows the access, so it was the file that could not give the page.
+    const vm_prot_t needed = write ? VM_PROT_READ | VM_PROT_WRITE : VM_PROT_READ;
+    if ((basic.protection & needed) != needed) return false;
+    vm_region_extended_info_data_t region{};
+    count = VM_REGION_EXTENDED_INFO_COUNT;
+    start = vm_address_t(address);
+    if (vm_region_64(mach_task_self(), &start, &size, VM_REGION_EXTENDED_INFO, reinterpret_cast<vm_region_info_t>(&region), &count,
+                     &object) != KERN_SUCCESS || start > address || !region.external_pager)
+        return false;
+    const uint64_t page = address & ~uint64_t(vm_page_size - 1);
+    if (mmap(reinterpret_cast<void*>(page), vm_page_size, region.protection & (PROT_READ | PROT_WRITE),
+             MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0) == MAP_FAILED)
+        return false;
+    lastRepaired.store(page, std::memory_order_relaxed);
+    repairedPages.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
+uint64_t repairedFilePages(uint64_t* last) noexcept {
+    if (last) *last = lastRepaired.load(std::memory_order_relaxed);
+    return repairedPages.load(std::memory_order_relaxed);
+}
+
+void catchFileFaults() {
+    static std::once_flag once;
+    std::call_once(once, [] {
+        struct sigaction action{}, before{};
+        // Where translated code runs, the handler for its faults is the one that does this too.
+        if (sigaction(SIGBUS, nullptr, &before) == 0 && (before.sa_flags & SA_SIGINFO) && before.sa_sigaction) return;
+        action.sa_sigaction = [](int number, siginfo_t* info, void* raw) {
+            if (repairFilePage(reinterpret_cast<uint64_t>(info->si_addr), missingPageAccess(static_cast<ucontext_t*>(raw)))) return;
+            signal(number, SIG_DFL);
+        };
+        action.sa_flags = SA_SIGINFO | SA_ONSTACK;
+        sigfillset(&action.sa_mask);
+        sigaction(SIGBUS, &action, nullptr);
+    });
+}
 
 bool enabled() { return !registry().modules.empty(); }
 
@@ -606,6 +678,7 @@ Result enter(Running& running) {
     Result result;
     result.reason = reason;
     result.signal = running.signal;
+    result.faultAccess = running.faultAccess;
     result.pc = running.context.pc;
     result.faultPc = running.context.faultPc;
     result.faultAddress = running.context.faultAddress;
@@ -691,6 +764,13 @@ Exit settle(Machine& machine, const Result& result) {
             ++counters.backed;
             return Exit::retry;
         }
+        // Guest code touched a page of a mapped file that the file no longer has (below).
+        // Asked only of memory the guest has: the checks that ART leaves to a fault at a null pointer
+        // come this way by the thousand.
+        if (result.signal == SIGBUS && result.faultAccess && space.guestAddress(result.faultAddress, address) &&
+            address >= 0x10000 && address < GuestSpace::size && space.mapped(address) && space.backed(address) &&
+            repairFilePage(result.faultAddress, result.faultAccess))
+            return Exit::retry;
         ++counters.faults;
         ++counters.faultsBySignal[result.signal & 31];
         {

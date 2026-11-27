@@ -34,8 +34,7 @@ times=() memories=()
 for start in 1 2 3 4 5 6; do
     # A rest between starts, with the app ended: an iPhone 14 gets warm after four starts in a row.
     if (( start > 1 )); then
-        pid=$(xcrun devicectl device info processes --device $device 2>/dev/null | grep -i 'nestvane' | awk '{print $1}' | head -1)
-        [[ -n "$pid" ]] && xcrun devicectl device process terminate --device $device --pid $pid > /dev/null 2>&1
+        ${0:A:h}/end-app.sh $device $bundle
         sleep 60
     fi
     xcrun devicectl device process launch --device $device --terminate-existing \

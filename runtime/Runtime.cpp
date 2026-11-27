@@ -817,6 +817,7 @@ void SharedBuffer::attach(std::string path, size_t size) {
     file = std::move(path);
     length = size;
     reserved = hostPages(size);
+    hostInode = 0;
     ++moves;
 }
 
@@ -863,6 +864,7 @@ bool SharedBuffer::makeExact(std::string path, uint64_t contentSize) {
     reserved = hostPages(held);
     file = std::move(path);
     exactFile = true;
+    hostInode = 0;
     ++moves;
     return true;
 }
@@ -879,6 +881,23 @@ bool SharedBuffer::unback() {
     mapping = static_cast<uint8_t*>(memory);
     file.clear();
     exactFile = false;
+    hostInode = 0;
+    ++moves;
+    return true;
+}
+
+bool SharedBuffer::forsake() {
+    if (file.empty()) return true;
+    void* memory = mmap(nullptr, std::max<size_t>(reserved, 1), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    if (memory == MAP_FAILED) return false;
+    if (mapping) {
+        std::memcpy(memory, mapping, length);
+        munmap(mapping, reserved);
+    }
+    mapping = static_cast<uint8_t*>(memory);
+    file.clear();
+    exactFile = false;
+    hostInode = 0;
     ++moves;
     return true;
 }
@@ -902,6 +921,7 @@ bool SharedBuffer::backWith(std::string path) {
     length = content;
     reserved = wanted;
     file = std::move(path);
+    hostInode = 0;
     ++moves;
     return true;
 }

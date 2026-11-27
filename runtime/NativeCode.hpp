@@ -77,7 +77,19 @@ struct Result {
     bool brief = false; // it left again within a fraction of a millisecond
     uint64_t interpreted = 0; // instructions a worker interpreted (offloadInterpreter)
     bool interpreter = false; // a run of the interpreter on a worker
+    int faultAccess = 0;      // of a SIGBUS for a page that is not there: 1 a read, 2 a write (repairFilePage)
 };
+// A fault at a page of a mapped host file that the mapping allows to be touched: the file could not
+// give the page, because it was cut short or replaced from outside the app while mapped (a file of
+// the shared storage, changed in the Files app). The page becomes zeros, in memory only, and the
+// access can be made again. `access` is 1 for a read and 2 for a write of a page that was not there,
+// 0 for any other fault, which is never repaired. False when the address is no such page. Safe in
+// a signal handler.
+bool repairFilePage(uint64_t address, int access) noexcept;
+// How many pages so far, and the host address of the last.
+uint64_t repairedFilePages(uint64_t* last = nullptr) noexcept;
+// Installs a handler that does this for the whole process, where the one of translated code is not there.
+void catchFileFaults();
 // Host threads that run guest threads' native code beside the main loop, which goes on with other
 // threads meanwhile.
 void startWorkers(unsigned count);

@@ -31,6 +31,12 @@ generated/validate-dns-proxy
 
 xcrun clang++ -O2 -std=c++20 -Wall -Wextra -Werror -Iruntime \
     runtime/GuestSpace.cpp tools/validate-guest-space.cpp -o generated/validate-guest-space
+
+# A mapped file cut short from outside: what it no longer has reads as zeros instead of ending the process.
+xcrun clang++ -O2 -std=c++20 -Wall -Wextra -Werror -Iruntime \
+    runtime/Runtime.cpp runtime/GuestSpace.cpp runtime/NativeCode.cpp runtime/NativeEntry.S runtime/NoNativeCode.cpp runtime/AArch64.cpp runtime/FastPath.cpp \
+    tools/no-aot.cpp tools/validate-file-fault.cpp -o generated/validate-file-fault
+generated/validate-file-fault
 generated/validate-guest-space
 
 # The rewriter, on instructions that name x25-x28 as ordinary registers: each run as written and as

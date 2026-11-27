@@ -940,6 +940,10 @@ private:
     // The host path of a guest path in the shared storage, or nothing.
     std::string sharedHost(std::string_view backing) const;
     void sharedFileCreated(const std::string& backing, WritableFile& file);
+    // A file of the shared storage is as long on the host as the guest knows it to be, unless it was
+    // written from outside the app (the Files app, in place). Looked at when the guest opens it: the
+    // guest's file then becomes what the host has.
+    void sharedFileOpened(const std::string& backing, WritableFile& file);
     void sharedFileRemoved(const std::string& backing);
     std::map<std::string, std::pair<int64_t, int64_t>, std::less<>> sharedListedTimes;
     std::chrono::steady_clock::time_point sharedScannedAt{};
