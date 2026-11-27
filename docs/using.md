@@ -47,6 +47,10 @@ Apps that use either camera interface work (Camera2, and since 1.14 the older Ca
 
 More → Settings has Nestvane's own settings: its version, where the shared files are, **120 Hz** on a ProMotion screen (smoother, uses more battery; it applies from the next start of Android), **Allow root** and the apps that asked for it, and **Check for updates**.
 
+On an iPad there is also **Tablet layout (experimental)**: Android then lays its screens out as on a tablet, with a taskbar, from the next time it starts. It is off at first. It was only tried at a tablet's size on an iPhone, not on an iPad; if Android does not show properly with it, turn it off here and start Android again.
+
+Android's own Settings show Wi-Fi and Bluetooth as off, and Bluetooth cannot be turned on: there is no such hardware inside Nestvane. Android is online all the same, over the iPhone's Wi-Fi or cellular connection.
+
 ## Root
 
 Root is off until you turn it on.

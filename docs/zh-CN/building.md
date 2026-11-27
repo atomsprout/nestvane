@@ -28,7 +28,7 @@
 
 在 Linux 机器上的 AOSP 源码树里进行。脚本在 [`experiments/aosp/`](../../experiments/aosp)。
 
-对源码树应用修改（共改动 23 个文件）：
+对源码树应用修改（共改动 29 个文件：23 个是为了保留寄存器和预先编译，6 个是 1.16 起对系统行为的改动，见下）：
 
 ```
 usage: patch.py <aosp root>      (safe to run again; every edit checks whether it is already applied)
@@ -54,12 +54,20 @@ usage: audit.py <tree> [--top N]
 
 补丁还改了构建配置，让启动镜像、system_server 和应用全部事先完整编译（`speed`）；因为没有 JIT，没编译到的方法就只能一直解释执行。
 
+1.16 起补丁还改了六个文件的行为：
+
+- `SystemServiceManager`：设了 `ro.nestvane.late_wifi` 时，Wi-Fi 的两个服务照常创建，但启动阶段和用户通知挪到开机完成之后。
+- Launcher3 的 `RotationHelper`：手机上桌面也跟着设备转。`TaskbarNavButtonController`：平板密度下第一次布局时的空指针。
+- goldfish 编解码服务的 H.264、HEVC 解码器：总是以字节取回画面（宿主不往颜色缓冲里画）；它和宿主共享的内存从 32 MiB 减到 16 MiB。
+
+只改了这些时重建很快：`build.sh <名字> -- droid Launcher3` 在 32 核的机器上 1–8 分钟。发布的根目录只换变了的文件：`system/framework/services.jar`、`system/framework/oat/arm64/` 下 system_server 各 jar 的编译代码（`services.jar` 一变它们都要换，因为记着类路径的校验和）、Launcher3QuickStep 的 APK 和编译代码、编解码服务的程序。
+
 ### 从零重建 AOSP 源码树
 
 AOSP 源码和构建产物只在构建机上有，别处没有保存，也不需要保存：它与原版 AOSP 的全部差别都来自本仓库。
 这一点在 2026 年 11 月 22 日核对过，为的是构建机可以不再保留：
 
-- 把 `patch.py` 改动的 23 个文件取原始版本，重新运行 `patch.py`，得到的文件与实际构建所用的源码树逐字节相同。`repo status` 显示各源码项目没有其他改动。
+- 把 `patch.py` 当时改动的 23 个文件取原始版本，重新运行 `patch.py`，得到的文件与实际构建所用的源码树逐字节相同。`repo status` 显示各源码项目没有其他改动。
 - 对 `clang-r584948b` 重新运行 `build-runtimes.sh`：源码树里装着的 15 个运行时库逐字节重现；5 个 UBSan 库代码相同，只有构建标识不同。
 - 构建机上的脚本就是 [`experiments/aosp/`](../../experiments/aosp) 里的这几个。
 

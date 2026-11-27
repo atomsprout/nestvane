@@ -41,6 +41,10 @@ iOS 设置 → 隐私与安全性 → 相机里 Nestvane 关着时，Android 的
 
 More → Settings 是 Nestvane 自己的设置：版本、共享文件在哪里、**120 Hz**（ProMotion 屏幕上才有，更流畅也更耗电，下次启动 Android 时生效）、**Allow root** 和请求过 root 的应用、**Check for updates**。
 
+iPad 上还有 **Tablet layout (experimental)**：打开后 Android 从下次启动起按平板的方式排版，带任务栏。默认关着。它只在 iPhone 上按平板的尺寸试过，还没有在 iPad 上试；如果打开后 Android 显示不正常，在这里关掉再重新启动 Android。
+
+Android 自己的设置里 Wi-Fi 和蓝牙显示为关着，蓝牙打不开：Nestvane 里没有这些硬件。Android 照样能上网，走的是 iPhone 的 Wi-Fi 或蜂窝。
+
 ## root
 
 root 默认关。

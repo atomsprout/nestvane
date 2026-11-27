@@ -28,7 +28,7 @@ There is no single command that performs the whole build, and no continuous inte
 
 On the Linux machine, in the AOSP checkout. The scripts are in [`experiments/aosp/`](../experiments/aosp).
 
-Apply the edits to the tree (23 files change):
+Apply the edits to the tree (29 files change: 23 for the reserved registers and compiling ahead of time, and 6 since 1.16 that change how the system behaves, listed below):
 
 ```
 usage: patch.py <aosp root>      (safe to run again; every edit checks whether it is already applied)
@@ -54,12 +54,20 @@ usage: audit.py <tree> [--top N]
 
 The patch also changes the build so that the boot image, the system server and the apps are compiled ahead of time in full (`speed`), because without a JIT a method that was not compiled would be interpreted for good.
 
+Since 1.16 the patch also changes how six files behave:
+
+- `SystemServiceManager`: where `ro.nestvane.late_wifi` is set, the two Wi-Fi services are created as usual, but go through the boot phases and are told of the user once the boot has completed.
+- Launcher3's `RotationHelper`: the home screen turns with the device on a phone too. `TaskbarNavButtonController`: a null pointer at the first layout at a tablet's density.
+- The H.264 and HEVC decoders of the goldfish codec service: they always take pictures as bytes (the host does not draw into colour buffers), and the memory the service shares with the host is 16 MiB instead of 32.
+
+A rebuild after changing only these is short: `build.sh <name> -- droid Launcher3` takes 1 to 8 minutes on the 32-core machine. Only the files that changed are replaced in the root that ships: `system/framework/services.jar`, the compiled code of every system server jar under `system/framework/oat/arm64/` (all of it changes with `services.jar`, because it records the class path's checksums), Launcher3QuickStep's APK and compiled code, and the codec service's program.
+
 ### Rebuilding the AOSP tree from nothing
 
 The AOSP checkout and its build output are not kept anywhere but on the build machine, and they do not need to be: everything that differs from stock AOSP comes from this repository.
 This was checked on 22 November 2026, so that the build machine can be given up:
 
-- `patch.py`, run on pristine copies of the 23 files it touches, gives exactly the files of the tree that was built. `repo status` shows no other change to any source project.
+- `patch.py`, run on pristine copies of the 23 files it touched then, gives exactly the files of the tree that was built. `repo status` shows no other change to any source project.
 - `build-runtimes.sh`, run again for `clang-r584948b`, reproduced the 15 runtime libraries installed in the tree byte for byte, and the five UBSan libraries with the same code and a different build ID.
 - The scripts on the machine were the ones in [`experiments/aosp/`](../experiments/aosp).
 
