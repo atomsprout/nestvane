@@ -8272,7 +8272,7 @@ bool ProbeLinux::futexPi(Machine& machine, uint64_t op, uint64_t address,
     using namespace std::chrono;
     constexpr uint32_t waiters = 0x80000000, ownerDied = 0x40000000, tidMask = 0x3fffffff;
     auto& x = machine.cpu.x;
-    const auto owner = value & tidMask;
+    uint32_t owner = value & tidMask;
     const bool unlock = op == 7;
     const bool tryLock = op == 8;
     const bool wallClock = op == 6 || (x[1] & 256);
@@ -8290,39 +8290,68 @@ bool ProbeLinux::futexPi(Machine& machine, uint64_t op, uint64_t address,
         timeout = fields[0] > (INT64_MAX - fields[1]) / 1'000'000'000
             ? nanoseconds::max() : nanoseconds(fields[0] * 1'000'000'000 + fields[1]);
     }
-    if (unlock ? owner != currentTid : owner == currentTid) {
-        x[0] = uint64_t(unlock ? -1 : -35);
-        return true;
+    // The word is changed by the guest's other threads too, without a call: its owner unlocks it on
+    // another core while this one decides. Reading it, deciding and writing it back overwrote such an
+    // unlock with the old value, which left the word naming an owner that no longer held the lock; that
+    // thread's next lock found itself the owner and was told of a deadlock (audioserver ended with
+    // "mutex lock failed: Resource deadlock would occur", and what played then had no sound). So the
+    // word is only changed from the value the decision was made on, and decided again when it is another.
+    const uint64_t wordAddress = x[0];
+    uint32_t* word = nullptr;
+    {
+        uint64_t start = 0, end = 0;
+        uint8_t* base = nullptr;
+        const uint64_t plain = machine.dataAddress(wordAddress);
+        if (machine.dataWindow(plain, true, start, end, base) && plain >= start && plain + sizeof(uint32_t) <= end)
+            word = reinterpret_cast<uint32_t*>(base + (plain - start));
     }
-    Thread* next = nullptr;
-    uint32_t nextOwner = 0;
-    for (auto& [tid, thread] : threads) {
-        if ((thread.wait != Wait::futexPi && thread.wait != Wait::futex) ||
-            thread.futexAddress != address || thread.futexBacking != backing ||
-            (!backing && thread.futexAddressSpace != current->process)) continue;
-        if (thread.wait == Wait::futex) { x[0] = invalid; return true; }
-        if (!next || thread.futexPiOrder < next->futexPiOrder) {
-            next = &thread;
-            nextOwner = uint32_t(tid);
+    // 1 when the word was changed from `expected`, 0 when it was another value by then, -1 for a fault.
+    const auto change = [&](uint32_t expected, uint32_t desired) {
+        if (word) return __atomic_compare_exchange_n(word, &expected, desired, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST) ? 1 : 0;
+        return writeGuest(machine, wordAddress, desired) ? 1 : -1;
+    };
+    for (int attempt = 0;; ++attempt) {
+        if (word && attempt) value = __atomic_load_n(word, __ATOMIC_SEQ_CST);
+        owner = value & tidMask;
+        if (unlock ? owner != currentTid : owner == currentTid) {
+            x[0] = uint64_t(unlock ? -1 : -35);
+            return true;
         }
-    }
-    if (unlock || !owner) {
-        const uint32_t replacement = unlock ? (next ? waiters | nextOwner : 0)
-                                            : (value & ownerDied) | uint32_t(currentTid);
-        if (!writeGuest(machine, x[0], replacement)) { x[0] = uint64_t(-14); return true; }
-        if (unlock && next) {
-            next->wait = Wait::none;
-            next->futexBacking.reset();
-            next->futexAddressSpace.reset();
-            next->deadline.reset();
-            next->realtimeWaitDeadline.reset();
-            next->saved.pc += 4;
-            next->saved.x[0] = 0;
+        Thread* next = nullptr;
+        uint32_t nextOwner = 0;
+        for (auto& [tid, thread] : threads) {
+            if ((thread.wait != Wait::futexPi && thread.wait != Wait::futex) ||
+                thread.futexAddress != address || thread.futexBacking != backing ||
+                (!backing && thread.futexAddressSpace != current->process)) continue;
+            if (thread.wait == Wait::futex) { x[0] = invalid; return true; }
+            if (!next || thread.futexPiOrder < next->futexPiOrder) {
+                next = &thread;
+                nextOwner = uint32_t(tid);
+            }
         }
-        x[0] = 0;
-        return true;
+        if (unlock || !owner) {
+            const uint32_t replacement = unlock ? (next ? waiters | nextOwner : 0)
+                                                : (value & ownerDied) | uint32_t(currentTid);
+            const int changed = change(value, replacement);
+            if (changed < 0) { x[0] = uint64_t(-14); return true; }
+            if (!changed && attempt < 64) continue;
+            if (!changed) { x[0] = uint64_t(-11); return true; }
+            if (unlock && next) {
+                next->wait = Wait::none;
+                next->futexBacking.reset();
+                next->futexAddressSpace.reset();
+                next->deadline.reset();
+                next->realtimeWaitDeadline.reset();
+                next->saved.pc += 4;
+                next->saved.x[0] = 0;
+            }
+            x[0] = 0;
+            return true;
+        }
+        const int changed = change(value, value | waiters);
+        if (changed < 0) { x[0] = uint64_t(-14); return true; }
+        if (changed || attempt >= 64) break;
     }
-    if (!writeGuest(machine, x[0], value | waiters)) { x[0] = uint64_t(-14); return true; }
     const auto task = threads.find(owner);
     if (task == threads.end() || task->second.wait == Wait::exited) {
         x[0] = uint64_t(-3);

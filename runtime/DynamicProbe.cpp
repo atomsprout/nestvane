@@ -1511,7 +1511,8 @@ service nestvane-trim /system/bin/sh /system/etc/nestvane/trim.sh
         }
         if (!databasePath.empty()) linux.mountData(databasePath);
         linux.holdSyncWhileStarting = true;
-        linux.timedSync = true;
+        // NESTVANE_NO_TIMED_SYNC=1 leaves the timed commit out, for comparing.
+        linux.timedSync = !std::getenv("NESTVANE_NO_TIMED_SYNC");
         linux.imageOpened = noteImageOpened;
         for (const auto& [path, file] : files) linux.mount(path, file.bytes());
         if (const auto bootconfig = files.find("/nestvane-metadata/bootconfig"); bootconfig != files.end()) {
