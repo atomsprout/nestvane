@@ -17,13 +17,19 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#include <dirent.h>
+#include <sys/stat.h>
 #include <cstring>
 #include <algorithm>
 #include <memory>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace nestvane::prefetch {
@@ -32,7 +38,33 @@ struct Image {
     std::string name;
     const uint8_t* text;
     uint64_t size;
+    std::string path = {};
 };
+
+// How far the reading has got, for the report of a start: pages asked for and read of the code and of
+// the system image's files, and when the last thread of each was done (milliseconds from when it
+// began, 0 while it is not).
+struct Progress {
+    std::atomic<uint64_t> codeWanted{0}, codeRead{0}, codeDoneAt{0}, codeThreads{0};
+    std::atomic<uint64_t> fileWanted{0}, fileRead{0}, fileDoneAt{0}, fileThreads{0};
+    std::atomic<uint64_t> lead{0};  // how long the reading had been going when Android's start began
+    std::chrono::steady_clock::time_point began = std::chrono::steady_clock::now();
+    uint64_t now() const {
+        return uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - began).count());
+    }
+};
+inline Progress progress;
+
+inline std::string status() {
+    char text[240];
+    std::snprintf(text, sizeof(text), "read ahead (begun %llu ms before): code %llu of %llu pages%s, files %llu of %llu pages%s",
+                  static_cast<unsigned long long>(progress.lead.load()),
+                  static_cast<unsigned long long>(progress.codeRead.load()), static_cast<unsigned long long>(progress.codeWanted.load()),
+                  progress.codeDoneAt ? (" (done at " + std::to_string(progress.codeDoneAt.load()) + " ms)").c_str() : "",
+                  static_cast<unsigned long long>(progress.fileRead.load()), static_cast<unsigned long long>(progress.fileWanted.load()),
+                  progress.fileDoneAt ? (" (done at " + std::to_string(progress.fileDoneAt.load()) + " ms)").c_str() : "");
+    return text;
+}
 
 inline std::vector<Image> images() {
     std::vector<Image> found;
@@ -43,63 +75,133 @@ inline std::vector<Image> images() {
         unsigned long size = 0;
         const auto* header = reinterpret_cast<const mach_header_64*>(_dyld_get_image_header(index));
         const uint8_t* text = getsegmentdata(header, "__TEXT", &size);
-        if (text && size) found.push_back({name + 1, text, size});
+        if (text && size) found.push_back({name + 1, text, size, path});
     }
     return found;
 }
 
-// The list is, for each image: its name and a newline, the size of its code, the number of pages, and
-// one byte a page, 1 for a page that was in memory.
-inline void record(const std::string& path) {
+// How many threads read: NESTVANE_PREFETCH_THREADS=<code>,<files> for trying other numbers.
+inline unsigned threadCount(unsigned which, unsigned fallback) {
+    const char* text = std::getenv("NESTVANE_PREFETCH_THREADS");
+    if (!text) return fallback;
+    unsigned code = 0, files = 0;
+    if (std::sscanf(text, "%u,%u", &code, &files) != 2) return fallback;
+    const unsigned asked = which ? files : code;
+    return asked >= 1 && asked <= 64 ? asked : fallback;
+}
+
+// The list of the code's pages: "NVPF2", the images (name, newline, size of the code), then the pages
+// that were in memory, each as image and page number, in the order a start comes to them.
+// |order| is the translated code in the order the start first looked it up (native::tablePlanCode):
+// a page takes its place from the first stretch that touches it, and a page that no stretch touches
+// (code reached without a look-up) goes with the nearest page of its image that one does.
+// NESTVANE_PREFETCH_UNORDERED=1 at the next start reads the same pages in the order of their
+// addresses, as before 1.24, for comparing.
+inline void record(const std::string& path, const std::vector<std::pair<uint64_t, uint64_t>>& order = {}) {
     const uint64_t page = uint64_t(getpagesize());
+    const auto loaded = images();
+    constexpr uint32_t none = UINT32_MAX;
+    std::vector<std::vector<char>> present(loaded.size());
+    std::vector<std::vector<uint32_t>> place(loaded.size());
+    for (size_t index = 0; index < loaded.size(); ++index) {
+        const uint64_t pages = (loaded[index].size + page - 1) / page;
+        present[index].resize(pages);
+        if (mincore(loaded[index].text, loaded[index].size, present[index].data()) != 0) return;
+        for (auto& byte : present[index]) byte = byte & 1;  // MINCORE_INCORE
+        place[index].assign(pages, none);
+    }
+    uint32_t next = 0;
+    for (const auto& [from, to] : order) {
+        for (size_t index = 0; index < loaded.size(); ++index) {
+            const uint64_t text = reinterpret_cast<uint64_t>(loaded[index].text);
+            if (from < text || from >= text + loaded[index].size || to <= from) continue;
+            for (uint64_t at = (from - text) / page; at <= (std::min(to, text + loaded[index].size) - 1 - text) / page; ++at)
+                if (present[index][at] && place[index][at] == none) place[index][at] = next++;
+            break;
+        }
+    }
+    struct Entry { uint32_t place, image, page; };
+    std::vector<Entry> entries;
+    for (size_t index = 0; index < loaded.size(); ++index) {
+        auto& places = place[index];
+        uint32_t last = none;
+        for (size_t at = 0; at < places.size(); ++at) {
+            if (places[at] != none) last = places[at];
+            else if (present[index][at]) places[at] = last;
+        }
+        last = next;  // before the image's first placed page: with that page; none placed: at the end
+        for (size_t at = places.size(); at-- > 0;) {
+            if (places[at] != none) last = places[at];
+            else if (present[index][at]) places[at] = last;
+        }
+        for (size_t at = 0; at < places.size(); ++at)
+            if (present[index][at]) entries.push_back({places[at], uint32_t(index), uint32_t(at)});
+    }
+    std::stable_sort(entries.begin(), entries.end(), [](const Entry& a, const Entry& b) { return a.place < b.place; });
     const std::string unfinished = path + ".new";
     FILE* file = std::fopen(unfinished.c_str(), "wb");
     if (!file) return;
-    bool complete = true;
-    for (const auto& image : images()) {
-        const uint64_t pages = (image.size + page - 1) / page;
-        std::vector<char> present(pages);
-        if (mincore(image.text, image.size, present.data()) != 0) { complete = false; break; }
-        for (auto& byte : present) byte = byte & 1;  // MINCORE_INCORE
+    std::fputs("NVPF2\n", file);
+    const uint64_t count = loaded.size(), total = entries.size();
+    std::fwrite(&count, sizeof(count), 1, file);
+    for (const auto& image : loaded) {
         std::fprintf(file, "%s\n", image.name.c_str());
         std::fwrite(&image.size, sizeof(image.size), 1, file);
-        std::fwrite(&pages, sizeof(pages), 1, file);
-        std::fwrite(present.data(), 1, pages, file);
     }
-    complete = std::fclose(file) == 0 && complete;
-    if (complete) std::rename(unfinished.c_str(), path.c_str());
+    std::fwrite(&total, sizeof(total), 1, file);
+    for (const auto& entry : entries) {
+        const uint32_t pair[2] = {entry.image, entry.page};
+        std::fwrite(pair, sizeof(pair), 1, file);
+    }
+    if (std::fclose(file) == 0) std::rename(unfinished.c_str(), path.c_str());
     else std::remove(unfinished.c_str());
 }
 
-// Returns how many pages are being read in.
-inline size_t start(const std::string& path, unsigned threads = 4) {
+// Returns how many pages are being read in. The threads go through the list together, each taking
+// every so-many-th page, so that what the start needs first is read first.
+inline size_t start(const std::string& path, unsigned threads = threadCount(0, 4)) {
     FILE* file = std::fopen(path.c_str(), "rb");
     if (!file) return 0;
     const uint64_t page = uint64_t(getpagesize());
     const auto loaded = images();
     auto wanted = std::make_shared<std::vector<const uint8_t*>>();
     char name[256];
-    while (std::fgets(name, sizeof(name), file)) {
+    uint64_t count = 0, total = 0;
+    // A list of an earlier version, or of another build's code, is not used: this start writes a new one.
+    bool valid = std::fgets(name, sizeof(name), file) && !std::strcmp(name, "NVPF2\n") &&
+                 std::fread(&count, sizeof(count), 1, file) == 1 && count == loaded.size();
+    std::vector<const Image*> listed;
+    for (uint64_t index = 0; valid && index < count; ++index) {
+        uint64_t size = 0;
+        valid = std::fgets(name, sizeof(name), file) && std::fread(&size, sizeof(size), 1, file) == 1;
+        if (!valid) break;
         name[std::strcspn(name, "\n")] = 0;
-        uint64_t size = 0, pages = 0;
-        if (std::fread(&size, sizeof(size), 1, file) != 1 || std::fread(&pages, sizeof(pages), 1, file) != 1 ||
-            pages > (uint64_t{1} << 24)) break;
-        std::vector<char> present(pages);
-        if (std::fread(present.data(), 1, pages, file) != pages) break;
-        for (const auto& image : loaded) {
-            // The same name with another size is another build's code: its pages mean nothing here.
-            if (image.name != name || image.size != size) continue;
-            for (uint64_t index = 0; index < pages; ++index)
-                if (present[index]) wanted->push_back(image.text + index * page);
-        }
+        const auto image = std::find_if(loaded.begin(), loaded.end(), [&](const Image& each) { return each.name == name && each.size == size; });
+        valid = image != loaded.end();
+        if (valid) listed.push_back(&*image);
+    }
+    valid = valid && std::fread(&total, sizeof(total), 1, file) == 1 && total <= (uint64_t{1} << 24);
+    for (uint64_t index = 0; valid && index < total; ++index) {
+        uint32_t pair[2];
+        if (std::fread(pair, sizeof(pair), 1, file) != 1) break;
+        if (pair[0] < listed.size() && uint64_t{pair[1]} * page < listed[pair[0]]->size)
+            wanted->push_back(listed[pair[0]]->text + uint64_t{pair[1]} * page);
     }
     std::fclose(file);
+    if (std::getenv("NESTVANE_PREFETCH_UNORDERED")) std::sort(wanted->begin(), wanted->end());
+    progress.codeWanted = wanted->size();
+    progress.codeThreads = wanted->empty() ? 0 : threads;
     for (unsigned thread = 0; thread < threads && !wanted->empty(); ++thread) {
         std::thread([wanted, thread, threads] {
-            const size_t from = wanted->size() * thread / threads, to = wanted->size() * (thread + 1) / threads;
             unsigned sum = 0;
-            for (size_t index = from; index < to; ++index) sum += *static_cast<const volatile uint8_t*>((*wanted)[index]);
+            size_t read = 0;
+            for (size_t index = thread; index < wanted->size(); index += threads) {
+                sum += *static_cast<const volatile uint8_t*>((*wanted)[index]);
+                if (++read % 64 == 0) progress.codeRead += 64;
+            }
             (void)sum;
+            progress.codeRead += read % 64;
+            if (--progress.codeThreads == 0) progress.codeDoneAt = std::max<uint64_t>(progress.now(), 1);
         }).detach();
     }
     return wanted->size();
@@ -109,9 +211,10 @@ inline size_t start(const std::string& path, unsigned threads = 4) {
 // (visitMappedImageFiles). Paths are kept from |root| on, which moves when the app is installed anew.
 inline void recordFiles(const std::string& path, const std::string& root) {
     const uint64_t page = uint64_t(getpagesize());
-    const std::string unfinished = path + ".new";
-    FILE* file = std::fopen(unfinished.c_str(), "wb");
-    if (!file) return;
+    // In the order Android first opened them (MappedImageFile::order); those it never opened, which the
+    // runtime itself reads as it sets up, come first.
+    struct Listed { uint32_t order; std::string name; uint64_t size; std::vector<char> present; };
+    std::vector<Listed> listed;
     visitMappedImageFiles([&](const MappedImageFile& mapped) {
         if (mapped.path.compare(0, root.size(), root) != 0 || mapped.size < page) return;
         const uint64_t size = mapped.size, pages = (size + page - 1) / page;
@@ -120,17 +223,25 @@ inline void recordFiles(const std::string& path, const std::string& root) {
         uint64_t count = 0;
         for (auto& byte : present) count += (byte = byte & 1);
         if (!count) return;
-        std::fprintf(file, "%s\n", mapped.path.c_str() + root.size());
-        std::fwrite(&size, sizeof(size), 1, file);
-        std::fwrite(&pages, sizeof(pages), 1, file);
-        std::fwrite(present.data(), 1, pages, file);
+        listed.push_back({mapped.order, mapped.path.substr(root.size()), size, std::move(present)});
     });
+    std::stable_sort(listed.begin(), listed.end(), [](const Listed& a, const Listed& b) { return a.order < b.order; });
+    const std::string unfinished = path + ".new";
+    FILE* file = std::fopen(unfinished.c_str(), "wb");
+    if (!file) return;
+    for (const auto& each : listed) {
+        const uint64_t pages = each.present.size();
+        std::fprintf(file, "%s\n", each.name.c_str());
+        std::fwrite(&each.size, sizeof(each.size), 1, file);
+        std::fwrite(&pages, sizeof(pages), 1, file);
+        std::fwrite(each.present.data(), 1, pages, file);
+    }
     if (std::fclose(file) == 0) std::rename(unfinished.c_str(), path.c_str());
     else std::remove(unfinished.c_str());
 }
 
 // Reads the listed pages of the files, so that they are in memory when Android maps them.
-inline size_t startFiles(const std::string& path, const std::string& root, unsigned threads = 3) {
+inline size_t startFiles(const std::string& path, const std::string& root, unsigned threads = threadCount(1, 3)) {
     FILE* file = std::fopen(path.c_str(), "rb");
     if (!file) return 0;
     struct Run { std::string path; uint64_t from, length; };
@@ -155,13 +266,17 @@ inline size_t startFiles(const std::string& path, const std::string& root, unsig
         }
     }
     std::fclose(file);
+    if (std::getenv("NESTVANE_PREFETCH_UNORDERED"))
+        std::stable_sort(runs->begin(), runs->end(), [](const Run& a, const Run& b) { return a.path < b.path; });
+    progress.fileWanted += total;
+    progress.fileThreads += runs->empty() ? 0 : threads;
     for (unsigned thread = 0; thread < threads && !runs->empty(); ++thread) {
-        std::thread([runs, thread, threads] {
+        std::thread([runs, thread, threads, page] {
             std::vector<char> scratch(64 * 16384);
-            const size_t from = runs->size() * thread / threads, to = runs->size() * (thread + 1) / threads;
             std::string open;
             int fd = -1;
-            for (size_t index = from; index < to; ++index) {
+            // Every so-many-th stretch, as with the code: the files Android opens first are read first.
+            for (size_t index = thread; index < runs->size(); index += threads) {
                 const auto& run = (*runs)[index];
                 if (run.path != open) {
                     if (fd >= 0) ::close(fd);
@@ -169,11 +284,96 @@ inline size_t startFiles(const std::string& path, const std::string& root, unsig
                     open = run.path;
                 }
                 if (fd >= 0) (void)::pread(fd, scratch.data(), std::min<uint64_t>(run.length, scratch.size()), off_t(run.from));
+                progress.fileRead += run.length / page;
             }
             if (fd >= 0) ::close(fd);
+            if (--progress.fileThreads == 0) progress.fileDoneAt = std::max<uint64_t>(progress.now(), 1);
         }).detach();
     }
     return total;
+}
+
+// The same for a directory of files that are not of the system image: Android's own large files (apps'
+// packages and compiled code), which the runtime keeps as files beside its database. Which of their
+// pages are in the system's memory is asked through a mapping made for the question.
+inline void recordDirectory(const std::string& path, const std::string& directory) {
+    const uint64_t page = uint64_t(getpagesize());
+    const std::string unfinished = path + ".new";
+    FILE* file = std::fopen(unfinished.c_str(), "wb");
+    if (!file) return;
+    if (DIR* listing = opendir(directory.c_str())) {
+        while (const dirent* entry = readdir(listing)) {
+            const std::string name = entry->d_name, full = directory + "/" + name;
+            struct stat status{};
+            if (name[0] == '.' || lstat(full.c_str(), &status) != 0 || !S_ISREG(status.st_mode) || uint64_t(status.st_size) < page) continue;
+            const int fd = ::open(full.c_str(), O_RDONLY | O_CLOEXEC);
+            if (fd < 0) continue;
+            const uint64_t size = uint64_t(status.st_size), pages = (size + page - 1) / page;
+            void* mapped = mmap(nullptr, size, PROT_READ, MAP_SHARED, fd, 0);
+            ::close(fd);
+            if (mapped == MAP_FAILED) continue;
+            std::vector<char> present(pages);
+            uint64_t count = 0;
+            if (mincore(mapped, size, present.data()) == 0)
+                for (auto& byte : present) count += (byte = byte & 1);
+            munmap(mapped, size);
+            if (!count) continue;
+            std::fprintf(file, "/%s\n", name.c_str());
+            std::fwrite(&size, sizeof(size), 1, file);
+            std::fwrite(&pages, sizeof(pages), 1, file);
+            std::fwrite(present.data(), 1, pages, file);
+        }
+        closedir(listing);
+    }
+    if (std::fclose(file) == 0) std::rename(unfinished.c_str(), path.c_str());
+    else std::remove(unfinished.c_str());
+}
+
+// Reads a whole file through, in large pieces, on a thread of its own: the database of Android's
+// data, which the start reads all of before anything else.
+inline void startWhole(const std::string& path) {
+    std::thread([path] {
+        const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+        if (fd < 0) return;
+        std::vector<char> scratch(1 << 20);
+        while (::read(fd, scratch.data(), scratch.size()) > 0) {}
+        ::close(fd);
+    }).detach();
+}
+
+// For measuring a start that finds nothing in memory, without restarting the device: asks the system
+// to let go of the pages it holds of the translated code and of every file under |roots|. What it
+// does let go of shows in the pages the start then reads from storage. Returns the files asked about.
+inline size_t dropForTest(const std::vector<std::string>& roots) {
+    for (const auto& image : images()) msync(const_cast<uint8_t*>(image.text), image.size, MS_INVALIDATE);
+    size_t files = 0;
+    std::vector<std::string> pending = roots;
+    while (!pending.empty()) {
+        const std::string directory = std::move(pending.back());
+        pending.pop_back();
+        DIR* listing = opendir(directory.c_str());
+        if (!listing) continue;
+        while (const dirent* entry = readdir(listing)) {
+            const std::string name = entry->d_name;
+            if (name == "." || name == "..") continue;
+            const std::string path = directory + "/" + name;
+            struct stat status{};
+            if (lstat(path.c_str(), &status) != 0) continue;
+            if (S_ISDIR(status.st_mode)) { pending.push_back(path); continue; }
+            if (!S_ISREG(status.st_mode) || status.st_size <= 0) continue;
+            const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+            if (fd < 0) continue;
+            void* mapped = mmap(nullptr, size_t(status.st_size), PROT_READ, MAP_SHARED, fd, 0);
+            if (mapped != MAP_FAILED) {
+                msync(mapped, size_t(status.st_size), MS_INVALIDATE);
+                munmap(mapped, size_t(status.st_size));
+                ++files;
+            }
+            ::close(fd);
+        }
+        closedir(listing);
+    }
+    return files;
 }
 
 } // namespace nestvane::prefetch

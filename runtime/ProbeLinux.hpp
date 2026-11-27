@@ -271,8 +271,17 @@ struct ProbeLinux {
     // Apps the user installed do not run until the home screen is shown (the starter clears this) or
     // half a minute has passed. NESTVANE_HOLD_APPS=0 turns it off.
     std::atomic_bool appsHeld{!std::getenv("NESTVANE_HOLD_APPS") || std::string_view(std::getenv("NESTVANE_HOLD_APPS")) != "0"};
+    // Told of each file of the system image that the guest opens, by where its bytes are: which files a
+    // start comes to first is what they are read in ahead by (ios/CodePrefetch.hpp).
+    void (*imageOpened)(const uint8_t* data) = nullptr;
     // Set for a start of Android: fsync is then left to the first commit after the home screen is up.
     bool holdSyncWhileStarting = false;
+    // Set for a start of Android: what was written to the data volume is committed within some seconds
+    // even when nothing asks with fsync, at a moment when no thread can run (ten seconds after the last
+    // commit) or at the latest half a minute after it. Without it, what an app wrote and did not fsync
+    // was lost when iOS ended Nestvane in the background.
+    bool timedSync = false;
+    mutable bool dataUnsaved = false;
     struct AllocationKnown { uint64_t bytes = 0; std::chrono::steady_clock::time_point at{}; bool valid = false; };
     mutable AllocationKnown allocationKnown[2];  // of the files that are not kept, and of those that are (resize)
     std::chrono::steady_clock::time_point appsHeldUntil = std::chrono::steady_clock::now() + std::chrono::seconds(30);
@@ -976,6 +985,7 @@ private:
     // An app the person installed, which waits while Android starts (appsHeld).
     bool heldApp(const Thread& thread) const;
     bool appsHeldNow() const;
+    void notePipeOddity(const std::string& what) const;
     // How many files and directories the guest's data may hold. With some thirty apps installed the
     // earlier limits (4096 files, 2048 directories) were reached, and Android could start no new app:
     // zygote could not make the app's profile directory and aborted.

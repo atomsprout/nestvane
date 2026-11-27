@@ -21,6 +21,8 @@ struct MappedImageFile {
     std::string path;
     const uint8_t* data;
     size_t size;
+    // Which file Android opened first is 1, and so on; 0 for a file it has not opened.
+    uint32_t order = 0;
 };
 void visitMappedImageFiles(const std::function<void(const MappedImageFile&)>& visit);
 

@@ -61,6 +61,16 @@ void describeCall(std::ostream& report, const CPU& cpu, uint64_t number) {
 std::mutex mappedImageLock;
 std::map<const uint8_t*, MappedImageFile> mappedImages;
 
+// Android opened the image file that has `data` in it: the first time is noted, in order.
+void noteImageOpened(const uint8_t* data) {
+    static uint32_t opened = 0;
+    const std::lock_guard guard(mappedImageLock);
+    auto file = mappedImages.upper_bound(data);
+    if (file == mappedImages.begin()) return;
+    --file;
+    if (data < file->second.data + file->second.size && !file->second.order) file->second.order = ++opened;
+}
+
 class ReadOnlyImageFile {
 public:
     ReadOnlyImageFile(const std::filesystem::path& path, size_t bytes) : size(bytes) {
@@ -72,7 +82,7 @@ public:
         if (mapped == MAP_FAILED) throw std::runtime_error("cannot map " + path.string());
         data = static_cast<const uint8_t*>(mapped);
         const std::lock_guard guard(mappedImageLock);
-        mappedImages[data] = {path.string(), data, size};
+        mappedImages[data] = {path.string(), data, size, 0};
     }
     ReadOnlyImageFile(ReadOnlyImageFile&& other) noexcept
         : data(std::exchange(other.data, nullptr)), size(other.size) {}
@@ -1489,6 +1499,8 @@ service nestvane-trim /system/bin/sh /system/etc/nestvane/trim.sh
         }
         if (!databasePath.empty()) linux.mountData(databasePath);
         linux.holdSyncWhileStarting = true;
+        linux.timedSync = true;
+        linux.imageOpened = noteImageOpened;
         for (const auto& [path, file] : files) linux.mount(path, file.bytes());
         if (const auto bootconfig = files.find("/nestvane-metadata/bootconfig"); bootconfig != files.end()) {
             static std::string configuration;

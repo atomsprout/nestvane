@@ -762,6 +762,7 @@ uint64_t ProbeLinux::binderWriteRead(Machine& machine, const Descriptor& fd) {
         fileNumbers.push_back(number);
     }
     if (fileNumbers.size() != next.files.size()) {
+        notePipeOddity("Binder: no descriptor numbers for " + std::to_string(next.files.size()) + " passed files");
         if (next.reply) {
             if (const auto caller = next.reply->connection.lock()) {
                 BinderPacket failed{brFailedReply};

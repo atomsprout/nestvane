@@ -20,6 +20,8 @@
 #include "IOSVideoDecoder.hpp"
 #include "Validation.hpp"
 
+static void StartReadAhead();
+
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -2089,10 +2091,10 @@ static bool ApkContent(NSData* data) {
             NSString* front = appState == UIApplicationStateActive ? @"" :
                 appState == UIApplicationStateInactive ? @" | app not active" : @" | app in the background";
             if (!UIApplication.sharedApplication.protectedDataAvailable) front = [front stringByAppendingString:@" | device locked"];
-            NSString* report = [NSString stringWithFormat:@"%@ %@ | process %d | thermal %@ → %@%@%@ | pages read from storage %ld, faults %ld\n%@",
+            NSString* report = [NSString stringWithFormat:@"%@ %@ | process %d | thermal %@ → %@%@%@ | pages read from storage %ld, faults %ld | %s\n%@",
                 platform, UIDevice.currentDevice.systemVersion, NSProcessInfo.processInfo.processIdentifier,
                 before, ThermalState(), NSProcessInfo.processInfo.lowPowerModeEnabled ? @" | low power mode" : @"", front,
-                pageIns, long(events.faults), [NSString stringWithUTF8String:output.c_str()]];
+                pageIns, long(events.faults), nestvane::prefetch::status().c_str(), [NSString stringWithUTF8String:output.c_str()]];
             NSError* error = nil;
             if (![report writeToURL:destination atomically:YES encoding:NSUTF8StringEncoding error:&error])
                 NSLog(@"Unable to export report: %@", error);
@@ -2118,6 +2120,8 @@ static bool ApkContent(NSData* data) {
             const BOOL ready = [manager createDirectoryAtURL:guest withIntermediateDirectories:YES
                                                   attributes:nil error:&directoryError];
             NSURL* database = [guest URLByAppendingPathComponent:@"guest-data.sqlite3"];
+            // Where the runtime keeps Android's large files, beside the database.
+            const std::string dataFiles = std::string(database.fileSystemRepresentation) + ".files";
             // Android's shared storage is a folder the Files app shows: On My iPhone > Nestvane > Android.
             setenv("NESTVANE_SHARED_STORAGE", [documents URLByAppendingPathComponent:@"Android"].fileSystemRepresentation, 1);
             // One request through the system's own loader, to Apple's connectivity check: on phones where
@@ -2279,11 +2283,14 @@ static bool ApkContent(NSData* data) {
                     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
                         NSString* list = [NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject
                             stringByAppendingPathComponent:@"boot-code-pages"];
-                        nestvane::prefetch::record(list.fileSystemRepresentation);
-                        // And which pages of the table of translated code it made (NativeCode.hpp).
+                        // Which pages of the table of translated code it made (NativeCode.hpp), and in that
+                        // order the code they point into.
                         nestvane::native::recordTablePlan([list stringByAppendingString:@"-table"].fileSystemRepresentation);
+                        nestvane::prefetch::record(list.fileSystemRepresentation, nestvane::native::tablePlanCode());
                         nestvane::prefetch::recordFiles([list stringByAppendingString:@"-files"].fileSystemRepresentation,
                                                         NSBundle.mainBundle.resourcePath.fileSystemRepresentation);
+                        nestvane::prefetch::recordDirectory([list stringByAppendingString:@"-data"].fileSystemRepresentation,
+                                                            dataFiles);
                     });
                     // NESTVANE_TEST_TEXT="<sender>|<text>" hands Android a text message, as the menu does,
                     // ten seconds after the launcher is displayed.
@@ -2505,13 +2512,10 @@ static bool ApkContent(NSData* data) {
                 // (ios/CodePrefetch.hpp). NESTVANE_NO_PREFETCH=1 leaves it out, for comparing.
                 NSString* prefetchList = [NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject
                     stringByAppendingPathComponent:@"boot-code-pages"];
-                if (!getenv("NESTVANE_NO_PREFETCH")) {
-                    const std::string imageRoot = NSBundle.mainBundle.resourcePath.fileSystemRepresentation;
-                    const size_t pages = nestvane::prefetch::start(prefetchList.fileSystemRepresentation);
-                    const size_t filePages = nestvane::prefetch::startFiles(
-                        [prefetchList stringByAppendingString:@"-files"].fileSystemRepresentation, imageRoot);
-                    NSLog(@"reading in %zu code pages and %zu pages of the system image", pages, filePages);
-                }
+                // What the last start read is read in again on other threads (StartReadAhead, which main()
+                // has called already: this is for a start of Android that is not the process's first).
+                StartReadAhead();
+                if (!nestvane::prefetch::progress.lead) nestvane::prefetch::progress.lead = std::max<uint64_t>(nestvane::prefetch::progress.now(), 1);
                 // The pages of the table of translated code that the last start made, made again on a
                 // thread of their own ahead of need. NESTVANE_NO_TABLE_PLAN=1 leaves it out, for comparing.
                 if (!getenv("NESTVANE_NO_TABLE_PLAN")) {
@@ -2752,6 +2756,45 @@ static nestvane::ProbeLinux::HostVolume deviceVolume() {
     }
 }
 
+// Reads in on other threads what the last start of Android read from storage: the translated code and
+// the system image's files in the order that start came to them (ios/CodePrefetch.hpp), Android's own
+// data, and the renderer's libraries. Called first thing in main(), so that the reading has the time
+// the app takes to come up as a head start; once a process.
+// NESTVANE_NO_PREFETCH=1 leaves all of it out and NESTVANE_NO_DATA_PREFETCH=1 Android's data, for
+// comparing. NESTVANE_TEST_DROP_CACHE=1 first asks iOS to let go of what it holds of all these files,
+// to measure a start that finds nothing in memory without restarting the device.
+static void StartReadAhead() {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        @autoreleasepool {
+            NSFileManager* manager = NSFileManager.defaultManager;
+            NSString* list = [NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject
+                stringByAppendingPathComponent:@"boot-code-pages"];
+            NSURL* guest = [[manager URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask].firstObject
+                URLByAppendingPathComponent:@"Nestvane" isDirectory:YES];
+            const std::string database = [guest URLByAppendingPathComponent:@"guest-data.sqlite3"].fileSystemRepresentation;
+            if (getenv("NESTVANE_TEST_DROP_CACHE")) {
+                const size_t dropped = nestvane::prefetch::dropForTest(
+                    {NSBundle.mainBundle.bundlePath.fileSystemRepresentation, guest.fileSystemRepresentation});
+                NSLog(@"asked the system to drop %zu files", dropped);
+            }
+            if (getenv("NESTVANE_NO_PREFETCH")) return;
+            nestvane::prefetch::progress.began = std::chrono::steady_clock::now();
+            NSString* frameworks = NSBundle.mainBundle.privateFrameworksPath;
+            for (NSString* library in @[@"NestvaneGfxstream.framework/NestvaneGfxstream", @"libEGL.framework/libEGL",
+                                        @"libGLESv2.framework/libGLESv2"])
+                nestvane::prefetch::startWhole([frameworks stringByAppendingPathComponent:library].fileSystemRepresentation);
+            if (!getenv("NESTVANE_NO_DATA_PREFETCH")) nestvane::prefetch::startWhole(database);
+            const size_t pages = nestvane::prefetch::start(list.fileSystemRepresentation);
+            const size_t filePages = nestvane::prefetch::startFiles([list stringByAppendingString:@"-files"].fileSystemRepresentation,
+                                                                    NSBundle.mainBundle.resourcePath.fileSystemRepresentation);
+            if (!getenv("NESTVANE_NO_DATA_PREFETCH"))
+                nestvane::prefetch::startFiles([list stringByAppendingString:@"-data"].fileSystemRepresentation, database + ".files", 2);
+            NSLog(@"reading in %zu code pages and %zu pages of the system image", pages, filePages);
+        }
+    });
+}
+
 int main(int argc, char* argv[]) {
     // NESTVANE_ADDRESS_MAP=1: before Android starts, the limits iOS gave this process (memory, address
     // range) and how much address space can still be reserved, in 64 MiB pieces, given back at once.
@@ -2771,6 +2814,7 @@ int main(int argc, char* argv[]) {
         [[NSData dataWithBytes:report.data() length:report.size()]
             writeToURL:[documents URLByAppendingPathComponent:@"memory-limits.txt"] atomically:YES];
     }
+    StartReadAhead();
     nestvane::ProbeLinux::setHostVolumeSource(deviceVolume);
     // Android's codec service decodes H.264 and HEVC with the phone's decoders (NESTVANE_NO_HARDWARE_VIDEO
     // leaves them out: the service then finds no media device and stops, and Android decodes in software).

@@ -580,6 +580,8 @@ std::vector<uint32_t> madeOrder;
 bool recordingOrder = true;
 uint64_t madeAhead = 0;  // pages the thread of the plan made
 size_t planSize = 0;
+// The plan that is on disk now: the one this start began with, or the one it wrote.
+std::vector<uint32_t> savedOrder;
 
 // Makes the page of the table that has the entry for guest pc, if a module that is in use has code
 // there. The entries are written to the file first and the page is made readable after, so that
@@ -665,6 +667,10 @@ size_t startTablePlan(const std::string& path) {
     }
     planSize = plan.size();
     if (plan.empty()) return 0;
+    {
+        const std::lock_guard lock(tableLock);
+        savedOrder = plan;
+    }
     std::thread([plan = std::move(plan)]() mutable {
         pthread_setname_np("code table plan");
         auto& all = registry();
@@ -705,7 +711,40 @@ bool recordTablePlan(const std::string& path) {
     if (!file) return false;
     const uint64_t header[3] = {planMagic, planKey(), order.size()};
     const bool written = std::fwrite(header, 8, 3, file) == 3 && std::fwrite(order.data(), 4, order.size(), file) == order.size();
-    return (std::fclose(file) == 0) && written && std::rename(temporary.c_str(), path.c_str()) == 0;
+    if (std::fclose(file) != 0 || !written || std::rename(temporary.c_str(), path.c_str()) != 0) return false;
+    const std::lock_guard lock(tableLock);
+    savedOrder = std::move(order);
+    return true;
+}
+
+std::vector<std::pair<uint64_t, uint64_t>> tablePlanCode() {
+    auto& all = registry();
+    std::vector<uint32_t> order;
+    {
+        const std::lock_guard lock(tableLock);
+        order = savedOrder;
+    }
+    std::vector<std::pair<uint64_t, uint64_t>> code;
+    code.reserve(order.size());
+    for (const uint32_t entry : order) {
+        // As makePage finds the module and the instructions of the page.
+        const uint64_t pc = all.low + uint64_t{entry} * 4;
+        if (pc >= all.covered) continue;
+        const auto next = std::upper_bound(all.byGuest.begin(), all.byGuest.end(), pc, [&](uint64_t address, size_t index) {
+            return address < all.modules[index].module->info[0];
+        });
+        if (next == all.byGuest.begin()) continue;
+        const Loaded& loaded = all.modules[*std::prev(next)];
+        if (pc >= loaded.module->info[1]) continue;
+        const size_t page = (pc - all.low) * 2 / GuestSpace::page;
+        const uint64_t first = all.low + page * (GuestSpace::page / 2), base = loaded.module->info[0];
+        const uint64_t from = std::max(first, base), to = std::min(first + GuestSpace::page / 2, loaded.module->info[1]);
+        if (from >= to) continue;
+        const uint64_t begin = (from - base) / 4, last = (to - base) / 4 - 1;
+        code.emplace_back(loaded.codeStart + loaded.start(begin),
+                          loaded.codeStart + loaded.start(last) + uint64_t{loaded.lengths[last]} * 4);
+    }
+    return code;
 }
 
 bool activate(const Module& module) {

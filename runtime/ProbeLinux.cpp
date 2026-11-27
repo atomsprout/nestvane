@@ -1894,6 +1894,7 @@ void ProbeLinux::markFileModified(WritableFile& file) const {
     const auto nanoseconds = (time - seconds).count();
     file.times[2] = file.times[4] = seconds.count();
     file.times[3] = file.times[5] = nanoseconds;
+    if (file.persistent) dataUnsaved = true;
 }
 
 uint64_t ProbeLinux::writeFileBytes(WritableFile& file, uint64_t offset, std::span<const uint8_t> bytes) {
@@ -2248,6 +2249,7 @@ uint64_t ProbeLinux::open(const Machine& machine, const std::string& path, uint3
     if (!canAccessParent(pathname, false)) return uint64_t(-13);
     auto entry = find(pathname, flags, &machine);
     if (entry && entry->temporary && !sharedHostRoot.empty()) sharedFileOpened(pathname, *entry->temporary);
+    if (imageOpened && entry && !entry->bytes.empty()) imageOpened(entry->bytes.data());
     if ((flags & (create | exclusive)) == (create | exclusive) && entry) return uint64_t(-17);
     if (!entry && !(flags & create)) return uint64_t(-2);
     // Immutable image data is already memory backed, with no guest page cache to bypass.
@@ -5842,6 +5844,7 @@ bool ProbeLinux::fileCall(Machine& machine) {
             }
             if (fd.pipe) {
                 if (x[8] == 67) { x[0] = uint64_t(-29); break; }
+                if (x[2] && fd.pipe->data.empty() && fd.pipe->writer.expired() && !fd.pipe->writes) notePipeOddity("read end of file, nothing was ever written");
                 if (!x[2] || (fd.pipe->data.empty() && fd.pipe->writer.expired())) { x[0] = 0; break; }
                 if (fd.pipe->data.empty()) {
                     if (!(fd.effectiveFlags() & 0x800)) return waitForEvents();
@@ -6664,7 +6667,10 @@ uint64_t ProbeLinux::writeDescriptor(Machine& machine, const Descriptor& fd, uin
     }
     if (fd.pipe) {
         if (!size) return 0;
-        if (fd.pipe->reader.expired()) return uint64_t(-32);
+        if (fd.pipe->reader.expired()) {
+            notePipeOddity("write to a pipe nobody reads (EPIPE), " + std::to_string(size) + " bytes, " + std::to_string(fd.pipe->writes) + " writes before");
+            return uint64_t(-32);
+        }
         const auto space = fd.pipe->capacity - fd.pipe->data.size();
         if (!space || (size <= pageSize && size > space)) return uint64_t(-11);
         const auto count = std::min<uint64_t>(size, space);
@@ -6901,6 +6907,8 @@ bool ProbeLinux::switchThread(Machine& machine, std::chrono::steady_clock::time_
     if (!sharedHostRoot.empty() && !appsHeld.load(std::memory_order_relaxed) && now - sharedScannedAt > seconds(3)) {
         sharedScannedAt = now;
         rescanShared();
+        // And when there has been no such moment for half a minute, now.
+        if (timedSync && dataUnsaved && now - lastDataSync >= seconds(30)) syncDataSoon();
         // Pages of mapped files that the files could no longer give (NativeCode.hpp, repairFilePage).
         static uint64_t repairsTold = 0;
         uint64_t lastRepair = 0;
@@ -7064,6 +7072,8 @@ bool ProbeLinux::switchThread(Machine& machine, std::chrono::steady_clock::time_
     // Without a timer to wait for, there is still the end of a run on a worker.
     while (!runnable && (nextDeadline || native::outstanding()) && now < deadline && !stop.stop_requested()) {
         if (dataSyncPending && now - lastDataSync >= seconds(2)) syncDataSoon();
+        // Nothing can run now: the moment to commit what was written without an fsync (timedSync).
+        else if (timedSync && dataUnsaved && now - lastDataSync >= seconds(10)) syncDataSoon();
         auto wake = nextDeadline ? std::min(*nextDeadline, deadline) : deadline;
         if (stop.stop_possible()) wake = std::min(wake, now + milliseconds(100));
         if (native::outstanding()) wake = std::min(wake, now + milliseconds(20));
@@ -8512,6 +8522,20 @@ bool ProbeLinux::endCurrentProcess(uint32_t signal, std::string_view why) {
     return true;
 }
 
+// NESTVANE_TEST_PIPE_NOTES=1: lines about pipes that end oddly, for finding why a command's output is
+// now and then empty (a few hundred at most).
+void ProbeLinux::notePipeOddity(const std::string& what) const {
+    static const bool wanted = std::getenv("NESTVANE_TEST_PIPE_NOTES");
+    static unsigned told = 0;
+    if (!wanted || !androidLogObserver || told >= 400) return;
+    ++told;
+    std::string name;
+    if (const auto main = threads.find(current->process->id); main != threads.end())
+        name.assign(reinterpret_cast<const char*>(main->second.name.data()),
+                    strnlen(reinterpret_cast<const char*>(main->second.name.data()), main->second.name.size()));
+    androidLogObserver("Nestvane: pipe: " + what + ", pid " + std::to_string(current->process->id) + " " + name);
+}
+
 bool ProbeLinux::endCachedApp(int minimumAdjustment, std::string_view reason) {
     // Android's cached apps have 900 and above (ProcessList.CACHED_APP_MIN_ADJ); the higher, the less needed.
     Process* victim = nullptr;
@@ -8789,6 +8813,7 @@ bool ProbeLinux::syncDataSoon() {
         return true;
     }
     dataSyncPending = false;
+    dataUnsaved = false;
     const bool done = syncData();
     lastDataSync = std::chrono::steady_clock::now();
     return done;

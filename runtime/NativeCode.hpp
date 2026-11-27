@@ -4,6 +4,8 @@
 #include <functional>
 #include <span>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace nestvane {
 
@@ -87,6 +89,9 @@ struct Result {
 size_t startTablePlan(const std::string& path);
 // Writes the plan, once, when the home screen is up. False when it was not written.
 bool recordTablePlan(const std::string& path);
+// The translated code that the pages of the plan on disk point into, as host addresses [from, to), in
+// the plan's order: roughly the order in which a start comes to its code, for reading it in ahead.
+std::vector<std::pair<uint64_t, uint64_t>> tablePlanCode();
 // A fault at a page of a mapped host file that the mapping allows to be touched: the file could not
 // give the page, because it was cut short or replaced from outside the app while mapped (a file of
 // the shared storage, changed in the Files app). The page becomes zeros, in memory only, and the
