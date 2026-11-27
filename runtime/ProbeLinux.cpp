@@ -7252,10 +7252,13 @@ bool ProbeLinux::forkProcess(Machine& machine) {
         if (!endCachedAppForRoom()) return retry("guest address space (test)", 0);
     }
     // The megabytes parent and child can have as one piece of host memory (GuestSpace::fork): those
-    // every mapping in which is of a file, private and not writable. Code and read-only data of the
-    // system's libraries, the boot image's compiled code, fonts and packages are most of a process
-    // forked from zygote. Anonymous memory is left out even when it is not writable now: it may be
-    // made writable and become a thread's stack, and a stack pointer is a host address.
+    // every mapping in which is private and not writable. Code and read-only data of the system's
+    // libraries, the boot image's compiled code, fonts and packages are most of a process forked from
+    // zygote; since 1.23 so is anonymous memory that is not writable, which is mostly what the linker
+    // wrote once and then protected (each library's relocated data). It was left out at first because
+    // it may be made writable and become a thread's stack, and a stack pointer is a host address: but
+    // changing a mapping's protection gives the process its own memory first (makePrivate), before
+    // anything can run on it. NESTVANE_TEST_SHARE_FILES_ONLY=1 leaves anonymous memory out as 1.20 did.
     // NESTVANE_TEST_NO_SHARE=1 leaves all of it as before, for comparison.
     std::vector<bool> shareable;
     if (static const bool off = std::getenv("NESTVANE_TEST_NO_SHARE"); machine.space && !off) {
@@ -7264,7 +7267,8 @@ bool ProbeLinux::forkProcess(Machine& machine) {
         for (const auto& segment : machine.segments) {
             const uint64_t size = segment.mappedSize();
             if (!size || segment.address >= GuestSpace::size) continue;
-            const bool fits = !(segment.flags & 2) && !segment.anonymous && !segment.shared && !segment.initialStack &&
+            static const bool filesOnly = std::getenv("NESTVANE_TEST_SHARE_FILES_ONLY");
+            const bool fits = !(segment.flags & 2) && !(filesOnly && segment.anonymous) && !segment.shared && !segment.initialStack &&
                               !segment.omitOnFork && !segment.wipeOnFork;
             for (uint64_t chunk = segment.address >> GuestSpace::chunkShift;
                  chunk <= (segment.address + size - 1) >> GuestSpace::chunkShift && chunk < GuestSpace::chunks; ++chunk) {
