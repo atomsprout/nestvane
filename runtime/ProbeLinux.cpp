@@ -9184,6 +9184,31 @@ std::string ProbeLinux::memoryReport(const Machine& machine) const {
             out << " " << row.name << "(" << row.pid << "," << row.adjustment << "):" << row.bytes / MiB;
         out << "\n";
     }
+    // NESTVANE_MEMORY_DETAIL=all: for every process, the megabytes that have host memory and those with
+    // a page the process itself wrote.
+    if (const char* wanted = std::getenv("NESTVANE_MEMORY_DETAIL"); wanted && std::string_view(wanted) == "all") {
+        uint64_t allBacked = 0, allWritten = 0;
+        out << "  megabytes written of megabytes with host memory, by process:";
+        for (const auto& [id, process] : processes) {
+            const auto* space = process == current->process.get() ? machine.space.get() : process->space.get();
+            if (!space) continue;
+            uint64_t written = 0, backedAll = 0;
+            for (uint64_t chunk = 0; chunk < GuestSpace::chunks; ++chunk) {
+                if (!space->backed(chunk << GuestSpace::chunkShift)) continue;
+                ++backedAll;
+                if (space->usage(chunk << GuestSpace::chunkShift, GuestSpace::chunk).dirty) ++written;
+            }
+            std::string name;
+            if (const auto main = threads.find(id); main != threads.end())
+                name.assign(reinterpret_cast<const char*>(main->second.name.data()),
+                            strnlen(reinterpret_cast<const char*>(main->second.name.data()), main->second.name.size()));
+            out << " " << name << ":" << written << "/" << backedAll;
+            allBacked += backedAll;
+            allWritten += written;
+        }
+        out << "\n  in all " << allWritten << " of " << allBacked << " MiB\n";
+        return out.str();
+    }
     // NESTVANE_MEMORY_DETAIL=<part of a program's path>: the mappings of the first such process.
     if (const char* wanted = std::getenv("NESTVANE_MEMORY_DETAIL")) {
         for (const auto& [id, process] : processes) {
@@ -9222,6 +9247,15 @@ std::string ProbeLinux::memoryReport(const Machine& machine) const {
             }
             out << "      in all " << counted << " MiB: file " << file << ", anonymous " << anonymous << ", in mappings under 4 MiB " << small
                 << "; reserved " << space->reservedBytes() / MiB << " MiB in " << space->runCount() << " runs\n";
+            // How much of it this process has written to: megabytes with at least one page of its own.
+            // The rest is as its parent left it, and could be the parent's memory if megabytes were shared.
+            uint64_t written = 0, backedAll = 0;
+            for (uint64_t chunk = 0; chunk < GuestSpace::chunks; ++chunk) {
+                if (!space->backed(chunk << GuestSpace::chunkShift)) continue;
+                ++backedAll;
+                if (space->usage(chunk << GuestSpace::chunkShift, GuestSpace::chunk).dirty) ++written;
+            }
+            out << "      megabytes with a page this process wrote: " << written << " of " << backedAll << "\n";
             break;
         }
     }
