@@ -1229,8 +1229,14 @@ DynamicReport probeInit(const std::string& directory, const std::string& databas
     </Decoders>
 </MediaCodecs>
 )xml";
+            // NESTVANE_TEST_VIDEO_4K=1 lists them up to 3840x2160, for finding out why that stops the service.
+            static std::string listed(mediaCodecs);
+            if (std::getenv("NESTVANE_TEST_VIDEO_4K")) {
+                for (size_t at; (at = listed.find("max=\"1920x1088\"")) != std::string::npos;) listed.replace(at, 15, "max=\"3840x2160\"");
+                for (size_t at; (at = listed.find("24-489600")) != std::string::npos;) listed.replace(at, 9, "24-1036800");
+            }
             linux.mount("/vendor/etc/media_codecs.xml",
-                        {reinterpret_cast<const uint8_t*>(mediaCodecs.data()), mediaCodecs.size()});
+                        {reinterpret_cast<const uint8_t*>(listed.data()), listed.size()});
         }
         linux.setCamera(std::move(camera));
         linux.setGuestTouch(std::move(touch));

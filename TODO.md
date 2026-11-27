@@ -74,7 +74,8 @@
 - [x] 老接口 `NetworkInfo.getType()`：查了，已经是 Wi-Fi（1.11 起就是；`dumpsys connectivity` 的 `mLegacyTypeTracker` 里网络 100 在类型 1 下）。只有类型名还是 “Ethernet”，没有改
 - [x] 桌面跟着设备转（#5-19，改 Launcher3 的 `RotationHelper`）：iPhone 14 上横屏时桌面是横的布局
 - [x] 硬件视频解码：1920×1088 以内的 H.264 和 HEVC 走 iPhone 的解码器（镜像里的 goldfish 编解码服务 + VideoToolbox）。iPhone 14 上 1080p 30 帧：H.264 显示 29.5 帧、App 占一个核的 42%（软件解码 166%），HEVC 29.4 帧、42%
-- [ ] 4K 的硬件解码：3840×2160 交给硬件时编解码服务在 iPhone 14 上停止（原因没查到），所以只列到 1080p，4K 仍是软件解码
+- [x] 4K 的硬件解码：查清了，不做。3840×2160 交给硬件时宿主进程内存不够（开线程失败，errno 12），渲染器随即中止整个 App；iPhone 14 平时就在内存上限边上。只列到 1080p，4K 仍是软件解码。发布后查的，见 `results/G0.md`
+- [ ] 内存紧到开不了线程时渲染器会中止整个 App（发布前在 1080p 上见过三次）：让 gfxstream 在着色器建不出来时不中止，或给宿主留余量
 - [ ] iPad 的平板布局：桌面在平板密度下一启动就停的问题修了（任务栏的空指针），iPhone 14 上用 120 dpi（宽 770 dp）试过能用；App 的 Settings 里加了开关（只在 iPad 上，默认关）。**没有在 iPad 上试**（iPad 当时连不上），所以仍算没完成
 - [ ] KDE Connect、Session 没有复测
 - [ ] 飞行模式（#5-24）：没有改，仍不断网
