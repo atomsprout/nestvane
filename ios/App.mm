@@ -26,6 +26,7 @@
 #include <cstring>
 #include <chrono>
 #include <mach/mach.h>
+#include <os/proc.h>
 #include <map>
 extern "C" int proc_regionfilename(int pid, uint64_t address, void* buffer, uint32_t size);
 #include <memory>
@@ -2603,8 +2604,76 @@ static bool ApkContent(NSData* data) {
 @property(nonatomic, strong) UIWindow* window;
 @end
 
+// NESTVANE_TEST_HOST_SPEED=1: how fast the device is right now, written to Documents/host-speed.txt
+// before anything else runs. The same loop is timed on a thread of the highest class and on one of the
+// background class, which iOS keeps on the efficiency cores: when the two take about as long, the app
+// is not getting the fast cores, and a start measured then says nothing about the app.
+static void MeasureHostSpeed() {
+    if (!std::getenv("NESTVANE_TEST_HOST_SPEED")) return;
+    const auto timed = [](qos_class_t qos) {
+        double milliseconds = 0;
+        std::thread([&] {
+            pthread_set_qos_class_self_np(qos, 0);
+            double best = 1e9;
+            for (int round = 0; round < 5; ++round) {
+                const auto begin = std::chrono::steady_clock::now();
+                volatile uint64_t value = 88172645463325252ull;
+                for (int i = 0; i < 40000000; ++i) { uint64_t v = value; v ^= v << 13; v ^= v >> 7; v ^= v << 17; value = v; }
+                best = std::min(best, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count());
+            }
+            milliseconds = best;
+        }).join();
+        return milliseconds;
+    };
+    const double fast = timed(QOS_CLASS_USER_INTERACTIVE), slow = timed(QOS_CLASS_BACKGROUND);
+    // All six cores at once, three rounds each: what the device has to give when every core is asked.
+    std::vector<double> together(6);
+    {
+        std::vector<std::thread> threads;
+        for (size_t index = 0; index < together.size(); ++index)
+            threads.emplace_back([&together, index] {
+                pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0);
+                const auto begin = std::chrono::steady_clock::now();
+                volatile uint64_t value = 88172645463325252ull + index;
+                for (int i = 0; i < 120000000; ++i) { uint64_t v = value; v ^= v << 13; v ^= v >> 7; v ^= v << 17; value = v; }
+                together[index] = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count() / 3;
+            });
+        for (auto& thread : threads) thread.join();
+        std::sort(together.begin(), together.end());
+    }
+    // Reading 256 MiB of translated code: tens of milliseconds when iOS still holds the file in memory
+    // from the start before, several hundred when it has to come from storage again.
+    double readMilliseconds = -1;
+    {
+        NSString* path = [NSBundle.mainBundle.privateFrameworksPath stringByAppendingPathComponent:@"NestvaneCode0.framework/NestvaneCode0"];
+        const int descriptor = open(path.fileSystemRepresentation, O_RDONLY);
+        if (descriptor >= 0) {
+            std::vector<char> buffer(4 << 20);
+            const auto begin = std::chrono::steady_clock::now();
+            for (off_t offset = 0; offset < (256ll << 20); offset += buffer.size())
+                if (pread(descriptor, buffer.data(), buffer.size(), offset) <= 0) break;
+            readMilliseconds = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
+            close(descriptor);
+        }
+    }
+    vm_statistics64_data_t vm{};
+    mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
+    const bool haveVM = host_statistics64(mach_host_self(), HOST_VM_INFO64, host_info64_t(&vm), &count) == KERN_SUCCESS;
+    const auto megabytes = [](uint64_t pages) { return (unsigned long long)(pages * vm_kernel_page_size >> 20); };
+    NSString* memory = haveVM ? [NSString stringWithFormat:@"device memory MB: free %llu, file-backed %llu, inactive %llu, in compressor %llu, wired %llu, app's own %llu; left for this app %llu",
+        megabytes(vm.free_count), megabytes(vm.external_page_count), megabytes(vm.inactive_count), megabytes(vm.compressor_page_count),
+        megabytes(vm.wire_count), megabytes(vm.internal_page_count), (unsigned long long)(os_proc_available_memory() >> 20)] : @"device memory unknown";
+    NSURL* documents = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
+    [[NSString stringWithFormat:@"highest class %.0f ms, background class %.0f ms, six at once %.0f %.0f %.0f %.0f %.0f %.0f ms, low power mode %d, thermal %ld, processors %lu active of %lu; 256 MiB of code read in %.0f ms; %@\n",
+        fast, slow, together[0], together[1], together[2], together[3], together[4], together[5], int(NSProcessInfo.processInfo.lowPowerModeEnabled), long(NSProcessInfo.processInfo.thermalState),
+        (unsigned long)NSProcessInfo.processInfo.activeProcessorCount, (unsigned long)NSProcessInfo.processInfo.processorCount,
+        readMilliseconds, memory]
+        writeToURL:[documents URLByAppendingPathComponent:@"host-speed.txt"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+}
+
 @implementation SceneDelegate
 - (void)scene:(UIScene*)scene willConnectToSession:(UISceneSession*)session options:(UISceneConnectionOptions*)options {
+    MeasureHostSpeed();
     self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene*)scene];
     self.window.rootViewController = [ValidationViewController new];
     [self.window makeKeyAndVisible];
