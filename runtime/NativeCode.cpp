@@ -2,6 +2,8 @@
 #include "FastPath.hpp"
 
 #include <csetjmp>
+#include <cstdio>
+#include <memory>
 
 #include "GuestSpace.hpp"
 #include "Runtime.hpp"
@@ -118,7 +120,8 @@ struct Registry {
     const char* failure = nullptr;
     uint64_t signalPage = 0;                                   // guest address of the signal return trampoline's page
     std::vector<size_t> byGuest;                               // modules in the order of their guest addresses
-    std::vector<bool> made;                                    // per page of the table: its entries exist
+    std::unique_ptr<std::atomic<uint8_t>[]> made;              // per page of the table: its entries exist
+    size_t pages = 0;
     int tableFile = -1;                                        // what the table's pages are kept in
     uint64_t madePages = 0;
 };
@@ -193,7 +196,8 @@ Registry& registry() {
             result.failure = "no file or no address space for the table of translated code";
             return result;
         }
-        result.made.assign(bytes / GuestSpace::page, false);
+        result.pages = bytes / GuestSpace::page;
+        result.made = std::make_unique<std::atomic<uint8_t>[]>(result.pages);
         // The trampoline's entries: whichever of its instructions a handler returns to, native code
         // leaves there and the interpreter runs the trampoline.
         uint64_t* entries = result.table + (result.signalPage - low) / 4;
@@ -204,7 +208,7 @@ Registry& registry() {
             entries[3] = reinterpret_cast<uint64_t>(&nestvane_native_interpreter_return);
             result.traps.insert(entries[3]);
             interpreterReturnPc = result.signalPage + 12;
-            result.made[(result.signalPage - low) * 2 / GuestSpace::page] = true;
+            result.made[(result.signalPage - low) * 2 / GuestSpace::page].store(1, std::memory_order_relaxed);
         } else {
             result.signalPage = 0;
         }
@@ -543,31 +547,51 @@ namespace {
 // Writes into the table's file through a writable view of a window of it, moved only when a write
 // falls outside: the readable view of the table shares the same pages. A write call for each page
 // cost the start more than half a second on an iPhone 14, some 23,000 pages of 16 KiB.
-bool writeTable(int file, off_t position, const void* data, size_t size) {
+struct TableWriter {
+    uint8_t* window = nullptr;
+    off_t windowStart = -1;
+    uint64_t* buffer = new uint64_t[GuestSpace::page / 8];
+};
+// The main loop's, and the one of the thread that makes pages ahead (below).
+TableWriter mainWriter, planWriter;
+// Held while a page of the table is made or changed, and while what its entries depend on changes
+// (a module coming into use, an entry trap): two threads make pages.
+std::mutex tableLock;
+std::condition_variable tableChanged;
+
+bool writeTable(TableWriter& writer, int file, off_t position, const void* data, size_t size) {
     constexpr off_t windowBytes = 2 << 20;
-    static uint8_t* window = nullptr;
-    static off_t windowStart = -1;
     const off_t start = position & ~(windowBytes - 1);
     if (position + off_t(size) > start + windowBytes) return pwrite(file, data, size, position) == ssize_t(size);
-    if (start != windowStart) {
-        if (window) munmap(window, windowBytes);
+    if (start != writer.windowStart) {
+        if (writer.window) munmap(writer.window, windowBytes);
         void* mapped = mmap(nullptr, windowBytes, PROT_READ | PROT_WRITE, MAP_SHARED, file, start);
-        window = mapped == MAP_FAILED ? nullptr : static_cast<uint8_t*>(mapped);
-        windowStart = window ? start : -1;
-        if (!window) return pwrite(file, data, size, position) == ssize_t(size);
+        writer.window = mapped == MAP_FAILED ? nullptr : static_cast<uint8_t*>(mapped);
+        writer.windowStart = writer.window ? start : -1;
+        if (!writer.window) return pwrite(file, data, size, position) == ssize_t(size);
     }
-    std::memcpy(window + (position - start), data, size);
+    std::memcpy(writer.window + (position - start), data, size);
     return true;
 }
 
+// The pages made so far, in the order they were made, each as (guest pc - low) / 4 of the look-up
+// that made it: what a start needs, kept for the next one (recordTablePlan).
+std::vector<uint32_t> madeOrder;
+bool recordingOrder = true;
+uint64_t madeAhead = 0;  // pages the thread of the plan made
+size_t planSize = 0;
+
 // Makes the page of the table that has the entry for guest pc, if a module that is in use has code
 // there. The entries are written to the file first and the page is made readable after, so that
-// another host thread never reads a page that is half made. Called on the main loop's thread only.
-bool makePage(uint64_t pc) {
+// another host thread never reads a page that is half made. Called on the main loop's thread, and on
+// the thread that makes the pages of the last start's plan ahead of need, each with its own writer.
+bool makePage(uint64_t pc, TableWriter& writer = mainWriter) {
     auto& all = registry();
     if (pc < all.low || pc >= all.covered) return false;
     const size_t page = (pc - all.low) * 2 / GuestSpace::page;
-    if (all.made[page]) return true;
+    if (all.made[page].load(std::memory_order_acquire)) return true;
+    const std::lock_guard lock(tableLock);
+    if (all.made[page].load(std::memory_order_relaxed)) return true;
     const auto next = std::upper_bound(all.byGuest.begin(), all.byGuest.end(), pc, [&](uint64_t address, size_t index) {
         return address < all.modules[index].module->info[0];
     });
@@ -575,7 +599,7 @@ bool makePage(uint64_t pc) {
     const Loaded& loaded = all.modules[*std::prev(next)];
     if (!loaded.active || pc >= loaded.module->info[1]) return false;
     constexpr size_t entries = GuestSpace::page / 8;
-    static uint64_t* const buffer = new uint64_t[entries];
+    uint64_t* const buffer = writer.buffer;
     const uint64_t first = all.low + page * (GuestSpace::page / 2), base = loaded.module->info[0];
     // What is no instruction of the module leaves native code when it is jumped to.
     std::fill_n(buffer, entries, reinterpret_cast<uint64_t>(&nestvane_native_stray));
@@ -597,20 +621,103 @@ bool makePage(uint64_t pc) {
     if (loaded.trap && all.traps.contains(loaded.trap) && loaded.module->info[2] >= from && loaded.module->info[2] < to)
         buffer[(loaded.module->info[2] - first) / 4] = loaded.trap;
     const off_t position = off_t(page * GuestSpace::page);
-    if (!writeTable(all.tableFile, position, buffer, GuestSpace::page) ||
+    if (!writeTable(writer, all.tableFile, position, buffer, GuestSpace::page) ||
         mprotect(reinterpret_cast<uint8_t*>(all.table) + position, GuestSpace::page, PROT_READ)) return false;
-    all.made[page] = true;
+    all.made[page].store(1, std::memory_order_release);
     ++all.madePages;
+    if (&writer == &planWriter) ++madeAhead;
+    if (recordingOrder && madeOrder.size() < 200000) madeOrder.push_back(uint32_t((pc - all.low) / 4));
     return true;
 }
 
 } // namespace
 
+namespace {
+
+// What identifies the translations a plan was recorded with: a plan of another build names other pages.
+uint64_t planKey() {
+    const auto& all = registry();
+    uint64_t key = all.low * 31 + all.covered * 131 + all.modules.size();
+    // In the order of their guest addresses: `modules` is in the order the host loaded their code, which
+    // is not the same at every launch.
+    for (const size_t index : all.byGuest) {
+        const auto& module = *all.modules[index].module;
+        key = key * 1099511628211ULL ^ (module.info[0] + module.info[1] * 3);
+    }
+    return key;
+}
+
+constexpr uint64_t planMagic = 0x314e414c50564e00ULL;  // "\0NVPLAN1"
+
+}  // namespace
+
+size_t startTablePlan(const std::string& path) {
+    auto& all = registry();
+    if (all.modules.empty()) return 0;
+    std::vector<uint32_t> plan;
+    if (FILE* file = std::fopen(path.c_str(), "rb")) {
+        uint64_t header[3] = {};
+        if (std::fread(header, 8, 3, file) == 3 && header[0] == planMagic && header[1] == planKey() && header[2] <= 200000) {
+            plan.resize(header[2]);
+            if (std::fread(plan.data(), 4, plan.size(), file) != plan.size()) plan.clear();
+        }
+        std::fclose(file);
+    }
+    planSize = plan.size();
+    if (plan.empty()) return 0;
+    std::thread([plan = std::move(plan)]() mutable {
+        pthread_setname_np("code table plan");
+        auto& all = registry();
+        // A page can be made once its module is in use, which the main loop sees to as Android's
+        // processes map their libraries: what cannot be made yet is tried again when one comes into use.
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(40);
+        while (!plan.empty() && std::chrono::steady_clock::now() < deadline) {
+            std::vector<uint32_t> later;
+            for (const uint32_t entry : plan)
+                if (!makePage(all.low + uint64_t{entry} * 4, planWriter)) later.push_back(entry);
+            plan.swap(later);
+            if (plan.empty()) break;
+            std::unique_lock lock(tableLock);
+            tableChanged.wait_for(lock, std::chrono::milliseconds(50));
+        }
+        const std::lock_guard lock(tableLock);
+        if (planWriter.window) munmap(planWriter.window, 2 << 20);
+        planWriter.window = nullptr;
+        planWriter.windowStart = -1;
+    }).detach();
+    return planSize;
+}
+
+bool recordTablePlan(const std::string& path) {
+    std::vector<uint32_t> order;
+    {
+        const std::lock_guard lock(tableLock);
+        if (!recordingOrder) return false;
+        recordingOrder = false;
+        order.swap(madeOrder);
+        // With a plan, every page of it was made whether or not this start needed it, so the list only
+        // grows: it is kept as it is unless this start had to make a tenth as many pages itself.
+        if (planSize && (order.size() - std::min<size_t>(order.size(), madeAhead)) * 10 < planSize) return false;
+    }
+    if (order.empty()) return false;
+    const std::string temporary = path + ".new";
+    FILE* file = std::fopen(temporary.c_str(), "wb");
+    if (!file) return false;
+    const uint64_t header[3] = {planMagic, planKey(), order.size()};
+    const bool written = std::fwrite(header, 8, 3, file) == 3 && std::fwrite(order.data(), 4, order.size(), file) == order.size();
+    return (std::fclose(file) == 0) && written && std::rename(temporary.c_str(), path.c_str()) == 0;
+}
+
 bool activate(const Module& module) {
     auto& all = registry();
     const auto found = all.byModule.find(&module);
     if (found == all.byModule.end()) return false;
-    all.modules[found->second].active = true;
+    if (all.modules[found->second].active) return true;
+    {
+        const std::lock_guard lock(tableLock);
+        all.modules[found->second].active = true;
+    }
+    tableChanged.notify_all();
     return true;
 }
 
@@ -618,10 +725,12 @@ void trap(uint64_t pc) {
     auto& all = registry();
     for (auto& loaded : all.modules) {
         if (!loaded.active || loaded.module->info[2] != pc || !loaded.trap) continue;
+        const std::lock_guard lock(tableLock);
         if (!all.traps.insert(loaded.trap).second) return;
         // A page that exists already gets the entry now; one that is made later gets it then.
         const size_t page = (pc - all.low) * 2 / GuestSpace::page;
-        if (all.made[page]) writeTable(all.tableFile, off_t((pc - all.low) * 2), &loaded.trap, 8);
+        if (all.made[page].load(std::memory_order_relaxed))
+            writeTable(mainWriter, all.tableFile, off_t((pc - all.low) * 2), &loaded.trap, 8);
         return;
     }
 }
@@ -663,7 +772,7 @@ bool load(Machine& machine, NativeContext& context) {
 bool loadOnWorker(const CPU& cpu, const GuestSpace& space, NativeContext& context) {
     auto& all = registry();
     if (cpu.pc < all.low || cpu.pc >= all.high || cpu.pc % 4) return false;
-    if (!all.made[(cpu.pc - all.low) * 2 / GuestSpace::page]) return false;
+    if (!all.made[(cpu.pc - all.low) * 2 / GuestSpace::page].load(std::memory_order_acquire)) return false;
     return loadContext(cpu, space, cpu.sp & 0x00ff'ffff'ffff'ffffULL, context);
 }
 
@@ -754,7 +863,7 @@ Exit settle(Machine& machine, const Result& result) {
         const uint64_t tableStart = reinterpret_cast<uint64_t>(all.table);
         if (result.faultAddress >= tableStart && result.faultAddress < tableStart + (all.covered - all.low) * 2) {
             const uint64_t target = all.low + (result.faultAddress - tableStart) / 2;
-            if (!all.made[(target - all.low) * 2 / GuestSpace::page] && makePage(target)) return Exit::retry;
+            if (!all.made[(target - all.low) * 2 / GuestSpace::page].load(std::memory_order_acquire) && makePage(target)) return Exit::retry;
         }
         // Mapped memory that nothing has written yet has no host pages. The interpreter reads it as
         // zeros without giving it any, so native code would fault there again and again.
@@ -1128,7 +1237,8 @@ std::string statistics() {
     static const mach_timebase_info_data_t base = [] { mach_timebase_info_data_t value; mach_timebase_info(&value); return value; }();
     const auto milliseconds = [&](uint64_t time) { return time * base.numer / base.denom / 1'000'000; };
     out << "  native execution time: " << milliseconds(counters.nativeTime) << " ms in guest code, "
-        << registry().madePages * GuestSpace::page / (1024 * 1024) << " MiB of code table made";
+        << registry().madePages * GuestSpace::page / (1024 * 1024) << " MiB of code table made (" << madeAhead
+        << " of " << registry().madePages << " pages ahead of need, from a plan of " << planSize << ")";
     if (counters.unmapped) out << ", " << counters.unmapped << " modules could not be mapped";
     out << '\n';
     // NESTVANE_NATIVE_USED=1 lists the translations that were mapped, for leaving the others out of a build.

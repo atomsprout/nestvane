@@ -2280,6 +2280,8 @@ static bool ApkContent(NSData* data) {
                         NSString* list = [NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject
                             stringByAppendingPathComponent:@"boot-code-pages"];
                         nestvane::prefetch::record(list.fileSystemRepresentation);
+                        // And which pages of the table of translated code it made (NativeCode.hpp).
+                        nestvane::native::recordTablePlan([list stringByAppendingString:@"-table"].fileSystemRepresentation);
                         nestvane::prefetch::recordFiles([list stringByAppendingString:@"-files"].fileSystemRepresentation,
                                                         NSBundle.mainBundle.resourcePath.fileSystemRepresentation);
                     });
@@ -2509,6 +2511,13 @@ static bool ApkContent(NSData* data) {
                     const size_t filePages = nestvane::prefetch::startFiles(
                         [prefetchList stringByAppendingString:@"-files"].fileSystemRepresentation, imageRoot);
                     NSLog(@"reading in %zu code pages and %zu pages of the system image", pages, filePages);
+                }
+                // The pages of the table of translated code that the last start made, made again on a
+                // thread of their own ahead of need. NESTVANE_NO_TABLE_PLAN=1 leaves it out, for comparing.
+                if (!getenv("NESTVANE_NO_TABLE_PLAN")) {
+                    const size_t planned = nestvane::native::startTablePlan(
+                        [prefetchList stringByAppendingString:@"-table"].fileSystemRepresentation);
+                    NSLog(@"making %zu pages of the code table ahead", planned);
                 }
                 progress("Initializing local Android renderer");
                 nestvane::GfxstreamSession renderer(rendererPath.fileSystemRepresentation, displaySize.width, displaySize.height);

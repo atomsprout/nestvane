@@ -1488,6 +1488,7 @@ service nestvane-trim /system/bin/sh /system/etc/nestvane/trim.sh
             native::catchFileFaults();
         }
         if (!databasePath.empty()) linux.mountData(databasePath);
+        linux.holdSyncWhileStarting = true;
         for (const auto& [path, file] : files) linux.mount(path, file.bytes());
         if (const auto bootconfig = files.find("/nestvane-metadata/bootconfig"); bootconfig != files.end()) {
             static std::string configuration;

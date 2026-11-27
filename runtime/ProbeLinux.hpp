@@ -271,6 +271,10 @@ struct ProbeLinux {
     // Apps the user installed do not run until the home screen is shown (the starter clears this) or
     // half a minute has passed. NESTVANE_HOLD_APPS=0 turns it off.
     std::atomic_bool appsHeld{!std::getenv("NESTVANE_HOLD_APPS") || std::string_view(std::getenv("NESTVANE_HOLD_APPS")) != "0"};
+    // Set for a start of Android: fsync is then left to the first commit after the home screen is up.
+    bool holdSyncWhileStarting = false;
+    struct AllocationKnown { uint64_t bytes = 0; std::chrono::steady_clock::time_point at{}; bool valid = false; };
+    mutable AllocationKnown allocationKnown[2];  // of the files that are not kept, and of those that are (resize)
     std::chrono::steady_clock::time_point appsHeldUntil = std::chrono::steady_clock::now() + std::chrono::seconds(30);
     size_t exportFiles(ProbeLinux& reader, std::string_view prefix) const;
     bool exportExt4Mount(ProbeLinux& reader, std::string_view path) const;

@@ -79,6 +79,14 @@ struct Result {
     bool interpreter = false; // a run of the interpreter on a worker
     int faultAccess = 0;      // of a SIGBUS for a page that is not there: 1 a read, 2 a write (repairFilePage)
 };
+// The table that native code looks guest addresses up in is made a page at a time, when a page is
+// first looked up in, and a start makes some 24,000 of them on the main loop's thread: 0.85 s of an
+// 8.6 s start on an iPhone 14. `recordTablePlan` writes which pages a start made, in order, and
+// `startTablePlan` makes those of the last start on a thread of its own, ahead of need. Returns the
+// number of pages in the plan, 0 when there is none or it is of other translations.
+size_t startTablePlan(const std::string& path);
+// Writes the plan, once, when the home screen is up. False when it was not written.
+bool recordTablePlan(const std::string& path);
 // A fault at a page of a mapped host file that the mapping allows to be touched: the file could not
 // give the page, because it was cut short or replaced from outside the app while mapped (a file of
 // the shared storage, changed in the Files app). The page becomes zeros, in memory only, and the

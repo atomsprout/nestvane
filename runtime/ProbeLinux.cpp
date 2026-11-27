@@ -1270,14 +1270,30 @@ ProbeLinux::HostVolume ProbeLinux::hostVolume() {
     static std::chrono::steady_clock::time_point asked;
     static HostVolume (*askedSource)() = nullptr;
     static uint64_t generation = 0;
-    std::lock_guard guard(lock);
+    static bool asking = false;
+    std::unique_lock guard(lock);
     const auto now = std::chrono::steady_clock::now();
     const auto source = hostVolumeSource.load();
-    if (source != askedSource || now - asked > std::chrono::seconds(5) || !cached.total) {
+    if (source != askedSource || !cached.total) {
         cached = source();
         cached.generation = ++generation;
         asked = now;
         askedSource = source;
+    } else if (now - asked > std::chrono::seconds(5) && !asking) {
+        // The host takes tens of milliseconds to answer (iOS reckons what it could free), and the main
+        // loop asks at every file that grows: the answer of a moment ago is given, and a new one is
+        // fetched on a thread of its own.
+        asking = true;
+        asked = now;
+        std::thread([source] {
+            const HostVolume fresh = source();
+            std::lock_guard guard(lock);
+            if (hostVolumeSource.load() == source && fresh.total) {
+                cached = fresh;
+                cached.generation = ++generation;
+            }
+            asking = false;
+        }).detach();
     }
     return cached;
 }
@@ -1837,11 +1853,23 @@ uint64_t ProbeLinux::resize(const WritableFile& file, uint64_t size) {
                 if (const auto storage = weakFile.lock()) allocated += storage->pages.size();
             }
         } else {
-            allocated = writableAllocation(file.persistent);
+            // The sum over every file, which a start with its thousands of files asked for at each
+            // page a file grew by: a sum of a moment ago plus what has grown since stands in for it,
+            // and only when that says there is no room is it reckoned again.
+            auto& known = allocationKnown[file.persistent];
+            const auto now = std::chrono::steady_clock::now();
+            if (!known.valid || now - known.at > std::chrono::milliseconds(500)) known = {writableAllocation(file.persistent), now, true};
+            allocated = known.bytes;
         }
-        const auto limit = file.memoryFile ? std::max(maxTransientBytes, memoryLimit / 2)
-                         : file.persistent ? persistentLimit(allocated) : maxTransientBytes;
+        auto limit = file.memoryFile ? std::max(maxTransientBytes, memoryLimit / 2)
+                   : file.persistent ? persistentLimit(allocated) : maxTransientBytes;
+        if (!file.memoryFile && pages - file.storage->pages.size() + allocated > limit) {
+            allocated = writableAllocation(file.persistent);
+            allocationKnown[file.persistent] = {allocated, std::chrono::steady_clock::now(), true};
+            limit = file.persistent ? persistentLimit(allocated) : maxTransientBytes;
+        }
         if (pages - file.storage->pages.size() + allocated > limit) return uint64_t(-28);
+        if (!file.memoryFile) allocationKnown[file.persistent].bytes += pages - file.storage->pages.size();
     }
     const uint64_t before = file.storage->pages.size();
     // A file of /data that becomes large moves to a host file of its own. If that fails it stays in memory.
@@ -8749,7 +8777,10 @@ bool ProbeLinux::waitChild(Machine& machine) {
 // the volume, so what a stop in between loses is the last two seconds, as after a power cut.
 bool ProbeLinux::syncDataSoon() {
     const auto now = std::chrono::steady_clock::now();
-    if (now - lastDataSync < std::chrono::seconds(2)) {
+    // Not while Android starts either: a start asks some four times, 40 ms each on the main loop, and
+    // what a stop during the start would lose is that start's own writing. The first commit comes
+    // when the home screen is up, or after the half minute that apps are held back at most.
+    if (now - lastDataSync < std::chrono::seconds(2) || (holdSyncWhileStarting && appsHeldNow())) {
         dataSyncPending = true;
         return true;
     }
