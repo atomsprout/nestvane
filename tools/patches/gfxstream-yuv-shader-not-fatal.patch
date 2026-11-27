@@ -1,0 +1,43 @@
+diff --git a/host/gl/yuv_converter.cpp b/host/gl/yuv_converter.cpp
+index 30a6e907a..3a6715ce3 100644
+--- a/host/gl/yuv_converter.cpp
++++ b/host/gl/yuv_converter.cpp
+@@ -626,8 +626,13 @@ void main(void) {
+         if (status == GL_FALSE) {
+             GLchar error[1024];
+             s_gles2.glGetShaderInfoLog(shader, sizeof(error), nullptr, &error[0]);
+-            GFXSTREAM_FATAL("Failed to compile YUV conversion shader: %s", error);
+-            s_gles2.glDeleteShader(shader);
++            // Nestvane: not fatal. With no GL context on this thread (the host could not make the
++            // thread's context for want of address space) there is no shader, and this picture is not
++            // converted; ending the whole app for it lost everything Android had open.
++            GFXSTREAM_ERROR("Failed to compile YUV conversion shader: %s", error);
++            s_gles2.glDeleteShader(vertShader);
++            s_gles2.glDeleteShader(fragShader);
++            mProgram = 0;
+             return;
+         }
+     }
+@@ -642,7 +647,7 @@ void main(void) {
+     if (status == GL_FALSE) {
+         GLchar error[1024];
+         s_gles2.glGetProgramInfoLog(mProgram, sizeof(error), 0, &error[0]);
+-        GFXSTREAM_FATAL("Failed to link YUV conversion program: %s", error);
++        GFXSTREAM_ERROR("Failed to link YUV conversion program: %s", error);
+         s_gles2.glDeleteProgram(mProgram);
+         mProgram = 0;
+         return;
+@@ -881,6 +886,13 @@ void YUVConverter::drawConvertFromFormat(GfxstreamFormat format, int x, int y, i
+         }
+         init(width, height, mFormat);
+     }
++    // Nestvane: no conversion program (see createYUVGLShader): this picture is left out, and the
++    // next one tries again.
++    if (!mProgram) {
++        reset();
++        restoreGLState();
++        return;
++    }
+ 
+     if (mFormat == GfxstreamFormat::P010 && !mHasGlsl3Support) {
+         // TODO: perhaps fallback to just software conversion.

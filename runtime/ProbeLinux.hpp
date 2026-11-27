@@ -240,6 +240,8 @@ struct ProbeLinux {
     // What the host has left when an allocation fails, in words: memory before iOS ends the app, and
     // the largest piece of address space that can still be reserved.
     static std::string hostMemoryState();
+    // Which way up Android's display is, in quarter turns, for the app that shows it.
+    void setDisplayRotation(int quarterTurns) { if (apkInbox) apkInbox->rotation = quarterTurns & 3; }
     static RootPolicy rootPolicy();
     bool rootEnabled() const { return rootOn; }
     std::function<int(uint32_t uid, const std::string& package)> rootDecision;

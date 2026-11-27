@@ -1300,10 +1300,9 @@ service nestvane-sms /system/bin/sh /system/etc/nestvane/sms.sh
     disabled
     stdio_to_kmsg
 
-# Which way up the display is, for the app that shows it (tools/rotation-watch).
-on property:sys.boot_completed=1
-    start nestvane-rotation
-
+# Which way up the display is: until 1.19 a Java program (tools/rotation-watch) was started here to
+# tell the app. It kept a process of 0.9 GB of address space for one number; the activity manager's
+# own log line says the same at every change (see the log observer), so the service is not started.
 service nestvane-rotation /system/bin/sh /system/etc/nestvane/rotation.sh
     user shell
     group shell
@@ -1360,6 +1359,13 @@ service nestvane-trim /system/bin/sh /system/etc/nestvane/trim.sh
         hostnet::offline() = false;
         if (progress || expectSmoke || startupTouch) linux.androidLogObserver = [&](std::string_view message) {
             const auto line = message.substr(0, message.find('\n'));
+            // Which way up Android's display is, for the app that shows it: the activity manager logs the
+            // whole configuration when it changes, as Android starts too, and the display's rotation is in it.
+            if (line.starts_with("ActivityTaskManager: Config changes=")) {
+                constexpr std::string_view field = "mDisplayRotation=ROTATION_";
+                if (const auto at = line.find(field); at != std::string_view::npos)
+                    linux.setDisplayRotation(std::atoi(std::string(line.substr(at + field.size(), 3)).c_str()) / 90);
+            }
             // Airplane mode. Android's network here is a wired interface, which airplane mode leaves on,
             // so the host does the cutting: while the mode is on it carries nothing (hostnet::offline),
             // and the connections there are end. The Bluetooth service's listener says what the mode is
