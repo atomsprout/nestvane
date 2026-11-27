@@ -73,6 +73,7 @@ Unless noted, the build is a development-signed Release build.
 - **Turning works from the start (1.19).** Android used to run a program of its own only to report which way up the display is; it started 15 seconds after the start and held nearly 1 GB of address space. The rotation is now read from the system's own log, and the program is no longer started.
 - **Fewer apps in the background are ended (1.20).** Every app process starts as a copy of one parent, and each copy used to take its own 1.1 to 1.3 GB of address space. Now the megabytes that hold only read-only pages of files stay shared between parent and copies, and a process gets its own only when it changes something there: each app process takes about 300 MB less. On an iPhone 14, 40 seconds after the start, Android's processes take 31.6 GB where they took 37.7 GB; with seven apps opened in turn for three rounds, 2 apps in the background were ended where 1.19 ended 11.
 - **A file replaced from outside no longer closes the app (1.21).** The files of the shared storage are shared with Android page for page. When one was replaced or shortened from the Files app or from a Mac while an Android app had it open, touching a part the file no longer had closed the whole app; now that part reads as zeros, and when Android next opens the file it gets what is there now. On an iPhone 14, a 12 MB file read in a loop while it was replaced by a 5 MB and then a 15 MB one gave the new content each time.
+- **A faster start (1.22).** The table that tells translated code where the code for an Android address is was built as a start went along, on the one thread everything waits for: a tenth of that thread's time. The parts a start needed are now remembered, and at the next start another thread builds them ahead. On an iPhone 14 the home screen is up in 7.7 s where it took 8.7.
 - **Apps that ask for the Wi-Fi service get one (1.16).** It says Wi-Fi is off, but it is no longer missing; the old `NetworkInfo.getType()` reports Wi-Fi (the type's name is still "Ethernet"). KDE Connect and Session, which stopped as they started for that reason, both open now (tried on 1.17).
 - **Airplane mode cuts the network (1.17).** Android's network is a wired interface, which airplane mode leaves on; now, while airplane mode is on, Nestvane carries nothing for Android and ends the connections there are, and carries again when it is turned off. Android's status bar still shows the network as connected.
 - **The built-in keyboard types digits (1.17).** Holding a letter of the top row gave no digit, and the digits of the ?123 page did nothing: the system lacked the virtual keyboard's key map.
@@ -95,6 +96,7 @@ Time from starting Android to the launcher being displayed, not counting the fir
 
 | Device | Stage | Time |
 | --- | --- | --- |
+| iPhone 14 (iOS 17.3.1) | 1.22, the release check: median of five starts | 7.7 s (7.4 to 8.3) |
 | iPhone 15 Pro | Current, without the media services | about 8 s |
 | iPhone 15 Pro | Current, with the media services | about 10 s |
 | iPhone 17 Pro (iOS 27.0.1) | When the frame rate work was done | 7.7 to 8.5 s; 17.6 s on the first start |
