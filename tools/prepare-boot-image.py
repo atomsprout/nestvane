@@ -418,6 +418,20 @@ CODEC_SERVICE_LIBRARIES = ("android.hardware.media.c2-V2-ndk.so", "libavservices
                            "libprotobuf-cpp-lite-6.33.5.so")
 
 
+# The key maps of the keyboards every Android has without hardware: the on-screen keyboard sends
+# digits as key events of the virtual keyboard, and without its map they are no characters (the number
+# row and the digits of the symbols page typed nothing, #5 item 18).
+KEY_MAPS = ("/system/usr/keychars/Virtual.kcm", "/system/usr/keychars/Generic.kcm", "/system/usr/keylayout/Generic.kl")
+
+
+def add_key_maps(adb, guest):
+    for path in KEY_MAPS:
+        local = guest / path.lstrip("/")
+        if not local.exists():
+            local.parent.mkdir(parents=True, exist_ok=True)
+            subprocess.run(adb + ["pull", path, str(local)], check=True, stdout=subprocess.DEVNULL)
+
+
 def add_codec_service(adb, guest):
     """The codec service, from the reference (an image built with experiments/aosp/patch.py, where the
     service takes every picture as bytes), and the reference's policy for its domain."""
@@ -931,6 +945,7 @@ def main():
                     add_declared_libraries(adb, guest)
                     add_media_server(adb, guest)
                     add_codec_service(adb, guest)
+                    add_key_maps(adb, guest)
                     precompile_apex_apps(adb, remote, guest)
                 if args.precompile_framework_code:
                     check_reference_files(
