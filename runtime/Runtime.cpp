@@ -529,6 +529,8 @@ bool AnonymousPages::prepareWrite(uint64_t offset, uint64_t length, int* mapping
     if (!length) return true;
     if (offset >= size || length > size - offset) return false;
     if (space) {
+        // What is shared with another process (GuestSpace::fork) becomes this one's own before it is written.
+        space->makePrivate(base + offset, length);
         for (uint64_t at = (base + offset) & ~(GuestSpace::chunk - 1); at < base + offset + length; at += GuestSpace::chunk)
             if (!space->touch(std::max(at, base + offset))) return false;
         return true;
@@ -572,7 +574,9 @@ void AnonymousPages::discard(uint64_t offset, uint64_t length) {
         // Whole pages are replaced by fresh ones. The partial pages at the ends are cleared in place.
         const auto first = (offset + hostPage - 1) & ~(hostPage - 1), last = end & ~(hostPage - 1);
         const auto clear = [&](uint64_t from, uint64_t to) {
-            if (from < to && space->backed(base + from)) std::memset(space->host(base + from), 0, to - from);
+            if (from >= to || !space->backed(base + from)) return;
+            space->makePrivate(base + from, to - from);
+            std::memset(space->host(base + from), 0, to - from);
         };
         if (first >= last) return clear(offset, end);
         clear(offset, first);
@@ -1134,6 +1138,8 @@ bool Machine::dataWindow(uint64_t address, bool forWrite, uint64_t& start, uint6
         const auto stored = address + toStore;
         if (!guestSpace.backed(stored)) return false;
         const auto chunkStart = stored & ~(GuestSpace::chunk - 1);
+        // A window for writing is this process's own memory: what it shares with another becomes its own first.
+        if (forWrite && guestSpace.shared(stored)) segment.anonymousPages->guestSpace()->makePrivate(chunkStart, GuestSpace::chunk);
         start = std::max(segment.address, chunkStart - toStore);
         end = std::min(limit, chunkStart + GuestSpace::chunk - toStore);
         base = guestSpace.host(start + toStore);

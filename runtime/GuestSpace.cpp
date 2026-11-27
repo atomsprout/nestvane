@@ -54,10 +54,140 @@ void GuestSpace::attach(void* tables) {
 
 GuestSpace::~GuestSpace() {
     for (const auto& run : runs_) munmap(run.memory - guardBefore, guardBefore + run.length + guardAfter);
+    for (const auto& piece : retired_) munmap(piece.memory, piece.length);
     if (tables_) munmap(tables_, tableBytes);
 }
 
-std::unique_ptr<GuestSpace> GuestSpace::fork() const {
+GuestSpace::SharedRun::~SharedRun() { munmap(memory - guardBefore, guardBefore + length + guardAfter); }
+
+void GuestSpace::setShared(uint64_t index, bool on) {
+    const bool was = sharedBits_[index / 8] >> (index % 8) & 1;
+    if (was == on) return;
+    sharedBits_[index / 8] = uint8_t(on ? sharedBits_[index / 8] | 1 << index % 8 : sharedBits_[index / 8] & ~(1 << index % 8));
+    sharedChunks_ += on ? 1 : uint64_t(-1);
+}
+
+// The host protection of a range that has host memory: what each mapped page is mapped with, or only
+// reading when the memory is shared, and no access where nothing is mapped.
+void GuestSpace::applyProtection(uint64_t guest, uint64_t length, bool readOnly) {
+    for (uint64_t at = guest; at < guest + length;) {
+        const int wanted = mapped(at) ? (readOnly ? int(read) : protection(at)) : 0;
+        uint64_t end = at + page;
+        while (end < guest + length && (mapped(end) ? (readOnly ? int(read) : protection(end)) : 0) == wanted) end += page;
+        mprotect(host(at), end - at, wanted);
+        at = end;
+    }
+}
+
+// Takes [guest, guest + length) out of the run it is in. The host addresses stay reserved with no
+// access; the run is cut in two around them, and each part keeps its guard pages, which lie in the
+// first and last pages of what was taken out.
+void GuestSpace::retire(uint64_t guest, uint64_t length) {
+    Run* run = runAt(guest);
+    uint8_t* memory = run->memory + (guest - run->guest);
+    mmap(memory, length, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
+    const bool first = guest == run->guest, last = guest + length == run->guest + run->length;
+    // What the neighbours keep as their guards is theirs to unmap; the rest is this piece's.
+    uint8_t* from = first ? memory - guardBefore : memory + guardAfter;
+    uint8_t* to = last ? memory + length + guardAfter : memory + length - guardBefore;
+    retired_.push_back({guest + uint64_t(from - memory), uint64_t(to - from), from});
+    if (first && last) {
+        *run = runs_.back();
+        runs_.pop_back();
+    } else if (first) {
+        run->memory += length;
+        run->guest += length;
+        run->length -= length;
+    } else if (last) {
+        run->length -= length;
+    } else {
+        const Run right{guest + length, run->guest + run->length - guest - length, memory + length};
+        run->length = guest - run->guest;
+        runs_.push_back(right);
+    }
+}
+
+void GuestSpace::share(const std::vector<bool>& eligible) {
+    struct Range { uint64_t first, last; };
+    std::vector<Range> ranges;
+    for (const auto& run : runs_) {
+        const uint64_t end = (run.guest + run.length) >> chunkShift;
+        for (uint64_t index = run.guest >> chunkShift; index < end;) {
+            if (index >= eligible.size() || !eligible[index]) { ++index; continue; }
+            uint64_t last = index + 1;
+            while (last < end && last < eligible.size() && eligible[last]) ++last;
+            ranges.push_back({index, last});
+            index = last;
+        }
+    }
+    if (ranges.empty()) return;
+    if (sharedBits_.empty()) sharedBits_.assign(chunks / 8, 0);
+    for (const auto& range : ranges) {
+        const uint64_t guest = range.first << chunkShift, length = (range.last - range.first) << chunkShift;
+        void* reserved = mmap(nullptr, guardBefore + length + guardAfter, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
+        if (reserved == MAP_FAILED) continue; // no host addresses for it: it stays as it is
+        uint8_t* memory = static_cast<uint8_t*>(reserved) + guardBefore;
+        if (!copyOnWrite(host(guest), length, memory)) {
+            munmap(reserved, guardBefore + length + guardAfter);
+            continue;
+        }
+        shared_.push_back(std::shared_ptr<SharedRun>(new SharedRun{guest, length, memory}));
+        retire(guest, length);
+        for (uint64_t index = range.first; index < range.last; ++index) {
+            offsets_[index] = reinterpret_cast<uint64_t>(memory) - guest;
+            setShared(index, true);
+        }
+        applyProtection(guest, length, true);
+    }
+}
+
+void GuestSpace::makePrivate(uint64_t address, uint64_t length) {
+    if (sharedBits_.empty() || !length) return;
+    const uint64_t end = std::min<uint64_t>((address + length + chunk - 1) >> chunkShift, chunks);
+    for (uint64_t index = address >> chunkShift; index < end;) {
+        if (!shared(index << chunkShift)) { ++index; continue; }
+        // As many as lie together in the shared memory get host memory together.
+        const uint64_t offset = offsets_[index];
+        uint64_t last = index + 1;
+        while (last < end && shared(last << chunkShift) && offsets_[last] == offset) ++last;
+        const uint64_t guest = index << chunkShift, bytes = (last - index) << chunkShift;
+        const uint8_t* source = reinterpret_cast<const uint8_t*>(guest + offset);
+        for (uint64_t at = index; at < last; ++at) {
+            offsets_[at] = voidOffset;
+            setShared(at, false);
+        }
+        if (!backRange(index, last) || !copyOnWrite(source, bytes, host(guest))) {
+            // No host addresses for a copy. The shared memory is pointed at again, and the caller told.
+            for (uint64_t at = index; at < last; ++at) {
+                if (offsets_[at] != voidOffset) freeChunk(at);
+                offsets_[at] = offset;
+                setShared(at, true);
+            }
+            throw std::bad_alloc();
+        }
+        applyProtection(guest, bytes, false);
+        madePrivate_ += last - index;
+        index = last;
+    }
+}
+
+void GuestSpace::detach(uint64_t address, uint64_t length, bool drop) {
+    if (sharedBits_.empty() || !length) return;
+    const uint64_t end = std::min<uint64_t>((address + length + chunk - 1) >> chunkShift, chunks);
+    for (uint64_t index = address >> chunkShift; index < end; ++index) {
+        const uint64_t guest = index << chunkShift;
+        if (!shared(guest)) continue;
+        if (drop && address <= guest && guest + chunk <= address + length) {
+            offsets_[index] = voidOffset;
+            setShared(index, false);
+        } else {
+            makePrivate(guest, chunk);
+        }
+    }
+}
+
+std::unique_ptr<GuestSpace> GuestSpace::fork(const std::vector<bool>* shareable) {
+    if (shareable) share(*shareable);
     void* tables = copyOnWrite(tables_, tableBytes);
     if (!tables) return nullptr;
     std::unique_ptr<GuestSpace> child(new GuestSpace(tables));
@@ -65,6 +195,9 @@ std::unique_ptr<GuestSpace> GuestSpace::fork() const {
     child->interpreted_ = interpreted_;
     child->linker_ = linker_;
     child->prelink = prelink;
+    child->shared_ = shared_;
+    child->sharedBits_ = sharedBits_;
+    child->sharedChunks_ = sharedChunks_;
     for (const auto& run : runs_) {
         uint8_t* memory = child->reserve(nullptr, guardBefore + run.length + guardAfter);
         if (!memory) return nullptr;
@@ -243,6 +376,25 @@ GuestSpace::Usage GuestSpace::usage() const {
     return total;
 }
 
+GuestSpace::ReadOnly GuestSpace::readOnly() const {
+    ReadOnly result;
+    const auto writable = [&](uint64_t index) {
+        for (uint64_t at = index << chunkShift; at < (index + 1) << chunkShift; at += page)
+            if (mapped(at) && (protection(at) & write)) return true;
+        return false;
+    };
+    for (const auto& run : runs_) {
+        bool whole = true;
+        for (uint64_t index = run.guest >> chunkShift; index < (run.guest + run.length) >> chunkShift; ++index) {
+            ++result.all;
+            if (writable(index)) whole = false;
+            else ++result.chunks;
+        }
+        if (whole) result.runs += run.length >> chunkShift;
+    }
+    return result;
+}
+
 uint64_t GuestSpace::contiguous(uint64_t address, uint64_t length) const {
     const uint64_t offset = offsets_[address >> chunkShift];
     uint64_t end = (address | (chunk - 1)) + 1;
@@ -277,6 +429,7 @@ void GuestSpace::mark(uint64_t address, uint64_t length, bool used, int protecti
 
 bool GuestSpace::mapAnonymous(uint64_t address, uint64_t length, int protection, bool now) {
     if (address % page || length % page || address + length > size) return false;
+    detach(address, length, false);
     if (now && !back(address, length)) return false;
     mark(address, length, true, protection);
     for (uint64_t done = 0; done < length;) {
@@ -290,6 +443,7 @@ bool GuestSpace::mapAnonymous(uint64_t address, uint64_t length, int protection,
 }
 
 bool GuestSpace::mapFrom(uint64_t address, uint64_t length, int protection, const uint8_t* source, bool shared) {
+    if (address % page == 0 && length % page == 0 && address + length <= size) detach(address, length, false);
     if (address % page || length % page || address + length > size || !back(address, length)) return false;
     mark(address, length, true, protection);
     for (uint64_t done = 0; done < length;) {
@@ -307,6 +461,7 @@ bool GuestSpace::mapFrom(uint64_t address, uint64_t length, int protection, cons
 }
 
 void GuestSpace::protect(uint64_t address, uint64_t length, int protection) {
+    makePrivate(address, length);
     for (uint64_t at = address / page; at < (address + length) / page; ++at)
         protection_[at / 4] = uint8_t((protection_[at / 4] & ~(3 << at % 4 * 2)) | protection << at % 4 * 2);
     for (uint64_t done = 0; done < length;) {
@@ -318,6 +473,7 @@ void GuestSpace::protect(uint64_t address, uint64_t length, int protection) {
 
 void GuestSpace::unmap(uint64_t address, uint64_t length) {
     if (!length || address + length > size) return;
+    detach(address, length, true);
     for (uint64_t done = 0; done < length;) {
         const uint64_t part = contiguous(address + done, length - done);
         if (backed(address + done)) mmap(host(address + done), part, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
@@ -329,6 +485,7 @@ void GuestSpace::unmap(uint64_t address, uint64_t length) {
 }
 
 void GuestSpace::discard(uint64_t address, uint64_t length) {
+    makePrivate(address, length);
     for (uint64_t at = address; at < address + length;) {
         uint64_t end = at + page;
         const bool present = mapped(at) && backed(at);
@@ -340,6 +497,8 @@ void GuestSpace::discard(uint64_t address, uint64_t length) {
 }
 
 bool GuestSpace::move(uint64_t from, uint64_t to, uint64_t length) {
+    makePrivate(from, length);
+    makePrivate(to, length);
     for (uint64_t done = 0; done < length;) {
         uint64_t part = contiguous(from + done, length - done);
         if (backed(from + done)) {
@@ -383,10 +542,24 @@ bool GuestSpace::guestAddress(uint64_t hostAddress, uint64_t& address, bool* inR
         if (inRun) *inRun = hostAddress - start < run.length;
         return true;
     }
+    for (const auto& run : shared_) {
+        const uint64_t start = reinterpret_cast<uint64_t>(run->memory);
+        if (hostAddress - (start - guardBefore) >= guardBefore + run->length + guardAfter) continue;
+        address = hostAddress - (start - run->guest);
+        if (inRun) *inRun = hostAddress - start < run->length;
+        return true;
+    }
+    for (const auto& piece : retired_) {
+        const uint64_t start = reinterpret_cast<uint64_t>(piece.memory);
+        if (hostAddress - start >= piece.length) continue;
+        address = hostAddress - (start - piece.guest);
+        return true;
+    }
     return false;
 }
 
 bool GuestSpace::copyIn(uint64_t address, const void* from, uint64_t length) {
+    makePrivate(address, length);
     for (uint64_t done = 0; done < length;) {
         if (!touch(address + done)) return false;
         const uint64_t part = std::min(contiguous(address + done, length - done), chunk - ((address + done) & (chunk - 1)));

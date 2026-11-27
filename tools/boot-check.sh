@@ -47,6 +47,10 @@ for start in 1 2 3 4 5 6; do
         xcrun devicectl device copy from --device $device --domain-type appDataContainer --domain-identifier $bundle \
             --source Documents/$file --destination $out/$file > /dev/null 2>&1
     done
+    if head -1 $out/boot-milestones.txt 2>/dev/null | grep -q 'low power mode'; then
+        echo "start $start: the device is in Low Power Mode, which slows it; turn that off and run this again"
+        exit 2
+    fi
     thermal=$(head -1 $out/boot-milestones.txt 2>/dev/null | sed 's/.*thermal //')
     if [[ "$thermal" != "nominal → nominal" ]]; then
         echo "start $start: thermal state '$thermal'; let the device cool down and run this again"

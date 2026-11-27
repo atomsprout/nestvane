@@ -891,6 +891,9 @@ struct SpaceMemory {
         address &= 0x00ff'ffff'ffff'ffffULL; // top byte ignored, as Android's tagged pointers have it
         if (address >= GuestSpace::size || size > GuestSpace::page - (address & (GuestSpace::page - 1))) return nullptr;
         if (!space.mapped(address) || !(space.protection(address) & access) || !space.backed(address)) return nullptr;
+        // Memory shared with another process is not written here: giving this one its own copy changes
+        // the space, which only the main loop does.
+        if ((access & GuestSpace::write) && space.shared(address)) return nullptr;
         return space.host(address);
     }
     bool load(uint64_t address, unsigned size, uint64_t& value) {

@@ -2073,9 +2073,12 @@ static bool ApkContent(NSData* data) {
                           encoding:NSUTF8StringEncoding error:nil];
         NSURL* outputURL = [documents URLByAppendingPathComponent:@"validation.txt"];
         const auto exportReport = [&](NSURL* destination, const std::string& output) {
-            NSString* report = [NSString stringWithFormat:@"%@ %@ | process %d | thermal %@ → %@\n%@",
+            // Low Power Mode slows the processor by well over a third: a start measured in it says nothing
+            // (tools/boot-check.sh refuses one).
+            NSString* report = [NSString stringWithFormat:@"%@ %@ | process %d | thermal %@ → %@%@\n%@",
                 platform, UIDevice.currentDevice.systemVersion, NSProcessInfo.processInfo.processIdentifier,
-                before, ThermalState(), [NSString stringWithUTF8String:output.c_str()]];
+                before, ThermalState(), NSProcessInfo.processInfo.lowPowerModeEnabled ? @" | low power mode" : @"",
+                [NSString stringWithUTF8String:output.c_str()]];
             NSError* error = nil;
             if (![report writeToURL:destination atomically:YES encoding:NSUTF8StringEncoding error:&error])
                 NSLog(@"Unable to export report: %@", error);

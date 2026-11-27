@@ -35,7 +35,25 @@ public:
     GuestSpace& operator=(const GuestSpace&) = delete;
 
     // A copy for a forked process: every run and the tables are copied on write.
-    std::unique_ptr<GuestSpace> fork() const;
+    //
+    // With `shareable` (one flag per megabyte of guest addresses), the megabytes flagged are first
+    // moved to host memory that this space and the copy both point at, read-only to the host, so
+    // that the two do not each reserve host addresses for them. The caller flags megabytes that hold
+    // nothing a program may write and nothing a thread's stack pointer can be in: mappings of files
+    // that are private and not writable. A megabyte stays shared until one side changes what is
+    // mapped there or writes to it (makePrivate); the other side keeps the shared memory.
+    std::unique_ptr<GuestSpace> fork(const std::vector<bool>* shareable = nullptr);
+    // Whether the megabyte of an address is in memory shared with another space.
+    bool shared(uint64_t address) const {
+        const uint64_t index = address >> chunkShift;
+        return !sharedBits_.empty() && index < chunks && (sharedBits_[index / 8] >> (index % 8) & 1);
+    }
+    // Gives this space host memory of its own for the shared megabytes of a range, with what the
+    // shared memory holds. Must be called before the host writes there or changes a mapping there.
+    // Throws std::bad_alloc when the host has no addresses for it.
+    void makePrivate(uint64_t address, uint64_t length);
+    uint64_t sharedBytes() const { return sharedChunks_ << chunkShift; }
+    uint64_t madePrivate() const { return madePrivate_; }
 
     // The table rewritten code indexes: one offset per chunk.
     const uint64_t* offsets() const { return offsets_; }
@@ -116,6 +134,11 @@ public:
     // The same for one range of guest addresses.
     Usage usage(uint64_t address, uint64_t length) const;
     size_t runCount() const { return runs_.size(); }
+    // How much of the host memory holds nothing a program may write, in megabytes: in runs that are
+    // so as a whole, and counted megabyte by megabyte. Such memory could be one for a process and
+    // the processes forked from it.
+    struct ReadOnly { uint64_t runs = 0, chunks = 0, all = 0; };
+    ReadOnly readOnly() const;
 
 private:
     struct Run { uint64_t guest, length; uint8_t* memory; };
@@ -141,6 +164,27 @@ private:
     bool interpreted_ = false;
     struct { uint64_t start = 0, length = 0; } linker_;
     uint64_t reserved_ = 0;
+
+    // Host memory that several spaces point at, unmapped when the last of them goes.
+    struct SharedRun {
+        uint64_t guest, length;
+        uint8_t* memory;
+        ~SharedRun();
+    };
+    // Host addresses this space used for megabytes it then moved to shared memory. They stay reserved
+    // and without access: a thread that still holds an address there faults and is found a guest address.
+    struct Retired { uint64_t guest, length; uint8_t* memory; };
+    std::vector<std::shared_ptr<SharedRun>> shared_;
+    std::vector<Retired> retired_;
+    std::vector<uint8_t> sharedBits_; // one bit per megabyte, empty until something is shared
+    uint64_t sharedChunks_ = 0, madePrivate_ = 0;
+    void share(const std::vector<bool>& eligible);
+    void retire(uint64_t guest, uint64_t length);
+    void setShared(uint64_t index, bool on);
+    void applyProtection(uint64_t guest, uint64_t length, bool readOnly);
+    // Before a mapping in a range changes: shared megabytes the range covers whole are let go of
+    // (when `drop`), the others are made private.
+    void detach(uint64_t address, uint64_t length, bool drop);
 };
 
 } // namespace nestvane

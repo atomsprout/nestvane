@@ -7212,7 +7212,58 @@ bool ProbeLinux::forkProcess(Machine& machine) {
         roomTested = true;
         if (!endCachedAppForRoom()) return retry("guest address space (test)", 0);
     }
-    for (int attempt = 0; machine.space && !(childSpace = machine.space->fork()); ++attempt)
+    // The megabytes parent and child can have as one piece of host memory (GuestSpace::fork): those
+    // every mapping in which is of a file, private and not writable. Code and read-only data of the
+    // system's libraries, the boot image's compiled code, fonts and packages are most of a process
+    // forked from zygote. Anonymous memory is left out even when it is not writable now: it may be
+    // made writable and become a thread's stack, and a stack pointer is a host address.
+    // NESTVANE_TEST_NO_SHARE=1 leaves all of it as before, for comparison.
+    std::vector<bool> shareable;
+    if (static const bool off = std::getenv("NESTVANE_TEST_NO_SHARE"); machine.space && !off) {
+        std::vector<bool> refused(GuestSpace::chunks);
+        shareable.assign(GuestSpace::chunks, false);
+        for (const auto& segment : machine.segments) {
+            const uint64_t size = segment.mappedSize();
+            if (!size || segment.address >= GuestSpace::size) continue;
+            const bool fits = !(segment.flags & 2) && !segment.anonymous && !segment.shared && !segment.initialStack &&
+                              !segment.omitOnFork && !segment.wipeOnFork;
+            for (uint64_t chunk = segment.address >> GuestSpace::chunkShift;
+                 chunk <= (segment.address + size - 1) >> GuestSpace::chunkShift && chunk < GuestSpace::chunks; ++chunk) {
+                if (fits) shareable[chunk] = true;
+                else refused[chunk] = true;
+            }
+        }
+        // NESTVANE_TEST_SHARE_REPORT=1: for each fork, what kept megabytes from being shared.
+        if (static const bool report = std::getenv("NESTVANE_TEST_SHARE_REPORT"); report && androidLogObserver) {
+            std::vector<uint8_t> why(GuestSpace::chunks);
+            for (const auto& segment : machine.segments) {
+                const uint64_t size = segment.mappedSize();
+                if (!size || segment.address >= GuestSpace::size) continue;
+                const uint8_t reason = (segment.flags & 2 ? 1 : 0) | (segment.shared ? 2 : 0) |
+                                       (segment.anonymous && !(segment.flags & 2) && !segment.shared ? 4 : 0);
+                for (uint64_t chunk = segment.address >> GuestSpace::chunkShift;
+                     chunk <= (segment.address + size - 1) >> GuestSpace::chunkShift && chunk < GuestSpace::chunks; ++chunk)
+                    why[chunk] |= reason | 8;
+            }
+            uint64_t fit = 0, writable = 0, sharedOnly = 0, anonymousOnly = 0, backed = 0;
+            for (uint64_t chunk = 0; chunk < GuestSpace::chunks; ++chunk) {
+                if (!why[chunk] || !machine.space->backed(chunk << GuestSpace::chunkShift)) continue;
+                ++backed;
+                if (why[chunk] & 1) ++writable;
+                else if (why[chunk] & 2) ++sharedOnly;
+                else if (why[chunk] & 4) ++anonymousOnly;
+                else ++fit;
+            }
+            androidLogObserver("Nestvane: fork of PID " + std::to_string(processId()) + ": megabytes with host memory " +
+                               std::to_string(backed) + ", shareable " + std::to_string(fit) + ", with something writable " +
+                               std::to_string(writable) + ", not writable but a shared mapping " + std::to_string(sharedOnly) +
+                               ", not writable but anonymous " + std::to_string(anonymousOnly) + "; already shared " +
+                               std::to_string(machine.space->sharedBytes() >> 20));
+        }
+        for (uint64_t chunk = 0; chunk < GuestSpace::chunks; ++chunk)
+            if (refused[chunk]) shareable[chunk] = false;
+    }
+    for (int attempt = 0; machine.space && !(childSpace = machine.space->fork(shareable.empty() ? nullptr : &shareable)); ++attempt)
         if (attempt == 4 || !endCachedAppForRoom()) return retry("guest address space", 0);
     child.process->space = childSpace;
     if (childSpace) {
@@ -9168,6 +9219,7 @@ std::string ProbeLinux::memoryReport(const Machine& machine) const {
         struct Reserved { uint64_t pid, bytes; int adjustment; std::string name; };
         std::vector<Reserved> reserved;
         uint64_t all = 0;
+        uint64_t sharedAll = 0, madePrivateAll = 0;
         for (const auto& [id, process] : processes) {
             const auto* space = process == current->process.get() ? machine.space.get() : process->space.get();
             if (!space) continue;
@@ -9177,9 +9229,13 @@ std::string ProbeLinux::memoryReport(const Machine& machine) const {
                             strnlen(reinterpret_cast<const char*>(main->second.name.data()), main->second.name.size()));
             reserved.push_back({id, space->reservedBytes(), process->oomScoreAdjustment, std::move(name)});
             all += reserved.back().bytes;
+            sharedAll += space->sharedBytes();
+            madePrivateAll += space->madePrivate();
         }
         std::sort(reserved.begin(), reserved.end(), [](const Reserved& a, const Reserved& b) { return a.bytes > b.bytes; });
-        out << "  host address space reserved by guest processes: " << all / MiB << " MiB; " << hostMemoryState() << "\n   ";
+        out << "  host address space reserved by guest processes: " << all / MiB << " MiB; " << hostMemoryState()
+            << "; megabytes they point at in shared memory " << sharedAll / MiB << " (counted in each), made their own since "
+            << madePrivateAll << "\n   ";
         for (const auto& row : reserved)
             out << " " << row.name << "(" << row.pid << "," << row.adjustment << "):" << row.bytes / MiB;
         out << "\n";
@@ -9188,6 +9244,7 @@ std::string ProbeLinux::memoryReport(const Machine& machine) const {
     // a page the process itself wrote.
     if (const char* wanted = std::getenv("NESTVANE_MEMORY_DETAIL"); wanted && std::string_view(wanted) == "all") {
         uint64_t allBacked = 0, allWritten = 0;
+        uint64_t allReadOnlyRuns = 0, allReadOnlyChunks = 0;
         out << "  megabytes written of megabytes with host memory, by process:";
         for (const auto& [id, process] : processes) {
             const auto* space = process == current->process.get() ? machine.space.get() : process->space.get();
@@ -9202,11 +9259,33 @@ std::string ProbeLinux::memoryReport(const Machine& machine) const {
             if (const auto main = threads.find(id); main != threads.end())
                 name.assign(reinterpret_cast<const char*>(main->second.name.data()),
                             strnlen(reinterpret_cast<const char*>(main->second.name.data()), main->second.name.size()));
-            out << " " << name << ":" << written << "/" << backedAll;
+            // The megabytes no mapping of which the program may write (by the mappings' own
+            // permissions: the host memory behind them is always writable), and of those the ones
+            // that also have nothing mapped shared.
+            std::vector<bool> writable(GuestSpace::chunks), sharedMapping(GuestSpace::chunks);
+            for (const auto& segment : process == current->process.get() ? machine.segments : process->segments) {
+                const uint64_t size = segment.mappedSize();
+                if (!size || segment.address >= GuestSpace::size) continue;
+                for (uint64_t chunk = segment.address >> GuestSpace::chunkShift;
+                     chunk <= (segment.address + size - 1) >> GuestSpace::chunkShift && chunk < GuestSpace::chunks; ++chunk) {
+                    if (segment.flags & 2) writable[chunk] = true;
+                    if (segment.shared) sharedMapping[chunk] = true;
+                }
+            }
+            uint64_t readOnlyChunks = 0, readOnlyPrivate = 0;
+            for (uint64_t chunk = 0; chunk < GuestSpace::chunks; ++chunk) {
+                if (writable[chunk] || !space->backed(chunk << GuestSpace::chunkShift)) continue;
+                ++readOnlyChunks;
+                if (!sharedMapping[chunk]) ++readOnlyPrivate;
+            }
+            out << " " << name << ":" << written << "/" << backedAll << "(ro " << readOnlyChunks << ", ro private " << readOnlyPrivate << ")";
+            allReadOnlyRuns += readOnlyPrivate;
+            allReadOnlyChunks += readOnlyChunks;
             allBacked += backedAll;
             allWritten += written;
         }
-        out << "\n  in all " << allWritten << " of " << allBacked << " MiB\n";
+        out << "\n  in all " << allWritten << " of " << allBacked << " MiB; megabytes with nothing writable " << allReadOnlyChunks
+            << " MiB, of which with no shared mapping either " << allReadOnlyRuns << " MiB\n";
         return out.str();
     }
     // NESTVANE_MEMORY_DETAIL=<part of a program's path>: the mappings of the first such process.
