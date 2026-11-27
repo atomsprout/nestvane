@@ -8453,7 +8453,10 @@ void ProbeLinux::recallNativeThreads(const Process* process) {
 }
 
 bool ProbeLinux::heldApp(const Thread& thread) const {
-    return thread.process->context.starts_with("u:r:untrusted_app");
+    // And the codec service for the phone's video decoders: started with the other services it took
+    // about 0.6 s from the start on an iPhone 14 (9288 ms to the home screen against 8727). Whoever
+    // asks for the list of codecs before the home screen is shown waits for it.
+    return thread.process->context.starts_with("u:r:untrusted_app") || thread.process->context == "u:r:mediacodec:s0";
 }
 
 bool ProbeLinux::currentIsApp() const { return heldApp(*current); }
