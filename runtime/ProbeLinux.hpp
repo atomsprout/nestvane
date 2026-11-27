@@ -271,6 +271,11 @@ struct ProbeLinux {
     // Apps the user installed do not run until the home screen is shown (the starter clears this) or
     // half a minute has passed. NESTVANE_HOLD_APPS=0 turns it off.
     std::atomic_bool appsHeld{!std::getenv("NESTVANE_HOLD_APPS") || std::string_view(std::getenv("NESTVANE_HOLD_APPS")) != "0"};
+    // With NESTVANE_TEST_PIPE_NOTES: the thread that was handed a dump transaction, whose system calls
+    // are then logged for a moment (DynamicProbe), and until when.
+    uint64_t tracedThread = 0;
+    unsigned tracedCalls = 0;
+    std::chrono::steady_clock::time_point tracedUntil{};
     // Told of each file of the system image that the guest opens, by where its bytes are: which files a
     // start comes to first is what they are read in ahead by (ios/CodePrefetch.hpp).
     void (*imageOpened)(const uint8_t* data) = nullptr;

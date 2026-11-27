@@ -5263,6 +5263,35 @@ int main() {
     assert(call(145, {UINT32_MAX, 0}) == 0 && call(175) == 0);
     assert(call(143, {0, 0}) == 0 && call(145, {0, 0}) == 0);
     {
+        // A buffer that lies across two mappings is read whole by a write call. It used to fail with
+        // EFAULT: system_server's dump of its activities, written 8 KiB at a time from the heap, now and
+        // then came out empty when a piece straddled two of the allocator's mappings.
+        ProbeLinux spanning(1, 0);
+        Machine spanningMachine(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
+        const auto invoke = [&](uint64_t number, std::array<uint64_t, 6> args = {}) {
+            std::copy(args.begin(), args.end(), spanningMachine.cpu.x.begin());
+            spanningMachine.cpu.x[8] = number;
+            assert(spanning.syscall(spanningMachine));
+            return spanningMachine.cpu.x[0];
+        };
+        const auto area = invoke(222, {0, 2 * pageSize, 3, 0x22, uint64_t(-1), 0});
+        assert(area < (uint64_t{1} << 45));
+        std::array<uint8_t, 200> pattern{}, back{};
+        for (size_t i = 0; i < pattern.size(); ++i) pattern[i] = uint8_t(i * 7 + 1);
+        assert(spanningMachine.write(area + pageSize - 100, pattern));
+        // The second page becomes a mapping of its own.
+        assert(invoke(226, {area + pageSize, pageSize, 1}) == 0);
+        assert(invoke(59, {base + 512, 0}) == 0);
+        std::array<uint32_t, 2> ends{};
+        assert(spanningMachine.readInto(base + 512, {reinterpret_cast<uint8_t*>(ends.data()), sizeof(ends)}));
+        assert(invoke(64, {ends[1], area + pageSize - 100, pattern.size()}) == pattern.size());
+        assert(invoke(63, {ends[0], base + 1024, pattern.size()}) == pattern.size());
+        assert(spanningMachine.readInto(base + 1024, back) && back == pattern);
+        // What is not mapped at all is still a fault.
+        assert(invoke(215, {area + pageSize, pageSize}) == 0);
+        assert(invoke(64, {ends[1], area + pageSize - 100, pattern.size()}) == uint64_t(-14));
+    }
+    {
         ProbeLinux guarded(1, 0);
         Machine guardedMachine(Image{base, {{base, std::vector<uint8_t>(pageSize), 6}}, {}});
         const auto invoke = [&](uint64_t number, std::array<uint64_t, 6> args = {}) {

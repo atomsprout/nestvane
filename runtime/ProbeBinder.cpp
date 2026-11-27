@@ -824,6 +824,20 @@ uint64_t ProbeLinux::binderWriteRead(Machine& machine, const Descriptor& fd) {
     if (requestLooper) connection.looperRequested = true;
     if (size >= sizeof(BinderTransaction)) {
         const auto offset = next.transaction.buffer - connection.address;
+        // IBinder::DUMP_TRANSACTION, '_DMP': the service writes its dump into the descriptor it is handed.
+        if (next.transaction.code == 0x5f444d50 && next.command != brReply) {
+            static const bool wanted = std::getenv("NESTVANE_TEST_PIPE_NOTES");
+            if (wanted) {
+                std::string numbers;
+                for (const auto number : fileNumbers) numbers += " " + std::to_string(number);
+                notePipeOddity("Binder: dump handed to tid " + std::to_string(currentTid) + " with " +
+                               std::to_string(next.files.size()) + " files, as descriptors" + numbers + " (" +
+                               std::to_string(descriptors().size()) + " open, limit " + std::to_string(descriptorLimit()) + ")");
+                tracedThread = currentTid;
+                tracedCalls = 0;
+                tracedUntil = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+            }
+        }
         for (size_t i = 0; i < next.files.size(); ++i) {
             auto& file = *next.files[i].file;
             file.flags |= closeOnExec;

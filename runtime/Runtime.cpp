@@ -1179,7 +1179,19 @@ const uint8_t* Machine::read(uint64_t address, size_t size, unsigned flags,
     if (const auto* bytes = read(address, size, flags)) return bytes;
     if (!(flags & executable)) address = dataAddress(address);
     const auto index = findSegment(address, size, flags, flags & executable ? codeHint : dataHint);
-    if (index == segments.size() || !segments[index].anonymousPages) return nullptr;
+    if (index == segments.size()) {
+        // No one mapping holds all of it. Bytes that lie across two or more mappings, each of which may
+        // be read, are gathered from them: a buffer on the heap straddles two of the allocator's
+        // mappings now and then, and a write call given such a buffer failed with EFAULT.
+        if ((flags & executable) || !size || !mappedRange(address, size, flags)) return nullptr;
+        try {
+            scratch.resize(size);
+        } catch (const std::bad_alloc&) {
+            return nullptr;
+        }
+        return readInto(address, scratch) ? scratch.data() : nullptr;
+    }
+    if (!segments[index].anonymousPages) return nullptr;
     const auto& segment = segments[index];
     try {
         scratch.resize(size);

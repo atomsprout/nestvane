@@ -851,6 +851,18 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
                     const auto path = (syscall == 203 || syscall == 200) ? pathArgument(machine, callArguments[1] + 2) : std::string();
                     linux.androidLogObserver(path.empty() ? std::string(line) : std::string(line) + " " + path);
                 }
+                // The system calls of a thread that was just handed a dump (ProbeLinux::tracedThread).
+                if (linux.tracedThread && linux.tracedThread == linux.threadId() && linux.androidLogObserver) {
+                    if (linux.tracedCalls++ >= 120 || steady_clock::now() > linux.tracedUntil) linux.tracedThread = 0;
+                    else {
+                        char line[200];
+                        std::snprintf(line, sizeof(line), "Nestvane: pipe: dump thread call %llu(0x%llx, 0x%llx, 0x%llx) -> 0x%llx%s",
+                                      static_cast<unsigned long long>(syscall), static_cast<unsigned long long>(callArguments[0]),
+                                      static_cast<unsigned long long>(callArguments[1]), static_cast<unsigned long long>(callArguments[2]),
+                                      static_cast<unsigned long long>(cpu.x[0]), linux.blocked() ? " (waits)" : "");
+                        linux.androidLogObserver(line);
+                    }
+                }
                 // NESTVANE_TRACE_DENIED=1: the calls that end in "permission denied", with where the path leads.
                 if (static const bool traced = std::getenv("NESTVANE_TRACE_DENIED"); traced && cpu.x[0] == uint64_t(-13) && linux.androidLogObserver) {
                     const auto path = pathArgument(machine, cpu.x[1]);
