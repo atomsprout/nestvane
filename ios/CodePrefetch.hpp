@@ -91,14 +91,16 @@ inline unsigned threadCount(unsigned which, unsigned fallback) {
     return asked >= 1 && asked <= 64 ? asked : fallback;
 }
 
-// What is done with a stretch of a file that the system holds in memory already: it is left alone.
-// NESTVANE_PREFETCH_HELD=copy reads it all the same (as before 1.24), =touch reads a byte of each of
-// its pages through a mapping. Starts in turn on an iPhone 14, files in memory: left alone 7302-7473 ms
-// (median 7465), read 7408-7643 (7534), touched 7670-8373 (7757, and more pages read from storage).
+// What is done with a stretch of a file that the system holds in memory already: it is read all the
+// same, as before 1.24. NESTVANE_PREFETCH_HELD=skip leaves it alone and =touch reads a byte of each
+// of its pages through a mapping. Left alone looked best when the three took turns (median 7465 ms
+// against 7534 read and 7757 touched), but with every start leaving them alone the pages a start read
+// from storage crept up (32,000 to 37,000) and the starts got slower (7.5-8.1 s): being read again
+// at each start is part of what keeps these pages in the system's memory.
 inline int heldMode() {
     static const int mode = [] {
         const char* text = std::getenv("NESTVANE_PREFETCH_HELD");
-        return !text ? 1 : !std::strcmp(text, "copy") ? 0 : !std::strcmp(text, "touch") ? 2 : 1;
+        return !text ? 0 : !std::strcmp(text, "skip") ? 1 : !std::strcmp(text, "touch") ? 2 : 0;
     }();
     return mode;
 }
