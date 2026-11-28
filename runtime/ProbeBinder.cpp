@@ -689,7 +689,8 @@ uint64_t ProbeLinux::binderCommand(Machine& machine, const Descriptor& fd, uint3
     }
     if (replying) outstanding.pop_back();
     notices.push_back({brComplete});
-    wakeBinderPollers();
+    // The work is the target's, the notices this process's own.
+    wakeBinderPollers(target->owner, processId());
     return 0;
 }
 

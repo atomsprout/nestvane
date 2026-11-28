@@ -6219,8 +6219,16 @@ uint64_t ProbeLinux::map(Machine& machine) {
     // Element X, Firefox, Proton VPN); anywhere else the whole process had to be interpreted.
     // And reservations with no access of a library's size, which loaders of their own map a library over
     // (WeChat's libilink2.so and libXNet.so, 27 MB). Arenas of allocators and runtimes are larger and stay where they were.
+    // Not what the C library reserves for each thread, though, over which nothing is ever mapped: the
+    // thread's stack (reserved with MAP_NORESERVE) and the 16 MiB around its shadow call stack
+    // (SCS_GUARD_REGION_SIZE in bionic's pthread_create.cpp, without access, of which 16 KiB become the
+    // stack). Up to 1.24 these went here too: an app with 48 threads had 772 MiB of the range's 1024
+    // taken by them, its libraries found no room, and the whole process was interpreted (Signal opened
+    // one time in seven).
+    constexpr uint64_t shadowStackGuard = 16 * 1024 * 1024;
     const bool trampolineShape = anon && ((length == 2 * pageSize && ((x[2] & 7) == 0 || (x[2] & 7) == 3)) ||
-                                          (!(x[2] & 7) && length <= 64 * 1024 * 1024));
+                                          (!(x[2] & 7) && length <= 64 * 1024 * 1024 && !(x[3] & noReserve) &&
+                                           length != shadowStackGuard));
     const uint64_t forLibrary = !atAddress && !lowHint && machine.space && !machine.space->interpreted() &&
         ((anon && !(x[2] & 7) && machine.space->inLinker(machine.cpu.pc)) || (native::enabled() && trampolineShape))
         ? freeForeignAddress(machine, length) : 0;
@@ -6511,6 +6519,39 @@ uint64_t ProbeLinux::map(Machine& machine) {
                                    (inPlace ? ") interprets code without a translation in place: " :
                                               ") is interpreted from here on, it maps code without a translation in place: ") +
                                    name + where + replaced + (known ? ", translated for another address" : ""));
+            }
+            // What the range near the translated code holds when a library found no room in it.
+            if (!inPlace && !machine.space->interpreted() && androidLogObserver) {
+                uint64_t bytes[4] = {}, counts[4] = {}, largestGap = 0, last = native::foreignLow;
+                uint64_t sizes[5] = {}, sizeCounts[5] = {};
+                for (const auto& segment : machine.segments) {
+                    const uint64_t from = segment.address, to = segment.address + segment.mappedSize();
+                    if (to <= native::foreignLow || from >= native::foreignHigh) continue;
+                    largestGap = std::max(largestGap, from > last ? from - last : 0);
+                    last = std::max(last, to);
+                    const int kind = !segment.anonymous ? 3 : (segment.flags & 7) ? (to - from <= 2 * pageSize ? 1 : 2) : 0;
+                    bytes[kind] += to - from;
+                    ++counts[kind];
+                    if (!kind) {
+                        const uint64_t size = to - from;
+                        const int bucket = size <= 64 * 1024 ? 0 : size <= 1024 * 1024 ? 1 : size <= 4 * 1024 * 1024 ? 2 :
+                                           size <= 16 * 1024 * 1024 ? 3 : 4;
+                        sizes[bucket] += size;
+                        ++sizeCounts[bucket];
+                    }
+                }
+                largestGap = std::max(largestGap, native::foreignHigh > last ? native::foreignHigh - last : 0);
+                androidLogObserver("native execution: the range for code without a translation, pid " + std::to_string(processId()) +
+                                   ": anonymous without access " + std::to_string(bytes[0] >> 20) + " MiB in " + std::to_string(counts[0]) +
+                                   ", anonymous of two pages " + std::to_string(bytes[1] >> 10) + " KiB in " + std::to_string(counts[1]) +
+                                   ", other anonymous " + std::to_string(bytes[2] >> 20) + " MiB in " + std::to_string(counts[2]) +
+                                   ", of files " + std::to_string(bytes[3] >> 20) + " MiB in " + std::to_string(counts[3]) +
+                                   "; largest gap " + std::to_string(largestGap >> 10) + " KiB; those without access by size, up to 64 KiB " +
+                                   std::to_string(sizes[0] >> 20) + " MiB in " + std::to_string(sizeCounts[0]) + ", to 1 MiB " +
+                                   std::to_string(sizes[1] >> 20) + " in " + std::to_string(sizeCounts[1]) + ", to 4 MiB " +
+                                   std::to_string(sizes[2] >> 20) + " in " + std::to_string(sizeCounts[2]) + ", to 16 MiB " +
+                                   std::to_string(sizes[3] >> 20) + " in " + std::to_string(sizeCounts[3]) + ", larger " +
+                                   std::to_string(sizes[4] >> 20) + " in " + std::to_string(sizeCounts[4]));
             }
             if (!inPlace) machine.space->dropCode();
             if (static const bool report = std::getenv("NESTVANE_NATIVE_TRACE"); report) {
@@ -9179,9 +9220,11 @@ bool ProbeLinux::readInotify(Machine& machine, const Descriptor& fd) {
     return true;
 }
 
-void ProbeLinux::wakePollers(const EventState* changedEvent, bool binderOnly, const SocketState* readableSocket) {
+void ProbeLinux::wakePollers(const EventState* changedEvent, bool binderOnly, const SocketState* readableSocket,
+                             const std::array<uint64_t, 2>* onlyProcesses) {
     for (auto& [tid, thread] : threads) {
         if (thread.wait != Wait::poll) continue;
+        if (onlyProcesses && thread.process->id != (*onlyProcesses)[0] && thread.process->id != (*onlyProcesses)[1]) continue;
         if (readableSocket) {
             const auto poller = thread.waitingEpoll.lock();
             // A Unix socket send makes only its peer readable.

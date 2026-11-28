@@ -404,8 +404,14 @@ private:
     unsigned wakeFutex(uint64_t address, unsigned count, uint32_t mask,
                        const std::shared_ptr<SharedFileBytes>& backing = {});
     void wakePollers(const EventState* changedEvent = nullptr, bool binderOnly = false,
-                     const SocketState* readableSocket = nullptr);
+                     const SocketState* readableSocket = nullptr, const std::array<uint64_t, 2>* onlyProcesses = nullptr);
     void wakeBinderPollers() { wakePollers(nullptr, true); }
+    // The same when the work is for one process and the notices for another: only their threads are
+    // looked at. A transaction looked at every waiting thread of every process, a tenth of a second of a start.
+    void wakeBinderPollers(uint64_t one, uint64_t other) {
+        const std::array<uint64_t, 2> only{one, other};
+        wakePollers(nullptr, true, nullptr, &only);
+    }
     bool waitForEvents();
     bool waitForHostEvents();
     bool poll(Machine& machine);
