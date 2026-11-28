@@ -7350,6 +7350,26 @@ bool ProbeLinux::forkProcess(Machine& machine) {
                      chunk <= (segment.address + size - 1) >> GuestSpace::chunkShift && chunk < GuestSpace::chunks; ++chunk)
                     why[chunk] |= reason | 8;
             }
+            // Of the megabytes that have something writable: how many of their pages are of mappings
+            // that are not writable (what sharing by the page instead of by the megabyte could add).
+            std::vector<uint32_t> readOnlyBytes(GuestSpace::chunks), writableBytes(GuestSpace::chunks);
+            for (const auto& segment : machine.segments) {
+                const uint64_t size = segment.mappedSize();
+                if (!size || segment.address >= GuestSpace::size) continue;
+                const bool sharable = !(segment.flags & 2) && !segment.shared && !segment.initialStack;
+                for (uint64_t at = segment.address; at < segment.address + size && at < GuestSpace::size;) {
+                    const uint64_t chunk = at >> GuestSpace::chunkShift;
+                    const uint64_t until = std::min(segment.address + size, (chunk + 1) << GuestSpace::chunkShift);
+                    (sharable ? readOnlyBytes : writableBytes)[chunk] += uint32_t(until - at);
+                    at = until;
+                }
+            }
+            uint64_t mixedReadOnly = 0, mixedWritable = 0;
+            for (uint64_t chunk = 0; chunk < GuestSpace::chunks; ++chunk)
+                if ((why[chunk] & 1) && machine.space->backed(chunk << GuestSpace::chunkShift)) {
+                    mixedReadOnly += readOnlyBytes[chunk];
+                    mixedWritable += writableBytes[chunk];
+                }
             uint64_t fit = 0, writable = 0, sharedOnly = 0, anonymousOnly = 0, backed = 0;
             for (uint64_t chunk = 0; chunk < GuestSpace::chunks; ++chunk) {
                 if (!why[chunk] || !machine.space->backed(chunk << GuestSpace::chunkShift)) continue;
@@ -7363,7 +7383,9 @@ bool ProbeLinux::forkProcess(Machine& machine) {
                                std::to_string(backed) + ", shareable " + std::to_string(fit) + ", with something writable " +
                                std::to_string(writable) + ", not writable but a shared mapping " + std::to_string(sharedOnly) +
                                ", not writable but anonymous " + std::to_string(anonymousOnly) + "; already shared " +
-                               std::to_string(machine.space->sharedBytes() >> 20));
+                               std::to_string(machine.space->sharedBytes() >> 20) + "; in those with something writable, MiB of " +
+                               "mappings that are not writable " + std::to_string(mixedReadOnly >> 20) + ", writable " +
+                               std::to_string(mixedWritable >> 20));
         }
         for (uint64_t chunk = 0; chunk < GuestSpace::chunks; ++chunk)
             if (refused[chunk]) shareable[chunk] = false;

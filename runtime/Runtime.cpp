@@ -1,6 +1,7 @@
 #include "Runtime.hpp"
 
 #include <atomic>
+#include <map>
 #include "NativeCode.hpp"
 
 #include <algorithm>
@@ -348,6 +349,37 @@ Image loadELF(std::span<const uint8_t> elf, uint64_t bias) {
     return readELF(elf, bias, ImageKind::staticExecutable).image;
 }
 
+namespace {
+
+// A segment of a known program that is never written (its code, its constants) is kept once, in host
+// pages of its own, and every process that runs the program maps those copy-on-write
+// (Machine::placeInSpace). Up to 1.24 each exec copied the program's and the dynamic linker's segments
+// into the new process: 258 MiB in the first 25 seconds of a start, and that much memory of the
+// processes' own. `key` says which file's bytes these are (a translated file's content key).
+// NESTVANE_TEST_COPY_MAPPINGS=1 copies as before, for comparing.
+void keepOnce(Segment& segment, uint64_t key) {
+    static const bool copy = std::getenv("NESTVANE_TEST_COPY_MAPPINGS");
+    const uint64_t size = segment.bytes.size();
+    if (copy || (segment.flags & writable) || !size || size % GuestSpace::page || segment.address % GuestSpace::page) return;
+    static std::mutex lock;
+    static std::map<std::pair<uint64_t, uint64_t>, std::pair<const uint8_t*, uint64_t>> kept;
+    const std::lock_guard guard(lock);
+    auto& entry = kept[{key, segment.address}];
+    if (!entry.first) {
+        void* memory = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+        if (memory == MAP_FAILED) return;
+        std::memcpy(memory, segment.bytes.data(), size);
+        mprotect(memory, size, PROT_READ);
+        entry = {static_cast<const uint8_t*>(memory), size};
+    }
+    if (entry.second != size) return;
+    segment.imageView = entry.first;
+    segment.reservedSize = size;
+    segment.bytes = {};
+}
+
+}  // namespace
+
 Image loadDynamicELF(std::span<const uint8_t> elf, std::span<const uint8_t> linker,
                      std::string_view guestFilename, std::string_view interpreterPath,
                      std::vector<std::string> arguments, uint64_t uid) {
@@ -363,6 +395,7 @@ Image loadDynamicELF(std::span<const uint8_t> elf, std::span<const uint8_t> link
     }
     auto interpreter = readELF(linker, interpreterBase, ImageKind::interpreter);
     auto& image = interpreter.image;
+    const size_t ofLinker = image.segments.size();
     for (auto& segment : program.image.segments) {
         for (const auto& existing : image.segments) {
             if (segment.address < existing.address + existing.bytes.size() &&
@@ -372,6 +405,9 @@ Image loadDynamicELF(std::span<const uint8_t> elf, std::span<const uint8_t> link
         }
         image.segments.push_back(std::move(segment));
     }
+    // What is known by its content (a translated file) keeps its unwritten segments once.
+    for (size_t index = 0; index < image.segments.size(); ++index)
+        if (const auto* module = index < ofLinker ? nativeLinker : nativeProgram) keepOnce(image.segments[index], module->key);
     image.startup = Startup{program.image.entry, interpreterBase, program.programHeaders,
                             program.programHeaderSize, program.programHeaderCount, std::string(guestFilename),
                             std::move(arguments), uid};
@@ -400,7 +436,7 @@ Machine::Machine(const Image& image, const std::shared_ptr<AnonymousBudget>& bud
     if (!stackSize || stackSize % pageSize || stackSize > maxGuestStackSize)
         throw std::runtime_error("invalid guest stack size");
     for (const auto& segment : segments) {
-        if (segment.address < stackTop && stackTop - stackSize < segment.address + segment.bytes.size()) {
+        if (segment.address < stackTop && stackTop - stackSize < segment.address + segment.mappedSize()) {
             throw std::runtime_error("ELF overlaps the guest stack");
         }
     }

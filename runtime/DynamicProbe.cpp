@@ -156,7 +156,7 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
     uint64_t inPlaceInstructions = 0, inPlaceStretched = 0;
     steady_clock::duration inPlaceTime{};
     std::array<std::pair<steady_clock::duration, uint64_t>, 512> syscallCost{};
-    uint64_t timedCalls = 0;
+    uint64_t timedCalls = 0, clockRounds = 0, scheduleRounds = 0;
     const auto timeReport = [&] {
         std::ostringstream out;
         out << "  host thread time: " << duration_cast<milliseconds>(syscallTime).count() << " ms in system calls, "
@@ -473,7 +473,10 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
                     }
                 }
             } else if (cpu.stop != Stop::running) break;
-            if (init && (linux.blocked() || !(cpu.retired & 4095))) {
+            // The clock is looked at when no thread could run, and otherwise once in 64 rounds: every round
+            // of native execution came here (the count of interpreted instructions stands still then),
+            // and the reading was a tenth of a second of a start.
+            if (init && (linux.blocked() || (nativeExecution ? !(++clockRounds & 63) : !(cpu.retired & 4095)))) {
                 if (stop.stop_requested()) break;
                 const auto now = steady_clock::now();
                 if (now >= deadline) {
@@ -489,11 +492,11 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
             }
             // Timed after a stretch of native code only: after each interpreted instruction, reading the
             // clock twice would cost more than the instruction.
-            const bool timeSchedule = nativeExecution && afterNative;
+            const bool timeSchedule = nativeExecution && afterNative && !(++scheduleRounds & 7);
             afterNative = false;
             const auto scheduleBegan = timeSchedule ? steady_clock::now() : steady_clock::time_point{};
             const bool scheduled = linux.schedule(machine, scheduleDeadline, stop);
-            if (timeSchedule) scheduleTime += steady_clock::now() - scheduleBegan;
+            if (timeSchedule) scheduleTime += (steady_clock::now() - scheduleBegan) * 8;
             if (!scheduled) {
                 const auto now = steady_clock::now();
                 if (now >= nextSnapshot && now < deadline && !stop.stop_requested()) {
