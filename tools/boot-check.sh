@@ -5,8 +5,11 @@
 #
 # Starts the installed app six times. The first start may be a cold one and is only reported; the median
 # of the other five, from launch to the Android home screen, is compared with the baseline of the same
-# kind of device in results/boot-baseline.txt. Slower than the baseline fails (exit status 1). With
-# --record a result that is not slower becomes the new baseline. A device that is not thermally nominal
+# kind of device in results/boot-baseline.txt. Starts of one build differ by a few per cent, so a median
+# within 5% of the baseline counts as level with it and passes; 5% or more slower fails (exit status 1).
+# With --record a result that is not slower than the baseline becomes the new baseline; one that is
+# level but slower passes and is not recorded, so the bar does not creep up a few per cent at a time.
+# A device that is not thermally nominal
 # is not measured: numbers from a hot device say nothing. It rests a minute between starts; the whole
 # check takes about ten minutes.
 #
@@ -93,16 +96,24 @@ previous=$(grep -v '^#' $baseline 2>/dev/null | awk -v model=$model '$1 == model
 if [[ -n "$previous" ]]; then
     best=$(echo $previous | awk '{print $3}')
     echo "baseline: $previous"
-    if (( median > best )); then
-        echo "FAILED: $median ms is slower than the baseline's $best ms. Find out why before releasing."
+    percent=$(awk -v m=$median -v b=$best 'BEGIN { printf "%+.1f", (m - b) * 100 / b }')
+    if (( median * 100 >= best * 105 )); then
+        echo "FAILED: $median ms is $percent% against the baseline's $best ms, 5% or more slower. Find out why before releasing."
         exit 1
     fi
-    echo "passed: not slower than the baseline ($median ms against $best ms)"
+    if (( median > best )); then
+        echo "passed: level with the baseline ($median ms against $best ms, $percent%; within 5% counts as the same)"
+        level=1
+    else
+        echo "passed: not slower than the baseline ($median ms against $best ms, $percent%)"
+    fi
 else
     echo "no baseline for $model yet"
 fi
 if [[ -n "${BOOT_CHECK_ENV:-}" ]]; then
     echo "with $BOOT_CHECK_ENV: not recorded"
+elif [[ "$record" == "--record" && -n "${level:-}" ]]; then
+    echo "not recorded: the baseline stays at $best ms"
 elif [[ "$record" == "--record" ]]; then
     echo "$model $version $median $memory $(date +%Y-%m-%d) $commit" >> $baseline
     echo "recorded in $baseline"

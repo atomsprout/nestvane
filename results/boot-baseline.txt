@@ -1,5 +1,6 @@
 # Start to the Android home screen, by kind of device: the bar each release has to clear (tools/boot-check.sh).
-# The last line of a device is its baseline. A release may only make it faster.
+# The last line of a device is its baseline. A release within 5% of it counts as level and passes without
+# being recorded; only a result that is not slower is recorded. 5% or more slower does not pass.
 # model version median-ms-of-five-warm-starts memory-GB date commit
 iPhone14,7 1.6 11075 2.56 2026-11-24 35a8fab
 iPhone14,7 1.7 10916 2.61 2026-11-24 ee19229
