@@ -106,7 +106,7 @@
 | Firefox | Mozilla | 能打开（1.13，见下面）；它的辅助进程会停，浏览器本身继续 |
 | Firefox Focus | Mozilla | 能打开（1.13） |
 | Brave | GitHub | 打开到欢迎页（nightly 构建） |
-| Opera | opera.com | 60 秒内没有画面：解释执行 |
+| Opera | opera.com | 100 秒仍停在启动画面（1.25；之前没有画面）：解释执行 |
 | Tor Browser | torproject.org | 能打开 |
 | Bitwarden | GitHub | 能打开（1.13） |
 | Proton VPN | GitHub | 打开到登录页（1.13） |
@@ -129,11 +129,11 @@
 | Kiwix | kiwix.org | 能打开 |
 | Syncthing-Fork | GitHub | 打开到介绍页 |
 | Obtainium | GitHub | 能打开，询问权限 |
-| Mihon | GitHub | 一启动就停，停在它自己的原生代码里 |
+| Mihon | GitHub | 能打开，停在欢迎页（1.25；之前一启动就停） |
 | LocalSend | GitHub | 60 秒内没有画面：它的 Flutter 引擎是解释执行的 |
 | AppFlowy | GitHub | 46 秒后能打开（Flutter） |
 
-50 个里 36 个能打开，另有一个（百度网盘）在 iPhone 上根本不能运行；试过的 104 个应用合计 87 个能打开。
+50 个里 37 个能打开（1.25 起多了 Mihon），另有一个（百度网盘）在 iPhone 上根本不能运行；试过的 104 个应用合计 88 个能打开。
 
 ## 1.13 改了什么
 

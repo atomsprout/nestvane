@@ -151,7 +151,7 @@ the device, so an app's own native libraries are interpreted, at about 40 millio
 ScriptWidget shows the cost. Its interface is Java, run by translated code, and opens in under a second; its
 script engine is a native library, and the first widget preview took about two minutes on an iPhone 15 Pro.
 
-A hundred and four apps have been installed and opened once each, and eighty-seven open to a usable screen: the
+A hundred and four apps have been installed and opened once each, and eighty-eight open to a usable screen: the
 list, with what stops the others, is in [Apps that were tried](compatibility.md).
 
 ## What has not been measured

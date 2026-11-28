@@ -113,7 +113,7 @@ was saved, and they were uninstalled again, six or four at a time in one start o
 | Firefox | Mozilla | Opens (1.13: see below); its helper processes stop, the browser itself goes on |
 | Firefox Focus | Mozilla | Opens (1.13) |
 | Brave | GitHub | Opens to its welcome screen (a nightly build) |
-| Opera | opera.com | No screen within 60 seconds: interpreted |
+| Opera | opera.com | Stays on its start screen for 100 seconds (1.25; no screen at all before): interpreted |
 | Tor Browser | torproject.org | Opens |
 | Bitwarden | GitHub | Opens (1.13) |
 | Proton VPN | GitHub | Opens to its sign-in (1.13) |
@@ -136,11 +136,11 @@ was saved, and they were uninstalled again, six or four at a time in one start o
 | Kiwix | kiwix.org | Opens |
 | Syncthing-Fork | GitHub | Opens to its introduction |
 | Obtainium | GitHub | Opens, and asks for a permission |
-| Mihon | GitHub | Stops as it starts, in its own native code |
+| Mihon | GitHub | Opens to its welcome screen (1.25; it stopped as it started before) |
 | LocalSend | GitHub | No screen within 60 seconds: its Flutter engine is interpreted |
 | AppFlowy | GitHub | Opens, after 46 seconds (Flutter) |
 
-Thirty-six of the fifty open, and one more (Baidu Netdisk) cannot run on an iPhone at all; of all one hundred and four apps tried, eighty-seven open.
+Thirty-seven of the fifty open (Mihon since 1.25), and one more (Baidu Netdisk) cannot run on an iPhone at all; of all one hundred and four apps tried, eighty-eight open.
 
 ## What changed in 1.13
 
