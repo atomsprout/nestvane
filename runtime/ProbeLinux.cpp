@@ -6384,6 +6384,14 @@ uint64_t ProbeLinux::map(Machine& machine) {
     }
     const bool sparse = anon && !x[2];
     const bool lazy = anon && !sparse && sharing == 2 && length >= lazyAnonymousThreshold;
+    // A smaller private anonymous mapping in a guest address space is given host addresses for all of
+    // it at once (a stack must lie in one piece of host memory, the stack pointer being a host
+    // address) and nothing more: fresh host memory is zeros already. Up to 1.24 it was first made as a
+    // block of zeros of its size, which was then copied into the guest's memory, so every thread's
+    // megabyte of stack and every region of an allocator was written through once before anything used
+    // it. NESTVANE_TEST_EAGER_ANON=1 does that again, for comparing.
+    static const bool eagerAnonymous = std::getenv("NESTVANE_TEST_EAGER_ANON");
+    const bool backedAnonymous = anon && !sparse && !lazy && sharing == 2 && machine.space && !eagerAnonymous;
     const auto copiedLength = backedLength - imageLength;
     if (!sparse && !lazy && copiedLength && (copiedLength > memoryLimit / 2 ||
         !allowsBacking(machine, start, end, copiedLength, memoryLimit))) return noMemory;
@@ -6400,7 +6408,14 @@ uint64_t ProbeLinux::map(Machine& machine) {
             segment.anonymousPages = AnonymousPages::allocate(length, anonymousBudget);
         }
         if (!segment.anonymousPages) return noMemory;
-    } else if (!sparse && copiedLength) {
+    } else if (backedAnonymous) {
+        if (atAddress) changeRange(machine, start, end, {});
+        if (auto pages = AnonymousPages::allocateIn(machine.space, start, length); pages && pages->prepareWrite(0, length)) {
+            segment.anonymousPages = std::move(pages);
+            segment.reservedSize = length;
+        }
+    }
+    if (!lazy && !segment.anonymousPages && !sparse && copiedLength) {
         if (snapshotFile && snapshotFile->privateMappingOffset == x[5] &&
             snapshotFile->privateMappingSourceSize == bytes.size()) {
             auto existing = snapshotFile->privateMapping.lock();
@@ -6408,6 +6423,10 @@ uint64_t ProbeLinux::map(Machine& machine) {
             if (existing.size() == copiedLength &&
                 std::memcmp(existing.data(), bytes.data(), bytes.size()) == 0)
                 segment.bytes = std::move(existing);
+        }
+        if (!anon) {
+            const auto file = descriptors().find(uint32_t(x[4]));
+            if (file != descriptors().end()) noteCopiedMapping(file->second.path, copiedLength);
         }
         if (segment.bytes.empty()) {
             segment.bytes.resize(copiedLength);

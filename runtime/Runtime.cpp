@@ -1036,15 +1036,39 @@ struct CopyCount {
     std::atomic<uint64_t> times{0}, bytes{0};
     void add(uint64_t length) { ++times; bytes += length; }
 };
-CopyCount placedByCopy[4];
+CopyCount placedByCopy[5];
 }  // namespace
 
+namespace {
+std::mutex copiedFilesLock;
+std::unordered_map<std::string, std::pair<uint64_t, uint64_t>> copiedFiles;
+}  // namespace
+
+void noteCopiedMapping(const std::string& path, uint64_t bytes) {
+    const std::lock_guard lock(copiedFilesLock);
+    auto& entry = copiedFiles[path];
+    ++entry.first;
+    entry.second += bytes;
+}
+
 std::string placedByCopyReport() {
-    static const char* const kinds[] = {"moved pages", "image view off a page boundary", "image view of a part of a page", "other bytes"};
+    static const char* const kinds[] = {"moved pages", "image view off a page boundary", "image view of a part of a page",
+                                        "bytes of a file", "zeros of an anonymous mapping"};
     std::string text = "mappings placed by copying:";
-    for (int kind = 0; kind < 4; ++kind)
+    for (int kind = 0; kind < 5; ++kind)
         text += std::string(kind ? "," : "") + " " + kinds[kind] + " " + std::to_string(placedByCopy[kind].times.load()) + " (" +
                 std::to_string(placedByCopy[kind].bytes.load() >> 20) + " MiB)";
+    // The files whose bytes were copied for a private mapping, the most first.
+    std::vector<std::pair<std::string, std::pair<uint64_t, uint64_t>>> files;
+    {
+        const std::lock_guard lock(copiedFilesLock);
+        files.assign(copiedFiles.begin(), copiedFiles.end());
+    }
+    std::sort(files.begin(), files.end(), [](const auto& a, const auto& b) { return a.second.second > b.second.second; });
+    text += "\n  files copied for private mappings: " + std::to_string(files.size());
+    for (size_t index = 0; index < files.size() && index < 24; ++index)
+        text += "\n    " + std::to_string(files[index].second.second >> 10) + " KiB in " + std::to_string(files[index].second.first) +
+                " mappings: " + files[index].first.substr(0, 150);
     return text;
 }
 
@@ -1083,7 +1107,8 @@ void Machine::placeInSpace(Segment& segment) {
     } else if (length && (segment.imageView || !segment.bytes.empty())) {
         // Which kind was copied: a view of the system image that is not laid out on whole pages (by
         // where it starts, or by its size), or bytes that are not of the image.
-        placedByCopy[!segment.imageView ? 3 : reinterpret_cast<uintptr_t>(segment.imageView) % GuestSpace::page ? 1 : 2].add(length);
+        placedByCopy[segment.imageView ? (reinterpret_cast<uintptr_t>(segment.imageView) % GuestSpace::page ? 1 : 2)
+                                       : segment.anonymous ? 4 : 3].add(length);
         if (!pages->prepareWrite(0, length)) return;
         pages->write(0, {segment.data(), size_t(length)});
     }

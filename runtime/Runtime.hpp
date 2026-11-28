@@ -424,6 +424,8 @@ private:
 
 // How many mappings got their guest memory by a copy of their bytes, and of what kind (Machine::placeInSpace).
 std::string placedByCopyReport();
+// A private mapping of a file was made by copying this many of its bytes.
+void noteCopiedMapping(const std::string& path, uint64_t bytes);
 
 struct AOTBlock {
     std::string_view fixture;
