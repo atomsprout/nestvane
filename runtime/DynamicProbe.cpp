@@ -149,6 +149,7 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
     uint64_t inPlaceInstructions = 0, inPlaceStretched = 0;
     steady_clock::duration inPlaceTime{};
     std::array<std::pair<steady_clock::duration, uint64_t>, 512> syscallCost{};
+    uint64_t timedCalls = 0;
     const auto timeReport = [&] {
         std::ostringstream out;
         out << "  host thread time: " << duration_cast<milliseconds>(syscallTime).count() << " ms in system calls, "
@@ -787,7 +788,10 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
                 if (sampleBoot) ++timing.calls;
                 const bool timeSyscall = syscallCount >= nextSyscallSample;
                 const auto syscallStart = timeSyscall ? steady_clock::now() : steady_clock::time_point{};
-                const auto callBegan = nativeExecution ? steady_clock::now() : steady_clock::time_point{};
+                // One call in eight is timed, and counts for eight: reading the clock before and after
+                // every call was itself a tenth of a second of a start, which makes 1.3 million calls.
+                const bool timeCall = nativeExecution && (++timedCalls & 7) == 0;
+                const auto callBegan = timeCall ? steady_clock::now() : steady_clock::time_point{};
                 // NESTVANE_TRACE_PROGRAM=<part of a program's path> puts that program's system calls into
                 // the Android log: the number, the first four arguments, and what came back.
                 static const char* const tracedProgram = std::getenv("NESTVANE_TRACE_PROGRAM");
@@ -869,11 +873,13 @@ DynamicReport runProbe(const Image& image, ProbeLinux& linux, ProbeKind kind, st
                     linux.androidLogObserver("native execution: denied call " + std::to_string(syscall) + " " + path + " " + linux.pathReport(path));
                 }
                 if (nativeExecution) {
-                    const auto spent = steady_clock::now() - callBegan;
-                    syscallTime += spent;
                     auto& slot = syscallCost[std::min<uint64_t>(syscall, syscallCost.size() - 1)];
-                    slot.first += spent;
                     ++slot.second;
+                    if (timeCall) {
+                        const auto spent = (steady_clock::now() - callBegan) * 8;
+                        syscallTime += spent;
+                        slot.first += spent;
+                    }
                 }
                 if (timeSyscall) {
                     timing.nanoseconds += duration_cast<nanoseconds>(steady_clock::now() - syscallStart).count();
