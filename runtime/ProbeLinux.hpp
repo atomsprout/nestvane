@@ -279,6 +279,9 @@ struct ProbeLinux {
     // Told of each file of the system image that the guest opens, by where its bytes are: which files a
     // start comes to first is what they are read in ahead by (ios/CodePrefetch.hpp).
     void (*imageOpened)(const uint8_t* data) = nullptr;
+    // Whether these bytes are all of a host file that is mapped from its start: the system fills the
+    // rest of such a mapping's last page with zeros, so a guest mapping can take that page as it is.
+    bool (*imageFileMapped)(const uint8_t* data, size_t size) = nullptr;
     // Set for a start of Android: fsync is then left to the first commit after the home screen is up.
     bool holdSyncWhileStarting = false;
     // Set for a start of Android: what was written to the data volume is committed within some seconds

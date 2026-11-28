@@ -1066,9 +1066,14 @@ std::string placedByCopyReport() {
     }
     std::sort(files.begin(), files.end(), [](const auto& a, const auto& b) { return a.second.second > b.second.second; });
     text += "\n  files copied for private mappings: " + std::to_string(files.size());
-    for (size_t index = 0; index < files.size() && index < 24; ++index)
+    for (size_t index = 0; index < files.size() && index < 24; ++index) {
+        // The runtime's own names for some files have bytes that are no text in them.
+        std::string name = files[index].first.substr(0, 150);
+        for (char& character : name)
+            if (character < 0x20 || character > 0x7e) character = '?';
         text += "\n    " + std::to_string(files[index].second.second >> 10) + " KiB in " + std::to_string(files[index].second.first) +
-                " mappings: " + files[index].first.substr(0, 150);
+                " mappings: " + name;
+    }
     return text;
 }
 

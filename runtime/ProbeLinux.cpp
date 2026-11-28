@@ -6268,6 +6268,10 @@ uint64_t ProbeLinux::map(Machine& machine) {
     uint64_t backedLength = length;
     uint64_t imageLength = 0;
     WritableFile* snapshotFile = nullptr;
+    // A private mapping of one of the guest's own files (an app's library in /data/app) whose pages are
+    // host pages: where they are, to map them copy-on-write in place of copying the file's bytes.
+    const uint8_t* ownPages = nullptr;
+    static const bool copyMappings = std::getenv("NESTVANE_TEST_COPY_MAPPINGS");
     if (anon) {
         if (x[5]) return invalid;
     } else {
@@ -6364,8 +6368,22 @@ uint64_t ProbeLinux::map(Machine& machine) {
         // The root loader and retained read-only APEX mounts own these bytes throughout the boot.
         // In a guest address space a private writable mapping can start as a view too: it is mapped
         // copy-on-write there, so only the pages the guest writes take memory of their own.
-        if ((!(x[2] & 2) || (machine.space && sharing == 2)) && !fd.temporary && !fd.apkRequest && files.contains(fd.path))
-            imageLength = bytes.size() & ~(pageSize - 1);
+        const bool viewable = (!(x[2] & 2) || (machine.space && sharing == 2)) && !fd.temporary && !fd.apkRequest &&
+                              files.contains(fd.path);
+        if (viewable) imageLength = bytes.size() & ~(pageSize - 1);
+        // The last page of a file is seldom full. When the bytes after the file's end in that page are
+        // known to be zeros, the page is part of the view like the others; otherwise it is copied,
+        // which up to 1.24 was a copy and a mapping of its own for every library in every process
+        // (9000 of them in a start). They are zeros in a host file mapped whole, and in the aligned
+        // copy made below. NESTVANE_TEST_COPY_MAPPINGS=1 copies as before, for comparing.
+        bool zerosAfterEnd = machine.space && viewable && !bytes.empty() && !copyMappings && !fd.ext4File && imageFileMapped &&
+                             reinterpret_cast<uintptr_t>(raw.data()) % GuestSpace::page == 0 && imageFileMapped(raw.data(), raw.size());
+        if (machine.space && sharing == 2 && fd.temporary && !copyMappings && !bytes.empty() && x[5] % GuestSpace::page == 0 &&
+            start % GuestSpace::page == 0 && pageSize == GuestSpace::page && fd.temporary->storage->pages.backed() &&
+            x[5] + pageAlignedLength(bytes.size()) <= fd.temporary->storage->pages.capacity())
+            ownPages = fd.temporary->storage->pages.data() + x[5];
+        // (A file inside a mounted image whose blocks happen to start on a page keeps its last page as a
+        // copy: an aligned copy of the whole file for the sake of that page cost 130 MB at the start.)
         if (machine.space && imageLength && reinterpret_cast<uintptr_t>(bytes.data()) % GuestSpace::page) {
             // A file inside a mounted image starts wherever its blocks are. Guest address spaces map
             // whole host pages, so such a file gets one page-aligned copy that every process maps,
@@ -6379,8 +6397,13 @@ uint64_t ProbeLinux::map(Machine& machine) {
                     aligned = {static_cast<const uint8_t*>(memory), raw.size()};
                 }
             }
-            if (aligned.size() == raw.size()) bytes = aligned.subspan(x[5], bytes.size());
+            if (aligned.size() == raw.size()) {
+                bytes = aligned.subspan(x[5], bytes.size());
+                zerosAfterEnd = !copyMappings;
+            }
         }
+        if (zerosAfterEnd && pageSize == GuestSpace::page && x[5] % pageSize == 0 && x[5] + bytes.size() == raw.size())
+            imageLength = pageAlignedLength(bytes.size());
     }
     const bool sparse = anon && !x[2];
     const bool lazy = anon && !sparse && sharing == 2 && length >= lazyAnonymousThreshold;
@@ -6413,6 +6436,16 @@ uint64_t ProbeLinux::map(Machine& machine) {
         if (auto pages = AnonymousPages::allocateIn(machine.space, start, length); pages && pages->prepareWrite(0, length)) {
             segment.anonymousPages = std::move(pages);
             segment.reservedSize = length;
+        }
+    } else if (ownPages && copiedLength == backedLength) {
+        // As Machine::placeInSpace maps a view of the image: the host pages copy-on-write, then the
+        // record of the guest pages they are now.
+        if (atAddress) changeRange(machine, start, end, {});
+        if (machine.space->mapFrom(start, backedLength, GuestSpace::read | GuestSpace::write, ownPages, false)) {
+            if (auto pages = AnonymousPages::allocateIn(machine.space, start, backedLength, false)) {
+                segment.anonymousPages = std::move(pages);
+                segment.reservedSize = backedLength;
+            }
         }
     }
     if (!lazy && !segment.anonymousPages && !sparse && copiedLength) {

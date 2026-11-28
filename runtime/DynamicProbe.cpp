@@ -71,6 +71,13 @@ void noteImageOpened(const uint8_t* data) {
     if (data < file->second.data + file->second.size && !file->second.order) file->second.order = ++opened;
 }
 
+// Whether [data, data + size) is the whole of one mapped image file.
+bool imageFileMapped(const uint8_t* data, size_t size) {
+    const std::lock_guard guard(mappedImageLock);
+    const auto file = mappedImages.find(data);
+    return file != mappedImages.end() && file->second.size == size;
+}
+
 class ReadOnlyImageFile {
 public:
     ReadOnlyImageFile(const std::filesystem::path& path, size_t bytes) : size(bytes) {
@@ -1520,6 +1527,7 @@ service nestvane-trim /system/bin/sh /system/etc/nestvane/trim.sh
         // NESTVANE_NO_TIMED_SYNC=1 leaves the timed commit out, for comparing.
         linux.timedSync = !std::getenv("NESTVANE_NO_TIMED_SYNC");
         linux.imageOpened = noteImageOpened;
+        linux.imageFileMapped = imageFileMapped;
         for (const auto& [path, file] : files) linux.mount(path, file.bytes());
         if (const auto bootconfig = files.find("/nestvane-metadata/bootconfig"); bootconfig != files.end()) {
             static std::string configuration;
