@@ -91,14 +91,32 @@ inline unsigned threadCount(unsigned which, unsigned fallback) {
     return asked >= 1 && asked <= 64 ? asked : fallback;
 }
 
+// What is done with a stretch of a file that the system holds in memory already: it is left alone.
+// NESTVANE_PREFETCH_HELD=copy reads it all the same (as before 1.24), =touch reads a byte of each of
+// its pages through a mapping. Starts in turn on an iPhone 14, files in memory: left alone 7302-7473 ms
+// (median 7465), read 7408-7643 (7534), touched 7670-8373 (7757, and more pages read from storage).
+inline int heldMode() {
+    static const int mode = [] {
+        const char* text = std::getenv("NESTVANE_PREFETCH_HELD");
+        return !text ? 1 : !std::strcmp(text, "copy") ? 0 : !std::strcmp(text, "touch") ? 2 : 1;
+    }();
+    return mode;
+}
+
 // Whether a stretch of a file is in the system's memory, asked through a mapping made for the question.
 inline bool inMemory(int fd, uint64_t from, uint64_t length, std::vector<char>& present) {
+    if (heldMode() == 0) return false;
     const uint64_t page = uint64_t(getpagesize()), pages = (length + page - 1) / page;
     void* mapped = mmap(nullptr, length, PROT_READ, MAP_SHARED, fd, off_t(from));
     if (mapped == MAP_FAILED) return false;
     if (present.size() < pages) present.resize(pages);
     bool all = mincore(mapped, length, present.data()) == 0;
     for (uint64_t index = 0; all && index < pages; ++index) all = present[index] & 1;
+    if (all && heldMode() == 2) {
+        unsigned sum = 0;
+        for (uint64_t index = 0; index < pages; ++index) sum += static_cast<const volatile uint8_t*>(mapped)[index * page];
+        (void)sum;
+    }
     munmap(mapped, length);
     return all;
 }

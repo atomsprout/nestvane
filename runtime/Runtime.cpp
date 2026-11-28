@@ -1,4 +1,6 @@
 #include "Runtime.hpp"
+
+#include <atomic>
 #include "NativeCode.hpp"
 
 #include <algorithm>
@@ -1026,6 +1028,26 @@ void Machine::place(Segment& segment) {
     }
 }
 
+namespace {
+// What mappings were given guest memory by copying their bytes into it, by kind, for the report: from
+// pages of their own elsewhere, from a view of the image not at a page boundary, from one of a size
+// that is not whole pages, from bytes that are not of the image.
+struct CopyCount {
+    std::atomic<uint64_t> times{0}, bytes{0};
+    void add(uint64_t length) { ++times; bytes += length; }
+};
+CopyCount placedByCopy[4];
+}  // namespace
+
+std::string placedByCopyReport() {
+    static const char* const kinds[] = {"moved pages", "image view off a page boundary", "image view of a part of a page", "other bytes"};
+    std::string text = "mappings placed by copying:";
+    for (int kind = 0; kind < 4; ++kind)
+        text += std::string(kind ? "," : "") + " " + kinds[kind] + " " + std::to_string(placedByCopy[kind].times.load()) + " (" +
+                std::to_string(placedByCopy[kind].bytes.load() >> 20) + " MiB)";
+    return text;
+}
+
 void Machine::placeInSpace(Segment& segment) {
     if (space && segment.shared && !segment.beyondFileEnd && segment.address % GuestSpace::page == 0 &&
         segment.fileOffset % GuestSpace::page == 0 && segment.mappedSize() % GuestSpace::page == 0) {
@@ -1056,8 +1078,12 @@ void Machine::placeInSpace(Segment& segment) {
     if (!pages) return;
     const auto length = segment.accessibleSize();
     if (segment.anonymousPages) {
+        placedByCopy[0].add(std::min<uint64_t>(length, size));
         if (!segment.anonymousPages->copyTo(*pages, segment.fileOffset, 0, std::min<uint64_t>(length, size))) return;
     } else if (length && (segment.imageView || !segment.bytes.empty())) {
+        // Which kind was copied: a view of the system image that is not laid out on whole pages (by
+        // where it starts, or by its size), or bytes that are not of the image.
+        placedByCopy[!segment.imageView ? 3 : reinterpret_cast<uintptr_t>(segment.imageView) % GuestSpace::page ? 1 : 2].add(length);
         if (!pages->prepareWrite(0, length)) return;
         pages->write(0, {segment.data(), size_t(length)});
     }

@@ -1277,7 +1277,8 @@ std::string statistics() {
     const auto milliseconds = [&](uint64_t time) { return time * base.numer / base.denom / 1'000'000; };
     out << "  native execution time: " << milliseconds(counters.nativeTime) << " ms in guest code, "
         << registry().madePages * GuestSpace::page / (1024 * 1024) << " MiB of code table made (" << madeAhead
-        << " of " << registry().madePages << " pages ahead of need, from a plan of " << planSize << ")";
+        << " of " << registry().madePages << " pages ahead of need, from a plan of " << planSize << ")\n  "
+        << placedByCopyReport();
     if (counters.unmapped) out << ", " << counters.unmapped << " modules could not be mapped";
     out << '\n';
     // NESTVANE_NATIVE_USED=1 lists the translations that were mapped, for leaving the others out of a build.

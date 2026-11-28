@@ -422,6 +422,9 @@ private:
     bool topByteIgnore;
 };
 
+// How many mappings got their guest memory by a copy of their bytes, and of what kind (Machine::placeInSpace).
+std::string placedByCopyReport();
+
 struct AOTBlock {
     std::string_view fixture;
     uint64_t entryOffset;
