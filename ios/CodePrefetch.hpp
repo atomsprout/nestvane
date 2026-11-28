@@ -56,6 +56,27 @@ struct Progress {
 };
 inline Progress progress;
 
+// What the lists this start began with named, by image name and by file path: one byte a page.
+// A list is made from the pages that are in the system's memory when the home screen is up, and that
+// is more than the start used: what was read ahead is there whether it was needed or not, and so is
+// whatever an earlier session left. Left to itself a list only grows (41,000 pages of code became
+// 54,000 in a day of starts, and a start with nothing in memory went from 8.5 s to 10 s). So a page
+// is only kept in a list if the list the start began with had it, or the start can be shown to have
+// used it; a list is made from everything in memory only when there was none before, which is the
+// first start after installing, when nothing else is in memory yet.
+// NESTVANE_PREFETCH_RESET=1 starts without the lists, so that this start makes them anew.
+inline std::vector<std::pair<std::string, std::vector<char>>> previousCode;
+inline std::vector<std::pair<std::string, std::vector<char>>> previousFiles;
+inline bool resetting() {
+    static const bool reset = std::getenv("NESTVANE_PREFETCH_RESET") != nullptr;
+    return reset;
+}
+inline const std::vector<char>* previousOf(const std::vector<std::pair<std::string, std::vector<char>>>& lists, const std::string& name) {
+    for (const auto& [listed, pages] : lists)
+        if (listed == name) return &pages;
+    return nullptr;
+}
+
 inline std::string status() {
     char text[240];
     std::snprintf(text, sizeof(text), "read ahead (begun %llu ms before): code %llu of %llu pages%s, files %llu of %llu pages%s",
@@ -143,6 +164,20 @@ inline void record(const std::string& path, const std::vector<std::pair<uint64_t
         for (auto& byte : present[index]) byte = byte & 1;  // MINCORE_INCORE
         place[index].assign(pages, none);
     }
+    // Kept: what the list this start began with had, and what the plan's stretches touch (the start
+    // looked that code up, so it used it). With no list to begin with, everything that is in memory.
+    for (size_t index = 0; index < loaded.size(); ++index) {
+        const auto* before = previousOf(previousCode, loaded[index].name);
+        if (!before || before->size() != present[index].size()) continue;
+        std::vector<char> planned(present[index].size(), 0);
+        const uint64_t text = reinterpret_cast<uint64_t>(loaded[index].text);
+        for (const auto& [from, to] : order) {
+            if (from < text || from >= text + loaded[index].size || to <= from) continue;
+            for (uint64_t at = (from - text) / page; at <= (std::min(to, text + loaded[index].size) - 1 - text) / page; ++at) planned[at] = 1;
+        }
+        for (size_t at = 0; at < present[index].size(); ++at)
+            if (!(*before)[at] && !planned[at]) present[index][at] = 0;
+    }
     uint32_t next = 0;
     for (const auto& [from, to] : order) {
         for (size_t index = 0; index < loaded.size(); ++index) {
@@ -193,7 +228,7 @@ inline void record(const std::string& path, const std::vector<std::pair<uint64_t
 // Returns how many pages are being read in. The threads go through the list together, each taking
 // every so-many-th page, so that what the start needs first is read first.
 inline size_t start(const std::string& path, unsigned threads = threadCount(0, 4)) {
-    FILE* file = std::fopen(path.c_str(), "rb");
+    FILE* file = resetting() ? nullptr : std::fopen(path.c_str(), "rb");
     if (!file) return 0;
     const uint64_t page = uint64_t(getpagesize());
     const auto loaded = images();
@@ -221,6 +256,17 @@ inline size_t start(const std::string& path, unsigned threads = threadCount(0, 4
             wanted->push_back(listed[pair[0]]->text + uint64_t{pair[1]} * page);
     }
     std::fclose(file);
+    // What this list names, for the list that this start will make (record).
+    if (!wanted->empty()) {
+        previousCode.clear();
+        for (const auto& image : loaded) previousCode.emplace_back(image.name, std::vector<char>((image.size + page - 1) / page, 0));
+        for (const uint8_t* address : *wanted)
+            for (size_t index = 0; index < loaded.size(); ++index)
+                if (address >= loaded[index].text && address < loaded[index].text + loaded[index].size) {
+                    previousCode[index].second[uint64_t(address - loaded[index].text) / page] = 1;
+                    break;
+                }
+    }
     if (std::getenv("NESTVANE_PREFETCH_UNORDERED")) std::sort(wanted->begin(), wanted->end());
     progress.codeWanted = wanted->size();
     progress.codeThreads = wanted->empty() ? 0 : threads;
@@ -253,8 +299,11 @@ inline void recordFiles(const std::string& path, const std::string& root) {
         const uint64_t size = mapped.size, pages = (size + page - 1) / page;
         std::vector<char> present(pages);
         if (mincore(mapped.data, size, present.data()) != 0) return;
+        // Of a file the list this start began with had: only the pages it had there.
+        const auto* before = previousOf(previousFiles, mapped.path);
+        if (before && before->size() != pages) before = nullptr;
         uint64_t count = 0;
-        for (auto& byte : present) count += (byte = byte & 1);
+        for (uint64_t at = 0; at < pages; ++at) count += (present[at] = (present[at] & 1) && (!before || (*before)[at]));
         if (!count) return;
         listed.push_back({mapped.order, mapped.path.substr(root.size()), size, std::move(present)});
     });
@@ -275,7 +324,7 @@ inline void recordFiles(const std::string& path, const std::string& root) {
 
 // Reads the listed pages of the files, so that they are in memory when Android maps them.
 inline size_t startFiles(const std::string& path, const std::string& root, unsigned threads = threadCount(1, 3)) {
-    FILE* file = std::fopen(path.c_str(), "rb");
+    FILE* file = resetting() ? nullptr : std::fopen(path.c_str(), "rb");
     if (!file) return 0;
     struct Run { std::string path; uint64_t from, length; };
     auto runs = std::make_shared<std::vector<Run>>();
@@ -297,6 +346,7 @@ inline size_t startFiles(const std::string& path, const std::string& root, unsig
             total += end - index;
             index = end;
         }
+        previousFiles.emplace_back(root + name, std::move(present));
     }
     std::fclose(file);
     if (std::getenv("NESTVANE_PREFETCH_UNORDERED"))
@@ -351,8 +401,10 @@ inline void recordDirectory(const std::string& path, const std::string& director
             if (mapped == MAP_FAILED) continue;
             std::vector<char> present(pages);
             uint64_t count = 0;
+            const auto* before = previousOf(previousFiles, full);
+            if (before && before->size() != pages) before = nullptr;
             if (mincore(mapped, size, present.data()) == 0)
-                for (auto& byte : present) count += (byte = byte & 1);
+                for (uint64_t at = 0; at < pages; ++at) count += (present[at] = (present[at] & 1) && (!before || (*before)[at]));
             munmap(mapped, size);
             if (!count) continue;
             std::fprintf(file, "/%s\n", name.c_str());

@@ -21,6 +21,10 @@
 #include "Validation.hpp"
 
 static void StartReadAhead();
+// Where the lists of what a start reads are kept, in Caches (ios/CodePrefetch.hpp, NativeCode.hpp).
+// The name changed with 1.24: lists made before it hold everything that was in memory when they were
+// made, and since 1.24 a list keeps to what the list before it had, so those would never shrink.
+static NSString* const BootListsName = @"boot-lists-124";
 
 #include <algorithm>
 #include <atomic>
@@ -2282,7 +2286,7 @@ static bool ApkContent(NSData* data) {
                     // A few seconds on, when the home screen has drawn: which code pages this start used.
                     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
                         NSString* list = [NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject
-                            stringByAppendingPathComponent:@"boot-code-pages"];
+                            stringByAppendingPathComponent:BootListsName];
                         // Which pages of the table of translated code it made (NativeCode.hpp), and in that
                         // order the code they point into.
                         nestvane::native::recordTablePlan([list stringByAppendingString:@"-table"].fileSystemRepresentation);
@@ -2511,7 +2515,7 @@ static bool ApkContent(NSData* data) {
                 // The code pages the last start used, read in on other cores while this one begins
                 // (ios/CodePrefetch.hpp). NESTVANE_NO_PREFETCH=1 leaves it out, for comparing.
                 NSString* prefetchList = [NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject
-                    stringByAppendingPathComponent:@"boot-code-pages"];
+                    stringByAppendingPathComponent:BootListsName];
                 // What the last start read is read in again on other threads (StartReadAhead, which main()
                 // has called already: this is for a start of Android that is not the process's first).
                 StartReadAhead();
@@ -2769,7 +2773,7 @@ static void StartReadAhead() {
         @autoreleasepool {
             NSFileManager* manager = NSFileManager.defaultManager;
             NSString* list = [NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject
-                stringByAppendingPathComponent:@"boot-code-pages"];
+                stringByAppendingPathComponent:BootListsName];
             NSURL* guest = [[manager URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask].firstObject
                 URLByAppendingPathComponent:@"Nestvane" isDirectory:YES];
             const std::string database = [guest URLByAppendingPathComponent:@"guest-data.sqlite3"].fileSystemRepresentation;
