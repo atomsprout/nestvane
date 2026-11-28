@@ -6226,9 +6226,11 @@ uint64_t ProbeLinux::map(Machine& machine) {
     // taken by them, its libraries found no room, and the whole process was interpreted (Signal opened
     // one time in seven).
     constexpr uint64_t shadowStackGuard = 16 * 1024 * 1024;
+    // NESTVANE_TEST_OLD_RANGE_RULE=1 takes them in as before, for comparing.
+    static const bool oldRangeRule = std::getenv("NESTVANE_TEST_OLD_RANGE_RULE");
     const bool trampolineShape = anon && ((length == 2 * pageSize && ((x[2] & 7) == 0 || (x[2] & 7) == 3)) ||
-                                          (!(x[2] & 7) && length <= 64 * 1024 * 1024 && !(x[3] & noReserve) &&
-                                           length != shadowStackGuard));
+                                          (!(x[2] & 7) && length <= 64 * 1024 * 1024 &&
+                                           (oldRangeRule || (!(x[3] & noReserve) && length != shadowStackGuard))));
     const uint64_t forLibrary = !atAddress && !lowHint && machine.space && !machine.space->interpreted() &&
         ((anon && !(x[2] & 7) && machine.space->inLinker(machine.cpu.pc)) || (native::enabled() && trampolineShape))
         ? freeForeignAddress(machine, length) : 0;
