@@ -48,6 +48,7 @@ struct Progress {
     std::atomic<uint64_t> codeWanted{0}, codeRead{0}, codeDoneAt{0}, codeThreads{0};
     std::atomic<uint64_t> fileWanted{0}, fileRead{0}, fileDoneAt{0}, fileThreads{0};
     std::atomic<uint64_t> lead{0};  // how long the reading had been going when Android's start began
+    std::atomic<uint64_t> skipped{0};  // pages of files that were in memory already and were not read
     std::chrono::steady_clock::time_point began = std::chrono::steady_clock::now();
     uint64_t now() const {
         return uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - began).count());
@@ -63,7 +64,7 @@ inline std::string status() {
                   progress.codeDoneAt ? (" (done at " + std::to_string(progress.codeDoneAt.load()) + " ms)").c_str() : "",
                   static_cast<unsigned long long>(progress.fileRead.load()), static_cast<unsigned long long>(progress.fileWanted.load()),
                   progress.fileDoneAt ? (" (done at " + std::to_string(progress.fileDoneAt.load()) + " ms)").c_str() : "");
-    return text;
+    return std::string(text) + ", " + std::to_string(progress.skipped.load()) + " in memory already";
 }
 
 inline std::vector<Image> images() {
@@ -88,6 +89,18 @@ inline unsigned threadCount(unsigned which, unsigned fallback) {
     if (std::sscanf(text, "%u,%u", &code, &files) != 2) return fallback;
     const unsigned asked = which ? files : code;
     return asked >= 1 && asked <= 64 ? asked : fallback;
+}
+
+// Whether a stretch of a file is in the system's memory, asked through a mapping made for the question.
+inline bool inMemory(int fd, uint64_t from, uint64_t length, std::vector<char>& present) {
+    const uint64_t page = uint64_t(getpagesize()), pages = (length + page - 1) / page;
+    void* mapped = mmap(nullptr, length, PROT_READ, MAP_SHARED, fd, off_t(from));
+    if (mapped == MAP_FAILED) return false;
+    if (present.size() < pages) present.resize(pages);
+    bool all = mincore(mapped, length, present.data()) == 0;
+    for (uint64_t index = 0; all && index < pages; ++index) all = present[index] & 1;
+    munmap(mapped, length);
+    return all;
 }
 
 // The list of the code's pages: "NVPF2", the images (name, newline, size of the code), then the pages
@@ -272,7 +285,7 @@ inline size_t startFiles(const std::string& path, const std::string& root, unsig
     progress.fileThreads += runs->empty() ? 0 : threads;
     for (unsigned thread = 0; thread < threads && !runs->empty(); ++thread) {
         std::thread([runs, thread, threads, page] {
-            std::vector<char> scratch(64 * 16384);
+            std::vector<char> scratch(64 * 16384), present(64);
             std::string open;
             int fd = -1;
             // Every so-many-th stretch, as with the code: the files Android opens first are read first.
@@ -283,7 +296,11 @@ inline size_t startFiles(const std::string& path, const std::string& root, unsig
                     fd = ::open(run.path.c_str(), O_RDONLY | O_CLOEXEC);
                     open = run.path;
                 }
-                if (fd >= 0) (void)::pread(fd, scratch.data(), std::min<uint64_t>(run.length, scratch.size()), off_t(run.from));
+                // What the system still holds is not read again: on a start that finds its files in
+                // memory that is all of it, and reading it would only copy hundreds of megabytes.
+                if (fd >= 0 && !inMemory(fd, run.from, run.length, present))
+                    (void)::pread(fd, scratch.data(), std::min<uint64_t>(run.length, scratch.size()), off_t(run.from));
+                else if (fd >= 0) progress.skipped += run.length / page;
                 progress.fileRead += run.length / page;
             }
             if (fd >= 0) ::close(fd);
@@ -335,8 +352,14 @@ inline void startWhole(const std::string& path) {
     std::thread([path] {
         const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
         if (fd < 0) return;
-        std::vector<char> scratch(1 << 20);
-        while (::read(fd, scratch.data(), scratch.size()) > 0) {}
+        std::vector<char> scratch(1 << 20), present;
+        struct stat status{};
+        // A megabyte at a time, and only what the system does not hold already.
+        for (uint64_t at = 0; fstat(fd, &status) == 0 && at < uint64_t(status.st_size); at += scratch.size()) {
+            const uint64_t length = std::min<uint64_t>(scratch.size(), uint64_t(status.st_size) - at);
+            if (!inMemory(fd, at, length, present)) (void)::pread(fd, scratch.data(), length, off_t(at));
+            else progress.skipped += length / uint64_t(getpagesize());
+        }
         ::close(fd);
     }).detach();
 }

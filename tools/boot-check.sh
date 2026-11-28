@@ -39,6 +39,9 @@ for start in 1 2 3 4 5 6; do
     fi
     # A start with the screen off leaves the app behind the lock screen, where it is given less of the
     # processor: that start woke the screen, so it is made again, twice at most, and not counted.
+    # An app that stays "not active" through that has something of the system's over it (after a
+    # restart of the phone, an alert that only its owner can answer): it is in front all the same and
+    # runs as fast, so the start is measured and the line says so. One in the background is not measured.
     for attempt in 1 2 3; do
         xcrun devicectl device process launch --device $device --terminate-existing \
             --environment-variables "{\"NESTVANE_INIT_SNAPSHOT_SECONDS\":\"25\"${BOOT_CHECK_ENV:+,$BOOT_CHECK_ENV}}" $bundle > $out/launch.log 2>&1 ||
@@ -48,6 +51,8 @@ for start in 1 2 3 4 5 6; do
         xcrun devicectl device copy from --device $device --domain-type appDataContainer --domain-identifier $bundle \
             --source Documents/boot-milestones.txt --destination $out/boot-milestones.txt > /dev/null 2>&1
         head -1 $out/boot-milestones.txt 2>/dev/null | grep -q 'app not active\|app in the background' || break
+        [[ -n "${covered:-}" ]] && break
+        (( attempt == 3 )) && { covered=1; break; }
         echo "start $start: the app was not in front (screen off?); starting it again"
         ${0:A:h}/end-app.sh $device $bundle
         sleep 20
@@ -62,7 +67,13 @@ for start in 1 2 3 4 5 6; do
         echo "start $start: the device is in Low Power Mode, which slows it; turn that off and run this again"
         exit 2
     fi
-    thermal=$(head -1 $out/boot-milestones.txt 2>/dev/null | sed 's/.*thermal //; s/ | pages read.*//')
+    if head -1 $out/boot-milestones.txt 2>/dev/null | grep -q 'app in the background'; then
+        echo "start $start: the app is in the background; bring it to the front and run this again"
+        exit 2
+    fi
+    note=""
+    head -1 $out/boot-milestones.txt 2>/dev/null | grep -q 'app not active' && note=" (the app was not active: something of the system's is over it)"
+    thermal=$(head -1 $out/boot-milestones.txt 2>/dev/null | sed 's/.*thermal //; s/ | pages read.*//; s/ | app not active//')
     pages=$(head -1 $out/boot-milestones.txt 2>/dev/null | sed -n 's/.*pages read from storage \([0-9]*\).*/\1/p')
     if [[ "$thermal" != "nominal → nominal" ]]; then
         echo "start $start: thermal state '$thermal'; let the device cool down and run this again"
@@ -71,7 +82,7 @@ for start in 1 2 3 4 5 6; do
     home=$(grep -a 'Displayed com.android.launcher3' $out/boot-milestones.txt | tail -1 | sed 's/^\[\([0-9]*\) ms\].*/\1/')
     memory=$(grep -a 'iOS physical footprint bytes' $out/guest-live.txt 2>/dev/null | head -1 | awk '{printf "%.2f", $NF / 1e9}')
     [[ -n "$home" ]] || { echo "start $start: the home screen was not reached within 36 s"; exit 1; }
-    echo "start $start: $home ms to the home screen, $memory GB${pages:+, $pages pages read from storage}"
+    echo "start $start: $home ms to the home screen, $memory GB${pages:+, $pages pages read from storage}$note"
     if (( start > 1 )); then times+=($home); memories+=($memory); fi
 done
 
