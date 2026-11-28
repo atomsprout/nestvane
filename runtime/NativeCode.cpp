@@ -872,9 +872,20 @@ Exit settle(Machine& machine, const Result& result) {
         // x28 is where the svc returns: the start of the next instruction, unless out-of-line code
         // was put in between, and then it is still within the svc's own translation.
         ++counters.syscalls;
-        if (!guestCode(result.pc, guestPc, atStart)) {
+        // A start makes over a million system calls from a few dozen places in the C library: where each
+        // is in the guest is remembered, in place of a search through the module's marks every time.
+        // settle runs on the main loop's thread only.
+        struct Known { uint64_t host = 0, guest = 0; bool atStart = false; };
+        static std::array<Known, 1024> known{};
+        auto& slot = known[(result.pc >> 2) & (known.size() - 1)];
+        if (slot.host == result.pc && result.pc) {
+            guestPc = slot.guest;
+            atStart = slot.atStart;
+        } else if (!guestCode(result.pc, guestPc, atStart)) {
             machine.fault(cpu.pc, result.pc);
             return Exit::lost;
+        } else {
+            slot = {result.pc, guestPc, atStart};
         }
         cpu.pc = atStart ? guestPc - 4 : guestPc;
         return Exit::syscall;
